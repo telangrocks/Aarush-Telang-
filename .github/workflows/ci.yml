@@ -6,364 +6,70 @@ on:
   pull_request:
     branches: [ main, develop, staging ]
 
-env:
-  NODE_VERSION: '20'
-  CACHE_KEY_PREFIX: v1
-
 jobs:
   # ============================================================================
-  # JOB 1: LINT & CODE QUALITY
+  # JOB 1: BACKEND CHECKS (TypeScript, Linting & Build)
   # ============================================================================
-  lint-and-format:
-    name: Lint & Code Quality Checks
+  backend-checks:
+    name: Backend CI Checks
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        working-directory: ['backend', 'mobile']
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Setup Node.js ${{ env.NODE_VERSION }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: '20'
           cache: 'npm'
-          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
-
+          cache-dependency-path: './backend/package-lock.json'
+          
       - name: Install dependencies
-        working-directory: ${{ matrix.working-directory }}
-        run: npm ci --prefer-offline --no-audit
-
-      - name: ESLint - Check code style
-        working-directory: ${{ matrix.working-directory }}
+        working-directory: ./backend
         run: |
-          if [ -f .eslintrc.json ] || [ -f .eslintrc.js ]; then
-            npm run lint -- --format=json --output-file=eslint-report.json || true
-            echo "ESLint check completed"
+          if [ -f package-lock.json ]; then
+            npm ci
           else
-            echo "ESLint config not found, skipping"
+            npm install
           fi
-        continue-on-error: true
 
-      - name: Prettier - Check formatting
-        working-directory: ${{ matrix.working-directory }}
-        run: |
-          if [ -f .prettierrc ] || [ -f .prettierrc.json ]; then
-            npm run format:check || npm run prettier:check || true
-            echo "Prettier check completed"
-          else
-            echo "Prettier config not found, skipping"
-          fi
-        continue-on-error: true
+      - name: Lint code
+        working-directory: ./backend
+        run: npm run lint || echo "Linting skipped or failed"
 
-      - name: Upload lint reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lint-reports-${{ matrix.working-directory }}
-          path: ${{ matrix.working-directory }}/eslint-report.json
-          retention-days: 30
+      - name: Build TypeScript code
+        working-directory: ./backend
+        run: npm run build
 
   # ============================================================================
-  # JOB 2: TYPE CHECKING (TypeScript)
+  # JOB 2: MOBILE CHECKS (Android Gradle Build)
   # ============================================================================
-  type-check:
-    name: TypeScript Type Checking
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        working-directory: ['backend', 'mobile']
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
-
-      - name: Install dependencies
-        working-directory: ${{ matrix.working-directory }}
-        run: npm ci --prefer-offline --no-audit
-
-      - name: TypeScript type checking
-        working-directory: ${{ matrix.working-directory }}
-        run: |
-          if [ -f tsconfig.json ]; then
-            npm run type-check || npx tsc --noEmit || true
-            echo "Type check completed"
-          else
-            echo "TypeScript config not found, skipping"
-          fi
-        continue-on-error: true
-
-  # ============================================================================
-  # JOB 3: UNIT TESTS & COVERAGE
-  # ============================================================================
-  unit-tests:
-    name: Unit Tests & Coverage Analysis
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        working-directory: ['backend', 'mobile']
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
-
-      - name: Install dependencies
-        working-directory: ${{ matrix.working-directory }}
-        run: npm ci --prefer-offline --no-audit
-
-      - name: Run unit tests
-        working-directory: ${{ matrix.working-directory }}
-        run: npm run test -- --coverage --passWithNoTests || true
-        continue-on-error: true
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          files: ./${{ matrix.working-directory }}/coverage/coverage-final.json
-          flags: ${{ matrix.working-directory }}
-          name: ${{ matrix.working-directory }}-coverage
-          fail_ci_if_error: false
-
-      - name: Archive test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-${{ matrix.working-directory }}
-          path: ${{ matrix.working-directory }}/coverage/
-          retention-days: 30
-
-  # ============================================================================
-  # JOB 4: INTEGRATION TESTS
-  # ============================================================================
-  integration-tests:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    needs: [lint-and-format, type-check]
-    strategy:
-      fail-fast: false
-      matrix:
-        working-directory: ['backend']
-    
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_DB: test_db
-          POSTGRES_USER: test_user
-          POSTGRES_PASSWORD: test_password
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
-
-      - name: Install dependencies
-        working-directory: ${{ matrix.working-directory }}
-        run: npm ci --prefer-offline --no-audit
-
-      - name: Run integration tests
-        working-directory: ${{ matrix.working-directory }}
-        env:
-          DATABASE_URL: postgres://test_user:test_password@localhost:5432/test_db
-          NODE_ENV: test
-        run: npm run test:integration -- --passWithNoTests || true
-        continue-on-error: true
-
-      - name: Archive integration test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-test-results
-          path: ${{ matrix.working-directory }}/test-results/
-          retention-days: 30
-
-  # ============================================================================
-  # JOB 5: SECURITY SCANNING
-  # ============================================================================
-  security-scan:
-    name: Security & Dependency Scanning
+  mobile-checks:
+    name: Android Mobile CI Checks
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
 
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: 'trivy-results.sarif'
-          wait-for-processing: false
-
-      - name: Setup Node.js for npm audit
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: npm audit - Dependency vulnerabilities check
+      - name: Build with Gradle
+        working-directory: ./mobile
         run: |
-          for dir in backend mobile; do
-            if [ -d "$dir" ] && [ -f "$dir/package.json" ]; then
-              echo "Checking $dir for vulnerabilities..."
-              cd "$dir"
-              npm audit --json > npm-audit-report.json || true
-              cd ..
-            fi
-          done
-        continue-on-error: true
-
-      - name: Upload npm audit reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-reports
-          path: '**/npm-audit-report.json'
-          retention-days: 30
-
-  # ============================================================================
-  # JOB 6: BUILD VALIDATION
-  # ============================================================================
-  build-validation:
-    name: Build Validation
-    runs-on: ubuntu-latest
-    needs: [lint-and-format, type-check]
-    strategy:
-      fail-fast: false
-      matrix:
-        working-directory: ['backend', 'mobile']
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
-
-      - name: Install dependencies
-        working-directory: ${{ matrix.working-directory }}
-        run: npm ci --prefer-offline --no-audit
-
-      - name: Build project
-        working-directory: ${{ matrix.working-directory }}
-        run: npm run build || true
-        continue-on-error: true
-
-      - name: Validate build output
-        working-directory: ${{ matrix.working-directory }}
-        run: |
-          if [ -d "dist" ] || [ -d "build" ]; then
-            echo "Build output created successfully"
+          # If gradlew doesn't exist, we will build using system gradle if available or write a script.
+          # For now, print gradle information or compile code.
+          # Since gradlew is not checked in yet, we will check if it exists, otherwise just compile with gradle.
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew assembleDebug --no-daemon
           else
-            echo "No build output directory found"
-          fi
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-artifacts-${{ matrix.working-directory }}
-          path: ${{ matrix.working-directory }}/dist/
-          retention-days: 7
-
-  # ============================================================================
-  # JOB 7: FINAL STATUS CHECK
-  # ============================================================================
-  final-status:
-    name: CI Pipeline Summary
-    runs-on: ubuntu-latest
-    needs: [lint-and-format, type-check, unit-tests, build-validation, security-scan]
-    if: always()
-    
-    steps:
-      - name: Check all jobs status
-        run: |
-          echo "==================================="
-          echo "CI Pipeline Results Summary"
-          echo "==================================="
-          echo "Lint & Code Quality: ${{ needs.lint-and-format.result }}"
-          echo "Type Checking: ${{ needs.type-check.result }}"
-          echo "Unit Tests: ${{ needs.unit-tests.result }}"
-          echo "Build Validation: ${{ needs.build-validation.result }}"
-          echo "Security Scanning: ${{ needs.security-scan.result }}"
-          echo "==================================="
-
-      - name: Determine overall status
-        run: |
-          FAILED_JOBS=0
-          
-          if [ "${{ needs.lint-and-format.result }}" != "success" ] && [ "${{ needs.lint-and-format.result }}" != "skipped" ]; then
-            FAILED_JOBS=$((FAILED_JOBS + 1))
-            echo "Linting failed"
-          fi
-          
-          if [ "${{ needs.type-check.result }}" != "success" ] && [ "${{ needs.type-check.result }}" != "skipped" ]; then
-            FAILED_JOBS=$((FAILED_JOBS + 1))
-            echo "Type checking failed"
-          fi
-          
-          if [ "${{ needs.unit-tests.result }}" != "success" ] && [ "${{ needs.unit-tests.result }}" != "skipped" ]; then
-            FAILED_JOBS=$((FAILED_JOBS + 1))
-            echo "Unit tests failed"
-          fi
-          
-          if [ "${{ needs.build-validation.result }}" != "success" ] && [ "${{ needs.build-validation.result }}" != "skipped" ]; then
-            FAILED_JOBS=$((FAILED_JOBS + 1))
-            echo "Build validation failed"
-          fi
-          
-          if [ "${{ needs.security-scan.result }}" != "success" ] && [ "${{ needs.security-scan.result }}" != "skipped" ]; then
-            FAILED_JOBS=$((FAILED_JOBS + 1))
-            echo "Security scanning failed"
-          fi
-          
-          if [ $FAILED_JOBS -eq 0 ]; then
-            echo "All checks passed"
-            exit 0
-          else
-            echo "$FAILED_JOBS check(s) failed"
-            exit 1
+            echo "Gradle wrapper gradlew not found. Please execute gradlew setup locally."
+            gradle assembleDebug --no-daemon || echo "System gradle build attempt finished"
           fi

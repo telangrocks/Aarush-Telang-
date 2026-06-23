@@ -1,48 +1,50 @@
 # Project Context & Overview
 
-**Last Updated:** 2026-06-22  
+**Last Updated:** 2026-06-23  
 **Session Status:** Project initialization phase
 
 ---
 
 ## 📋 Project Summary
-**Project Name:** [TO BE FILLED]  
-**Repository:** [GitHub URL]  
-**Type:** Mobile Application  
-**Primary Goal:** Build a professional, production-ready mobile app with automated CI/CD, code review, backend services, and testing
+**Project Name:** Crypto Pulse  
+**Repository:** Local (GitHub setup pending connection)  
+**Type:** Mobile Application & Serverless Backend  
+**Primary Goal:** Build a professional, production-ready mobile crypto tracker app with modern Jetpack Compose, serverless backend (Cloudflare Workers + D1 database), automated CI/CD, and robust testing.
 
 ---
 
 ## 🎯 Core Features (Priority Order)
-1. [Feature 1 - TO BE FILLED]
-2. [Feature 2 - TO BE FILLED]
-3. [Feature 3 - TO BE FILLED]
-4. [Feature 4 - TO BE FILLED]
-5. [Feature 5 - TO BE FILLED]
+1. **Live Price Monitor**: Real-time cryptocurrency prices, search, and details powered by public APIs.
+2. **Interactive Price Charts**: Historical performance tracking (24h, 7d, 30d, 1y).
+3. **Portfolio Tracker**: User portfolio transaction log and balance tracker stored securely in Cloudflare D1.
+4. **Price Watchlist & Alerts**: Customized watchlist with target price notifications.
+5. **Crypto News Feed**: Real-time cryptocurrency news aggregator.
 
 ---
 
 ## 🛠️ Tech Stack
 
 ### Mobile
-- **Framework:** [TO BE FILLED]
-- **Language:** [TO BE FILLED]
-- **Build Tools:** [TO BE FILLED]
+- **Framework:** Jetpack Compose (Modern native Android UI toolkit)
+- **Language:** Kotlin
+- **Build Tools:** Gradle (Kotlin DSL - `build.gradle.kts`)
+- **Key Libraries:** Retrofit (network), Room (local cache), Hilt (dependency injection), Jetpack Navigation
 
 ### Backend
-- **Runtime:** [TO BE FILLED]
-- **Framework:** [TO BE FILLED]
+- **Runtime:** Node.js / Cloudflare Workers
+- **Language:** TypeScript
 - **Deployment:** Cloudflare Workers (via Wrangler CLI)
+- **Key Libraries:** Hono (ultra-lightweight web framework for Workers), wrangler
 
 ### Database
-- **Type:** [TO BE FILLED]
-- **Provider:** [TO BE FILLED]
+- **Type:** SQL Database (Relational)
+- **Provider:** Cloudflare D1 (Native serverless SQLite database for Cloudflare Workers)
 
 ### DevOps & CI/CD
 - **Version Control:** GitHub
 - **CI/CD:** GitHub Actions
-- **Code Review Automation:** Custom workflow with quality checks
-- **Deployment:** Automated on successful checks
+- **Code Review Automation:** Custom linting/validation checks on Pull Requests
+- **Deployment:** Automated deploy to Cloudflare Workers on merging to `main`
 
 ---
 
@@ -50,9 +52,9 @@
 
 | Phase | Status | Description | Dependencies |
 |-------|--------|-------------|--------------|
-| 1 | ⏳ Pending | GitHub repo setup & local connection | — |
+| 1 | ⏳ In Progress | Project initialization & Local structure | — |
 | 2 | ⏳ Pending | CI/CD workflow with automated code review | Phase 1 |
-| 3 | ⏳ Pending | Backend services & business logic (phase by phase) | Phase 2 |
+| 3 | ⏳ Pending | Backend services & D1 database schema | Phase 2 |
 | 4 | ⏳ Pending | Wrangler CLI integration & deployment | Phase 3 |
 | 5 | ⏳ Pending | Validate backend deployment automation | Phase 4 |
 | 6 | ⏳ Pending | UI/UX Design & Implementation | Phase 5 |
@@ -101,7 +103,7 @@ See **PROGRESS.md** for detailed task breakdown and status
 ---
 
 ## 📝 Quick Start for Future Sessions
-1. Open this folder in VS Code
+1. Open this folder in VS Code / Android Studio
 2. Check **PROGRESS.md** to see what was completed and what's pending
 3. Review the last task in PROGRESS.md to understand current context
 4. Check **ARCHITECTURE.md** for tech stack and design decisions
@@ -119,10 +121,6 @@ See **PROGRESS.md** for detailed task breakdown and status
 ---
 
 ## 🚀 Next Steps
-1. Provide project details (name, features, tech stack)
-2. Create GitHub repository
-3. Initialize local project with proper folder structure
-4. Set up GitHub Actions workflow
-5. Begin Phase 1: Backend services
-
-**Questions to Answer:** See user input section in PROGRESS.md
+1. Finalize the backend/mobile basic folder structure initialization
+2. Set up GitHub Actions workflow (`ci-cd.yml`)
+3. Develop initial backend and database schema configurations

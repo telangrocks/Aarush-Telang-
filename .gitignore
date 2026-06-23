@@ -64,3 +64,12 @@ env/
 # Misc
 .turbo/
 .DS_Store
+
+# Large binaries & OS cache
+*.exe
+*.zip
+*.rar
+.gradle/
+build/
+.android/
+*.lock
