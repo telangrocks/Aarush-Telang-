@@ -23,15 +23,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-        env:
-          ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+          node-version: '24'
+        # No need for ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION now
 
       - name: Cache npm packages
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('backend/package.json') }}
+          key: ${{ runner.os }}-npm-${{ hashFiles('backend/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-npm-
 
