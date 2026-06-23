@@ -103,7 +103,7 @@ $onCreated = Register-ObjectEvent $watcher "Created" -Action {
 try {
     while ($true) {
         Start-Sleep -Milliseconds 500
-        if ($script:pendingChanges -and ([DateTime]::Now -sub $script:lastChangeEvent).TotalMilliseconds -gt $debounceTimeMs) {
+        if ($script:pendingChanges -and (([DateTime]::Now - $script:lastChangeEvent).TotalMilliseconds -gt $debounceTimeMs)) {
             $script:pendingChanges = $false
             Push-Changes
         }
