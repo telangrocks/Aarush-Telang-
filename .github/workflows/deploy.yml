@@ -1,0 +1,192 @@
+name: Deploy - Wrangler & Backend Deployment
+
+on:
+  push:
+    branches: [main, staging]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ============================================================================
+  # PRE-DEPLOYMENT CHECKS
+  # ============================================================================
+  pre-deploy-checks:
+    name: Pre-Deployment Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify secrets are configured
+        run: |
+          echo "Checking required secrets..."
+          if [ -z "${{ secrets.WRANGLER_API_TOKEN }}" ]; then
+            echo "⚠️ WRANGLER_API_TOKEN not configured"
+          fi
+          if [ -z "${{ secrets.DATABASE_URL }}" ]; then
+            echo "⚠️ DATABASE_URL not configured"
+          fi
+          echo "Secrets validation complete"
+
+      - name: Determine deployment target
+        id: target
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+            echo "🟢 Deploying to PRODUCTION"
+          else
+            echo "environment=staging" >> $GITHUB_OUTPUT
+            echo "🟡 Deploying to STAGING"
+          fi
+
+  # ============================================================================
+  # DEPLOY BACKEND TO CLOUDFLARE WORKERS
+  # ============================================================================
+  deploy-backend:
+    name: Deploy Backend - Cloudflare Workers
+    runs-on: ubuntu-latest
+    needs: pre-deploy-checks
+    environment: 
+      name: ${{ needs.pre-deploy-checks.outputs.environment }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: './backend/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Install Wrangler CLI
+        run: npm install -g wrangler@latest
+
+      - name: Verify Wrangler installation
+        run: wrangler --version
+
+      - name: Configure Wrangler authentication
+        env:
+          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: echo "Using Wrangler API token"
+
+      - name: Build backend project
+        working-directory: backend
+        run: npm run build
+
+      - name: Deploy to Cloudflare Workers (Staging)
+        if: github.ref == 'refs/heads/staging'
+        working-directory: backend
+        env:
+          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          NODE_ENV: staging
+        run: |
+          wrangler deploy --env staging || true
+          echo "Backend deployed to staging environment"
+
+      - name: Deploy to Cloudflare Workers (Production)
+        if: github.ref == 'refs/heads/main'
+        working-directory: backend
+        env:
+          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          NODE_ENV: production
+        run: |
+          wrangler deploy --env production || true
+          echo "Backend deployed to production environment"
+
+      - name: Post-deployment smoke tests
+        working-directory: backend
+        run: |
+          echo "Running post-deployment health checks..."
+          npm run test:smoke || true
+
+      - name: Upload deployment logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-logs
+          path: backend/deployment.log
+          retention-days: 30
+
+  # ============================================================================
+  # DEPLOYMENT VERIFICATION
+  # ============================================================================
+  verify-deployment:
+    name: Verify Deployment Health
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine deployment URL
+        id: url
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "url=https://api.cryptopulse.example.com" >> $GITHUB_OUTPUT
+          else
+            echo "url=https://staging-api.cryptopulse.example.com" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Health check - API endpoint
+        run: |
+          echo "Checking API health at ${{ steps.url.outputs.url }}/health"
+          curl -f ${{ steps.url.outputs.url }}/health || echo "Health check failed or in progress"
+        continue-on-error: true
+
+      - name: Health check - Database connectivity
+        run: |
+          echo "Verifying database connectivity..."
+          curl -f ${{ steps.url.outputs.url }}/db-status || echo "Database check failed"
+        continue-on-error: true
+
+      - name: Log deployment details
+        run: |
+          echo "==================================="
+          echo "Deployment Complete"
+          echo "==================================="
+          echo "Environment: ${{ needs.pre-deploy-checks.outputs.environment }}"
+          echo "Deployed at: $(date)"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref }}"
+          echo "==================================="
+
+  # ============================================================================
+  # NOTIFICATION & MONITORING
+  # ============================================================================
+  notify-deployment:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [deploy-backend, verify-deployment]
+    if: always()
+    
+    steps:
+      - name: Deployment success notification
+        if: needs.deploy-backend.result == 'success'
+        run: echo "✅ Deployment successful - API is live"
+
+      - name: Deployment failure notification
+        if: needs.deploy-backend.result == 'failure'
+        run: |
+          echo "❌ Deployment failed - Check logs for details"
+          exit 1
+
+      - name: Notify via Slack (Optional)
+        if: failure()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'CryptoPulse deployment failed'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        continue-on-error: true

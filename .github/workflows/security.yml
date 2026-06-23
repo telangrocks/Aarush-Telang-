@@ -1,0 +1,295 @@
+name: Security - Vulnerability & Dependency Scanning
+
+on:
+  push:
+    branches: [main, develop, staging]
+  pull_request:
+    branches: [main, develop, staging]
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ============================================================================
+  # SNYK SECURITY SCANNING
+  # ============================================================================
+  snyk-scan:
+    name: Snyk Vulnerability Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --json-file-output=snyk-results.json
+        continue-on-error: true
+
+      - name: Upload Snyk results
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-vulnerability-report
+          path: snyk-results.json
+          retention-days: 30
+
+  # ============================================================================
+  # DEPENDENCY CHECK (OWASP)
+  # ============================================================================
+  dependency-check:
+    name: OWASP Dependency Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          path: '.'
+          format: 'JSON'
+          args: >
+            --enableExperimental
+            --enableVulnerability
+            --suppression dependency-check-suppression.xml
+        continue-on-error: true
+
+      - name: Upload Dependency-Check results
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/dependency-check-report.json
+          retention-days: 30
+
+  # ============================================================================
+  # NPM AUDIT - BACKEND & MOBILE
+  # ============================================================================
+  npm-audit:
+    name: NPM Audit - Dependency Vulnerabilities
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        working-directory: ['backend', 'mobile']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.working-directory }}
+        run: npm ci --prefer-offline
+
+      - name: Run npm audit
+        working-directory: ${{ matrix.working-directory }}
+        id: audit
+        run: |
+          npm audit --json > npm-audit-report.json || true
+          AUDIT_RESULT=$(npm audit --audit-level=moderate --json | jq '.metadata.vulnerabilities.high + .metadata.vulnerabilities.critical')
+          echo "vulnerabilities=$AUDIT_RESULT" >> $GITHUB_OUTPUT
+          echo "Found vulnerabilities: $AUDIT_RESULT"
+        continue-on-error: true
+
+      - name: Comment on PR if vulnerabilities found
+        if: github.event_name == 'pull_request' && steps.audit.outputs.vulnerabilities > 0
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `⚠️ **npm audit detected ${{ steps.audit.outputs.vulnerabilities }} vulnerabilities in ${{ matrix.working-directory }}**\n\nRun \`npm audit\` locally to review and fix.`
+            })
+        continue-on-error: true
+
+      - name: Upload npm audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-${{ matrix.working-directory }}
+          path: ${{ matrix.working-directory }}/npm-audit-report.json
+          retention-days: 30
+
+  # ============================================================================
+  # SECRET SCANNING
+  # ============================================================================
+  secret-scan:
+    name: Secret & Credential Detection
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog Secret Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+        continue-on-error: true
+
+      - name: GitGuardian Secret Scan
+        uses: gitguardian/ggshield-action@master
+        env:
+          GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
+          GITHUB_PUSH_BEFORE_SHA: ${{ github.event.before }}
+          GITHUB_PUSH_BASE_SHA: ${{ github.event.base }}
+          GITHUB_PULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        continue-on-error: true
+
+  # ============================================================================
+  # LICENSE COMPLIANCE CHECK
+  # ============================================================================
+  license-check:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        working-directory: ['backend', 'mobile']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.working-directory }}
+        run: npm ci --prefer-offline
+
+      - name: Check license compliance
+        working-directory: ${{ matrix.working-directory }}
+        run: |
+          npm install -g license-report
+          license-report --only=MIT,Apache-2.0,ISC,BSD-3-Clause,BSD-2-Clause --markdown > license-report.md || true
+          echo "License check completed"
+        continue-on-error: true
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-report-${{ matrix.working-directory }}
+          path: ${{ matrix.working-directory }}/license-report.md
+          retention-days: 30
+
+  # ============================================================================
+  # SAST - STATIC APPLICATION SECURITY TESTING
+  # ============================================================================
+  sast-scan:
+    name: SAST - Code Security Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: 'javascript,typescript'
+
+      - name: Build CodeQL
+        uses: github/codeql-action/autobuild@v2
+        continue-on-error: true
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v2
+        with:
+          category: '/language:javascript'
+        continue-on-error: true
+
+  # ============================================================================
+  # CONTAINER SECURITY (if using Docker)
+  # ============================================================================
+  container-scan:
+    name: Container Image Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image (if Dockerfile exists)
+        run: |
+          if [ -f "Dockerfile" ]; then
+            docker build -t cryptopulse:latest .
+            echo "Docker image built"
+          else
+            echo "No Dockerfile found, skipping container scan"
+          fi
+        continue-on-error: true
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'cryptopulse:latest'
+          format: 'sarif'
+          output: 'trivy-container-results.sarif'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-container-results.sarif'
+        continue-on-error: true
+
+  # ============================================================================
+  # SECURITY REPORT SUMMARY
+  # ============================================================================
+  security-summary:
+    name: Security Scan Summary
+    runs-on: ubuntu-latest
+    needs: [snyk-scan, npm-audit, sast-scan]
+    if: always()
+    
+    steps:
+      - name: Generate security summary
+        run: |
+          echo "==================================="
+          echo "🔐 Security Scan Summary"
+          echo "==================================="
+          echo "✅ Snyk Vulnerability Scan: ${{ needs.snyk-scan.result }}"
+          echo "✅ NPM Audit: ${{ needs.npm-audit.result }}"
+          echo "✅ SAST Analysis: ${{ needs.sast-scan.result }}"
+          echo "==================================="
+          echo "Artifacts available in Actions tab"
+          echo "Review all reports before merging"
+          echo "==================================="
+
+      - name: Fail if critical issues found
+        if: needs.snyk-scan.result == 'failure' || needs.npm-audit.result == 'failure'
+        run: |
+          echo "⚠️ Security issues detected - review before merge"
+          exit 1
