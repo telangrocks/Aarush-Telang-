@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
-import { handleRegister, handleVerifyOtp } from './handlers/user';
+import { handleRegister, handleVerifyOtp, handleLogin } from './handlers/user';
 
 export interface Env {
   DB: D1Database;
   RESEND_API_KEY: string;
+  JWT_SECRET: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -27,6 +28,7 @@ app.get('/', (c) => {
 // --- User Onboarding Endpoints ---
 app.post('/api/register', async (c) => handleRegister(c.req.raw, c.env));
 app.post('/api/verify-otp', async (c) => handleVerifyOtp(c.req.raw, c.env));
+app.post('/api/login', async (c) => handleLogin(c.req.raw, c.env));
 // ------------------------------------
 
 // GET /api/prices

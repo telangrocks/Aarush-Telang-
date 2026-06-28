@@ -29,10 +29,10 @@ jobs:
       - name: Cache npm packages
         uses: actions/cache@v4
         with:
-          path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('backend/package-lock.json') }}
+          path: ./backend/node_modules
+          key: ${{ runner.os }}-node-${{ matrix.node-version }}-${{ hashFiles('backend/package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-npm-
+            ${{ runner.os }}-node-${{ matrix.node-version }}-
 
       - name: Install dependencies
         working-directory: ./backend
