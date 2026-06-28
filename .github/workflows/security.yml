@@ -92,18 +92,18 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
+          cache-dependency-path: './${{ matrix.working-directory }}/yarn.lock'
 
       - name: Install dependencies
         working-directory: ${{ matrix.working-directory }}
-        run: npm ci --prefer-offline
+        run: yarn install --immutable
 
       - name: Run npm audit
         working-directory: ${{ matrix.working-directory }}
         id: audit
         run: |
-          npm audit --json > npm-audit-report.json || true
-          AUDIT_RESULT=$(npm audit --audit-level=moderate --json | jq '.metadata.vulnerabilities.high + .metadata.vulnerabilities.critical')
+          yarn audit --json > npm-audit-report.json || true
+          AUDIT_RESULT=$(yarn audit --level moderate --json | jq 'select(.type == "auditSummary") | .data.vulnerabilities.high + .data.vulnerabilities.critical')
           echo "vulnerabilities=$AUDIT_RESULT" >> $GITHUB_OUTPUT
           echo "Found vulnerabilities: $AUDIT_RESULT"
         continue-on-error: true
@@ -180,11 +180,11 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
+          cache-dependency-path: './${{ matrix.working-directory }}/yarn.lock'
 
       - name: Install dependencies
         working-directory: ${{ matrix.working-directory }}
-        run: npm ci --prefer-offline
+        run: yarn install --immutable
 
       - name: Check license compliance
         working-directory: ${{ matrix.working-directory }}

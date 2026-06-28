@@ -29,19 +29,14 @@ jobs:
       - name: Cache npm packages
         uses: actions/cache@v4
         with:
-          path: ./backend/node_modules
-          key: ${{ runner.os }}-node-${{ matrix.node-version }}-${{ hashFiles('backend/package-lock.json') }}
+          path: .yarn/cache
+          key: ${{ runner.os }}-yarn-${{ hashFiles('backend/yarn.lock') }}
           restore-keys: |
-            ${{ runner.os }}-node-${{ matrix.node-version }}-
+            ${{ runner.os }}-yarn-
 
       - name: Install dependencies
         working-directory: ./backend
-        run: |
-          # Use npm ci for faster, more reliable installs. If it fails, fallback to a clean npm install.
-          npm ci || ( \
-            echo "npm ci failed, attempting fallback to clean install..." && \
-            rm -rf node_modules package-lock.json && \
-            npm install )
+        run: yarn install --immutable
 
       - name: Lint code
         working-directory: ./backend
