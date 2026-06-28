@@ -37,10 +37,11 @@ jobs:
       - name: Install dependencies
         working-directory: ./backend
         run: |
-          # Use npm ci for faster, more reliable installs. If it fails, fallback to yarn.
+          # Use npm ci for faster, more reliable installs. If it fails, fallback to a clean npm install.
           npm ci || ( \
-            echo "npm ci failed, attempting fallback to yarn..." && \
-            yarn install --frozen-lockfile )
+            echo "npm ci failed, attempting fallback to clean install..." && \
+            rm -rf node_modules package-lock.json && \
+            npm install )
 
       - name: Lint code
         working-directory: ./backend
