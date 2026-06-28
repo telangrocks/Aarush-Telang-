@@ -36,12 +36,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: ./backend
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+        run: npm install
 
       - name: Lint code
         working-directory: ./backend

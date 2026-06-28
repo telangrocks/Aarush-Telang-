@@ -44,5 +44,5 @@ Register-ObjectEvent $Watcher Changed  -Action { On-Change }
 Register-ObjectEvent $Watcher Deleted  -Action { On-Change }
 Register-ObjectEvent $Watcher Renamed  -Action { On-Change }
 
-Write-Host "🚀 Auto‑commit service started – watching $RepoRoot"
+Write-Host "🚀 Auto-commit service started - watching $RepoRoot"
 while ($true) { Start-Sleep -Seconds 5 }

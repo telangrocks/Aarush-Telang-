@@ -2,13 +2,13 @@
 node_modules/
 .pnp
 .pnp.js
-pip-lock.txt
-Pipfile.lock
 
 # Environment variables
 .env
 .env.local
 .env.*.local
+.wrangler/
+wrangler.env
 
 # IDE & Editors
 .vscode/
@@ -49,10 +49,6 @@ ios/build/
 *.jks
 *.keystore
 
-# Cloudflare Workers
-.wrangler/
-wrangler.env
-
 # Python
 __pycache__/
 *.py[cod]
@@ -70,8 +66,9 @@ env/
 *.zip
 *.rar
 .gradle/
-build/
 .android/
-*.lock
-# auto‑test commit trigger
-# auto‑test 2026-06-23T16:51:12.4299179+05:30
+
+# Keep package-lock.json — required for reproducible CI installs
+# Ignore other lock files
+yarn.lock
+pnpm-lock.yaml

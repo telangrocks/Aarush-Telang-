@@ -1,10 +1,13 @@
 import { Hono } from 'hono';
+import { handleRegister, handleVerifyOtp } from './handlers/user';
 
 export interface Env {
   DB: D1Database;
+  RESEND_API_KEY: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
 
 // Global error handler
 app.onError((err, c) => {
@@ -20,6 +23,11 @@ app.get('/', (c) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// --- User Onboarding Endpoints ---
+app.post('/api/register', async (c) => handleRegister(c.req.raw, c.env));
+app.post('/api/verify-otp', async (c) => handleVerifyOtp(c.req.raw, c.env));
+// ------------------------------------
 
 // GET /api/prices
 app.get('/api/prices', (c) => {
