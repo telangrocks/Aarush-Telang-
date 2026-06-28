@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import { handleRegister, handleVerifyOtp, handleLogin } from './handlers/user';
+import { jwt } from '@hono/jwt';
+import { handleRegister, handleVerifyOtp, handleLogin, handleGetProfile } from './handlers/user';
 
 export interface Env {
   DB: D1Database;
@@ -29,6 +30,16 @@ app.get('/', (c) => {
 app.post('/api/register', async (c) => handleRegister(c.req.raw, c.env));
 app.post('/api/verify-otp', async (c) => handleVerifyOtp(c.req.raw, c.env));
 app.post('/api/login', async (c) => handleLogin(c.req.raw, c.env));
+
+// --- Protected API Routes ---
+const api = new Hono<{ Bindings: Env }>();
+
+api.use('/*', (c, next) => {
+  const auth = jwt({ secret: c.env.JWT_SECRET });
+  return auth(c, next);
+});
+api.get('/profile', (c) => handleGetProfile(c));
+app.route('/api', api);
 // ------------------------------------
 
 // GET /api/prices

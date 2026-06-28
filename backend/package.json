@@ -1,14 +1,14 @@
 {
-  "name": "crypto-pulse-backend",
+  "name": "backend",
   "version": "1.0.0",
-  "description": "Serverless backend for Crypto Pulse application on Cloudflare Workers",
-  "main": "src/index.ts",
+  "private": true,
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy --minify",
-    "build": "tsc --noEmit",
-    "lint": "eslint src/**/*.ts",
-    "format": "prettier --write \"src/**/*.ts\""
+    "start": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "eslint 'src/**/*.ts'",
+    "build": "tsc",
+    "test": "echo \"No tests defined\"",
+    "format": "prettier --write 'src/**/*.ts'"
   },
   "dependencies": {
     "@hono/jwt": "^1.0.0",

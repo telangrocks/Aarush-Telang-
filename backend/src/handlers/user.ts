@@ -110,3 +110,28 @@ export async function handleVerifyOtp(request: Request, env: Env): Promise<Respo
     return new Response(JSON.stringify({ error: 'An internal server error occurred.' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
+
+/**
+ * Handles fetching the authenticated user's profile.
+ * This is a protected route and expects a valid JWT.
+ */
+export async function handleGetProfile(c: any): Promise<Response> {
+  try {
+    const payload = c.get('jwtPayload');
+    if (!payload || !payload.sub) {
+      return c.json({ error: 'Unauthorized', message: 'Invalid token payload.' }, 401);
+    }
+
+    const userId = payload.sub;
+    const user = await c.env.DB.prepare('SELECT id, email, created_at FROM users WHERE id = ?').bind(userId).first();
+
+    if (!user) {
+      return c.json({ error: 'User not found.' }, 404);
+    }
+
+    return c.json(user);
+  } catch (error: any) {
+    console.error('Get profile error:', error);
+    return c.json({ error: 'An internal server error occurred.', message: error.message }, 500);
+  }
+}

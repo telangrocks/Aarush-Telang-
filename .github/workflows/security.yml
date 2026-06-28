@@ -91,12 +91,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
+          cache: 'yarn'
           cache-dependency-path: './${{ matrix.working-directory }}/yarn.lock'
 
       - name: Install dependencies
         working-directory: ${{ matrix.working-directory }}
-        run: yarn install --immutable
+        run: yarn install --immutable --inline-builds
 
       - name: Run npm audit
         working-directory: ${{ matrix.working-directory }}
@@ -179,17 +179,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
+          cache: 'yarn'
           cache-dependency-path: './${{ matrix.working-directory }}/yarn.lock'
 
       - name: Install dependencies
         working-directory: ${{ matrix.working-directory }}
-        run: yarn install --immutable
+        run: yarn install --immutable --inline-builds
 
       - name: Check license compliance
         working-directory: ${{ matrix.working-directory }}
         run: |
-          npm install -g license-report
+          yarn global add license-report
           license-report --only=MIT,Apache-2.0,ISC,BSD-3-Clause,BSD-2-Clause,CC0-1.0,0BSD --markdown > license-report.md || true
           echo "License check completed"
         continue-on-error: true

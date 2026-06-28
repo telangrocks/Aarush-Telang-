@@ -40,15 +40,15 @@ jobs:
 
       - name: Lint code
         working-directory: ./backend
-        run: npm run lint
+        run: yarn lint
 
       - name: Build TypeScript code
         working-directory: ./backend
-        run: npm run build
+        run: yarn build
 
       - name: Run backend tests
         working-directory: ./backend
-        run: npm test || echo "No tests defined"
+        run: yarn test || echo "No tests defined"
 
   mobile-checks:
     name: Android Mobile CI Checks
