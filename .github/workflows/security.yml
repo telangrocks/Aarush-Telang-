@@ -190,7 +190,7 @@ jobs:
         working-directory: ${{ matrix.working-directory }}
         run: |
           npm install -g license-report
-          license-report --only=MIT,Apache-2.0,ISC,BSD-3-Clause,BSD-2-Clause --markdown > license-report.md || true
+          license-report --only=MIT,Apache-2.0,ISC,BSD-3-Clause,BSD-2-Clause,CC0-1.0,0BSD --markdown > license-report.md || true
           echo "License check completed"
         continue-on-error: true
 

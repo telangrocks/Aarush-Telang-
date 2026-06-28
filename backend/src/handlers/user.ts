@@ -1,6 +1,6 @@
 // src/handlers/user.ts
 import { Env } from '../utils/types';
-import { hashPassword } from '../utils/auth';
+import { hashPassword, verifyPassword, generateJwt } from '../utils/auth';
 import { sendOtpEmail } from '../services/email';
 
 /**
@@ -41,6 +41,38 @@ export async function handleRegister(request: Request, env: Env): Promise<Respon
     return new Response(JSON.stringify({ message: 'Verification OTP sent to your email.' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     console.error('Registration error:', error);
+    return new Response(JSON.stringify({ error: 'An internal server error occurred.' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handles the user login request.
+ * Verifies credentials and returns a JWT on success.
+ */
+export async function handleLogin(request: Request, env: Env): Promise<Response> {
+  try {
+    const { email, password } = await request.json<{ email?: string; password?: string }>();
+    if (!email || !password) {
+      return new Response(JSON.stringify({ error: 'Email and password are required.' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const user = await env.DB.prepare('SELECT id, email, hashed_password, status FROM users WHERE email = ?')
+      .bind(email)
+      .first<{ id: string; email: string; hashed_password: string; status: string }>();
+
+    if (!user || user.status !== 'ACTIVE') {
+      return new Response(JSON.stringify({ error: 'Invalid credentials or user not active.' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const isPasswordValid = await verifyPassword(password, user.hashed_password);
+    if (!isPasswordValid) {
+      return new Response(JSON.stringify({ error: 'Invalid credentials or user not active.' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const token = await generateJwt(user.id, user.email, env.JWT_SECRET);
+    return new Response(JSON.stringify({ token }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    console.error('Login error:', error);
     return new Response(JSON.stringify({ error: 'An internal server error occurred.' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
