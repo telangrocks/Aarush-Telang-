@@ -1,74 +1,48 @@
-# Dependencies
-node_modules/
-.pnp
-.pnp.js
+# Backend
+backend/node_modules/
+backend/dist/
+backend/.wrangler/
+backend/wrangler.lock
+backend/npm-debug.log*
+backend/.env*
+backend/!.env.example
 
-# Environment variables
-.env
-.env.local
-.env.*.local
-.wrangler/
-wrangler.env
+# Mobile
+mobile/.gradle/
+mobile/build/
+mobile/.idea/
+mobile/*.iml
+mobile/local.properties
+mobile/*.apk
+mobile/*.aab
+mobile/bin/
+mobile/out/
 
-# IDE & Editors
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
-.DS_Store
-*.sublime-project
+*.iml
 *.sublime-workspace
 
-# Build outputs
-dist/
-build/
-out/
-.next/
-.nuxt/
-.cache/
-coverage/
+# Dependencies
+node_modules/
 
-# OS files
-Thumbs.db
-.DS_Store
-
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# Environment
+.env
+.env.local
+.env.*.local
 
 # Testing
-.jest-cache/
-.mocha-timeout
+coverage/
+.nyc_output/
 
-# Mobile
-android/build/
-ios/build/
-*.jks
-*.keystore
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-venv/
-env/
-.pytest_cache/
-
-# Misc
-.turbo/
-.DS_Store
-
-# Large binaries & OS cache
-*.exe
-*.zip
-*.rar
-.gradle/
-.android/
-
-# Keep package-lock.json — required for reproducible CI installs
-# Ignore other lock files
-yarn.lock
-pnpm-lock.yaml
+# Temporary
+tmp/
+temp/
+*.tmp

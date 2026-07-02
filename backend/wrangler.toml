@@ -1,9 +1,23 @@
 name = "crypto-pulse-backend"
+type = "service"
 main = "src/index.ts"
-compatibility_date = "2024-05-29"
+compatibility_date = "2024-06-03"
 
-# Bind D1 Database
-[[d1_databases]]
-binding = "DB"
-database_name = "crypto_pulse_db"
-database_id = "00000000-0000-0000-0000-000000000000" # Placeholder, works locally. User can update this for remote deploy.
+# Environment Variables (Development)
+[env.development]
+vars = { ENVIRONMENT = "development", API_TIMEOUT = "30000" }
+
+# Environment Variables (Production)
+[env.production]
+vars = { ENVIRONMENT = "production", API_TIMEOUT = "10000" }
+
+# Database Bindings (D1 - will be added after Phase 3)
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "crypto_pulse"
+# database_id = "your-database-id"
+
+# KV Namespaces (for caching - optional)
+# [[kv_namespaces]]
+# binding = "CACHE"
+# id = "your-kv-namespace-id"

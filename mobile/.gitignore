@@ -1,0 +1,55 @@
+# Gradle
+.gradle/
+build/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Android Studio
+.idea/
+.DS_Store
+*.iml
+*.iws
+*.ipr
+local.properties
+
+# Build outputs
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+
+# Java class files
+*.class
+*.jar
+*.war
+*.rar
+
+# Generated files
+bin/
+gen/
+out/
+
+# Signing files
+.signing/
+*.jks
+*.keystore
+*.key
+*.p12
+*.pem
+*.der
+
+# User-specific files
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# Environment
+.env
+.env.local
