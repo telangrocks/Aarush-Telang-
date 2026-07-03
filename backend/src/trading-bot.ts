@@ -45,11 +45,8 @@ export class TradingBot {
           return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
         }
 
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted }, this.env.ENCRYPTION_KEY);
-
-        // Use the decrypted secret to satisfy the linter.
-        // In a real implementation, this variable would be passed to the exchange library.
-        console.log(`Decrypted secret for user ${userId}. Ready to initialize exchange library.`);
 
         // STEP 2: Initialize exchange library (e.g., ccxt).
         // const exchange = new ccxt.binance({ apiKey: userKeys.exchange_api_key, secret: decryptedSecret });
