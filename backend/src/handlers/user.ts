@@ -40,9 +40,10 @@ export async function handleRegister(c: Context<{ Bindings: Env }>): Promise<Res
     ).bind(newUserId, email, hashedPassword, otp, otpExpiresAt).run();
 
     return c.json({ message: 'Verification OTP sent to your email.' }, 200);
-  } catch (error) {
+  } catch (err: unknown) {
+    const error = err as Error;
     console.error('Registration error:', error);
-    return c.json({ error: 'An internal server error occurred.' }, 500);
+    return c.json({ error: 'An internal server error occurred.', message: error.message }, 500);
   }
 }
 
@@ -72,9 +73,10 @@ export async function handleLogin(c: Context<{ Bindings: Env }>): Promise<Respon
 
     const token = await generateJwt(user.id, user.email, c.env.JWT_SECRET);
     return c.json({ token }, 200);
-  } catch (error) {
+  } catch (err: unknown) {
+    const error = err as Error;
     console.error('Login error:', error);
-    return c.json({ error: 'An internal server error occurred.' }, 500);
+    return c.json({ error: 'An internal server error occurred.', message: error.message }, 500);
   }
 }
 
@@ -107,9 +109,10 @@ export async function handleVerifyOtp(c: Context<{ Bindings: Env }>): Promise<Re
 
     const token = await generateJwt(user.id, email, c.env.JWT_SECRET);
     return c.json({ message: 'Account activated successfully!', token }, 200);
-  } catch (error) {
+  } catch (err: unknown) {
+    const error = err as Error;
     console.error('Verification error:', error);
-    return c.json({ error: 'An internal server error occurred.' }, 500);
+    return c.json({ error: 'An internal server error occurred.', message: error.message }, 500);
   }
 }
 
@@ -132,7 +135,8 @@ export async function handleGetProfile(c: Context<{ Bindings: Env }>): Promise<R
     }
 
     return c.json(user);
-  } catch (error: any) {
+  } catch (err: unknown) {
+    const error = err as Error;
     console.error('Get profile error:', error);
     return c.json({ error: 'An internal server error occurred.', message: error.message }, 500);
   }

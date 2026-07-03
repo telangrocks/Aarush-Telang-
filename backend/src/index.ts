@@ -17,11 +17,28 @@ export interface Env {
   __VITEST_POOL_ID__?: string; // Used by vitest
 }
 
+interface CoinGeckoMarket {
+  id: string;
+  name: string;
+  symbol: string;
+  current_price: number;
+  price_change_percentage_24h: number;
+}
+
+interface AlertWithUser {
+  id: string;
+  user_id: string;
+  token_id: string;
+  target_price: number;
+  condition: 'ABOVE' | 'BELOW';
+  email: string;
+}
+
 const app = new Hono<{ Bindings: Env }>();
 
 
 // Global error handler
-app.onError((err, c) => {
+app.onError((err: Error, c) => {
   console.error(err);
   return c.json({ error: 'Internal Server Error', message: err.message }, 500);
 });
@@ -45,7 +62,7 @@ app.get('/db-status', async (c) => {
       message: 'Database connection successful',
       timestamp: new Date().toISOString()
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     return c.json({
       status: 'error',
       message: 'Database connection failed',
@@ -249,8 +266,8 @@ app.get(
       if (!response.ok) {
         return c.json({ error: 'Failed to fetch prices from external API' }, response.status);
       }
-      const data = await response.json();
-      const formattedData = data.map((coin: any) => ({
+      const data: CoinGeckoMarket[] = await response.json();
+      const formattedData = data.map((coin) => ({
         id: coin.id,
         name: coin.name,
         symbol: coin.symbol,
@@ -258,8 +275,9 @@ app.get(
         change_24h: coin.price_change_percentage_24h,
       }));
       return c.json({ timestamp: new Date().toISOString(), data: formattedData });
-    } catch (err: any) {
-      return c.json({ error: 'Error fetching prices', message: err.message }, 500);
+    } catch (err: unknown) {
+      const error = err as Error;
+      return c.json({ error: 'Error fetching prices', message: error.message }, 500);
     }
   }
 );
@@ -286,7 +304,7 @@ app.get('/api/news', (c) => {
 
 async function processAlerts(env: Env) {
   console.log('Starting alert processing...');
-  const { results: alerts } = await env.DB.prepare("SELECT pa.id, pa.user_id, pa.token_id, pa.target_price, pa.condition, u.email FROM price_alerts pa JOIN users u ON pa.user_id = u.id WHERE pa.is_active = 1").all<any>();
+  const { results: alerts } = await env.DB.prepare("SELECT pa.id, pa.user_id, pa.token_id, pa.target_price, pa.condition, u.email FROM price_alerts pa JOIN users u ON pa.user_id = u.id WHERE pa.is_active = 1").all<AlertWithUser>();
   if (!alerts || alerts.length === 0) {
     console.log('No active alerts to process.');
     return;
