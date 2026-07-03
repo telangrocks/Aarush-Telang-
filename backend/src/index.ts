@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
-import { jwt } from '@hono/jwt';
-import { cache } from '@hono/kv-cache';
+import { jwt } from 'hono/jwt';
+import { cache } from 'hono/cache';
 import { handleRegister, handleVerifyOtp, handleLogin, handleGetProfile } from './handlers/user';
 import { handleGetMarketCandidates } from './handlers/market';
 import { sendPriceAlertEmail } from './handlers/notification';

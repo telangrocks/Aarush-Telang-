@@ -22,8 +22,6 @@
   "author": "Aarush Telang",
   "license": "UNLICENSED",
   "dependencies": {
-    "@hono/jwt": "^1.0.0",
-    "@hono/kv-cache": "^0.2.2",
     "hono": "^4.4.12"
   },
   "devDependencies": {
