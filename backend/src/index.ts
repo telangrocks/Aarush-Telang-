@@ -3,8 +3,8 @@ import { jwt } from 'hono/jwt';
 import { cache } from 'hono/cache';
 import { handleRegister, handleVerifyOtp, handleLogin, handleGetProfile } from './handlers/user';
 import { handleGetMarketCandidates } from './handlers/market';
-import { sendPriceAlertEmail } from './handlers/notification';
-import { encrypt } from './utils/crypto';
+import { sendPriceAlertEmail } from './handlers/notification'; // Corrected path
+import { encrypt } from './crypto'; // Corrected path
 import { TradingBot } from './trading-bot';
 
 export interface Env {
@@ -32,6 +32,12 @@ interface AlertWithUser {
   target_price: number;
   condition: 'ABOVE' | 'BELOW';
   email: string;
+}
+
+interface JWTPayload {
+  sub: string;
+  email: string;
+  exp: number;
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -62,7 +68,7 @@ app.get('/db-status', async (c) => {
       message: 'Database connection successful',
       timestamp: new Date().toISOString()
     });
-  } catch (err: unknown) {
+  } catch (err: any) {
     return c.json({
       status: 'error',
       message: 'Database connection failed',
@@ -81,7 +87,7 @@ app.post('/api/login', (c) => handleLogin(c));
 const api = new Hono<{ Bindings: Env }>();
 
 api.use('/*', (c, next) => {
-  const auth = jwt({ secret: c.env.JWT_SECRET });
+  const auth = jwt({ secret: c.env.JWT_SECRET, alg: 'HS256' });
   return auth(c, next);
 });
 api.get('/profile', (c) => handleGetProfile(c));
@@ -89,13 +95,13 @@ app.route('/api', api);
 
 // --- Watchlist Endpoints (Protected) ---
 api.get('/watchlist', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const { results } = await c.env.DB.prepare('SELECT * FROM watchlist WHERE user_id = ? ORDER BY added_at DESC').bind(payload.sub).all();
   return c.json(results);
 });
 
 api.post('/watchlist', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const body = await c.req.json();
   const { token_id } = body;
   if (!token_id) {
@@ -107,7 +113,7 @@ api.post('/watchlist', async (c) => {
 });
 
 api.delete('/watchlist/:id', async (c) => {
-    const payload = c.get('jwtPayload');
+    const payload = c.get('jwtPayload') as JWTPayload;
     const id = c.req.param('id');
     const { success } = await c.env.DB.prepare('DELETE FROM watchlist WHERE id = ? AND user_id = ?').bind(id, payload.sub).run();
     return c.json({ success });
@@ -115,13 +121,13 @@ api.delete('/watchlist/:id', async (c) => {
 
 // --- Portfolio Endpoints (Protected) ---
 api.get('/portfolio', async (c) => {
-    const payload = c.get('jwtPayload');
+    const payload = c.get('jwtPayload') as JWTPayload;
     const { results } = await c.env.DB.prepare('SELECT * FROM portfolio_transactions WHERE user_id = ? ORDER BY transaction_date DESC').bind(payload.sub).all();
     return c.json(results);
 });
 
 api.post('/portfolio', async (c) => {
-    const payload = c.get('jwtPayload');
+    const payload = c.get('jwtPayload') as JWTPayload;
     const body = await c.req.json();
     const { token_id, amount, buy_price } = body;
     if (!token_id || amount === undefined || buy_price === undefined) {
@@ -133,7 +139,7 @@ api.post('/portfolio', async (c) => {
 });
 
 api.delete('/portfolio/:id', async (c) => {
-    const payload = c.get('jwtPayload');
+    const payload = c.get('jwtPayload') as JWTPayload;
     const id = c.req.param('id');
     const { success } = await c.env.DB.prepare('DELETE FROM portfolio_transactions WHERE id = ? AND user_id = ?').bind(id, payload.sub).run();
     return c.json({ success });
@@ -141,13 +147,13 @@ api.delete('/portfolio/:id', async (c) => {
 
 // --- Price Alert Endpoints (Protected) ---
 api.get('/alerts', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const { results } = await c.env.DB.prepare('SELECT * FROM price_alerts WHERE user_id = ? AND is_active = 1 ORDER BY created_at DESC').bind(payload.sub).all();
   return c.json(results);
 });
 
 api.post('/alerts', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const body = await c.req.json();
   const { token_id, target_price, condition } = body;
   if (!token_id || target_price === undefined || !['ABOVE', 'BELOW'].includes(condition)) {
@@ -159,7 +165,7 @@ api.post('/alerts', async (c) => {
 });
 
 api.delete('/alerts/:id', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const id = c.req.param('id');
   const { success } = await c.env.DB.prepare('DELETE FROM price_alerts WHERE id = ? AND user_id = ?').bind(id, payload.sub).run();
   return c.json({ success });
@@ -167,7 +173,7 @@ api.delete('/alerts/:id', async (c) => {
 
 // --- Exchange API Key Management (Protected) ---
 api.post('/exchange/keys', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const { apiKey, apiSecret } = await c.req.json<{ apiKey: string; apiSecret: string }>();
 
   if (!apiKey || !apiSecret) {
@@ -198,7 +204,7 @@ api.get(
 
 // Executes a trade based on the bot's current setup.
 api.post('/bot/execute-trade', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const doId = c.env.TRADING_BOTS.idFromName(payload.sub);
   const stub = c.env.TRADING_BOTS.get(doId);
   return stub.fetch(new Request(new URL(c.req.url).origin + '/execute-trade', { method: 'POST' }));
@@ -206,7 +212,7 @@ api.post('/bot/execute-trade', async (c) => {
 
 // Manually stops an active trade.
 api.post('/bot/stop-trade', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const doId = c.env.TRADING_BOTS.idFromName(payload.sub);
   const stub = c.env.TRADING_BOTS.get(doId);
   return stub.fetch(new Request(new URL(c.req.url).origin + '/stop-trade', { method: 'POST' }));
@@ -225,7 +231,7 @@ api.get('/strategies', (c) => {
 
 // Activates the trading bot for the user.
 api.post('/bot/activate', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const { coinId, strategy } = await c.req.json();
   const doId = c.env.TRADING_BOTS.idFromName(payload.sub); // Use user ID as the DO name
   const stub = c.env.TRADING_BOTS.get(doId);
@@ -235,7 +241,7 @@ api.post('/bot/activate', async (c) => {
 
 // Deactivates the trading bot.
 api.post('/bot/deactivate', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const doId = c.env.TRADING_BOTS.idFromName(payload.sub);
   const stub = c.env.TRADING_BOTS.get(doId);
   return stub.fetch(new Request(new URL(c.req.url).origin + '/deactivate', { method: 'POST' }));
@@ -243,7 +249,7 @@ api.post('/bot/deactivate', async (c) => {
 
 // Gets the current status of the user's bot.
 api.get('/bot/status', async (c) => {
-  const payload = c.get('jwtPayload');
+  const payload = c.get('jwtPayload') as JWTPayload;
   const doId = c.env.TRADING_BOTS.idFromName(payload.sub);
   const stub = c.env.TRADING_BOTS.get(doId);
   return stub.fetch(new Request(new URL(c.req.url).origin + '/status'));
@@ -264,7 +270,7 @@ app.get(
       // Fetch data from CoinGecko API
       const response = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1&sparkline=false');
       if (!response.ok) {
-        return c.json({ error: 'Failed to fetch prices from external API' }, response.status);
+        return c.json({ error: 'Failed to fetch prices from external API' }, { status: response.status });
       }
       const data: CoinGeckoMarket[] = await response.json();
       const formattedData = data.map((coin) => ({
@@ -316,7 +322,7 @@ async function processAlerts(env: Env) {
     console.error('Failed to fetch prices for alert processing.');
     return;
   }
-  const prices = await priceResponse.json();
+  const prices = await priceResponse.json<Record<string, { usd: number }>>();
 
   for (const alert of alerts) {
     const currentPrice = prices[alert.token_id]?.usd;

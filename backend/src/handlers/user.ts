@@ -1,8 +1,8 @@
 // src/handlers/user.ts
 import { Context } from 'hono';
 import { Env } from '../index';
-import { hashPassword, verifyPassword, generateJwt } from '../utils/auth';
-import { sendOtpEmail } from '../services/email';
+import { hashPassword, verifyPassword, generateJwt } from './auth'; // Corrected path
+import { sendOtpEmail } from './email'; // Corrected path
 
 /**
  * Handles the user registration request.
@@ -122,7 +122,7 @@ export async function handleVerifyOtp(c: Context<{ Bindings: Env }>): Promise<Re
  */
 export async function handleGetProfile(c: Context<{ Bindings: Env }>): Promise<Response> {
   try {
-    const payload = c.get('jwtPayload');
+    const payload = c.get('jwtPayload') as { sub: string };
     if (!payload || !payload.sub) {
       return c.json({ error: 'Unauthorized', message: 'Invalid token payload.' }, 401);
     }

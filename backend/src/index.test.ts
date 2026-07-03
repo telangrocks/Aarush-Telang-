@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import worker from './index';
 import { Env } from './index';
-import { sign } from '@hono/jwt';
+import { sign } from 'hono/jwt';
 
 describe('App Endpoints', () => {
   it('GET /health returns status ok', async () => {
     const res = await worker.fetch(new Request('http://localhost/health'));
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = await res.json<{ status: string; service: string; timestamp: string }>();
     expect(data.status).toBe('ok');
     expect(data.service).toBe('Crypto Pulse Backend');
     expect(data.timestamp).toBeDefined();
@@ -16,16 +16,16 @@ describe('App Endpoints', () => {
   it('GET /db-status returns ok when DB is available', async () => {
     // Mock the environment
     const mockEnv = {
-      DB: {
-        prepare: vi.fn().mockReturnValue({
-          run: vi.fn().mockResolvedValue({}),
-        }),
-      },
+        DB: {
+            prepare: vi.fn().mockReturnValue({
+                run: vi.fn().mockResolvedValue({}),
+            }),
+        } as unknown as D1Database,
     };
 
-    const res = await worker.fetch(new Request('http://localhost/db-status'), mockEnv);
+    const res = await worker.fetch(new Request('http://localhost/db-status'), mockEnv as Env);
     expect(res.status).toBe(200);
-    const data = await res.json();
+    const data = await res.json<{ status: string; message: string }>();
     expect(data.status).toBe('ok');
     expect(data.message).toBe('Database connection successful');
   });
@@ -33,16 +33,16 @@ describe('App Endpoints', () => {
   it('GET /db-status returns error when DB fails', async () => {
     // Mock the environment
     const mockEnv = {
-      DB: {
-        prepare: vi.fn().mockReturnValue({
-          run: vi.fn().mockRejectedValue(new Error('Connection timeout')),
-        }),
-      },
+        DB: {
+            prepare: vi.fn().mockReturnValue({
+                run: vi.fn().mockRejectedValue(new Error('Connection timeout')),
+            }),
+        } as unknown as D1Database,
     };
 
-    const res = await worker.fetch(new Request('http://localhost/db-status'), mockEnv);
+    const res = await worker.fetch(new Request('http://localhost/db-status'), mockEnv as Env);
     expect(res.status).toBe(500);
-    const data = await res.json();
+    const data = await res.json<{ status: string; message: string }>();
     expect(data.status).toBe('error');
     expect(data.message).toBe('Database connection failed');
   });
@@ -55,13 +55,18 @@ describe('App Endpoints', () => {
     beforeEach(async () => {
       mockEnv = {
         DB: {
-          prepare: vi.fn().mockReturnThis(),
-          bind: vi.fn().mockReturnThis(),
-          all: vi.fn().mockResolvedValue({ results: [{ id: 'btc', user_id: userId }] }),
-          run: vi.fn().mockResolvedValue({ success: true }),
-        },
+            prepare: vi.fn(() => ({
+                bind: vi.fn(() => ({
+                    all: vi.fn().mockResolvedValue({ results: [{ id: 'btc', user_id: userId }] }),
+                    run: vi.fn().mockResolvedValue({ success: true }),
+                })),
+            })),
+        } as unknown as D1Database,
         ENCRYPTION_KEY: 'test-encryption-key',
         JWT_SECRET: 'test-secret',
+        RESEND_API_KEY: 'test-resend-key',
+        PRICE_CACHE: {} as KVNamespace,
+        TRADING_BOTS: {} as DurableObjectNamespace,
       };
       token = await sign({ sub: userId, email: 'test@test.com' }, mockEnv.JWT_SECRET);
     });
@@ -88,11 +93,11 @@ describe('App Endpoints', () => {
 
         const res = await worker.fetch(req, mockEnv as Env);
         expect(res.status).toBe(200);
-        const data = await res.json();
+        const data = await res.json<{ success: boolean; token_id: string }>();
         expect(data.success).toBe(true);
         expect(data.token_id).toBe('ethereum');
-        expect(mockEnv.DB.prepare).toHaveBeenCalledWith('INSERT INTO watchlist (id, user_id, token_id, added_at) VALUES (?, ?, ?, ?)');
-        expect(mockEnv.DB.bind).toHaveBeenCalledWith(expect.any(String), userId, 'ethereum', expect.any(String));
+        expect(mockEnv.DB?.prepare).toHaveBeenCalledWith('INSERT INTO watchlist (id, user_id, token_id, added_at) VALUES (?, ?, ?, ?)');
+        expect(mockEnv.DB?.prepare('stmt').bind).toHaveBeenCalledWith(expect.any(String), userId, 'ethereum', expect.any(String));
     });
 
     it('DELETE /api/watchlist/:id should remove item for authenticated user', async () => {
@@ -104,10 +109,10 @@ describe('App Endpoints', () => {
 
         const res = await worker.fetch(req, mockEnv as Env);
         expect(res.status).toBe(200);
-        const data = await res.json();
+        const data = await res.json<{ success: boolean }>();
         expect(data.success).toBe(true);
-        expect(mockEnv.DB.prepare).toHaveBeenCalledWith('DELETE FROM watchlist WHERE id = ? AND user_id = ?');
-        expect(mockEnv.DB.bind).toHaveBeenCalledWith(itemId, userId);
+        expect(mockEnv.DB?.prepare).toHaveBeenCalledWith('DELETE FROM watchlist WHERE id = ? AND user_id = ?');
+        expect(mockEnv.DB?.prepare('stmt').bind).toHaveBeenCalledWith(itemId, userId);
     });
 
     it('should return 401 for protected routes without a valid token', async () => {
@@ -126,10 +131,10 @@ describe('App Endpoints', () => {
 
       const res = await worker.fetch(req, mockEnv as Env);
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json<{ success: boolean; token_id: string }>();
       expect(data.success).toBe(true);
       expect(data.token_id).toBe('bitcoin');
-      expect(mockEnv.DB.prepare).toHaveBeenCalledWith('INSERT INTO price_alerts (id, user_id, token_id, target_price, condition, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+      expect(mockEnv.DB?.prepare).toHaveBeenCalledWith('INSERT INTO price_alerts (id, user_id, token_id, target_price, condition, created_at) VALUES (?, ?, ?, ?, ?, ?)');
     });
 
     it('POST /api/exchange/keys should store encrypted keys', async () => {
@@ -142,17 +147,24 @@ describe('App Endpoints', () => {
 
       const res = await worker.fetch(req, mockEnv as Env);
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json<{ success: boolean }>();
       expect(data.success).toBe(true);
-      expect(mockEnv.DB.prepare).toHaveBeenCalledWith('UPDATE users SET exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?');
-      expect(mockEnv.DB.bind).toHaveBeenCalledWith('test-api-key', expect.any(String), expect.any(String), userId);
+      expect(mockEnv.DB?.prepare).toHaveBeenCalledWith('UPDATE users SET exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?');
+      expect(mockEnv.DB?.prepare('stmt').bind).toHaveBeenCalledWith('test-api-key', expect.any(String), expect.any(String), userId);
     });
   });
 
   it('scheduled handler should run without errors', async () => {
-    const mockEnv = { DB: { prepare: vi.fn().mockReturnThis(), all: vi.fn().mockResolvedValue({ results: [] }) } };
-    const ctx = { waitUntil: vi.fn() } as ExecutionContext;
-    await worker.scheduled!({} as ScheduledEvent, mockEnv, ctx);
+    const mockEnv = {
+        DB: {
+            prepare: vi.fn().mockReturnValue({
+                all: vi.fn().mockResolvedValue({ results: [] }),
+            }),
+        } as unknown as D1Database,
+        RESEND_API_KEY: 'test-key',
+    };
+    const ctx = { waitUntil: vi.fn() } as unknown as ExecutionContext;
+    await worker.scheduled!({} as ScheduledEvent, mockEnv as Env, ctx);
     expect(ctx.waitUntil).toHaveBeenCalled();
   });
 });

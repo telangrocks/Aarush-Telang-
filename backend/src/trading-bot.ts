@@ -1,5 +1,5 @@
 import { Env } from './index';
-import { decrypt } from './utils/crypto';
+import { decrypt } from './crypto'; // Corrected path
 
 export class TradingBot {
   state: DurableObjectState;
