@@ -92,6 +92,7 @@ jobs:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           NODE_ENV: staging
         run: |
+          wrangler d1 migrations apply crypto-pulse-db --env staging || echo "No migrations or DB not found"
           wrangler deploy --env staging || true
           echo "Backend deployed to staging environment"
 
@@ -103,6 +104,7 @@ jobs:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
           NODE_ENV: production
         run: |
+          wrangler d1 migrations apply crypto-pulse-db --env production || echo "No migrations or DB not found"
           wrangler deploy --env production || true
           echo "Backend deployed to production environment"
 

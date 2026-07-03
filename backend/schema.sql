@@ -1,3 +1,14 @@
+-- Create Users table
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    hashed_password TEXT NOT NULL,
+    status TEXT NOT NULL,
+    otp_secret TEXT,
+    otp_expires_at INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create Watchlist table
 CREATE TABLE IF NOT EXISTS watchlist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

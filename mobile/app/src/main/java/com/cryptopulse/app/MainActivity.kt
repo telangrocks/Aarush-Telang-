@@ -15,8 +15,25 @@ import androidx.compose.ui.tooling.preview.Preview
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
 import dagger.hilt.android.AndroidEntryPoint
 
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.cryptopulse.app.ui.auth.AuthViewModel
+import com.cryptopulse.app.ui.auth.OtpScreen
+import com.cryptopulse.app.ui.auth.RegisterScreen
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import com.cryptopulse.app.data.local.TokenManager
+import javax.inject.Inject
+
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject
+    lateinit var tokenManager: TokenManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -25,7 +42,42 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    Greeting("Crypto Pulse")
+                    val navController = rememberNavController()
+                    val token by tokenManager.tokenFlow.collectAsState(initial = null)
+                    
+                    // Simple routing based on token presence
+                    val startDestination = if (token.isNullOrEmpty()) "register" else "home"
+                    
+                    // Need to give DataStore a moment to load, otherwise it might flash login
+                    // In a production app, use a Splash screen state to wait for tokenFlow
+                    
+                    NavHost(navController = navController, startDestination = startDestination) {
+                        composable("register") {
+                            val viewModel = hiltViewModel<AuthViewModel>()
+                            RegisterScreen(
+                                viewModel = viewModel,
+                                onNavigateToOtp = {
+                                    navController.navigate("otp") {
+                                        popUpTo("register") { inclusive = true }
+                                    }
+                                }
+                            )
+                        }
+                        composable("otp") {
+                            val viewModel = hiltViewModel<AuthViewModel>()
+                            OtpScreen(
+                                viewModel = viewModel,
+                                onAuthSuccess = {
+                                    navController.navigate("home") {
+                                        popUpTo("otp") { inclusive = true }
+                                    }
+                                }
+                            )
+                        }
+                        composable("home") {
+                            Greeting(name = "Crypto Pulse User! (Logged In)")
+                        }
+                    }
                 }
             }
         }

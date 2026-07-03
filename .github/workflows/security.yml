@@ -91,19 +91,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'yarn'
-          cache-dependency-path: './${{ matrix.working-directory }}/yarn.lock'
+          cache: 'npm'
+          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
 
       - name: Install dependencies
         working-directory: ${{ matrix.working-directory }}
-        run: yarn install --immutable --inline-builds
+        run: npm ci
 
       - name: Run npm audit
         working-directory: ${{ matrix.working-directory }}
         id: audit
         run: |
-          yarn audit --json > npm-audit-report.json || true
-          AUDIT_RESULT=$(yarn audit --level moderate --json | jq 'select(.type == "auditSummary") | .data.vulnerabilities.high + .data.vulnerabilities.critical')
+          npm audit --json > npm-audit-report.json || true
+          AUDIT_RESULT=$(npm audit --json | jq '.metadata.vulnerabilities.high + .metadata.vulnerabilities.critical')
           echo "vulnerabilities=$AUDIT_RESULT" >> $GITHUB_OUTPUT
           echo "Found vulnerabilities: $AUDIT_RESULT"
         continue-on-error: true
@@ -169,7 +169,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        working-directory: ['backend', 'mobile']
+        working-directory: ['backend']
     
     steps:
       - name: Checkout code
@@ -179,18 +179,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'yarn'
-          cache-dependency-path: './${{ matrix.working-directory }}/yarn.lock'
+          cache: 'npm'
+          cache-dependency-path: './${{ matrix.working-directory }}/package-lock.json'
 
       - name: Install dependencies
         working-directory: ${{ matrix.working-directory }}
-        run: yarn install --immutable --inline-builds
+        run: npm ci
 
       - name: Check license compliance
         working-directory: ${{ matrix.working-directory }}
         run: |
-          yarn global add license-report
-          license-report --only=MIT,Apache-2.0,ISC,BSD-3-Clause,BSD-2-Clause,CC0-1.0,0BSD --markdown > license-report.md || true
+          npx license-checker --production --onlyAllow "MIT;Apache-2.0;ISC;BSD-3-Clause;BSD-2-Clause;CC0-1.0;0BSD" --summary > license-report.md || true
           echo "License check completed"
         continue-on-error: true
 

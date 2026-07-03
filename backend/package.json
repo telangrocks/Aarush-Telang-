@@ -1,26 +1,39 @@
 {
-  "name": "backend",
+  "name": "crypto-pulse-backend",
   "version": "1.0.0",
+  "description": "Backend API for Crypto Pulse, running on Cloudflare Workers.",
   "private": true,
+  "main": "dist/index.js",
   "scripts": {
+    "build": "tsc --noEmit",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy",
+    "dev": "wrangler dev",
     "start": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "lint": "eslint 'src/**/*.ts'",
-    "build": "tsc",
-    "test": "echo \"No tests defined\"",
-    "format": "prettier --write 'src/**/*.ts'"
+    "test": "vitest run src",
+    "test:watch": "vitest src",
+    "test:coverage": "vitest run src --coverage",
+    "test:smoke": "node scripts/smoke-test.js",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix",
+    "format": "prettier --write .",
+    "type-check": "tsc --noEmit"
   },
+  "author": "Aarush Telang",
+  "license": "UNLICENSED",
   "dependencies": {
     "@hono/jwt": "^1.0.0",
-    "hono": "^4.4.9"
+    "@hono/kv-cache": "^0.2.2",
+    "hono": "^4.4.12"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20240529.0",
+    "@cloudflare/workers-types": "^4.20240620.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.1",
+    "@typescript-eslint/parser": "^7.13.1",
     "eslint": "^8.57.0",
-    "@typescript-eslint/eslint-plugin": "^7.13.0",
-    "@typescript-eslint/parser": "^7.13.0",
     "prettier": "^3.3.2",
     "typescript": "^5.5.2",
-    "wrangler": "^3.61.0"
+    "vitest": "^1.6.0",
+    "wrangler": "^3.63.1"
   }
 }

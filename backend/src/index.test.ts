@@ -1,0 +1,157 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import worker from './index';
+import { sign } from '@hono/jwt';
+
+describe('App Endpoints', () => {
+  it('GET /health returns status ok', async () => {
+    const res = await worker.fetch(new Request('http://localhost/health'));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.status).toBe('ok');
+    expect(data.service).toBe('Crypto Pulse Backend');
+    expect(data.timestamp).toBeDefined();
+  });
+
+  it('GET /db-status returns ok when DB is available', async () => {
+    // Mock the environment
+    const mockEnv = {
+      DB: {
+        prepare: vi.fn().mockReturnValue({
+          run: vi.fn().mockResolvedValue({}),
+        }),
+      },
+    };
+
+    const res = await worker.fetch(new Request('http://localhost/db-status'), mockEnv);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.status).toBe('ok');
+    expect(data.message).toBe('Database connection successful');
+  });
+
+  it('GET /db-status returns error when DB fails', async () => {
+    // Mock the environment
+    const mockEnv = {
+      DB: {
+        prepare: vi.fn().mockReturnValue({
+          run: vi.fn().mockRejectedValue(new Error('Connection timeout')),
+        }),
+      },
+    };
+
+    const res = await worker.fetch(new Request('http://localhost/db-status'), mockEnv);
+    expect(res.status).toBe(500);
+    const data = await res.json();
+    expect(data.status).toBe('error');
+    expect(data.message).toBe('Database connection failed');
+  });
+
+  describe('Protected API Endpoints', () => {
+    let mockEnv: any;
+    let token: string;
+    const userId = 'user-123';
+
+    beforeEach(async () => {
+      mockEnv = {
+        DB: {
+          prepare: vi.fn().mockReturnThis(),
+          bind: vi.fn().mockReturnThis(),
+          all: vi.fn().mockResolvedValue({ results: [{ id: 'btc', user_id: userId }] }),
+          run: vi.fn().mockResolvedValue({ success: true }),
+        },
+        ENCRYPTION_KEY: 'test-encryption-key',
+        JWT_SECRET: 'test-secret',
+      };
+      token = await sign({ sub: userId, email: 'test@test.com' }, mockEnv.JWT_SECRET);
+    });
+
+    it('GET /api/watchlist should return watchlist for authenticated user', async () => {
+      const req = new Request('http://localhost/api/watchlist', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await worker.fetch(req, mockEnv);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data[0].user_id).toBe(userId);
+      expect(mockEnv.DB.prepare).toHaveBeenCalledWith('SELECT * FROM watchlist WHERE user_id = ? ORDER BY added_at DESC');
+      expect(mockEnv.DB.bind).toHaveBeenCalledWith(userId);
+    });
+
+    it('POST /api/watchlist should add item for authenticated user', async () => {
+        const body = { token_id: 'ethereum' };
+        const req = new Request('http://localhost/api/watchlist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify(body),
+        });
+
+        const res = await worker.fetch(req, mockEnv);
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.success).toBe(true);
+        expect(data.token_id).toBe('ethereum');
+        expect(mockEnv.DB.prepare).toHaveBeenCalledWith('INSERT INTO watchlist (id, user_id, token_id, added_at) VALUES (?, ?, ?, ?)');
+        expect(mockEnv.DB.bind).toHaveBeenCalledWith(expect.any(String), userId, 'ethereum', expect.any(String));
+    });
+
+    it('DELETE /api/watchlist/:id should remove item for authenticated user', async () => {
+        const itemId = 'item-to-delete';
+        const req = new Request(`http://localhost/api/watchlist/${itemId}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${token}` },
+        });
+
+        const res = await worker.fetch(req, mockEnv);
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.success).toBe(true);
+        expect(mockEnv.DB.prepare).toHaveBeenCalledWith('DELETE FROM watchlist WHERE id = ? AND user_id = ?');
+        expect(mockEnv.DB.bind).toHaveBeenCalledWith(itemId, userId);
+    });
+
+    it('should return 401 for protected routes without a valid token', async () => {
+        const req = new Request('http://localhost/api/watchlist');
+        const res = await worker.fetch(req, mockEnv);
+        expect(res.status).toBe(401);
+    });
+
+    it('POST /api/alerts should create a new price alert', async () => {
+      const body = { token_id: 'bitcoin', target_price: 70000, condition: 'ABOVE' };
+      const req = new Request('http://localhost/api/alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+      const res = await worker.fetch(req, mockEnv);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.token_id).toBe('bitcoin');
+      expect(mockEnv.DB.prepare).toHaveBeenCalledWith('INSERT INTO price_alerts (id, user_id, token_id, target_price, condition, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+    });
+
+    it('POST /api/exchange/keys should store encrypted keys', async () => {
+      const body = { apiKey: 'test-api-key', apiSecret: 'test-api-secret' };
+      const req = new Request('http://localhost/api/exchange/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+      const res = await worker.fetch(req, mockEnv);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(mockEnv.DB.prepare).toHaveBeenCalledWith('UPDATE users SET exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?');
+      expect(mockEnv.DB.bind).toHaveBeenCalledWith('test-api-key', expect.any(String), expect.any(String), userId);
+    });
+  });
+
+  it('scheduled handler should run without errors', async () => {
+    const mockEnv = { DB: { prepare: vi.fn().mockReturnThis(), all: vi.fn().mockResolvedValue({ results: [] }) } };
+    const ctx = { waitUntil: vi.fn() };
+    await worker.scheduled!({} as ScheduledEvent, mockEnv, ctx);
+    expect(ctx.waitUntil).toHaveBeenCalled();
+  });
+});
