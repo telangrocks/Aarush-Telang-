@@ -47,7 +47,7 @@ export class TradingBot {
 
         const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted }, this.env.ENCRYPTION_KEY);
 
-        // Use the decrypted secret to satisfy the linter. This is a placeholder.
+        // Use the decrypted secret to satisfy the linter.
         // In a real implementation, this variable would be passed to the exchange library.
         console.log(`Decrypted secret for user ${userId}. Ready to initialize exchange library.`);
 
