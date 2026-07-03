@@ -46,9 +46,9 @@ export class TradingBot {
         }
 
         const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted }, this.env.ENCRYPTION_KEY);
-        
+
         // Use the decrypted secret to prevent unused variable error.
-        console.log(`Successfully decrypted secret for user ${userId}. Ready to initialize exchange.`);
+        console.log(`Decrypted secret for user ${userId}. Ready to initialize exchange.`);
 
         // STEP 2: Initialize exchange library (e.g., ccxt).
         // const exchange = new ccxt.binance({ apiKey: userKeys.exchange_api_key, secret: decryptedSecret });

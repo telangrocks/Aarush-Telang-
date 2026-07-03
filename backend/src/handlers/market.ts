@@ -40,7 +40,8 @@ export async function handleGetMarketCandidates(c: Context<{ Bindings: Env }>): 
             }));
 
         return c.json(candidates);
-    } catch (err: any) {
-        return c.json({ error: 'Error processing market data', message: err.message }, 500);
+    } catch (err: unknown) {
+        const error = err as Error;
+        return c.json({ error: 'Error processing market data', message: error.message }, 500);
     }
 }

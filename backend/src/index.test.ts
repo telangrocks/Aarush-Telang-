@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import worker from './index';
+import { Env } from './index';
 import { sign } from '@hono/jwt';
 
 describe('App Endpoints', () => {
@@ -47,7 +48,7 @@ describe('App Endpoints', () => {
   });
 
   describe('Protected API Endpoints', () => {
-    let mockEnv: any;
+    let mockEnv: Partial<Env>;
     let token: string;
     const userId = 'user-123';
 
@@ -69,7 +70,7 @@ describe('App Endpoints', () => {
       const req = new Request('http://localhost/api/watchlist', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const res = await worker.fetch(req, mockEnv);
+      const res = await worker.fetch(req, mockEnv as Env);
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data[0].user_id).toBe(userId);
@@ -85,7 +86,7 @@ describe('App Endpoints', () => {
             body: JSON.stringify(body),
         });
 
-        const res = await worker.fetch(req, mockEnv);
+        const res = await worker.fetch(req, mockEnv as Env);
         expect(res.status).toBe(200);
         const data = await res.json();
         expect(data.success).toBe(true);
@@ -101,7 +102,7 @@ describe('App Endpoints', () => {
             headers: { Authorization: `Bearer ${token}` },
         });
 
-        const res = await worker.fetch(req, mockEnv);
+        const res = await worker.fetch(req, mockEnv as Env);
         expect(res.status).toBe(200);
         const data = await res.json();
         expect(data.success).toBe(true);
@@ -111,7 +112,7 @@ describe('App Endpoints', () => {
 
     it('should return 401 for protected routes without a valid token', async () => {
         const req = new Request('http://localhost/api/watchlist');
-        const res = await worker.fetch(req, mockEnv);
+        const res = await worker.fetch(req, mockEnv as Env);
         expect(res.status).toBe(401);
     });
 
@@ -123,7 +124,7 @@ describe('App Endpoints', () => {
         body: JSON.stringify(body),
       });
 
-      const res = await worker.fetch(req, mockEnv);
+      const res = await worker.fetch(req, mockEnv as Env);
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -139,7 +140,7 @@ describe('App Endpoints', () => {
         body: JSON.stringify(body),
       });
 
-      const res = await worker.fetch(req, mockEnv);
+      const res = await worker.fetch(req, mockEnv as Env);
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -150,7 +151,7 @@ describe('App Endpoints', () => {
 
   it('scheduled handler should run without errors', async () => {
     const mockEnv = { DB: { prepare: vi.fn().mockReturnThis(), all: vi.fn().mockResolvedValue({ results: [] }) } };
-    const ctx = { waitUntil: vi.fn() };
+    const ctx = { waitUntil: vi.fn() } as ExecutionContext;
     await worker.scheduled!({} as ScheduledEvent, mockEnv, ctx);
     expect(ctx.waitUntil).toHaveBeenCalled();
   });
