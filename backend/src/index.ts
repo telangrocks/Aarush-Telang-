@@ -3,8 +3,8 @@ import { jwt } from 'hono/jwt';
 import { cache } from 'hono/cache';
 import { handleRegister, handleVerifyOtp, handleLogin, handleGetProfile } from './handlers/user';
 import { handleGetMarketCandidates } from './handlers/market';
-import { sendPriceAlertEmail } from './handlers/notification'; // Corrected path
-import { encrypt } from './crypto'; // Corrected path
+import { sendPriceAlertEmail } from './handlers/notification';
+import { encrypt } from './crypto';
 import { TradingBot } from './trading-bot';
 
 export interface Env {
@@ -68,11 +68,12 @@ app.get('/db-status', async (c) => {
       message: 'Database connection successful',
       timestamp: new Date().toISOString()
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const error = err as Error;
     return c.json({
       status: 'error',
       message: 'Database connection failed',
-      error: err.message,
+      error: error.message,
       timestamp: new Date().toISOString()
     }, 500);
   }
@@ -270,7 +271,7 @@ app.get(
       // Fetch data from CoinGecko API
       const response = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1&sparkline=false');
       if (!response.ok) {
-        return c.json({ error: 'Failed to fetch prices from external API' }, response.status as any);
+        return c.json({ error: 'Failed to fetch prices from external API' }, { status: response.status });
       }
       const data: CoinGeckoMarket[] = await response.json();
       const formattedData = data.map((coin) => ({
