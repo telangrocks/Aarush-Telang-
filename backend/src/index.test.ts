@@ -68,7 +68,7 @@ describe('App Endpoints', () => {
         PRICE_CACHE: {} as KVNamespace,
         TRADING_BOTS: {} as DurableObjectNamespace,
       };
-      token = await sign({ sub: userId, email: 'test@test.com' }, mockEnv.JWT_SECRET);
+      token = await sign({ sub: userId, email: 'test@test.com' }, mockEnv.JWT_SECRET!);
     });
 
     it('GET /api/watchlist should return watchlist for authenticated user', async () => {
@@ -77,10 +77,10 @@ describe('App Endpoints', () => {
       });
       const res = await worker.fetch(req, mockEnv as Env);
       expect(res.status).toBe(200);
-      const data = await res.json();
+      const data = await res.json<{ user_id: string }[]>();
       expect(data[0].user_id).toBe(userId);
-      expect(mockEnv.DB.prepare).toHaveBeenCalledWith('SELECT * FROM watchlist WHERE user_id = ? ORDER BY added_at DESC');
-      expect(mockEnv.DB.bind).toHaveBeenCalledWith(userId);
+      expect(mockEnv.DB?.prepare).toHaveBeenCalledWith('SELECT * FROM watchlist WHERE user_id = ? ORDER BY added_at DESC');
+      expect(mockEnv.DB?.prepare('stmt').bind).toHaveBeenCalledWith(userId);
     });
 
     it('POST /api/watchlist should add item for authenticated user', async () => {

@@ -1,5 +1,5 @@
 // src/utils/auth.ts
-import { sign } from '@hono/jwt';
+import { sign } from 'hono/jwt';
 
 const ITERATIONS = 100000;
 const HASH_ALGORITHM = 'SHA-256';
