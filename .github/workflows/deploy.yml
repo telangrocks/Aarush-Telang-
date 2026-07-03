@@ -23,15 +23,24 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify secrets are configured
+        env:
+          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: |
-          echo "Checking required secrets..."
-          if [ -z "${{ secrets.WRANGLER_API_TOKEN }}" ]; then
-            echo "⚠️ WRANGLER_API_TOKEN not configured"
+          if [ -z "$WRANGLER_API_TOKEN" ]; then
+            echo "❌ Error: WRANGLER_API_TOKEN secret is not configured."
+            exit 1
           fi
-          if [ -z "${{ secrets.DATABASE_URL }}" ]; then
-            echo "⚠️ DATABASE_URL not configured"
+          if [ "${{ github.ref }}" = "refs/heads/main" ] && [ -z "$PRODUCTION_DATABASE_URL" ]; then
+            echo "❌ Error: PRODUCTION_DATABASE_URL secret is not configured for the main branch."
+            exit 1
           fi
-          echo "Secrets validation complete"
+          if [ "${{ github.ref }}" = "refs/heads/staging" ] && [ -z "$STAGING_DATABASE_URL" ]; then
+            echo "❌ Error: STAGING_DATABASE_URL secret is not configured for the staging branch."
+            exit 1
+          fi
+          echo "✅ All required secrets are configured."
 
       - name: Determine deployment target
         id: target
@@ -92,9 +101,12 @@ jobs:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           NODE_ENV: staging
         run: |
-          wrangler d1 migrations apply crypto-pulse-db --env staging || echo "No migrations or DB not found"
-          wrangler deploy --env staging || true
-          echo "Backend deployed to staging environment"
+          {
+            echo "Running D1 migrations for staging..."
+            wrangler d1 migrations apply crypto-pulse-db --env staging
+            echo "Deploying to staging environment..."
+            wrangler deploy --env staging
+          } 2>&1 | tee backend/deployment.log
 
       - name: Deploy to Cloudflare Workers (Production)
         if: github.ref == 'refs/heads/main'
@@ -104,15 +116,18 @@ jobs:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
           NODE_ENV: production
         run: |
-          wrangler d1 migrations apply crypto-pulse-db --env production || echo "No migrations or DB not found"
-          wrangler deploy --env production || true
-          echo "Backend deployed to production environment"
+          {
+            echo "Running D1 migrations for production..."
+            wrangler d1 migrations apply crypto-pulse-db --env production
+            echo "Deploying to production environment..."
+            wrangler deploy --env production
+          } 2>&1 | tee backend/deployment.log
 
       - name: Post-deployment smoke tests
         working-directory: backend
         run: |
           echo "Running post-deployment health checks..."
-          npm run test:smoke || true
+          npm run test:smoke
 
       - name: Upload deployment logs
         if: always()

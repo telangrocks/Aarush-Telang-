@@ -34,9 +34,9 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           args: --severity-threshold=high --json-file-output=snyk-results.json
-        continue-on-error: true
 
       - name: Upload Snyk results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: snyk-vulnerability-report
@@ -62,10 +62,9 @@ jobs:
           args: >
             --enableExperimental
             --enableVulnerability
-            --suppression dependency-check-suppression.xml
-        continue-on-error: true
 
       - name: Upload Dependency-Check results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dependency-check-report
@@ -81,7 +80,63 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        working-directory: ['backend', 'mobile']
+# Repository Migration & Canonical Project Setup
+
+## Objective
+
+I want to transition this Android project so that the **GitHub repository becomes the canonical (single source of truth)**.
+
+From this point onward, all future development should be based on the repository. My local machine will only be used later to clone the repository, open it in Android Studio, build, debug, and test the application.
+
+## Tasks
+
+1. Perform a complete comparison between the local Android project and the repository workspace.
+2. Identify every required source file, resource, Gradle file, manifest, asset, workflow, configuration, and dependency needed for a complete Android Studio project.
+3. Copy or synchronize any missing project files from the local project into the repository workspace.
+4. Preserve the existing directory structure.
+5. Ensure that no required project files are omitted.
+6. Exclude all machine-specific or generated content, including:
+
+   * `local.properties`
+   * `.gradle/`
+   * `build/`
+   * IDE caches
+   * temporary files
+   * signing keystores
+   * secrets, tokens, credentials, or environment-specific files
+7. Update any project configuration necessary so the repository workspace is internally consistent.
+8. Validate that a fresh clone of this repository would contain everything required to open the project successfully in Android Studio after the normal machine-specific setup.
+
+## Final Audit
+
+Perform a complete verification and confirm:
+
+* All Android source code is present.
+* All resources are present.
+* All Gradle configuration files are present.
+* All manifests are present.
+* All required assets are present.
+* All GitHub workflows are present.
+* All required project configuration files are present.
+* There are no missing files required for a successful build.
+* The repository workspace is complete and ready to become the project's canonical source.
+
+## Important
+
+* **Do not perform any Git operations** (no commit, push, pull, merge, rebase, branch creation, or pull request).
+* Only prepare the repository workspace.
+* Leave all changes uncommitted.
+
+## Deliverables
+
+When finished, provide:
+
+1. A complete list of files that were migrated.
+2. A list of files intentionally excluded and the reason.
+3. Any remaining issues.
+4. Any recommendations before the first commit.
+5. A final confirmation stating whether the repository workspace is ready to become the canonical project and can later be cloned into Android Studio for building and testing.
+        working-directory: ['backend']
     
     steps:
       - name: Checkout code
@@ -100,33 +155,8 @@ jobs:
 
       - name: Run npm audit
         working-directory: ${{ matrix.working-directory }}
-        id: audit
-        run: |
-          npm audit --json > npm-audit-report.json || true
-          AUDIT_RESULT=$(npm audit --json | jq '.metadata.vulnerabilities.high + .metadata.vulnerabilities.critical')
-          echo "vulnerabilities=$AUDIT_RESULT" >> $GITHUB_OUTPUT
-          echo "Found vulnerabilities: $AUDIT_RESULT"
-        continue-on-error: true
+        run: npm audit --audit-level=high
 
-      - name: Comment on PR if vulnerabilities found
-        if: github.event_name == 'pull_request' && steps.audit.outputs.vulnerabilities > 0
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `⚠️ **npm audit detected ${{ steps.audit.outputs.vulnerabilities }} vulnerabilities in ${{ matrix.working-directory }}**\n\nRun \`npm audit\` locally to review and fix.`
-            })
-        continue-on-error: true
-
-      - name: Upload npm audit report
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-audit-${{ matrix.working-directory }}
-          path: ${{ matrix.working-directory }}/npm-audit-report.json
-          retention-days: 30
 
   # ============================================================================
   # SECRET SCANNING
@@ -148,7 +178,6 @@ jobs:
           base: ${{ github.event.repository.default_branch }}
           head: HEAD
           extra_args: --debug --only-verified
-        continue-on-error: true
 
       - name: GitGuardian Secret Scan
         uses: gitguardian/ggshield-action@master
@@ -158,7 +187,6 @@ jobs:
           GITHUB_PUSH_BASE_SHA: ${{ github.event.base }}
           GITHUB_PULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        continue-on-error: true
 
   # ============================================================================
   # LICENSE COMPLIANCE CHECK
@@ -188,12 +216,10 @@ jobs:
 
       - name: Check license compliance
         working-directory: ${{ matrix.working-directory }}
-        run: |
-          npx license-checker --production --onlyAllow "MIT;Apache-2.0;ISC;BSD-3-Clause;BSD-2-Clause;CC0-1.0;0BSD" --summary > license-report.md || true
-          echo "License check completed"
-        continue-on-error: true
+        run: npx license-checker --production --onlyAllow "MIT;Apache-2.0;ISC;BSD-3-Clause;BSD-2-Clause;CC0-1.0;0BSD" --summary > license-report.md
 
       - name: Upload license report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: license-report-${{ matrix.working-directory }}
@@ -220,13 +246,11 @@ jobs:
 
       - name: Build CodeQL
         uses: github/codeql-action/autobuild@v2
-        continue-on-error: true
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v2
         with:
           category: '/language:javascript'
-        continue-on-error: true
 
   # ============================================================================
   # CONTAINER SECURITY (if using Docker)
@@ -234,20 +258,14 @@ jobs:
   container-scan:
     name: Container Image Security Scan
     runs-on: ubuntu-latest
+    if: hashFiles('**/Dockerfile') != ''
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build Docker image (if Dockerfile exists)
-        run: |
-          if [ -f "Dockerfile" ]; then
-            docker build -t cryptopulse:latest .
-            echo "Docker image built"
-          else
-            echo "No Dockerfile found, skipping container scan"
-          fi
-        continue-on-error: true
+      - name: Build Docker image
+        run: docker build -t cryptopulse:latest .
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@master
@@ -256,13 +274,12 @@ jobs:
           format: 'sarif'
           output: 'trivy-container-results.sarif'
           severity: 'CRITICAL,HIGH'
-        continue-on-error: true
 
       - name: Upload Trivy results
+        if: always()
         uses: github/codeql-action/upload-sarif@v2
         with:
           sarif_file: 'trivy-container-results.sarif'
-        continue-on-error: true
 
   # ============================================================================
   # SECURITY REPORT SUMMARY
@@ -270,8 +287,8 @@ jobs:
   security-summary:
     name: Security Scan Summary
     runs-on: ubuntu-latest
-    needs: [snyk-scan, npm-audit, sast-scan]
-    if: always()
+    needs: [snyk-scan, dependency-check, npm-audit, secret-scan, license-check, sast-scan, container-scan]
+    if: always() # This job should always run to provide a summary
     
     steps:
       - name: Generate security summary
@@ -279,16 +296,25 @@ jobs:
           echo "==================================="
           echo "🔐 Security Scan Summary"
           echo "==================================="
-          echo "✅ Snyk Vulnerability Scan: ${{ needs.snyk-scan.result }}"
-          echo "✅ NPM Audit: ${{ needs.npm-audit.result }}"
-          echo "✅ SAST Analysis: ${{ needs.sast-scan.result }}"
+          echo "Snyk Scan:           ${{ needs.snyk-scan.result }}"
+          echo "Dependency Check:    ${{ needs.dependency-check.result }}"
+          echo "NPM Audit:           ${{ needs.npm-audit.result }}"
+          echo "Secret Scan:         ${{ needs.secret-scan.result }}"
+          echo "License Check:       ${{ needs.license-check.result }}"
+          echo "SAST Analysis:       ${{ needs.sast-scan.result }}"
+          # The container-scan result is only included if the job was not skipped
+          if [ "${{ needs.container-scan.result }}" != "" ]; then
+            echo "Container Scan:      ${{ needs.container-scan.result }}"
+          else
+            echo "Container Scan:      SKIPPED"
+          fi
           echo "==================================="
-          echo "Artifacts available in Actions tab"
-          echo "Review all reports before merging"
+          echo "Check the individual job logs for details."
+          echo "Artifacts are available for download in the Actions tab."
           echo "==================================="
 
-      - name: Fail if critical issues found
-        if: needs.snyk-scan.result == 'failure' || needs.npm-audit.result == 'failure'
+      - name: Fail if any security check failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: |
-          echo "⚠️ Security issues detected - review before merge"
+          echo "❌ One or more security checks failed, were cancelled, or skipped unexpectedly."
           exit 1
