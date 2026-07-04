@@ -25,25 +25,6 @@ jobs:
       - name: Verify secrets are configured
         env:
           WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
-          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
-        run: |
-          if [ -z "$WRANGLER_API_TOKEN" ]; then
-            echo "❌ Error: WRANGLER_API_TOKEN secret is not configured."
-            exit 1
-          fi
-          if [ "${{ github.ref }}" = "refs/heads/main" ] && [ -z "$PRODUCTION_DATABASE_URL" ]; then
-            echo "❌ Error: PRODUCTION_DATABASE_URL secret is not configured for the main branch."
-            exit 1
-          fi
-          if [ "${{ github.ref }}" = "refs/heads/staging" ] && [ -z "$STAGING_DATABASE_URL" ]; then
-            echo "❌ Error: STAGING_DATABASE_URL secret is not configured for the staging branch."
-            exit 1
-          fi
-          echo "✅ All required secrets are configured."
-
-      - name: Determine deployment target
-        id: target
         run: |
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
             echo "environment=production" >> $GITHUB_OUTPUT
@@ -52,6 +33,17 @@ jobs:
             echo "environment=staging" >> $GITHUB_OUTPUT
             echo "🟡 Deploying to STAGING"
           fi
+          if [ -z "$WRANGLER_API_TOKEN" ]; then
+            echo "❌ Error: WRANGLER_API_TOKEN secret is not configured."
+            exit 1
+          fi
+          echo "✅ All required secrets are configured."
+
+      - name: Determine deployment target
+        id: target
+        run: |
+          # This step is now part of the previous step's script block
+          # to consolidate logic. It can be removed or kept for clarity.
 
   # ============================================================================
   # DEPLOY BACKEND TO CLOUDFLARE WORKERS
@@ -98,7 +90,6 @@ jobs:
         working-directory: backend
         env:
           WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           NODE_ENV: staging
         run: |
           {
@@ -113,7 +104,6 @@ jobs:
         working-directory: backend
         env:
           WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
           NODE_ENV: production
         run: |
           {
