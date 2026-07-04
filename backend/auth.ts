@@ -1,6 +1,6 @@
 // src/utils/auth.ts
 
-import { sign } from '@hono/jwt';
+import { sign } from 'hono/jwt';
 /**
  * Hashes a password using PBKDF2 with SHA-256.
  * @param password The plain-text password.

@@ -151,7 +151,7 @@ When finished, provide:
 
       - name: Install dependencies
         working-directory: ${{ matrix.working-directory }}
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run npm audit
         working-directory: ${{ matrix.working-directory }}
@@ -212,7 +212,7 @@ When finished, provide:
 
       - name: Install dependencies
         working-directory: ${{ matrix.working-directory }}
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Check license compliance
         working-directory: ${{ matrix.working-directory }}
