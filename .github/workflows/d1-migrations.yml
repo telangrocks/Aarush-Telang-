@@ -11,6 +11,7 @@ on:
         options:
           - inspect
           - apply
+          - bootstrap
       sql_command:
         description: Optional SQL command to run when action is inspect
         required: false
@@ -63,8 +64,14 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
         run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote
 
+      - name: Bootstrap production schema
+        if: ${{ inputs.action == 'bootstrap' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: wrangler d1 execute crypto_pulse_db --config wrangler.toml --remote --file scripts/bootstrap-prod-schema.sql
+
       - name: Inspect remote D1 schema
-        if: ${{ inputs.action == 'inspect' }}
+        if: ${{ inputs.action == 'inspect' || inputs.action == 'bootstrap' || inputs.action == 'apply' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
         run: wrangler d1 execute crypto_pulse_db --config wrangler.toml --remote --command "${{ inputs.sql_command }}"
