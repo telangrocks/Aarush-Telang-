@@ -18,12 +18,30 @@ describe("App Endpoints", () => {
   });
 
   it("GET /db-status returns ok when DB is available", async () => {
-    // Mock the environment
+    const mockPrepare = vi.fn((query: string) => {
+      if (query === "SELECT 1") {
+        return {
+          run: vi.fn().mockResolvedValue({}),
+        };
+      }
+
+      if (
+        query ===
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+      ) {
+        return {
+          bind: vi.fn((tableName: string) => ({
+            first: vi.fn().mockResolvedValue({ name: tableName }),
+          })),
+        };
+      }
+
+      throw new Error(`Unexpected query: ${query}`);
+    });
+
     const mockEnv = {
       DB: {
-        prepare: vi.fn().mockReturnValue({
-          run: vi.fn().mockResolvedValue({}),
-        }),
+        prepare: mockPrepare,
       } as unknown as D1Database,
     };
 
@@ -32,9 +50,19 @@ describe("App Endpoints", () => {
       mockEnv as Env,
     );
     expect(res.status).toBe(200);
-    const data = await res.json<{ status: string; message: string }>();
+    const data = await res.json<{
+      status: string;
+      message: string;
+      tablesChecked: string[];
+    }>();
     expect(data.status).toBe("ok");
     expect(data.message).toBe("Database connection successful");
+    expect(data.tablesChecked).toEqual([
+      "users",
+      "watchlist",
+      "portfolio_transactions",
+      "price_alerts",
+    ]);
   });
 
   it("GET /db-status returns error when DB fails", async () => {
