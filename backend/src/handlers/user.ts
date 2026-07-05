@@ -45,6 +45,7 @@ export async function handleRegister(
       .slice(0, 6)
       .padStart(6, "0");
     const otpExpiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    const createdAt = new Date().toISOString();
 
     let emailDeliveryFailed = false;
     let emailFailureMessage: string | null = null;
@@ -73,12 +74,23 @@ export async function handleRegister(
     }
 
     await c.env.DB.prepare(
-      `INSERT INTO users (id, email, password_hash, status, otp_secret, otp_expires_at)
-       VALUES (?, ?, ?, 'PENDING_VERIFICATION', ?, ?)
+      `INSERT INTO users (
+         id,
+         email,
+         password_hash,
+         created_at,
+         status,
+         otp_secret,
+         otp_expires_at
+       )
+       VALUES (?, ?, ?, ?, 'PENDING_VERIFICATION', ?, ?)
        ON CONFLICT(email) DO UPDATE SET
-       password_hash = excluded.password_hash, status = 'PENDING_VERIFICATION', otp_secret = excluded.otp_secret, otp_expires_at = excluded.otp_expires_at`,
+         password_hash = excluded.password_hash,
+         status = 'PENDING_VERIFICATION',
+         otp_secret = excluded.otp_secret,
+         otp_expires_at = excluded.otp_expires_at`,
     )
-      .bind(newUserId, email, hashedPassword, otp, otpExpiresAt)
+      .bind(newUserId, email, hashedPassword, createdAt, otp, otpExpiresAt)
       .run();
 
     c.status(200);
