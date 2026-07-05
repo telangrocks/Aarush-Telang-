@@ -1,8 +1,8 @@
 // src/utils/auth.ts
-import { sign } from 'hono/jwt';
+import { sign } from "hono/jwt";
 
 const ITERATIONS = 100000;
-const HASH_ALGORITHM = 'SHA-256';
+const HASH_ALGORITHM = "SHA-256";
 
 /**
  * Hashes a password using PBKDF2 with SHA-256.
@@ -13,16 +13,21 @@ const HASH_ALGORITHM = 'SHA-256';
 export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const keyMaterial = await crypto.subtle.importKey(
-    'raw',
+    "raw",
     new TextEncoder().encode(password),
-    { name: 'PBKDF2' },
+    { name: "PBKDF2" },
     false,
-    ['deriveBits']
+    ["deriveBits"],
   );
   const key = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: salt, iterations: ITERATIONS, hash: HASH_ALGORITHM },
+    {
+      name: "PBKDF2",
+      salt: salt,
+      iterations: ITERATIONS,
+      hash: HASH_ALGORITHM,
+    },
     keyMaterial,
-    256
+    256,
   );
 
   const hash = btoa(String.fromCharCode(...new Uint8Array(key)));
@@ -37,15 +42,35 @@ export async function hashPassword(password: string): Promise<string> {
  * @param storedHash The stored string containing the salt and hash.
  * @returns True if the password is valid, false otherwise.
  */
-export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
-  const [saltString, hash] = storedHash.split(':');
+export async function verifyPassword(
+  password: string,
+  storedHash: string,
+): Promise<boolean> {
+  const [saltString, hash] = storedHash.split(":");
   if (!saltString || !hash) {
     return false; // Invalid hash format
   }
 
-  const salt = new Uint8Array(Array.from(atob(saltString), c => c.charCodeAt(0)));
-  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
-  const key = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: salt, iterations: ITERATIONS, hash: HASH_ALGORITHM }, keyMaterial, 256);
+  const salt = new Uint8Array(
+    Array.from(atob(saltString), (c) => c.charCodeAt(0)),
+  );
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits"],
+  );
+  const key = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt: salt,
+      iterations: ITERATIONS,
+      hash: HASH_ALGORITHM,
+    },
+    keyMaterial,
+    256,
+  );
 
   const newHash = btoa(String.fromCharCode(...new Uint8Array(key)));
   return newHash === hash;
@@ -54,9 +79,21 @@ export async function verifyPassword(password: string, storedHash: string): Prom
 /**
  * Generates a JSON Web Token (JWT) for a user.
  */
-export async function generateJwt(userId: string, email: string, secret: string): Promise<string> {
+export async function generateJwt(
+  userId: string,
+  email: string,
+  secret: string,
+): Promise<string> {
+  if (!secret || typeof secret !== "string") {
+    throw new Error("JWT_SECRET is missing or invalid");
+  }
+
   return sign(
-    { sub: userId, email, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7 }, // 7-day expiration
-    secret
+    {
+      sub: userId,
+      email,
+      exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
+    }, // 7-day expiration
+    secret,
   );
 }
