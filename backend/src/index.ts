@@ -70,7 +70,7 @@ app.route('/api', api);
 // ==========================================
 // SCHEDULED HANDLER
 // ==========================================
-const scheduled = async (event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
+const scheduled = async (event: ScheduledEvent, env: Env, _ctx: ExecutionContext) => {
   console.log('Starting alert processing...');
   // In a real app, you would query the DB for alerts and process them.
   const { results } = await env.DB.prepare('SELECT * FROM price_alerts WHERE triggered = 0').all();

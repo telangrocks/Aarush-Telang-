@@ -20,9 +20,9 @@ export async function handleGetMarketCandidates(c: Context<{ Bindings: Env }>): 
     try {
         const response = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false');
         if (!response.ok) {
-            return c.json({ error: 'Failed to fetch market data from external API' }, response.status as any);
+            return c.json({ error: 'Failed to fetch market data from external API' }, { status: response.status });
         }
-        const data: CoinGeckoMarket[] = await response.json();
+        const data = (await response.json()) as CoinGeckoMarket[];
 
         const candidates = data
             // Filter for coins with significant volume (e.g., > $1M)
