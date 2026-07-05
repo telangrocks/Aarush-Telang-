@@ -4,9 +4,9 @@ name: CI - Code Quality & Build Validation
 
 on:
   push:
-    branches: [ main, develop, staging ]
+    branches: [main, develop, staging]
   pull_request:
-    branches: [ main, develop, staging ]
+    branches: [main, develop, staging]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Cache npm packages
         uses: actions/cache@v4
@@ -55,15 +55,16 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v3
         with:
-          java-version: '17'
-          distribution: 'zulu'
-          cache: 'gradle'
+          java-version: "17"
+          distribution: "zulu"
+          cache: "gradle"
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v3
 
       - name: Build with Gradle
         working-directory: ./mobile
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace
 
       - name: Upload Android build artifact
         if: always()
