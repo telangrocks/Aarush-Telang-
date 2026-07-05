@@ -9,25 +9,25 @@
 const fetch = globalThis.fetch;
 
 if (!fetch) {
-  console.error('ERROR: fetch is not available. Node.js 18+ required.');
+  console.error("ERROR: fetch is not available. Node.js 18+ required.");
   process.exit(1);
 }
 
-const WORKER_URL = process.env.WORKER_URL || 'http://localhost:8787';
+const WORKER_URL = process.env.WORKER_URL || "http://localhost:8787";
 const TIMEOUT = 10000; // 10 seconds
 
 async function runSmokeTests() {
-  console.log('🧪 Running post-deployment smoke tests...\n');
+  console.log("🧪 Running post-deployment smoke tests...\n");
 
   const tests = [
     {
-      name: 'Health Check',
-      endpoint: '/health',
+      name: "Health Check",
+      endpoint: "/health",
       expectedStatus: 200,
     },
     {
-      name: 'API Availability',
-      endpoint: '/api/status',
+      name: "Database Status",
+      endpoint: "/db-status",
       expectedStatus: 200,
     },
   ];
@@ -51,7 +51,7 @@ async function runSmokeTests() {
         passed++;
       } else {
         console.error(
-          `❌ ${test.name}: FAILED - Expected ${test.expectedStatus}, got ${response.status}`
+          `❌ ${test.name}: FAILED - Expected ${test.expectedStatus}, got ${response.status}`,
         );
         failed++;
       }
@@ -67,7 +67,7 @@ async function runSmokeTests() {
     process.exit(1);
   }
 
-  console.log('✨ All smoke tests passed!');
+  console.log("✨ All smoke tests passed!");
 }
 
 runSmokeTests();

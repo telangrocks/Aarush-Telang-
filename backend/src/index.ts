@@ -4,6 +4,12 @@ import { jwt } from "hono/jwt";
 import { secureHeaders } from "hono/secure-headers";
 import { HTTPException } from "hono/http-exception";
 import { encrypt } from "./crypto";
+import {
+  handleGetProfile,
+  handleLogin,
+  handleRegister,
+  handleVerifyOtp,
+} from "./handlers/user";
 
 export interface Env {
   DB: D1Database;
@@ -43,6 +49,13 @@ app.get("/db-status", async (c) => {
 });
 
 // ==========================================
+// PUBLIC API ROUTES
+// ==========================================
+app.post("/api/register", handleRegister);
+app.post("/api/verify-otp", handleVerifyOtp);
+app.post("/api/login", handleLogin);
+
+// ==========================================
 // PROTECTED API ROUTES
 // ==========================================
 const api = new Hono<{ Bindings: Env }>();
@@ -56,6 +69,8 @@ api.use("*", (c, next) => {
   });
   return jwtMiddleware(c, next);
 });
+
+api.get("/profile", handleGetProfile);
 
 api.get("/watchlist", async (c) => {
   const payload = c.get("jwtPayload") as { sub: string };

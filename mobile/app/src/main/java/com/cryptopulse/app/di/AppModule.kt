@@ -27,9 +27,7 @@ object AppModule {
     @Singleton
     fun provideRetrofit(): Retrofit {
         return Retrofit.Builder()
-            // In a real app, this would be your production URL. 
-            // For emulator testing, use 10.0.2.2 which maps to localhost on the host machine.
-            .baseUrl("http://10.0.2.2:8787/") 
+            .baseUrl("https://crypto-pulse-backend.telangrocks.workers.dev/")
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }
