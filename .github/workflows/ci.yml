@@ -64,8 +64,11 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
 
+      - name: Ensure Gradle wrapper is executable
+        run: chmod +x ./gradlew
+
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Upload Android build artifact
         if: always()
