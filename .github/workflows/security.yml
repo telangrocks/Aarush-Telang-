@@ -202,16 +202,27 @@ jobs:
   container-scan:
     name: Container Image Security Scan
     runs-on: ubuntu-latest
-    if: hashFiles('**/Dockerfile') != ''
     
     steps:
+      - name: Check for Dockerfile
+        id: check_dockerfile
+        run: |
+          if find . -name "Dockerfile" -print -quit | grep -q .; then
+            echo "DOCKERFILE_EXISTS=true" >> $GITHUB_OUTPUT
+          else
+            echo "DOCKERFILE_EXISTS=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout code
+        if: steps.check_dockerfile.outputs.DOCKERFILE_EXISTS == 'true'
         uses: actions/checkout@v4
 
       - name: Build Docker image
+        if: steps.check_dockerfile.outputs.DOCKERFILE_EXISTS == 'true'
         run: docker build -t cryptopulse:latest .
 
       - name: Scan image with Trivy
+        if: steps.check_dockerfile.outputs.DOCKERFILE_EXISTS == 'true'
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: 'cryptopulse:latest'
@@ -220,7 +231,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Upload Trivy results
-        if: always()
+        if: always() && steps.check_dockerfile.outputs.DOCKERFILE_EXISTS == 'true'
         uses: github/codeql-action/upload-sarif@v2
         with:
           sarif_file: 'trivy-container-results.sarif'

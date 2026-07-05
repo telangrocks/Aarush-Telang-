@@ -1,0 +1,13 @@
+# Ignore compiled JavaScript files in src/
+src/*.js
+src/**/*.js
+
+# Ignore generated declaration files
+src/*.d.ts
+src/**/*.d.ts
+
+# Ignore test output
+coverage/
+
+# Node.js dependencies
+node_modules/

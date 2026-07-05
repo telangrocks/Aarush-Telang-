@@ -46,22 +46,14 @@ app.get('/db-status', async (c) => {
 const api = new Hono<{ Bindings: Env }>();
 
 // JWT Middleware with proper error handling
-api.use(
-  '*',
-  jwt({
-    secret: (c) => c.env.JWT_SECRET,
+api.use('*', (c, next) => {
+  const jwtMiddleware = jwt({
+    secret: c.env.JWT_SECRET,
     cookie: 'auth_token',
-    // This is the crucial fix for the 500 error.
-    // It ensures a proper 401 response is sent on auth failure.
-    errorHandler: (err, c) => {
-      throw new HTTPException(401, {
-        res: new Response(JSON.stringify({ error: 'Unauthorized', message: err.message }), {
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      });
-    },
-  })
-);
+    alg: 'HS256',
+  });
+  return jwtMiddleware(c, next);
+});
 
 // Placeholder routes to make tests pass
 api.get('/watchlist', (c) => c.json([{ user_id: 'user-123' }]));
