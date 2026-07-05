@@ -1,0 +1,70 @@
+name: D1 migrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Action to run against the production D1 database
+        required: true
+        default: inspect
+        type: choice
+        options:
+          - inspect
+          - apply
+      sql_command:
+        description: Optional SQL command to run when action is inspect
+        required: false
+        default: "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
+
+concurrency:
+  group: d1-migrations-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  d1-production:
+    name: Manage production D1 schema
+    runs-on: ubuntu-latest
+    environment: production
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify D1 token
+        env:
+          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: test -n "$WRANGLER_API_TOKEN" || { echo "WRANGLER_API_TOKEN is required"; exit 1; }
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@3.63.1
+
+      - name: Show D1 database info
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: wrangler d1 info crypto_pulse_db --config wrangler.toml
+
+      - name: Apply D1 migrations
+        if: ${{ inputs.action == 'apply' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote
+
+      - name: Inspect remote D1 schema
+        if: ${{ inputs.action == 'inspect' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: wrangler d1 execute crypto_pulse_db --config wrangler.toml --remote --command "${{ inputs.sql_command }}"
