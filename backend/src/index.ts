@@ -37,10 +37,8 @@ app.get("/db-status", async (c) => {
     return c.json({ status: "ok", message: "Database connection successful" });
   } catch (e) {
     console.error("DB connection failed:", e);
-    return c.json(
-      { status: "error", message: "Database connection failed" },
-      500,
-    );
+    c.status(500);
+    return c.json({ status: "error", message: "Database connection failed" });
   }
 });
 
@@ -179,13 +177,15 @@ app.onError((err, c) => {
   if (err instanceof HTTPException) {
     return err.getResponse();
   }
-  return c.json({ error: "Internal Server Error", message: err.message }, 500);
+  c.status(500);
+  return c.json({ error: "Internal Server Error", message: err.message });
 });
 
 // 404 Handler
 app.notFound((c) => {
-  return c.json(
-    { error: "Not Found", message: `Endpoint '${c.req.path}' not found.` },
-    404,
-  );
+  c.status(404);
+  return c.json({
+    error: "Not Found",
+    message: `Endpoint '${c.req.path}' not found.`,
+  });
 });
