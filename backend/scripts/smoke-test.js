@@ -24,11 +24,23 @@ async function runSmokeTests() {
       name: "Health Check",
       endpoint: "/health",
       expectedStatus: 200,
+      validateBody: async (response) => {
+        const data = await response.json();
+        if (data.status !== "ok") {
+          throw new Error(`Unexpected health status: ${JSON.stringify(data)}`);
+        }
+      },
     },
     {
       name: "Database Status",
       endpoint: "/db-status",
       expectedStatus: 200,
+      validateBody: async (response) => {
+        const data = await response.json();
+        if (data.status !== "ok") {
+          throw new Error(`Database status not ok: ${JSON.stringify(data)}`);
+        }
+      },
     },
   ];
 
@@ -47,11 +59,15 @@ async function runSmokeTests() {
       clearTimeout(timeout);
 
       if (response.status === test.expectedStatus) {
+        if (test.validateBody) {
+          await test.validateBody(response.clone());
+        }
         console.log(`✅ ${test.name}: PASSED`);
         passed++;
       } else {
+        const body = await response.text();
         console.error(
-          `❌ ${test.name}: FAILED - Expected ${test.expectedStatus}, got ${response.status}`,
+          `❌ ${test.name}: FAILED - Expected ${test.expectedStatus}, got ${response.status}. Body: ${body}`,
         );
         failed++;
       }

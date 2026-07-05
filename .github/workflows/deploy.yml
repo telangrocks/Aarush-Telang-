@@ -64,3 +64,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
         run: wrangler deploy
+
+      - name: Post-deploy smoke test
+        env:
+          WORKER_URL: https://crypto-pulse-backend.telangrocks.workers.dev
+        run: npm run test:smoke

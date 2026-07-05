@@ -40,7 +40,40 @@ app.get("/health", (c) => {
 app.get("/db-status", async (c) => {
   try {
     await c.env.DB.prepare("SELECT 1").run();
-    return c.json({ status: "ok", message: "Database connection successful" });
+    const requiredTables = [
+      "users",
+      "watchlist",
+      "portfolio_transactions",
+      "price_alerts",
+    ];
+
+    const missingTables: string[] = [];
+    for (const tableName of requiredTables) {
+      const table = await c.env.DB.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      )
+        .bind(tableName)
+        .first<{ name: string }>();
+
+      if (!table) {
+        missingTables.push(tableName);
+      }
+    }
+
+    if (missingTables.length > 0) {
+      c.status(500);
+      return c.json({
+        status: "error",
+        message: "Database schema is incomplete",
+        missingTables,
+      });
+    }
+
+    return c.json({
+      status: "ok",
+      message: "Database connection successful",
+      tablesChecked: requiredTables,
+    });
   } catch (e) {
     console.error("DB connection failed:", e);
     c.status(500);
