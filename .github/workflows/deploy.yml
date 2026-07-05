@@ -1,193 +1,66 @@
-name: Deploy - Wrangler & Backend Deployment
+name: Deploy backend
 
 on:
-  push:
-    branches: [main, staging]
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy.yml"
 
-env:
-  NODE_VERSION: '22.x'
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # ============================================================================
-  # PRE-DEPLOYMENT CHECKS
-  # ============================================================================
-  pre-deploy-checks:
-    name: Pre-Deployment Validation
-    runs-on: ubuntu-latest
-    outputs:
-      environment: ${{ steps.target.outputs.environment }}
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Determine Environment and Verify Secrets
-        id: target # This ID is referenced by the job's outputs
-        env:
-          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-        run: |
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            echo "environment=production" >> $GITHUB_OUTPUT
-          else
-            echo "environment=staging" >> $GITHUB_OUTPUT
-          fi
-          if [ -z "$WRANGLER_API_TOKEN" ]; then
-            echo "❌ Error: WRANGLER_API_TOKEN secret is not configured."
-            exit 1
-          fi
-          echo "✅ All required secrets are configured."
-
-  # ============================================================================
-  # DEPLOY BACKEND TO CLOUDFLARE WORKERS
-  # ============================================================================
   deploy-backend:
-    name: Deploy Backend - Cloudflare Workers
+    name: Build, migrate, and deploy backend
     runs-on: ubuntu-latest
-    needs: pre-deploy-checks
-    environment: 
-      name: ${{ needs.pre-deploy-checks.outputs.environment }}
-      
+    environment: production
+
+    defaults:
+      run:
+        working-directory: backend
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ env.NODE_VERSION }}
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: './backend/package-lock.json'
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
 
       - name: Install dependencies
-        working-directory: backend
-        run: npm ci --prefer-offline --no-audit
+        run: npm ci
 
-      - name: Install specific Wrangler CLI version
-        run: npm install -g wrangler@3.63.1
+      - name: Lint
+        run: npm run lint
 
-      - name: Verify Wrangler installation
-        run: wrangler --version
-
-      - name: Configure Wrangler authentication
-        env:
-          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-        run: echo "Using Wrangler API token"
-
-      - name: Build backend project
-        working-directory: backend
+      - name: Build
         run: npm run build
 
-      - name: Deploy to Cloudflare Workers (Staging)
-        if: github.ref == 'refs/heads/staging'
-        working-directory: backend
+      - name: Run tests
+        run: npm test -- --run
+
+      - name: Verify Wrangler config
         env:
           WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-          NODE_ENV: staging
         run: |
-          {
-            echo "Running D1 migrations for staging..."
-            wrangler d1 migrations apply crypto-pulse-db --env staging
-            echo "Deploying to staging environment..."
-            wrangler deploy --env staging
-          } 2>&1 | tee backend/deployment.log
+          test -n "$WRANGLER_API_TOKEN" || { echo "WRANGLER_API_TOKEN is required"; exit 1; }
+          grep -q "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" wrangler.toml && { echo "wrangler.toml still has placeholder D1 database_id"; exit 1; } || true
 
-      - name: Deploy to Cloudflare Workers (Production)
-        if: github.ref == 'refs/heads/main'
-        working-directory: backend
+      - name: Install Wrangler
+        run: npm install -g wrangler@3.63.1
+
+      - name: Apply D1 migrations
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-          NODE_ENV: production
-        run: |
-          {
-            echo "Running D1 migrations for production..."
-            wrangler d1 migrations apply crypto-pulse-db --env production
-            echo "Deploying to production environment..."
-            wrangler deploy --env production
-          } 2>&1 | tee backend/deployment.log
+          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: wrangler d1 migrations apply crypto_pulse_db
 
-      - name: Post-deployment smoke tests
-        working-directory: backend
-        run: |
-          echo "Running post-deployment health checks..."
-          npm run test:smoke
-
-      - name: Upload deployment logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deployment-logs
-          path: backend/deployment.log
-          retention-days: 30
-
-  # ============================================================================
-  # DEPLOYMENT VERIFICATION
-  # ============================================================================
-  verify-deployment:
-    name: Verify Deployment Health
-    runs-on: ubuntu-latest
-    needs: deploy-backend
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Determine deployment URL
-        id: url
-        run: |
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            echo "url=https://api.cryptopulse.example.com" >> $GITHUB_OUTPUT
-          else
-            echo "url=https://staging-api.cryptopulse.example.com" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Health check - API endpoint
-        run: |
-          echo "Checking API health at ${{ steps.url.outputs.url }}/health"
-          curl -f ${{ steps.url.outputs.url }}/health || echo "Health check failed or in progress"
-        continue-on-error: true
-
-      - name: Health check - Database connectivity
-        run: |
-          echo "Verifying database connectivity..."
-          curl -f ${{ steps.url.outputs.url }}/db-status || echo "Database check failed"
-        continue-on-error: true
-
-      - name: Log deployment details
-        run: |
-          echo "==================================="
-          echo "Deployment Complete"
-          echo "==================================="
-          echo "Environment: ${{ needs.pre-deploy-checks.outputs.environment }}"
-          echo "Deployed at: $(date)"
-          echo "Commit: ${{ github.sha }}"
-          echo "Branch: ${{ github.ref }}"
-          echo "==================================="
-
-  # ============================================================================
-  # NOTIFICATION & MONITORING
-  # ============================================================================
-  notify-deployment:
-    name: Deployment Notification
-    runs-on: ubuntu-latest
-    needs: [deploy-backend, verify-deployment]
-    if: always()
-    
-    steps:
-      - name: Deployment success notification
-        if: needs.deploy-backend.result == 'success'
-        run: echo "✅ Deployment successful - API is live"
-
-      - name: Deployment failure notification
-        if: needs.deploy-backend.result == 'failure'
-        run: |
-          echo "❌ Deployment failed - Check logs for details"
-          exit 1
-
-      - name: Notify via Slack (Optional)
-        if: failure()
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          text: 'CryptoPulse deployment failed'
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-        continue-on-error: true
+      - name: Deploy Worker
+        env:
+          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: wrangler deploy

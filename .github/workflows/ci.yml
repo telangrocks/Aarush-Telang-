@@ -1,69 +1,70 @@
-# CI - Code Quality & Build Validation
-
-name: CI - Code Quality & Build Validation
+name: CI
 
 on:
   push:
-    branches: [main, develop, staging]
+    branches: [main]
   pull_request:
-    branches: [main, develop, staging]
+    branches: [main]
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  backend-checks:
-    name: Backend CI Checks
+  backend:
+    name: Backend checks
     runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-
-      - name: Cache npm packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('backend/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
 
       - name: Install dependencies
-        working-directory: ./backend
         run: npm ci
 
-      - name: Lint code
-        working-directory: ./backend
+      - name: Lint
         run: npm run lint
 
-      - name: Run backend tests
-        working-directory: ./backend
+      - name: Build
+        run: npm run build
+
+      - name: Test
         run: npm test -- --run
 
-  mobile-checks:
-    name: Android Mobile CI Checks
+  mobile:
+    name: Android build
     runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: mobile
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
-          java-version: "17"
-          distribution: "zulu"
-          cache: "gradle"
+          distribution: temurin
+          java-version: 17
+          cache: gradle
 
-      - name: Install Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build with Gradle
-        working-directory: ./mobile
+      - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
       - name: Upload Android build artifact
@@ -71,5 +72,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-build
-          path: ./mobile/app/build/outputs/**/*.apk
+          path: mobile/app/build/outputs/**/*.apk
           retention-days: 7
