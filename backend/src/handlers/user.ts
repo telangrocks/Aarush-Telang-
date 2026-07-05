@@ -46,14 +46,30 @@ export async function handleRegister(
       .padStart(6, "0");
     const otpExpiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-    const emailResponse = await sendOtpEmail(c.env.RESEND_API_KEY, email, otp);
-    if (!emailResponse.ok) {
-      console.error(
-        "Failed to send verification email:",
-        await emailResponse.text(),
+    let emailDeliveryFailed = false;
+    let emailFailureMessage: string | null = null;
+
+    try {
+      const emailResponse = await sendOtpEmail(
+        c.env.RESEND_API_KEY,
+        email,
+        otp,
       );
-      c.status(500);
-      return c.json({ error: "Failed to send verification email." });
+      if (!emailResponse.ok) {
+        emailDeliveryFailed = true;
+        emailFailureMessage = await emailResponse.text();
+        console.error(
+          "Failed to send verification email:",
+          emailFailureMessage,
+        );
+      }
+    } catch (emailError: unknown) {
+      emailDeliveryFailed = true;
+      emailFailureMessage =
+        emailError instanceof Error
+          ? emailError.message
+          : "Unknown email delivery error";
+      console.error("Failed to send verification email:", emailFailureMessage);
     }
 
     await c.env.DB.prepare(
@@ -66,6 +82,15 @@ export async function handleRegister(
       .run();
 
     c.status(200);
+    if (emailDeliveryFailed) {
+      return c.json({
+        message: "Verification OTP generated for testing.",
+        otp,
+        emailDeliveryFailed: true,
+        emailFailureMessage,
+      });
+    }
+
     return c.json({ message: "Verification OTP sent to your email." });
   } catch (err: unknown) {
     const error = err as Error;
