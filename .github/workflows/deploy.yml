@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  NODE_VERSION: '18.x'
+  NODE_VERSION: '22.x'
 
 jobs:
   # ============================================================================
@@ -62,8 +62,8 @@ jobs:
         working-directory: backend
         run: npm ci --prefer-offline --no-audit
 
-      - name: Install Wrangler CLI
-        run: npm install -g wrangler@latest
+      - name: Install specific Wrangler CLI version
+        run: npm install -g wrangler@3.63.1
 
       - name: Verify Wrangler installation
         run: wrangler --version
