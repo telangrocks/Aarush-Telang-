@@ -68,7 +68,11 @@ jobs:
         if: ${{ inputs.action == 'bootstrap' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-        run: wrangler d1 execute crypto_pulse_db --config wrangler.toml --remote --file scripts/bootstrap-prod-schema.sql
+        run: |
+          wrangler d1 execute crypto_pulse_db --config wrangler.toml --remote --command "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, is_verified INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, exchange_api_key TEXT, exchange_api_secret_iv TEXT, exchange_api_secret_encrypted TEXT, status TEXT NOT NULL DEFAULT 'PENDING_VERIFICATION', otp_secret TEXT, otp_expires_at INTEGER);"
+          wrangler d1 execute crypto_pulse_db --config wrangler.toml --remote --command "CREATE TABLE IF NOT EXISTS watchlist (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_id TEXT NOT NULL, added_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);"
+          wrangler d1 execute crypto_pulse_db --config wrangler.toml --remote --command "CREATE TABLE IF NOT EXISTS portfolio_transactions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_id TEXT NOT NULL, amount REAL NOT NULL, buy_price REAL NOT NULL, transaction_date TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);"
+          wrangler d1 execute crypto_pulse_db --config wrangler.toml --remote --command "CREATE TABLE IF NOT EXISTS price_alerts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_id TEXT NOT NULL, target_price REAL NOT NULL, condition TEXT NOT NULL CHECK(condition IN ('ABOVE', 'BELOW')), created_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, triggered_at TEXT);"
 
       - name: Inspect remote D1 schema
         if: ${{ inputs.action == 'inspect' || inputs.action == 'bootstrap' || inputs.action == 'apply' }}
