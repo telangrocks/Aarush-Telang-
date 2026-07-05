@@ -80,62 +80,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-# Repository Migration & Canonical Project Setup
-
-## Objective
-
-I want to transition this Android project so that the **GitHub repository becomes the canonical (single source of truth)**.
-
-From this point onward, all future development should be based on the repository. My local machine will only be used later to clone the repository, open it in Android Studio, build, debug, and test the application.
-
-## Tasks
-
-1. Perform a complete comparison between the local Android project and the repository workspace.
-2. Identify every required source file, resource, Gradle file, manifest, asset, workflow, configuration, and dependency needed for a complete Android Studio project.
-3. Copy or synchronize any missing project files from the local project into the repository workspace.
-4. Preserve the existing directory structure.
-5. Ensure that no required project files are omitted.
-6. Exclude all machine-specific or generated content, including:
-
-   * `local.properties`
-   * `.gradle/`
-   * `build/`
-   * IDE caches
-   * temporary files
-   * signing keystores
-   * secrets, tokens, credentials, or environment-specific files
-7. Update any project configuration necessary so the repository workspace is internally consistent.
-8. Validate that a fresh clone of this repository would contain everything required to open the project successfully in Android Studio after the normal machine-specific setup.
-
-## Final Audit
-
-Perform a complete verification and confirm:
-
-* All Android source code is present.
-* All resources are present.
-* All Gradle configuration files are present.
-* All manifests are present.
-* All required assets are present.
-* All GitHub workflows are present.
-* All required project configuration files are present.
-* There are no missing files required for a successful build.
-* The repository workspace is complete and ready to become the project's canonical source.
-
-## Important
-
-* **Do not perform any Git operations** (no commit, push, pull, merge, rebase, branch creation, or pull request).
-* Only prepare the repository workspace.
-* Leave all changes uncommitted.
-
-## Deliverables
-
-When finished, provide:
-
-1. A complete list of files that were migrated.
-2. A list of files intentionally excluded and the reason.
-3. Any remaining issues.
-4. Any recommendations before the first commit.
-5. A final confirmation stating whether the repository workspace is ready to become the canonical project and can later be cloned into Android Studio for building and testing.
         working-directory: ['backend']
     
     steps:

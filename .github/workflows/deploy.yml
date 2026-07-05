@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
 
 jobs:
   # ============================================================================
@@ -21,29 +21,21 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Verify secrets are configured
+      - name: Determine Environment and Verify Secrets
+        id: target # This ID is referenced by the job's outputs
         env:
           WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
         run: |
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
             echo "environment=production" >> $GITHUB_OUTPUT
-            echo "🟢 Deploying to PRODUCTION"
           else
             echo "environment=staging" >> $GITHUB_OUTPUT
-            echo "🟡 Deploying to STAGING"
           fi
           if [ -z "$WRANGLER_API_TOKEN" ]; then
             echo "❌ Error: WRANGLER_API_TOKEN secret is not configured."
             exit 1
           fi
           echo "✅ All required secrets are configured."
-
-      - name: Determine deployment target
-        id: target
-        run: |
-          # This step is now part of the previous step's script block
-          # to consolidate logic. It can be removed or kept for clarity.
 
   # ============================================================================
   # DEPLOY BACKEND TO CLOUDFLARE WORKERS
@@ -76,20 +68,21 @@ jobs:
       - name: Verify Wrangler installation
         run: wrangler --version
 
-      - name: Configure Wrangler authentication
-        env:
-          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-        run: echo "Using Wrangler API token"
-
       - name: Build backend project
         working-directory: backend
         run: npm run build
+
+      - name: Post-deployment smoke tests
+        working-directory: backend
+        run: |
+          echo "Running post-deployment health checks..."
+          npm run test:smoke
 
       - name: Deploy to Cloudflare Workers (Staging)
         if: github.ref == 'refs/heads/staging'
         working-directory: backend
         env:
-          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
           NODE_ENV: staging
         run: |
           {
@@ -103,7 +96,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         working-directory: backend
         env:
-          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
           NODE_ENV: production
         run: |
           {
@@ -112,12 +105,6 @@ jobs:
             echo "Deploying to production environment..."
             wrangler deploy --env production
           } 2>&1 | tee backend/deployment.log
-
-      - name: Post-deployment smoke tests
-        working-directory: backend
-        run: |
-          echo "Running post-deployment health checks..."
-          npm run test:smoke
 
       - name: Upload deployment logs
         if: always()
