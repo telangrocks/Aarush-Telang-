@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  NODE_VERSION: '22'
+  NODE_VERSION: '18.x'
 
 jobs:
   # ============================================================================
@@ -68,21 +68,20 @@ jobs:
       - name: Verify Wrangler installation
         run: wrangler --version
 
+      - name: Configure Wrangler authentication
+        env:
+          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: echo "Using Wrangler API token"
+
       - name: Build backend project
         working-directory: backend
         run: npm run build
-
-      - name: Post-deployment smoke tests
-        working-directory: backend
-        run: |
-          echo "Running post-deployment health checks..."
-          npm run test:smoke
 
       - name: Deploy to Cloudflare Workers (Staging)
         if: github.ref == 'refs/heads/staging'
         working-directory: backend
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
           NODE_ENV: staging
         run: |
           {
@@ -105,6 +104,12 @@ jobs:
             echo "Deploying to production environment..."
             wrangler deploy --env production
           } 2>&1 | tee backend/deployment.log
+
+      - name: Post-deployment smoke tests
+        working-directory: backend
+        run: |
+          echo "Running post-deployment health checks..."
+          npm run test:smoke
 
       - name: Upload deployment logs
         if: always()

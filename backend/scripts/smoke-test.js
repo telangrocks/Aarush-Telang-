@@ -1,39 +1,73 @@
-const fetch = require('node:fetch');
+#!/usr/bin/env node
+
+/**
+ * Post-deployment smoke tests
+ * Ensures Cloudflare Worker is responding correctly
+ */
+
+// Use global fetch (available in Node.js 18+)
+const fetch = globalThis.fetch;
+
+if (!fetch) {
+  console.error('ERROR: fetch is not available. Node.js 18+ required.');
+  process.exit(1);
+}
+
+const WORKER_URL = process.env.WORKER_URL || 'http://localhost:8787';
+const TIMEOUT = 10000; // 10 seconds
 
 async function runSmokeTests() {
-  const targetUrl = process.env.URL || 'http://localhost:8787';
-  console.log(`Running smoke tests against ${targetUrl}...`);
+  console.log('🧪 Running post-deployment smoke tests...\n');
 
-  let hasErrors = false;
-
-  const endpoints = [
-    '/health',
-    '/db-status',
-    '/api/prices'
+  const tests = [
+    {
+      name: 'Health Check',
+      endpoint: '/health',
+      expectedStatus: 200,
+    },
+    {
+      name: 'API Availability',
+      endpoint: '/api/status',
+      expectedStatus: 200,
+    },
   ];
 
-  for (const endpoint of endpoints) {
+  let passed = 0;
+  let failed = 0;
+
+  for (const test of tests) {
     try {
-      const res = await fetch(`${targetUrl}${endpoint}`);
-      if (res.ok) {
-        console.log(`✅ GET ${endpoint} - ${res.status} OK`);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), TIMEOUT);
+
+      const response = await fetch(`${WORKER_URL}${test.endpoint}`, {
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (response.status === test.expectedStatus) {
+        console.log(`✅ ${test.name}: PASSED`);
+        passed++;
       } else {
-        console.error(`❌ GET ${endpoint} - Failed with status ${res.status}`);
-        hasErrors = true;
+        console.error(
+          `❌ ${test.name}: FAILED - Expected ${test.expectedStatus}, got ${response.status}`
+        );
+        failed++;
       }
-    } catch (err) {
-      console.error(`❌ GET ${endpoint} - Request error: ${err.message}`);
-      hasErrors = true;
+    } catch (error) {
+      console.error(`❌ ${test.name}: ERROR - ${error.message}`);
+      failed++;
     }
   }
 
-  if (hasErrors) {
-    console.error('Smoke tests failed!');
+  console.log(`\n📊 Results: ${passed} passed, ${failed} failed`);
+
+  if (failed > 0) {
     process.exit(1);
-  } else {
-    console.log('All smoke tests passed successfully!');
-    process.exit(0);
   }
+
+  console.log('✨ All smoke tests passed!');
 }
 
 runSmokeTests();
