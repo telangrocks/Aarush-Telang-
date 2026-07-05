@@ -24,8 +24,15 @@ export async function handleGetMarketCandidates(
       "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false",
     );
     if (!response.ok) {
-      c.status(response.status);
-      return c.json({ error: "Failed to fetch market data from external API" });
+      return new Response(
+        JSON.stringify({
+          error: "Failed to fetch market data from external API",
+        }),
+        {
+          status: response.status,
+          headers: { "content-type": "application/json" },
+        },
+      );
     }
     const data = (await response.json()) as CoinGeckoMarket[];
 
