@@ -55,10 +55,15 @@ jobs:
       - name: Install Wrangler
         run: npm install -g wrangler@3.63.1
 
+      - name: List D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+        run: wrangler d1 migrations list crypto_pulse_db --config wrangler.toml --remote
+
       - name: Apply D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-        run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote --persist-to ./migrations
+        run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote
 
       - name: Deploy Worker
         env:
