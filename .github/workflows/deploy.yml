@@ -58,7 +58,7 @@ jobs:
       - name: Apply D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
-        run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote
+        run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote --persist-to ./migrations
 
       - name: Deploy Worker
         env:
