@@ -57,10 +57,10 @@ jobs:
 
       - name: Apply D1 migrations
         env:
-          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
         run: wrangler d1 migrations apply crypto_pulse_db
 
       - name: Deploy Worker
         env:
-          WRANGLER_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WRANGLER_API_TOKEN }}
         run: wrangler deploy
