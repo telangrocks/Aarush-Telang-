@@ -8,6 +8,7 @@ import {
   handleGetProfile,
   handleLogin,
   handleRegister,
+  handleResendOtp,
   handleVerifyOtp,
 } from "./handlers/user";
 
@@ -16,6 +17,8 @@ export interface Env {
   ENCRYPTION_KEY: string;
   JWT_SECRET: string;
   RESEND_API_KEY: string;
+  RESEND_FROM_EMAIL?: string;
+  AUTH_ALLOW_DEV_OTP_FALLBACK?: string;
   PRICE_CACHE: KVNamespace;
   TRADING_BOTS: DurableObjectNamespace;
 }
@@ -85,6 +88,7 @@ app.get("/db-status", async (c) => {
 // PUBLIC API ROUTES
 // ==========================================
 app.post("/api/register", handleRegister);
+app.post("/api/resend-otp", handleResendOtp);
 app.post("/api/verify-otp", handleVerifyOtp);
 app.post("/api/login", handleLogin);
 
@@ -187,8 +191,6 @@ api.post("/exchange/keys", async (c) => {
   return c.json({ success: true });
 });
 
-// This is the crucial fix for the 404 errors.
-// It registers the protected 'api' router with the main app.
 app.route("/api", api);
 
 // ==========================================
