@@ -18,22 +18,72 @@ class AuthViewModel @Inject constructor(
 
     var email by mutableStateOf("")
     var password by mutableStateOf("")
+    var confirmPassword by mutableStateOf("")
 
     var isLoading by mutableStateOf(false)
     var errorMessage by mutableStateOf<String?>(null)
     var isAuthenticated by mutableStateOf(false)
 
-    fun register() {
-        if (email.isBlank() || password.length < 8) {
-            errorMessage = "Please enter a valid email and a password of at least 8 characters."
-            return
+    var emailError by mutableStateOf<String?>(null)
+    var passwordError by mutableStateOf<String?>(null)
+    var confirmPasswordError by mutableStateOf<String?>(null)
+
+    fun clearErrors() {
+        emailError = null
+        passwordError = null
+        confirmPasswordError = null
+        errorMessage = null
+    }
+
+    fun validateRegistration(): Boolean {
+        clearErrors()
+        var isValid = true
+
+        val trimmedEmail = email.trim()
+        when {
+            trimmedEmail.isBlank() -> {
+                emailError = "Email is required."
+                isValid = false
+            }
+            !android.util.Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches() -> {
+                emailError = "Please enter a valid email address."
+                isValid = false
+            }
         }
+
+        when {
+            password.isBlank() -> {
+                passwordError = "Password is required."
+                isValid = false
+            }
+            password.length < 8 -> {
+                passwordError = "Password must be at least 8 characters."
+                isValid = false
+            }
+        }
+
+        when {
+            confirmPassword.isBlank() -> {
+                confirmPasswordError = "Please confirm your password."
+                isValid = false
+            }
+            password != confirmPassword -> {
+                confirmPasswordError = "Passwords do not match."
+                isValid = false
+            }
+        }
+
+        return isValid
+    }
+
+    fun register() {
+        if (!validateRegistration()) return
 
         viewModelScope.launch {
             isLoading = true
             errorMessage = null
 
-            when (val result = repository.register(email, password)) {
+            when (val result = repository.register(email.trim(), password)) {
                 is AuthResult.Success -> {
                     isAuthenticated = true
                 }
@@ -47,16 +97,29 @@ class AuthViewModel @Inject constructor(
     }
 
     fun login() {
-        if (email.isBlank() || password.isBlank()) {
-            errorMessage = "Please enter your email and password."
-            return
+        clearErrors()
+
+        val trimmedEmail = email.trim()
+        when {
+            trimmedEmail.isBlank() -> {
+                emailError = "Email is required."
+                return
+            }
+            !android.util.Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches() -> {
+                emailError = "Please enter a valid email address."
+                return
+            }
+            password.isBlank() -> {
+                passwordError = "Password is required."
+                return
+            }
         }
 
         viewModelScope.launch {
             isLoading = true
             errorMessage = null
 
-            when (val result = repository.login(email, password)) {
+            when (val result = repository.login(trimmedEmail, password)) {
                 is AuthResult.Success -> {
                     isAuthenticated = true
                 }

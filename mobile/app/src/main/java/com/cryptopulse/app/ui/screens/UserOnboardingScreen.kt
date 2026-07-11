@@ -1,50 +1,22 @@
-package com.cryptopulse.app.ui.auth
+package com.cryptopulse.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.PersonAdd
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Snackbar
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -52,29 +24,21 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.cryptopulse.app.ui.components.CryptoPulseTopBar
-import com.cryptopulse.app.ui.components.GlowCard
-import com.cryptopulse.app.ui.components.GradientButton
-import com.cryptopulse.app.ui.theme.CyanPrimary
-import com.cryptopulse.app.ui.theme.LossRed
-import com.cryptopulse.app.ui.theme.NavyBorder
-import com.cryptopulse.app.ui.theme.NavyCard
-import com.cryptopulse.app.ui.theme.NavyDark
-import com.cryptopulse.app.ui.theme.NavyDeep
-import com.cryptopulse.app.ui.theme.TextMuted
-import com.cryptopulse.app.ui.theme.TextPrimary
-import com.cryptopulse.app.ui.theme.TextSecondary
+import androidx.navigation.NavController
+import com.cryptopulse.app.ui.components.*
+import com.cryptopulse.app.ui.auth.*
+import com.cryptopulse.app.ui.theme.*
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AuthScreen(
-    viewModel: AuthViewModel,
-    onAuthSuccess: () -> Unit,
-) {
-    var isLoginMode by rememberSaveable { mutableStateOf(false) }
-
+fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel) {
     LaunchedEffect(viewModel.isAuthenticated) {
-        if (viewModel.isAuthenticated) onAuthSuccess()
+        if (viewModel.isAuthenticated) {
+            navController.navigate("home") {
+                popUpTo("welcome") { inclusive = true }
+            }
+        }
     }
 
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
@@ -112,19 +76,16 @@ fun AuthScreen(
             ) {
                 Spacer(Modifier.height(8.dp))
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        imageVector = if (isLoginMode) Icons.Default.Login else Icons.Default.PersonAdd,
+                        imageVector = Icons.Default.PersonAdd,
                         contentDescription = null,
                         tint = CyanPrimary,
                         modifier = Modifier.size(26.dp)
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = if (isLoginMode) "SIGN IN" else "CREATE ACCOUNT",
+                        text = "CREATE ACCOUNT",
                         color = CyanPrimary,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 22.sp,
@@ -132,49 +93,17 @@ fun AuthScreen(
                     )
                 }
 
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(16.dp))
 
                 Text(
-                    text = if (isLoginMode) {
-                        "Sign in with your email and password to access your trading dashboard."
-                    } else {
-                        "Create your account with email and password to start your trading journey."
-                    },
+                    text = "Start your trading journey with a secure CryptoPulse account.",
                     color = TextSecondary,
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
                     lineHeight = 20.sp,
                 )
 
-                Spacer(Modifier.height(20.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0x1400B4FF), RoundedCornerShape(12.dp))
-                        .padding(4.dp),
-                ) {
-                    AuthModeButton(
-                        text = "Create Account",
-                        selected = !isLoginMode,
-                        onClick = {
-                            isLoginMode = false
-                            viewModel.clearError()
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                    AuthModeButton(
-                        text = "Sign In",
-                        selected = isLoginMode,
-                        onClick = {
-                            isLoginMode = true
-                            viewModel.clearError()
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(24.dp))
 
                 GlowCard {
                     Column(modifier = Modifier.fillMaxWidth()) {
@@ -204,10 +133,20 @@ fun AuthScreen(
                             onValueChange = { viewModel.email = it },
                             placeholder = "Enter your email address",
                             keyboardType = KeyboardType.Email,
+                            isError = viewModel.emailError != null,
                             trailingIcon = {
                                 Icon(Icons.Default.Email, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                             }
                         )
+                        if (viewModel.emailError != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = viewModel.emailError!!,
+                                color = LossRed,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
 
                         Spacer(Modifier.height(14.dp))
 
@@ -216,17 +155,52 @@ fun AuthScreen(
                         DarkTextField(
                             value = viewModel.password,
                             onValueChange = { viewModel.password = it },
-                            placeholder = if (isLoginMode) "Enter your password" else "Min. 8 characters",
+                            placeholder = "Min. 8 characters",
                             keyboardType = KeyboardType.Password,
                             visualTransformation = PasswordVisualTransformation(),
+                            isError = viewModel.passwordError != null,
                             trailingIcon = {
                                 Icon(Icons.Default.Lock, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                             }
                         )
+                        if (viewModel.passwordError != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = viewModel.passwordError!!,
+                                color = LossRed,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
+
+                        Spacer(Modifier.height(14.dp))
+
+                        AuthFieldLabel("CONFIRM PASSWORD")
+                        Spacer(Modifier.height(4.dp))
+                        DarkTextField(
+                            value = viewModel.confirmPassword,
+                            onValueChange = { viewModel.confirmPassword = it },
+                            placeholder = "Re-enter your password",
+                            keyboardType = KeyboardType.Password,
+                            visualTransformation = PasswordVisualTransformation(),
+                            isError = viewModel.confirmPasswordError != null,
+                            trailingIcon = {
+                                Icon(Icons.Default.Lock, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                            }
+                        )
+                        if (viewModel.confirmPasswordError != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = viewModel.confirmPasswordError!!,
+                                color = LossRed,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
                     }
                 }
 
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(12.dp))
 
                 Row(
                     modifier = Modifier
@@ -239,35 +213,23 @@ fun AuthScreen(
                     Icon(Icons.Default.Info, null, tint = CyanPrimary, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = if (isLoginMode) {
-                            "Use the same email and password you created during signup."
-                        } else {
-                            "We are using simple email and password authentication for now so you can get into the app quickly."
-                        },
+                        text = "Your account will be created instantly. Optional email verification can be enabled later.",
                         color = TextSecondary,
                         fontSize = 11.sp,
                         lineHeight = 17.sp,
                     )
                 }
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
 
                 GradientButton(
                     text = when {
-                        viewModel.isLoading && isLoginMode -> "Signing in…"
                         viewModel.isLoading -> "Creating account…"
-                        isLoginMode -> "Sign In"
                         else -> "Create Account"
                     },
-                    onClick = {
-                        if (isLoginMode) {
-                            viewModel.login()
-                        } else {
-                            viewModel.register()
-                        }
-                    },
+                    onClick = { viewModel.register() },
                     enabled = !viewModel.isLoading,
-                    leadingIcon = if (isLoginMode) Icons.Default.Login else Icons.Default.Shield,
+                    leadingIcon = Icons.Default.Shield,
                     trailingIcon = Icons.Default.ArrowForward,
                 )
 
@@ -288,78 +250,14 @@ fun AuthScreen(
                     modifier = Modifier.padding(top = 2.dp)
                 )
 
+                Spacer(Modifier.height(20.dp))
+
+                TextButton(onClick = { navController.navigate("auth") }) {
+                    Text("Already have an account? Sign In", color = CyanPrimary)
+                }
+
                 Spacer(Modifier.height(16.dp))
             }
         }
     }
-}
-
-@Composable
-fun AuthModeButton(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    TextButton(
-        onClick = onClick,
-        modifier = modifier
-            .background(
-                if (selected) CyanPrimary.copy(alpha = 0.15f) else Color.Transparent,
-                RoundedCornerShape(10.dp),
-            )
-    ) {
-        Text(
-            text = text,
-            color = if (selected) CyanPrimary else TextSecondary,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-        )
-    }
-}
-
-@Composable
-fun AuthFieldLabel(text: String) {
-    Text(
-        text = text,
-        color = TextSecondary,
-        fontSize = 10.sp,
-        fontWeight = FontWeight.Medium,
-        letterSpacing = 0.8.sp,
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun DarkTextField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    placeholder: String,
-    keyboardType: KeyboardType = KeyboardType.Text,
-    visualTransformation: VisualTransformation = VisualTransformation.None,
-    isError: Boolean = false,
-    trailingIcon: @Composable (() -> Unit)? = null,
-) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        placeholder = { Text(placeholder, color = TextMuted, fontSize = 13.sp) },
-        trailingIcon = trailingIcon,
-        visualTransformation = visualTransformation,
-        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-        singleLine = true,
-        isError = isError,
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = if (isError) LossRed else CyanPrimary,
-            unfocusedBorderColor = if (isError) LossRed else NavyBorder,
-            cursorColor = if (isError) LossRed else CyanPrimary,
-            focusedTextColor = TextPrimary,
-            unfocusedTextColor = TextPrimary,
-            focusedContainerColor = NavyCard,
-            unfocusedContainerColor = NavyCard,
-            errorBorderColor = LossRed,
-            errorCursorColor = LossRed,
-        ),
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth(),
-    )
 }

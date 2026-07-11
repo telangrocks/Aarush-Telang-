@@ -21,6 +21,8 @@ import androidx.navigation.compose.rememberNavController
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.ui.auth.AuthScreen
 import com.cryptopulse.app.ui.auth.AuthViewModel
+import com.cryptopulse.app.ui.screens.UserOnboardingScreen
+import com.cryptopulse.app.ui.screens.WelcomeScreen
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -41,16 +43,26 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val navController = rememberNavController()
                     val token by tokenManager.tokenFlow.collectAsState(initial = null)
-                    val startDestination = if (token.isNullOrEmpty()) "auth" else "home"
+                    val startDestination = if (token.isNullOrEmpty()) "welcome" else "home"
 
                     NavHost(navController = navController, startDestination = startDestination) {
+                        composable("welcome") {
+                            WelcomeScreen(navController = navController)
+                        }
+                        composable("onboarding") {
+                            val viewModel = hiltViewModel<AuthViewModel>()
+                            UserOnboardingScreen(
+                                navController = navController,
+                                viewModel = viewModel
+                            )
+                        }
                         composable("auth") {
                             val viewModel = hiltViewModel<AuthViewModel>()
                             AuthScreen(
                                 viewModel = viewModel,
                                 onAuthSuccess = {
                                     navController.navigate("home") {
-                                        popUpTo("auth") { inclusive = true }
+                                        popUpTo("welcome") { inclusive = true }
                                     }
                                 }
                             )
