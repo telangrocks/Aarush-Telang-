@@ -1,5 +1,4 @@
 import { Env } from './index';
-import { decrypt } from './crypto'; // Corrected path
 
 export class TradingBot {
   state: DurableObjectState;
@@ -44,9 +43,6 @@ export class TradingBot {
         if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
           return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
         }
-
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted }, this.env.ENCRYPTION_KEY);
 
         // STEP 2: Initialize exchange library (e.g., ccxt).
         // const exchange = new ccxt.binance({ apiKey: userKeys.exchange_api_key, secret: decryptedSecret });
