@@ -7,10 +7,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cryptopulse.app.data.repository.AuthRepository
 import com.cryptopulse.app.domain.model.AuthResult
-import kotlinx.coroutines.launch
-
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.launch
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
@@ -19,11 +18,9 @@ class AuthViewModel @Inject constructor(
 
     var email by mutableStateOf("")
     var password by mutableStateOf("")
-    var otp by mutableStateOf("")
-    
+
     var isLoading by mutableStateOf(false)
     var errorMessage by mutableStateOf<String?>(null)
-    var isOtpSent by mutableStateOf(false)
     var isAuthenticated by mutableStateOf(false)
 
     fun register() {
@@ -35,10 +32,10 @@ class AuthViewModel @Inject constructor(
         viewModelScope.launch {
             isLoading = true
             errorMessage = null
-            
+
             when (val result = repository.register(email, password)) {
                 is AuthResult.Success -> {
-                    isOtpSent = true
+                    isAuthenticated = true
                 }
                 is AuthResult.Error -> {
                     errorMessage = result.message
@@ -49,9 +46,9 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    fun verifyOtp() {
-        if (otp.length != 6) {
-            errorMessage = "Please enter a valid 6-digit OTP."
+    fun login() {
+        if (email.isBlank() || password.isBlank()) {
+            errorMessage = "Please enter your email and password."
             return
         }
 
@@ -59,7 +56,7 @@ class AuthViewModel @Inject constructor(
             isLoading = true
             errorMessage = null
 
-            when (val result = repository.verifyOtp(email, otp)) {
+            when (val result = repository.login(email, password)) {
                 is AuthResult.Success -> {
                     isAuthenticated = true
                 }

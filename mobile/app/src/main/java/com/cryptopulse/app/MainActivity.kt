@@ -6,26 +6,23 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
-import com.cryptopulse.app.ui.theme.CryptoPulseTheme
-import dagger.hilt.android.AndroidEntryPoint
-
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.cryptopulse.app.ui.auth.AuthViewModel
-import com.cryptopulse.app.ui.auth.OtpScreen
-import com.cryptopulse.app.ui.auth.RegisterScreen
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.LaunchedEffect
 import com.cryptopulse.app.data.local.TokenManager
+import com.cryptopulse.app.ui.auth.AuthScreen
+import com.cryptopulse.app.ui.auth.AuthViewModel
+import com.cryptopulse.app.ui.theme.CryptoPulseTheme
+import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -44,32 +41,16 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val navController = rememberNavController()
                     val token by tokenManager.tokenFlow.collectAsState(initial = null)
-                    
-                    // Simple routing based on token presence
-                    val startDestination = if (token.isNullOrEmpty()) "register" else "home"
-                    
-                    // Need to give DataStore a moment to load, otherwise it might flash login
-                    // In a production app, use a Splash screen state to wait for tokenFlow
-                    
+                    val startDestination = if (token.isNullOrEmpty()) "auth" else "home"
+
                     NavHost(navController = navController, startDestination = startDestination) {
-                        composable("register") {
+                        composable("auth") {
                             val viewModel = hiltViewModel<AuthViewModel>()
-                            RegisterScreen(
-                                viewModel = viewModel,
-                                onNavigateToOtp = {
-                                    navController.navigate("otp") {
-                                        popUpTo("register") { inclusive = true }
-                                    }
-                                }
-                            )
-                        }
-                        composable("otp") {
-                            val viewModel = hiltViewModel<AuthViewModel>()
-                            OtpScreen(
+                            AuthScreen(
                                 viewModel = viewModel,
                                 onAuthSuccess = {
                                     navController.navigate("home") {
-                                        popUpTo("otp") { inclusive = true }
+                                        popUpTo("auth") { inclusive = true }
                                     }
                                 }
                             )
@@ -83,8 +64,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
-import androidx.compose.ui.unit.dp
 
 @Composable
 fun Greeting(name: String, modifier: Modifier = Modifier) {

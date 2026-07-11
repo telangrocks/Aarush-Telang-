@@ -3,6 +3,59 @@ import worker from "./index";
 import { Env } from "./index";
 import { sign } from "hono/jwt";
 
+function createStatementForQuery(query: string) {
+  if (query === "SELECT status FROM users WHERE email = ?") {
+    return {
+      bind: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
+    };
+  }
+
+  if (query.includes("INSERT INTO users")) {
+    return {
+      bind: vi.fn(() => ({
+        run: vi.fn().mockResolvedValue({ success: true }),
+      })),
+    };
+  }
+
+  if (query === "SELECT id, email FROM users WHERE email = ?") {
+    return {
+      bind: vi.fn(() => ({
+        first: vi.fn().mockResolvedValue({
+          id: "new-user-id",
+          email: "new@example.com",
+        }),
+      })),
+    };
+  }
+
+  if (
+    query ===
+    "SELECT id, email, password_hash, status FROM users WHERE email = ?"
+  ) {
+    return {
+      bind: vi.fn(() => ({
+        first: vi.fn().mockResolvedValue({
+          id: "existing-user-id",
+          email: "login@example.com",
+          password_hash: "invalid:test-hash",
+          status: "PENDING_VERIFICATION",
+        }),
+      })),
+    };
+  }
+
+  if (query.includes("UPDATE users SET status = 'ACTIVE'")) {
+    return {
+      bind: vi.fn(() => ({
+        run: vi.fn().mockResolvedValue({ success: true }),
+      })),
+    };
+  }
+
+  return null;
+}
+
 describe("App Endpoints", () => {
   it("GET /health returns status ok", async () => {
     const res = await worker.fetch(new Request("http://localhost/health"));
@@ -83,6 +136,57 @@ describe("App Endpoints", () => {
     const data = await res.json<{ status: string; message: string }>();
     expect(data.status).toBe("error");
     expect(data.message).toBe("Database connection failed");
+  });
+
+  it("POST /api/register creates an active account and returns a token", async () => {
+    const mockEnv = {
+      DB: {
+        prepare: vi.fn((query: string) => {
+          const statement = createStatementForQuery(query);
+          if (!statement) {
+            throw new Error(`Unexpected query: ${query}`);
+          }
+          return statement;
+        }),
+      } as unknown as D1Database,
+      ENCRYPTION_KEY: "test-encryption-key",
+      JWT_SECRET: "test-secret",
+      RESEND_API_KEY: "test-resend-key",
+      PRICE_CACHE: {} as KVNamespace,
+      TRADING_BOTS: {} as DurableObjectNamespace,
+    };
+
+    const res = await worker.fetch(
+      new Request("http://localhost/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "New@Example.com",
+          password: "TestPass123",
+        }),
+      }),
+      mockEnv as Env,
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json<{ message: string; token: string }>();
+    expect(data.message).toBe("Account created successfully.");
+    expect(data.token).toBeDefined();
+  });
+
+  it("POST /api/verify-otp returns disabled when OTP auth is not enabled", async () => {
+    const res = await worker.fetch(
+      new Request("http://localhost/api/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "user@example.com", otp: "123456" }),
+      }),
+      {} as Env,
+    );
+
+    expect(res.status).toBe(410);
+    const data = await res.json<{ error: string }>();
+    expect(data.error).toBe("OTP email verification is currently disabled.");
   });
 
   describe("Protected API Endpoints", () => {
