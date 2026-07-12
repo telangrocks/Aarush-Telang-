@@ -3,6 +3,15 @@ import worker from "./index";
 import { Env } from "./index";
 import { sign } from "hono/jwt";
 
+vi.mock("./exchanges", () => ({
+  getExchangeAdapter: () => ({
+    validateCredentials: vi.fn().mockResolvedValue({ success: true, message: "OK" }),
+    fetchMarketData: vi.fn().mockResolvedValue([]),
+  }),
+  ExchangeName: "binance",
+  SUPPORTED_EXCHANGES: [],
+}));
+
 function createStatementForQuery(query: string) {
   if (query === "SELECT status FROM users WHERE email = ?") {
     return {
@@ -46,6 +55,14 @@ function createStatementForQuery(query: string) {
   }
 
   if (query.includes("UPDATE users SET status = 'ACTIVE'")) {
+    return {
+      bind: vi.fn(() => ({
+        run: vi.fn().mockResolvedValue({ success: true }),
+      })),
+    };
+  }
+
+  if (query.includes("UPDATE users SET exchange_name")) {
     return {
       bind: vi.fn(() => ({
         run: vi.fn().mockResolvedValue({ success: true }),
@@ -310,9 +327,9 @@ describe("App Endpoints", () => {
       );
     });
 
-    it("POST /api/exchange/keys should store encrypted keys", async () => {
-      const body = { apiKey: "test-api-key", apiSecret: "test-api-secret" };
-      const req = new Request("http://localhost/api/exchange/keys", {
+    it("POST /api/exchange/connect should store encrypted keys", async () => {
+      const body = { exchangeName: "binance", apiKey: "test-api-key", apiSecret: "test-api-secret" };
+      const req = new Request("http://localhost/api/exchange/connect", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -326,9 +343,10 @@ describe("App Endpoints", () => {
       const data = await res.json<{ success: boolean }>();
       expect(data.success).toBe(true);
       expect(mockEnv.DB?.prepare).toHaveBeenCalledWith(
-        "UPDATE users SET exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?",
+        "UPDATE users SET exchange_name = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?",
       );
       expect(mockEnv.DB?.prepare("stmt").bind).toHaveBeenCalledWith(
+        "binance",
         "test-api-key",
         expect.any(String),
         expect.any(String),
