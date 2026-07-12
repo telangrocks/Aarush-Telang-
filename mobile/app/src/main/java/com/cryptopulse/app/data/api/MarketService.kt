@@ -1,5 +1,6 @@
 package com.cryptopulse.app.data.api
 
+import com.google.gson.annotations.SerializedName
 import retrofit2.Response
 import retrofit2.http.GET
 import retrofit2.http.Headers
@@ -7,7 +8,7 @@ import retrofit2.http.Headers
 data class MarketCandidateDto(
     val rank: Int,
     val symbol: String,
-    val currentMarketPrice: Double,
+    @SerializedName("price") val currentMarketPrice: Double,
     val volume24h: Double,
     val priceChangePercent24h: Double,
     val score: Int,

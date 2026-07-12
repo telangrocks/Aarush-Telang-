@@ -23,6 +23,7 @@ import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.ui.auth.AuthScreen
 import com.cryptopulse.app.ui.auth.AuthViewModel
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
+import com.cryptopulse.app.ui.screens.SplashScreen
 import com.cryptopulse.app.ui.screens.ConnectExchangeScreen
 import com.cryptopulse.app.ui.screens.MarketCandidatesScreen
 import com.cryptopulse.app.ui.screens.TradeConfirmationScreen
@@ -50,9 +51,12 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val navController = rememberNavController()
                     val token by tokenManager.tokenFlow.collectAsState(initial = null)
-                    val startDestination = if (token.isNullOrEmpty()) "welcome" else "connect_exchange"
+                    val startDestination = "splash"
 
                     NavHost(navController = navController, startDestination = startDestination) {
+                        composable("splash") {
+                            SplashScreen(navController = navController, tokenManager = tokenManager)
+                        }
                         composable("welcome") {
                             WelcomeScreen(navController = navController)
                         }

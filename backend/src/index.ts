@@ -106,6 +106,7 @@ api.use("*", (c, next) => {
   const jwtMiddleware = jwt({
     secret: c.env.JWT_SECRET,
     cookie: "auth_token",
+    header: "Authorization",
     alg: "HS256",
   });
   return jwtMiddleware(c, next);

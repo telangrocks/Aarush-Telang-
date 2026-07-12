@@ -17,6 +17,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.ui.components.CryptoPulseLogoIcon
 import com.cryptopulse.app.ui.theme.*
 import kotlinx.coroutines.delay
@@ -30,7 +31,7 @@ import kotlinx.coroutines.delay
  *  – Full fade-in over 1.8 s, auto-navigates after 3.5 s
  */
 @Composable
-fun SplashScreen(navController: NavController) {
+fun SplashScreen(navController: NavController, tokenManager: TokenManager) {
 
     // ── Animation state ───────────────────────────────────────────────────
     var visible by remember { mutableStateOf(false) }
@@ -56,8 +57,11 @@ fun SplashScreen(navController: NavController) {
     LaunchedEffect(Unit) {
         visible = true
         delay(3500)
-        navController.popBackStack()
-        navController.navigate("register")
+        val token = tokenManager.getToken()
+        val destination = if (token.isNullOrEmpty()) "welcome" else "connect_exchange"
+        navController.navigate(destination) {
+            popUpTo("splash") { inclusive = true }
+        }
     }
 
     // ── Background ────────────────────────────────────────────────────────
