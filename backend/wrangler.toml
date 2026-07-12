@@ -9,4 +9,8 @@ database_name = "crypto_pulse_db"
 database_id = "15f49e2f-08bf-4dc5-8ec5-0860429fc0c4"
 
 [durable_objects]
-bindings = [{ binding = "TRADING_BOTS", class_name = "TradingBot" }]
+bindings = [{ name = "TRADING_BOTS", class_name = "TradingBot" }]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["TradingBot"]
