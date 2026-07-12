@@ -3,7 +3,6 @@ import { cors } from "hono/cors";
 import { jwt } from "hono/jwt";
 import { secureHeaders } from "hono/secure-headers";
 import { HTTPException } from "hono/http-exception";
-import { encrypt } from "./crypto";
 import {
   handleGetProfile,
   handleLogin,

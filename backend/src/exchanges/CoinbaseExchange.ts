@@ -74,7 +74,7 @@ export class CoinbaseExchange implements IExchangeAdapter {
       const pairs = ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "DOGE-USD", "ADA-USD", "AVAX-USD", "DOT-USD", "LINK-USD", "MATIC-USD", "NEAR-USD"];
       const results: MarketTicker[] = [];
 
-      let minNotionalMap = new Map<string, number>();
+      const minNotionalMap = new Map<string, number>();
       try {
         const productsResponse = await fetch(`${this.config.restUrl}/api/v3/brokerage/products`);
         if (productsResponse.ok) {

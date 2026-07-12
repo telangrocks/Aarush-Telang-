@@ -1,8 +1,7 @@
 import { Context } from "hono";
 import { Env } from "../index";
-import { encrypt, decrypt } from "../crypto";
 import { getExchangeAdapter, ExchangeName } from "../exchanges";
-import { analyzeMarket, AnalysisCandidate } from "../market-analysis";
+import { analyzeMarket } from "../market-analysis";
 
 export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
@@ -93,11 +92,6 @@ export async function handleGetPersonalizedMarketCandidates(
       c.status(400);
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
-
-    const decryptedSecret = await decrypt(
-      { iv: user.exchange_api_secret_iv!, encrypted: user.exchange_api_secret_encrypted! },
-      c.env.ENCRYPTION_KEY,
-    );
 
     const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
     const tickers = await adapter.fetchMarketData();
