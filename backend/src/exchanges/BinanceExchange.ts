@@ -58,12 +58,28 @@ export class BinanceExchange implements IExchangeAdapter {
 
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
-      const response = await fetch(`${this.config.restUrl}/api/v3/ticker/24hr`);
-      if (!response.ok) {
+      const [tickersResponse, exchangeInfoResponse] = await Promise.all([
+        fetch(`${this.config.restUrl}/api/v3/ticker/24hr`),
+        fetch(`${this.config.restUrl}/api/v3/exchangeInfo`),
+      ]);
+
+      if (!tickersResponse.ok || !exchangeInfoResponse.ok) {
         return [];
       }
-      const data = await response.json() as any;
-      return data
+
+      const tickers = await tickersResponse.json() as any[];
+      const exchangeInfo = await exchangeInfoResponse.json() as any;
+
+      const minNotionalMap = new Map<string, number>();
+      for (const symbol of exchangeInfo.symbols ?? []) {
+        const filters = symbol.filters ?? [];
+        const notionalFilter = filters.find((f: any) => f.filterType === "NOTIONAL");
+        if (notionalFilter && symbol.status === "TRADING") {
+          minNotionalMap.set(symbol.symbol, parseFloat(notionalFilter.minNotional || "0"));
+        }
+      }
+
+      return tickers
         .filter((item: any) => item.symbol.endsWith("USDT") || item.symbol.endsWith("BUSD"))
         .slice(0, 50)
         .map((item: any) => ({
@@ -74,6 +90,7 @@ export class BinanceExchange implements IExchangeAdapter {
           priceChangePercent24h: parseFloat(item.priceChangePercent),
           highPrice24h: parseFloat(item.highPrice),
           lowPrice24h: parseFloat(item.lowPrice),
+          minNotional: minNotionalMap.get(item.symbol) || 0,
         }));
     } catch {
       return [];

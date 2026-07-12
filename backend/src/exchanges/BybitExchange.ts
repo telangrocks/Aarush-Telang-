@@ -61,15 +61,34 @@ export class BybitExchange implements IExchangeAdapter {
 
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
-      const response = await fetch(`${this.config.restUrl}/v5/market/tickers?category=spot`);
-      if (!response.ok) {
+      const [tickersResponse, instrumentsResponse] = await Promise.all([
+        fetch(`${this.config.restUrl}/v5/market/tickers?category=spot`),
+        fetch(`${this.config.restUrl}/v5/market/instruments-info?category=spot`),
+      ]);
+
+      if (!tickersResponse.ok || !instrumentsResponse.ok) {
         return [];
       }
-      const data = await response.json() as any;
-      if (data.retCode !== 0 || !Array.isArray(data.result?.list)) {
+
+      const tickersData = await tickersResponse.json() as any;
+      const instrumentsData = await instrumentsResponse.json() as any;
+
+      if (tickersData.retCode !== 0 || !Array.isArray(tickersData.result?.list)) {
         return [];
       }
-      return data.result.list
+
+      const minNotionalMap = new Map<string, number>();
+      for (const instrument of instrumentsData.result?.list ?? []) {
+        const symbol = instrument.symbol;
+        const lotSize = instrument.lotSizeFilter ?? {};
+        const minOrderQty = parseFloat(lotSize.minOrderQty ?? "0");
+        const minOrderAmt = parseFloat(lotSize.minOrderAmt ?? "0");
+        if (symbol && (minOrderAmt > 0 || minOrderQty > 0)) {
+          minNotionalMap.set(symbol, minOrderAmt || minOrderQty);
+        }
+      }
+
+      return tickersData.result.list
         .filter((item: any) => item.symbol.endsWith("USDT"))
         .slice(0, 50)
         .map((item: any) => ({
@@ -80,6 +99,7 @@ export class BybitExchange implements IExchangeAdapter {
           priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
           highPrice24h: parseFloat(item.highPrice24h || 0),
           lowPrice24h: parseFloat(item.lowPrice24h || 0),
+          minNotional: minNotionalMap.get(item.symbol) || 0,
         }));
     } catch {
       return [];

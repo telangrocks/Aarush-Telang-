@@ -70,15 +70,33 @@ export class KrakenExchange implements IExchangeAdapter {
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
       const pairs = "XBTUSD,ETHUSD,SOLUSD,BNBUSD,XRPUSD,DOGEUSD,ADAUSD,AVAXUSD,DOTUSD,LINKUSD,MATICUSD,NEARUSD";
-      const response = await fetch(`${this.config.restUrl}/0/public/Ticker?pair=${pairs}`);
-      if (!response.ok) {
+      const [tickersResponse, assetPairsResponse] = await Promise.all([
+        fetch(`${this.config.restUrl}/0/public/Ticker?pair=${pairs}`),
+        fetch(`${this.config.restUrl}/0/public/AssetPairs?pair=${pairs}`),
+      ]);
+
+      if (!tickersResponse.ok || !assetPairsResponse.ok) {
         return [];
       }
-      const data = await response.json() as any;
-      if (data.error && data.error.length > 0) {
+
+      const tickersData = await tickersResponse.json() as any;
+      const assetPairsData = await assetPairsResponse.json() as any;
+
+      if (tickersData.error && tickersData.error.length > 0) {
         return [];
       }
-      const result = data.result || {};
+
+      const minNotionalMap = new Map<string, number>();
+      for (const [key, item] of Object.entries(assetPairsData.result ?? {})) {
+        const pair = item as any;
+        const ordermin = parseFloat(pair.ordermin ?? "0");
+        const symbol = pair.wsname?.split("/")[0] || key.replace("USD", "");
+        if (symbol && ordermin > 0) {
+          minNotionalMap.set(symbol, ordermin);
+        }
+      }
+
+      const result = tickersData.result || {};
       return Object.values(result).map((item: any) => {
         const symbol = item.wsname?.split("/")[0] || Object.keys(result)[0];
         return {
@@ -89,6 +107,7 @@ export class KrakenExchange implements IExchangeAdapter {
           priceChangePercent24h: 0,
           highPrice24h: parseFloat(item.h?.[1] || 0),
           lowPrice24h: parseFloat(item.l?.[1] || 0),
+          minNotional: minNotionalMap.get(symbol) || 0,
         };
       });
     } catch {

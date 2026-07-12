@@ -36,6 +36,7 @@ data class MarketCandidate(
     val coinName: String,
     val notations: Int,
     val currentMarketPrice: Double,
+    val minNotional: Double,
     val coinColor: Color,
 )
 
@@ -235,9 +236,15 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                 fontSize = 14.sp,
             )
             Text(
-                text = candidate.coinName,
+                text = "Price: $${String.format("%.2f", candidate.currentMarketPrice)}",
                 color = TextSecondary,
                 fontSize = 11.sp,
+            )
+            Text(
+                text = "Min Notional: $${String.format("%.2f", candidate.minNotional)}",
+                color = CyanPrimary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
             )
         }
 
@@ -341,6 +348,7 @@ fun List<MarketCandidateDto>.toScreenCandidates(): List<MarketCandidate> {
             coinName = symbol,
             notations = dto.score,
             currentMarketPrice = dto.currentMarketPrice,
+            minNotional = dto.minNotional,
             coinColor = coinColors[symbol] ?: Color(0xFF00B4FF),
         )
     }

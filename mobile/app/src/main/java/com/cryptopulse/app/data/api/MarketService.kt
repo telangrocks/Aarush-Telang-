@@ -11,6 +11,7 @@ data class MarketCandidateDto(
     val volume24h: Double,
     val priceChangePercent24h: Double,
     val score: Int,
+    val minNotional: Double,
 )
 
 interface MarketService {

@@ -14,6 +14,7 @@ export interface MarketTicker {
   priceChangePercent24h: number;
   highPrice24h: number;
   lowPrice24h: number;
+  minNotional: number;
 }
 
 export interface ValidationResult {

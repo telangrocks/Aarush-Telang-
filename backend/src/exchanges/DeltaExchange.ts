@@ -58,16 +58,33 @@ export class DeltaExchange implements IExchangeAdapter {
 
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
-      const response = await fetch(`${this.config.restUrl}/v2/tickers`);
-      if (!response.ok) {
+      const [tickersResponse, productsResponse] = await Promise.all([
+        fetch(`${this.config.restUrl}/v2/tickers`),
+        fetch(`${this.config.restUrl}/v2/products`),
+      ]);
+
+      if (!tickersResponse.ok || !productsResponse.ok) {
         return [];
       }
-      const data = await response.json() as any;
-      if (!data.success || !Array.isArray(data.result)) {
+
+      const tickersData = await tickersResponse.json() as any;
+      const productsData = await productsResponse.json() as any;
+
+      if (!tickersData.success || !Array.isArray(tickersData.result)) {
         return [];
       }
-      return data.result
-        .filter((item: any) => item.symbol && item.symbol.includes("USDT") || item.symbol && item.symbol.includes("USDC"))
+
+      const minNotionalMap = new Map<string, number>();
+      for (const product of productsData.result ?? []) {
+        const symbol = product.symbol;
+        const minNotional = parseFloat(product.min_notional ?? product.min_notional_value ?? "0");
+        if (symbol) {
+          minNotionalMap.set(symbol, minNotional);
+        }
+      }
+
+      return tickersData.result
+        .filter((item: any) => item.symbol && (item.symbol.includes("USDT") || item.symbol.includes("USDC")))
         .slice(0, 50)
         .map((item: any) => ({
           symbol: item.symbol.replace(/USDT$|USDC$/, ""),
@@ -77,6 +94,7 @@ export class DeltaExchange implements IExchangeAdapter {
           priceChangePercent24h: parseFloat(item.price_change_percent || 0),
           highPrice24h: parseFloat(item.high_24h || item.high || 0),
           lowPrice24h: parseFloat(item.low_24h || item.low || 0),
+          minNotional: minNotionalMap.get(item.symbol) || 0,
         }));
     } catch {
       return [];

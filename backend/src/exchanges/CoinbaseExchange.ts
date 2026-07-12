@@ -74,6 +74,26 @@ export class CoinbaseExchange implements IExchangeAdapter {
       const pairs = ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "DOGE-USD", "ADA-USD", "AVAX-USD", "DOT-USD", "LINK-USD", "MATIC-USD", "NEAR-USD"];
       const results: MarketTicker[] = [];
 
+      let minNotionalMap = new Map<string, number>();
+      try {
+        const productsResponse = await fetch(`${this.config.restUrl}/api/v3/brokerage/products`);
+        if (productsResponse.ok) {
+          const productsData = await productsResponse.json() as any;
+          for (const product of productsData.products ?? []) {
+            const symbol = product.product_id?.replace("-USD", "") || product.base_name;
+            const minQuoteSize = parseFloat(product.min_quote_size ?? "0");
+            const minBaseSize = parseFloat(product.min_base_size ?? "0");
+            if (symbol && minQuoteSize > 0) {
+              minNotionalMap.set(symbol, minQuoteSize);
+            } else if (symbol && minBaseSize > 0) {
+              minNotionalMap.set(symbol, minBaseSize);
+            }
+          }
+        }
+      } catch {
+        // Continue with empty map if products fetch fails
+      }
+
       for (const pair of pairs) {
         try {
           const response = await fetch(`${this.config.restUrl}/v2/prices/${pair}/spot`);
@@ -81,14 +101,16 @@ export class CoinbaseExchange implements IExchangeAdapter {
           const data = await response.json() as any;
           const price = parseFloat(data.data.amount);
           if (price > 0) {
+            const symbol = pair.split("-")[0];
             results.push({
-              symbol: pair.split("-")[0],
+              symbol,
               price,
               volume24h: 0,
               priceChange24h: 0,
               priceChangePercent24h: 0,
               highPrice24h: price * 1.02,
               lowPrice24h: price * 0.98,
+              minNotional: minNotionalMap.get(symbol) || 0,
             });
           }
         } catch {
