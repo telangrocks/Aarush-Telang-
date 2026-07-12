@@ -254,3 +254,5 @@ app.notFound((c) => {
     message: `Endpoint '${c.req.path}' not found.`,
   });
 });
+
+export { TradingBot } from "./trading-bot";
