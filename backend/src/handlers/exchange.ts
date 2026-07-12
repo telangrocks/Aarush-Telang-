@@ -1,5 +1,6 @@
 import { Context } from "hono";
 import { Env } from "../index";
+import { encrypt } from "../crypto";
 import { getExchangeAdapter, ExchangeName } from "../exchanges";
 import { analyzeMarket } from "../market-analysis";
 
