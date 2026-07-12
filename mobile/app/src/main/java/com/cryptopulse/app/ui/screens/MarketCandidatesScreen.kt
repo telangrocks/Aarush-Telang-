@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -21,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.cryptopulse.app.data.api.MarketCandidateDto
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.theme.*
 import java.text.SimpleDateFormat
@@ -29,26 +31,12 @@ import java.util.*
 // ─── Data model for the screen ────────────────────────────────────────────────
 data class MarketCandidate(
     val rank: Int,
-    val symbol: String,          // e.g. "SOL"
-    val pairName: String,        // e.g. "SOL/USDT"
-    val coinName: String,        // e.g. "Solana"
-    val notations: Int,          // e.g. 95
+    val symbol: String,
+    val pairName: String,
+    val coinName: String,
+    val notations: Int,
     val currentMarketPrice: Double,
-    val coinColor: Color,        // brand colour for the coin avatar
-)
-
-// Sample data — replace with real API data when the MarketViewModel is wired
-private val sampleCandidates = listOf(
-    MarketCandidate(1,  "SOL",  "SOL/USDT",  "Solana",        95,  172.45, Color(0xFF9945FF)),
-    MarketCandidate(2,  "AVAX", "AVAX/USDT", "Avalanche",     92,   36.20, Color(0xFFE84142)),
-    MarketCandidate(3,  "MATIC","MATIC/USDT","Polygon",        88,    0.91, Color(0xFF8247E5)),
-    MarketCandidate(4,  "LINK", "LINK/USDT", "Chainlink",     85,   14.30, Color(0xFF375BD2)),
-    MarketCandidate(5,  "ATOM", "ATOM/USDT", "Cosmos",        82,    9.15, Color(0xFF6F7390)),
-    MarketCandidate(6,  "BNB",  "BNB/USDT",  "Binance Coin",  80,  597.80, Color(0xFFF3BA2F)),
-    MarketCandidate(7,  "NEAR", "NEAR/USDT", "NEAR Protocol", 78,    6.10, Color(0xFF00C1DE)),
-    MarketCandidate(8,  "ARB",  "ARB/USDT",  "Arbitrum",      75,    1.08, Color(0xFF12AAFF)),
-    MarketCandidate(9,  "IMX",  "IMX/USDT",  "Immutable X",   72,    2.45, Color(0xFF17B5CB)),
-    MarketCandidate(10, "RNDR", "RNDR/USDT", "Render Token",  70,    7.90, Color(0xFFE95F2B)),
+    val coinColor: Color,
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,10 +46,12 @@ private val sampleCandidates = listOf(
 fun MarketCandidatesScreen(
     onCandidateClick: (MarketCandidate) -> Unit,
     onBack: (() -> Unit)? = null,
+    viewModel: com.cryptopulse.app.ui.auth.ExchangeViewModel = hiltViewModel(),
 ) {
+    val candidates by viewModel.candidates.collectAsState(initial = emptyList())
+    val mappedCandidates = remember(candidates) { candidates.toScreenCandidates() }
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
-    // Live clock for "Updated At" row
     var currentTime by remember { mutableStateOf(getCurrentTime()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -73,12 +63,28 @@ fun MarketCandidatesScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(bgGradient)
+            .background(bgGradient),
     ) {
         Scaffold(
             topBar = { CryptoPulseTopBar(onBack = onBack) },
             containerColor = Color.Transparent,
         ) { padding ->
+
+            if (mappedCandidates.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = CyanPrimary)
+                        Spacer(Modifier.height(16.dp))
+                        Text("Analyzing market data...", color = TextSecondary, fontSize = 14.sp)
+                    }
+                }
+                return@Scaffold
+            }
 
             LazyColumn(
                 modifier = Modifier
@@ -88,7 +94,6 @@ fun MarketCandidatesScreen(
                 verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
 
-                // ── Section heading ───────────────────────────────────────
                 item {
                     Spacer(Modifier.height(12.dp))
                     Row(
@@ -96,7 +101,6 @@ fun MarketCandidatesScreen(
                         horizontalArrangement = Arrangement.Center,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        // Purple alien badge icon (reference uses a stylized purple orb)
                         Box(
                             modifier = Modifier
                                 .size(32.dp)
@@ -126,7 +130,6 @@ fun MarketCandidatesScreen(
                     Spacer(Modifier.height(14.dp))
                 }
 
-                // ── Metadata bar ──────────────────────────────────────────
                 item {
                     Row(
                         modifier = Modifier
@@ -145,7 +148,6 @@ fun MarketCandidatesScreen(
                     Spacer(Modifier.height(14.dp))
                 }
 
-                // ── Table header ──────────────────────────────────────────
                 item {
                     Row(
                         modifier = Modifier
@@ -160,13 +162,14 @@ fun MarketCandidatesScreen(
                     Divider(color = NavyBorder, thickness = 1.dp, modifier = Modifier.padding(vertical = 4.dp))
                 }
 
-                // ── Candidate rows ────────────────────────────────────────
-                itemsIndexed(sampleCandidates) { _, candidate ->
-                    CandidateRow(candidate = candidate, onClick = { onCandidateClick(candidate) })
+                itemsIndexed(mappedCandidates) { _, candidate ->
+                    CandidateRow(candidate = candidate, onClick = {
+                        viewModel.selectCandidate(candidate)
+                        onCandidateClick(candidate)
+                    })
                     Divider(color = NavyBorder.copy(alpha = 0.5f), thickness = 0.5.dp)
                 }
 
-                // ── Footer disclaimer ─────────────────────────────────────
                 item {
                     Spacer(Modifier.height(12.dp))
                     Row(
@@ -203,12 +206,10 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
             .padding(vertical = 12.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Rank badge
         RankBadge(rank = candidate.rank)
 
         Spacer(Modifier.width(10.dp))
 
-        // Coin avatar circle
         Box(
             modifier = Modifier
                 .size(38.dp)
@@ -226,7 +227,6 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
 
         Spacer(Modifier.width(10.dp))
 
-        // Name + pair
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = candidate.pairName,
@@ -241,7 +241,6 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
             )
         }
 
-        // Notations badge
         Box(
             modifier = Modifier
                 .border(1.dp, ProfitGreen, RoundedCornerShape(6.dp))
@@ -263,7 +262,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
 private fun RankBadge(rank: Int) {
     val (bg, text) = when (rank) {
         1 -> Color(0xFFF59E0B) to Color(0xFF1A0F00)
-        2 -> Color(0xFF94A3B8) to Color(0xFF0A0F1A)
+        2 -> Color(0xFF94A8B8) to Color(0xFF0A0F1A)
         3 -> Color(0xFFCD7F32) to Color(0xFF1A0A00)
         else -> NavyMid to TextSecondary
     }
@@ -311,3 +310,38 @@ private fun getCurrentTime(): String =
 
 private fun getCurrentDate(): String =
     SimpleDateFormat("d MMM yyyy", Locale.getDefault()).format(Date())
+
+// ─── Mapper from DTO to screen model ──────────────────────────────────────────
+fun List<MarketCandidateDto>.toScreenCandidates(): List<MarketCandidate> {
+    val coinColors = mapOf(
+        "BTC" to Color(0xFFF7931A),
+        "ETH" to Color(0xFF627EEA),
+        "BNB" to Color(0xFFF3BA2F),
+        "SOL" to Color(0xFF9945FF),
+        "XRP" to Color(0xFF00AAE4),
+        "USDT" to Color(0xFF26A17B),
+        "USDC" to Color(0xFF2775CA),
+        "DOGE" to Color(0xFFC2A633),
+        "ADA" to Color(0xFF0033AD),
+        "AVAX" to Color(0xFFE84142),
+        "DOT" to Color(0xFFE6007A),
+        "LINK" to Color(0xFF375BD2),
+        "MATIC" to Color(0xFF8247E5),
+        "NEAR" to Color(0xFF00C1DE),
+        "ARB" to Color(0xFF12AAFF),
+        "IMX" to Color(0xFF17B5CB),
+        "RNDR" to Color(0xFFE95F2B),
+    )
+    return this.map { dto ->
+        val symbol = dto.symbol.uppercase(Locale.getDefault())
+        MarketCandidate(
+            rank = dto.rank,
+            symbol = symbol,
+            pairName = "$symbol/USDT",
+            coinName = symbol,
+            notations = dto.score,
+            currentMarketPrice = dto.currentMarketPrice,
+            coinColor = coinColors[symbol] ?: Color(0xFF00B4FF),
+        )
+    }
+}

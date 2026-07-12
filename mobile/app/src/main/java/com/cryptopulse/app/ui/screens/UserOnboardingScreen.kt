@@ -35,7 +35,7 @@ import kotlinx.coroutines.delay
 fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel) {
     LaunchedEffect(viewModel.isAuthenticated) {
         if (viewModel.isAuthenticated) {
-            navController.navigate("home") {
+            navController.navigate("connect_exchange") {
                 popUpTo("welcome") { inclusive = true }
             }
         }

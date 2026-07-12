@@ -11,6 +11,11 @@ import {
   handleResendOtp,
   handleVerifyOtp,
 } from "./handlers/user";
+import {
+  handleValidateExchange,
+  handleConnectExchange,
+  handleGetPersonalizedMarketCandidates,
+} from "./handlers/exchange";
 
 export interface Env {
   DB: D1Database;
@@ -173,23 +178,11 @@ api.post("/alerts", async (c) => {
   return c.json({ success: true, token_id });
 });
 
-api.post("/exchange/keys", async (c) => {
-  const payload = c.get("jwtPayload") as { sub: string };
-  const userId = payload.sub;
-  const { apiKey, apiSecret } = await c.req.json<{
-    apiKey: string;
-    apiSecret: string;
-  }>();
-  const encryptedSecret = await encrypt(apiSecret, c.env.ENCRYPTION_KEY);
+api.post("/exchange/validate", handleValidateExchange);
 
-  await c.env.DB.prepare(
-    "UPDATE users SET exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?",
-  )
-    .bind(apiKey, encryptedSecret.iv, encryptedSecret.encrypted, userId)
-    .run();
+api.post("/exchange/connect", handleConnectExchange);
 
-  return c.json({ success: true });
-});
+api.get("/market/candidates", handleGetPersonalizedMarketCandidates);
 
 app.route("/api", api);
 

@@ -1,0 +1,85 @@
+import { IExchangeAdapter, ValidationResult, MarketTicker } from "./BaseExchange";
+import { ExchangeConfig } from "./types";
+
+async function hmacSha256(message: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(message));
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export class DeltaExchange implements IExchangeAdapter {
+  readonly config: ExchangeConfig = {
+    name: "delta",
+    displayName: "Delta Exchange",
+    restUrl: "https://api.delta.exchange",
+  };
+
+  getName() {
+    return this.config.displayName;
+  }
+
+  async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
+    try {
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const query = `timestamp=${timestamp}`;
+      const signature = await hmacSha256(query, apiSecret);
+
+      const response = await fetch(`${this.config.restUrl}/v2/account/wallet/balance?${query}`, {
+        headers: {
+          "API-Key": apiKey,
+          "Signature": signature,
+        },
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        return { success: false, message: `HTTP ${response.status}: ${body}` };
+      }
+
+      const data = await response.json() as any;
+      if (data.success === false) {
+        return { success: false, message: data.error?.message || "Invalid API credentials" };
+      }
+
+      return { success: true, message: "Delta Exchange credentials validated successfully" };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Network error during validation" };
+    }
+  }
+
+  async fetchMarketData(): Promise<MarketTicker[]> {
+    try {
+      const response = await fetch(`${this.config.restUrl}/v2/tickers`);
+      if (!response.ok) {
+        return [];
+      }
+      const data = await response.json() as any;
+      if (!data.success || !Array.isArray(data.result)) {
+        return [];
+      }
+      return data.result
+        .filter((item: any) => item.symbol && item.symbol.includes("USDT") || item.symbol && item.symbol.includes("USDC"))
+        .slice(0, 50)
+        .map((item: any) => ({
+          symbol: item.symbol.replace(/USDT$|USDC$/, ""),
+          price: parseFloat(item.close || item.last_price || 0),
+          volume24h: parseFloat(item.volume || 0),
+          priceChange24h: parseFloat(item.price_change || 0),
+          priceChangePercent24h: parseFloat(item.price_change_percent || 0),
+          highPrice24h: parseFloat(item.high_24h || item.high || 0),
+          lowPrice24h: parseFloat(item.low_24h || item.low || 0),
+        }));
+    } catch {
+      return [];
+    }
+  }
+}

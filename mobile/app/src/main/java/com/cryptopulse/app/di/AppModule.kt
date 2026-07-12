@@ -2,6 +2,8 @@ package com.cryptopulse.app.di
 
 import android.content.Context
 import com.cryptopulse.app.data.api.AuthService
+import com.cryptopulse.app.data.api.ExchangeService
+import com.cryptopulse.app.data.api.MarketService
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.repository.AuthRepository
 import dagger.Module
@@ -42,5 +44,17 @@ object AppModule {
     @Singleton
     fun provideAuthRepository(api: AuthService, tokenManager: TokenManager): AuthRepository {
         return AuthRepository(api, tokenManager)
+    }
+
+    @Provides
+    @Singleton
+    fun provideExchangeService(retrofit: Retrofit): ExchangeService {
+        return retrofit.create(ExchangeService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideMarketService(retrofit: Retrofit): MarketService {
+        return retrofit.create(MarketService::class.java)
     }
 }
