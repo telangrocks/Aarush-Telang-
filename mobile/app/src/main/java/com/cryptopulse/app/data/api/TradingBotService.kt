@@ -28,4 +28,10 @@ interface TradingBotService {
 
     @POST("/api/trading-bot/stop-trade")
     suspend fun stopTrade(): Response<Map<String, Any>>
+
+    @GET("/api/trading-bot/alerts")
+    suspend fun getAlerts(): Response<List<Map<String, Any>>>
+
+    @POST("/api/trading-bot/alerts/acknowledge")
+    suspend fun acknowledgeAlert(@Body request: Map<String, String>): Response<Map<String, Any>>
 }

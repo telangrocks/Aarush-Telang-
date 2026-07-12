@@ -2,6 +2,7 @@ package com.cryptopulse.app.ui.auth
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.cryptopulse.app.data.api.ActivateBotRequest
 import com.cryptopulse.app.data.api.ConnectExchangeRequest
 import com.cryptopulse.app.data.api.ExchangeService
 import com.cryptopulse.app.data.api.MarketCandidateDto
@@ -54,6 +55,8 @@ class ExchangeViewModel @Inject constructor(
     private val strategyService: StrategyService,
     private val technicalAnalysisService: TechnicalAnalysisService,
     private val tickerService: TickerService,
+    private val tradingBotService: com.cryptopulse.app.data.api.TradingBotService,
+    private val tokenManager: com.cryptopulse.app.data.local.TokenManager,
 ) : ViewModel() {
 
     private val _formState = MutableStateFlow(ExchangeFormState())
@@ -85,6 +88,9 @@ class ExchangeViewModel @Inject constructor(
 
     private val _ticker = MutableStateFlow<TickerResponse?>(null)
     val ticker: StateFlow<TickerResponse?> = _ticker
+
+    private val _pendingAlert = MutableStateFlow<Map<String, Any>?>(null)
+    val pendingAlert: StateFlow<Map<String, Any>?> = _pendingAlert
 
     fun onExchangeSelected(exchange: String) {
         _formState.value = _formState.value.copy(selectedExchange = exchange)
@@ -240,6 +246,68 @@ class ExchangeViewModel @Inject constructor(
                 val response = tickerService.getTicker(candidate.symbol)
                 if (response.isSuccessful && response.body() != null) {
                     _ticker.value = response.body()
+                }
+            } catch (e: Exception) {
+                // Silently fail
+            }
+        }
+    }
+
+    fun setPendingAlert(alert: Map<String, Any>) {
+        _pendingAlert.value = alert
+    }
+
+    fun dismissCurrentAlert() {
+        val alertId = _pendingAlert.value?.get("id") as? String
+        if (alertId != null) {
+            viewModelScope.launch {
+                try {
+                    val token = tokenManager.getToken()
+                    if (token != null) {
+                        tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
+                    }
+                } catch (e: Exception) {
+                    // Silently fail
+                }
+            }
+        }
+        _pendingAlert.value = null
+    }
+
+    fun executeCurrentTrade() {
+        val candidate = _selectedCandidate.value ?: return
+        val alert = _pendingAlert.value ?: return
+
+        viewModelScope.launch {
+            try {
+                val token = tokenManager.getToken()
+                if (token != null) {
+                    val response = tradingBotService.executeTrade()
+                    if (response.isSuccessful) {
+                        val alertId = alert["id"] as? String
+                        if (alertId != null) {
+                            tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
+                        }
+                        _pendingAlert.value = null
+                    }
+                }
+            } catch (e: Exception) {
+                // Silently fail
+            }
+        }
+    }
+
+    fun activateBot(symbol: String, strategy: String) {
+        viewModelScope.launch {
+            try {
+                val token = tokenManager.getToken()
+                if (token != null) {
+                    tradingBotService.activate(
+                        ActivateBotRequest(
+                            coinId = symbol,
+                            strategy = strategy,
+                        )
+                    )
                 }
             } catch (e: Exception) {
                 // Silently fail

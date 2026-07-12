@@ -7,3 +7,7 @@ compatibility_date = "2024-05-29"
 binding = "DB"
 database_name = "crypto_pulse_db"
 database_id = "15f49e2f-08bf-4dc5-8ec5-0860429fc0c4"
+
+[[durable_objects]]
+binding = "TRADING_BOTS"
+class_name = "TradingBot"

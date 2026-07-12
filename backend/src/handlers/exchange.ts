@@ -344,7 +344,7 @@ export async function handleExecuteTrade(
       new Request("http://bot/execute-trade", { method: "POST" }),
     );
 
-    const data = await response.json<{ success: boolean; message: string }>();
+    const data = await response.json<{ success: boolean; message: string; order?: any }>();
     return c.json(data);
   } catch (e: unknown) {
     const error = e as Error;
@@ -373,5 +373,61 @@ export async function handleStopTradingBot(
     const error = e as Error;
     c.status(500);
     return c.json({ success: false, message: error.message || "Failed to stop trading bot" });
+  }
+}
+
+export async function handleGetBotAlerts(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/alerts", { method: "GET" }),
+    );
+
+    const data = await response.json<any[]>();
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ error: "Failed to get bot alerts", message: error.message });
+  }
+}
+
+export async function handleAcknowledgeAlert(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+    const { alertId } = await c.req.json<{ alertId: string }>();
+
+    if (!alertId) {
+      c.status(400);
+      return c.json({ error: "alertId is required" });
+    }
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/acknowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alertId }),
+      }),
+    );
+
+    const data = await response.json<{ success: boolean }>();
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ success: false, message: error.message || "Failed to acknowledge alert" });
   }
 }

@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult } from "./BaseExchange";
 import { ExchangeConfig } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
@@ -94,6 +94,53 @@ export class BinanceExchange implements IExchangeAdapter {
         }));
     } catch {
       return [];
+    }
+  }
+
+  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult> {
+    try {
+      const timestamp = Date.now();
+      const recvWindow = 5000;
+      const fullSymbol = `${symbol.toUpperCase()}USDT`;
+      
+      const orderParams = new URLSearchParams({
+        symbol: fullSymbol,
+        side: side,
+        type: 'MARKET',
+        quoteOrderQty: '10',
+      });
+
+      const queryString = `timestamp=${timestamp}&recvWindow=${recvWindow}&${orderParams.toString()}`;
+      const signature = await hmacSha256(queryString, apiSecret);
+      const url = `${this.config.restUrl}/api/v3/order?${queryString}&signature=${signature}`;
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-MBX-APIKEY': apiKey,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: orderParams.toString(),
+      });
+
+      const data = await response.json() as any;
+      
+      if (!response.ok || data.code) {
+        return { 
+          success: false, 
+          message: data.msg || `HTTP ${response.status}: Order failed` 
+        };
+      }
+
+      return {
+        success: true,
+        message: `Order placed successfully`,
+        orderId: data.orderId?.toString(),
+        price: parseFloat(data.fills?.[0]?.price || '0'),
+        quantity: parseFloat(data.fills?.[0]?.qty || '0'),
+      };
+    } catch (e: any) {
+      return { success: false, message: e.message || 'Network error during order placement' };
     }
   }
 }

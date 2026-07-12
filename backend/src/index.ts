@@ -21,6 +21,8 @@ import {
   handleGetTradingBotStatus,
   handleExecuteTrade,
   handleStopTradingBot,
+  handleGetBotAlerts,
+  handleAcknowledgeAlert,
 } from "./handlers/exchange";
 
 export interface Env {
@@ -201,6 +203,8 @@ api.post("/trading-bot/activate", handleActivateTradingBot);
 api.get("/trading-bot/status", handleGetTradingBotStatus);
 api.post("/trading-bot/execute-trade", handleExecuteTrade);
 api.post("/trading-bot/stop-trade", handleStopTradingBot);
+api.get("/trading-bot/alerts", handleGetBotAlerts);
+api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
 
 app.route("/api", api);
 

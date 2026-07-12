@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -30,10 +31,14 @@ import com.cryptopulse.app.ui.screens.TradeConfirmationScreen
 import com.cryptopulse.app.ui.screens.TradeSetupScreen
 import com.cryptopulse.app.ui.screens.UserOnboardingScreen
 import com.cryptopulse.app.ui.screens.WelcomeScreen
+import com.cryptopulse.app.ui.screens.TradeAlertScreen
+import com.cryptopulse.app.service.BackgroundMonitoringService
+import com.cryptopulse.app.service.AlertBus
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
 import com.cryptopulse.app.ui.screens.MarketCandidate
 import com.cryptopulse.app.ui.auth.ExchangeViewModel.TradeSetupState
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -194,18 +199,55 @@ class MainActivity : ComponentActivity() {
                                 coinColor = Color(0xFFF7931A),
                             )
                             val strategy = selectedStrategy ?: "scalping"
+
+                            LaunchedEffect(Unit) {
+                                AlertBus.alerts.collect { alert ->
+                                    viewModel.setPendingAlert(alert)
+                                    navController.navigate("trade_alert")
+                                }
+                            }
+
                             TechnicalAnalysisScreen(
                                 candidate = candidate,
                                 strategy = strategy,
                                 onBack = { navController.popBackStack() },
-                                onBotToggled = { isActive ->
-                                    if (isActive) {
-                                        viewModel.fetchTechnicalAnalysis()
-                                    }
+                                viewModel = viewModel,
+                            )
+                        }
+                        composable("trade_alert") {
+                            TradeAlertScreen(
+                                onBack = { navController.popBackStack() },
+                                onTradeExecuted = {
+                                    navController.popBackStack()
                                 }
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra("extra_alert", false)) {
+            val entryPrice = intent.getDoubleExtra("alert_entry_price", 0.0)
+            val stopLoss = intent.getDoubleExtra("alert_stop_loss", 0.0)
+            val takeProfit = intent.getDoubleExtra("alert_take_profit", 0.0)
+            val estimatedPnl = intent.getDoubleExtra("alert_estimated_pnl", 0.0)
+            val alertId = intent.getStringExtra("alert_id")
+            if (entryPrice > 0 && alertId != null) {
+                val alert = mapOf(
+                    "id" to alertId,
+                    "symbol" to (intent.getStringExtra("alert_symbol") ?: "UNKNOWN"),
+                    "entryPrice" to entryPrice,
+                    "stopLoss" to stopLoss,
+                    "takeProfit" to takeProfit,
+                    "estimatedPnl" to estimatedPnl,
+                )
+                lifecycleScope.launch {
+                    AlertBus.send(alert)
                 }
             }
         }
@@ -217,7 +259,7 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
     Text(
         text = "Welcome to $name!",
         modifier = modifier.padding(16.dp)
-    )
+    }
 }
 
 @Preview(showBackground = true)
