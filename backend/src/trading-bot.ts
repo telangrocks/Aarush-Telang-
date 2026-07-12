@@ -39,7 +39,7 @@ export class TradingBot {
       }
       case '/deactivate': {
         await this.state.storage.put('isActive', false);
-        try { await this.state.storage.deleteAlarm(); } catch {}
+        try { await this.state.storage.deleteAlarm(); } catch (e) { /* ignore */ }
         return new Response(JSON.stringify({ success: true, message: 'Bot deactivated.' }), { status: 200 });
       }
       case '/status': {
@@ -151,7 +151,7 @@ export class TradingBot {
     }
   }
 
-  private detectOpportunity(ticker: MarketTicker, strategy: string): { symbol: string; entryPrice: number; stopLoss: number; takeProfit: number; estimatedPnl: number } | null {
+  private detectOpportunity(ticker: MarketTicker, _strategy: string): { symbol: string; entryPrice: number; stopLoss: number; takeProfit: number; estimatedPnl: number } | null {
     const change = ticker.priceChangePercent24h;
     const price = ticker.price;
 
