@@ -50,19 +50,16 @@ fun TradeSetupScreen(
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
-    // ── Form state ────────────────────────────────────────────────────────────
-    var entryPriceText   by remember { mutableStateOf("") }
-    var stopLossText     by remember { mutableStateOf("") }
-    var takeProfitText   by remember { mutableStateOf("") }
+    var entryPriceText by remember { mutableStateOf("") }
     var positionSizeText by remember { mutableStateOf("") }
+    var entryPriceError by remember { mutableStateOf<String?>(null) }
 
-    // Parsed doubles (null = invalid / empty)
-    val entryPrice   = entryPriceText.toDoubleOrNull()
-    val stopLoss     = stopLossText.toDoubleOrNull()
-    val takeProfit   = takeProfitText.toDoubleOrNull()
+    val entryPrice = entryPriceText.toDoubleOrNull()
     val positionSize = positionSizeText.toDoubleOrNull()
 
-    // ── Derived P&L values ────────────────────────────────────────────────────
+    val stopLoss = entryPrice?.let { it * 0.99 }
+    val takeProfit = entryPrice?.let { it * 1.02 }
+
     val riskPct = if (entryPrice != null && entryPrice > 0 && stopLoss != null)
         abs((stopLoss - entryPrice) / entryPrice * 100) else null
 
@@ -78,7 +75,19 @@ fun TradeSetupScreen(
     val estimatedLoss = if (entryPrice != null && stopLoss != null && positionSize != null && entryPrice > 0)
         (entryPrice - stopLoss) / entryPrice * positionSize else null
 
-    val canProceed = entryPrice != null && stopLoss != null && takeProfit != null && positionSize != null && entryPrice > 0
+    val canProceed = entryPrice != null && entryPrice > 0 &&
+                     positionSize != null && positionSize > 0 &&
+                     entryPrice >= candidate.minNotional
+
+    LaunchedEffect(entryPriceText) {
+        if (entryPriceText.isNotEmpty() && entryPrice == null) {
+            entryPriceError = "Invalid price format"
+        } else if (entryPrice != null && entryPrice < candidate.minNotional) {
+            entryPriceError = "Entry price must be at least $${String.format("%.2f", candidate.minNotional)}"
+        } else {
+            entryPriceError = null
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -96,14 +105,14 @@ fun TradeSetupScreen(
                         .padding(horizontal = 20.dp, vertical = 12.dp)
                 ) {
                     GradientButton(
-                        text = "Calculate P&L",
+                        text = "Submit",
                         onClick = {
                             if (canProceed) {
                                 onProceedToConfirm(entryPrice!!, stopLoss!!, takeProfit!!, positionSize!!)
                             }
                         },
                         enabled = canProceed,
-                        leadingIcon = Icons.Default.Calculate,
+                        leadingIcon = Icons.Default.Check,
                     )
                 }
             }
@@ -156,13 +165,22 @@ fun TradeSetupScreen(
                             value = entryPriceText,
                             onValueChange = { entryPriceText = it },
                             placeholder = "Enter entry price",
+                            isError = entryPriceError != null,
                         )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = "Current Market Price: ${candidate.currentMarketPrice} USDT",
-                            color = CyanPrimary,
-                            fontSize = 11.sp,
-                        )
+                        Spacer(Modifier.height(4.dp))
+                        if (entryPriceError != null) {
+                            Text(
+                                text = entryPriceError!!,
+                                color = LossRed,
+                                fontSize = 11.sp,
+                            )
+                        } else {
+                            Text(
+                                text = "Current Market Price: ${String.format("%.2f", candidate.currentMarketPrice)} USDT | Min Notional: $${String.format("%.2f", candidate.minNotional)}",
+                                color = CyanPrimary,
+                                fontSize = 11.sp,
+                            )
+                        }
                     }
                 }
 
@@ -188,11 +206,20 @@ fun TradeSetupScreen(
                             Spacer(Modifier.height(8.dp))
                             TradeFieldLabel("STOP LOSS PRICE (USDT)")
                             Spacer(Modifier.height(4.dp))
-                            TradeTextField(
-                                value = stopLossText,
-                                onValueChange = { stopLossText = it },
-                                placeholder = "Enter stop loss",
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(NavyCard, RoundedCornerShape(10.dp))
+                                    .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 12.dp, vertical = 14.dp),
+                            ) {
+                                Text(
+                                    text = stopLoss?.let { String.format("%.2f", it) + " USDT" } ?: "–",
+                                    color = TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
                             Spacer(Modifier.height(6.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -224,11 +251,20 @@ fun TradeSetupScreen(
                             Spacer(Modifier.height(8.dp))
                             TradeFieldLabel("TAKE PROFIT PRICE (USDT)")
                             Spacer(Modifier.height(4.dp))
-                            TradeTextField(
-                                value = takeProfitText,
-                                onValueChange = { takeProfitText = it },
-                                placeholder = "Enter take profit",
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(NavyCard, RoundedCornerShape(10.dp))
+                                    .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 12.dp, vertical = 14.dp),
+                            ) {
+                                Text(
+                                    text = takeProfit?.let { String.format("%.2f", it) + " USDT" } ?: "–",
+                                    color = TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
                             Spacer(Modifier.height(6.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -295,7 +331,7 @@ fun TradeSetupScreen(
 
                 // Footer disclaimer
                 Text(
-                    text = "ⓘ  This is an estimate. Actual results may vary based on market conditions.",
+                    text = "ⓘ  Entry price must be at least the minimum notional value. Stop Loss and Take Profit are auto-calculated.",
                     color = TextMuted,
                     fontSize = 10.sp,
                     textAlign = TextAlign.Center,
@@ -379,6 +415,7 @@ private fun TradeTextField(
     value: String,
     onValueChange: (String) -> Unit,
     placeholder: String,
+    isError: Boolean = false,
 ) {
     OutlinedTextField(
         value = value,
@@ -389,13 +426,15 @@ private fun TradeTextField(
         },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
         singleLine = true,
+        isError = isError,
         colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor      = CyanPrimary,
-            unfocusedBorderColor    = NavyBorder,
-            cursorColor             = CyanPrimary,
-            focusedTextColor        = TextPrimary,
-            unfocusedTextColor      = TextPrimary,
-            focusedContainerColor   = NavyCard,
+            focusedBorderColor = if (isError) LossRed else CyanPrimary,
+            unfocusedBorderColor = if (isError) LossRed else NavyBorder,
+            cursorColor = if (isError) LossRed else CyanPrimary,
+            errorBorderColor = LossRed,
+            focusedTextColor = TextPrimary,
+            unfocusedTextColor = TextPrimary,
+            focusedContainerColor = NavyCard,
             unfocusedContainerColor = NavyCard,
         ),
         shape = RoundedCornerShape(10.dp),

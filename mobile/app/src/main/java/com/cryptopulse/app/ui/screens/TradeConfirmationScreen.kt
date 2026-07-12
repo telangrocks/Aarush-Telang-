@@ -9,7 +9,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -18,30 +18,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.components.GradientButton
+import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
-import kotlin.math.abs
+import kotlinx.coroutines.launch
 
-/**
- * Trade Confirmation Screen — restyled to match the reference design.
- *
- * Shows a full "CALCULATION SUMMARY" with all data rows colour-coded in
- * green (profit) and red (loss), matching the reference exactly.
- *
- * All existing functionality is preserved:
- *  – executeTrade() is still called on confirm
- *  – navController navigation to LiveTradeMonitoring is unchanged
- *
- * @param candidate     The selected market candidate
- * @param entryPrice    Entry price (passed from TradeSetupScreen)
- * @param stopLossPrice Stop loss price (passed from TradeSetupScreen)
- * @param takeProfitPrice Take profit price (passed from TradeSetupScreen)
- * @param positionSize  Position size in USDT (passed from TradeSetupScreen)
- * @param onBack        Back navigation
- * @param onConfirmTrade Called when the user taps "Confirm Trade"
- */
 @Composable
 fun TradeConfirmationScreen(
     candidate: MarketCandidate,
@@ -50,9 +34,9 @@ fun TradeConfirmationScreen(
     takeProfitPrice: Double,
     positionSize: Double,
     onBack: () -> Unit,
-    onConfirmTrade: () -> Unit,
+    viewModel: ExchangeViewModel = hiltViewModel(),
+    onConfirmTrade: () -> Unit = {},
 ) {
-    // ── Calculations ──────────────────────────────────────────────────────────
     val stopLossPct    = if (entryPrice > 0) abs((stopLossPrice - entryPrice) / entryPrice * 100) else 0.0
     val takeProfitPct  = if (entryPrice > 0) abs((takeProfitPrice - entryPrice) / entryPrice * 100) else 0.0
     val rrRatio        = if (stopLossPct > 0) "1 : ${"%.2f".format(takeProfitPct / stopLossPct)}" else "–"
@@ -61,6 +45,8 @@ fun TradeConfirmationScreen(
     val estimatedPnl   = potentialProfit
 
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
+    val scope = rememberCoroutineScope()
+    var isLoading by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -79,10 +65,20 @@ fun TradeConfirmationScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     GradientButton(
-                        text = "Confirm Trade",
-                        onClick = onConfirmTrade,
-                        leadingIcon = Icons.Default.Shield,
-                        trailingIcon = Icons.Default.ArrowForward,
+                        text = if (isLoading) "Processing..." else "Confirm Trade",
+                        onClick = {
+                            if (!isLoading) {
+                                isLoading = true
+                                scope.launch {
+                                    viewModel.fetchTechnicalAnalysis()
+                                    onConfirmTrade()
+                                    isLoading = false
+                                }
+                            }
+                        },
+                        leadingIcon = if (isLoading) Icons.Default.HourglassEmpty else Icons.Default.Shield,
+                        trailingIcon = if (!isLoading) Icons.Default.ArrowForward else null,
+                        enabled = !isLoading,
                     )
                     Spacer(Modifier.height(6.dp))
                     Row(
@@ -114,7 +110,6 @@ fun TradeConfirmationScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // ── Page title ────────────────────────────────────────────
                 Text(
                     text = "CONFIRM TRADE",
                     color = CyanPrimary,
@@ -132,16 +127,13 @@ fun TradeConfirmationScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                // ── Coin info card ────────────────────────────────────────
                 CoinInfoCard(candidate = candidate)
 
                 Spacer(Modifier.height(14.dp))
 
-                // ── Calculation summary card ──────────────────────────────
                 GlowCard {
                     Column(modifier = Modifier.fillMaxWidth()) {
 
-                        // Card header
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Calculate, null, tint = Color(0xFFBB86FC), modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
@@ -163,11 +155,9 @@ fun TradeConfirmationScreen(
                         )
 
                         Spacer(Modifier.height(14.dp))
-
                         Divider(color = NavyBorder, thickness = 0.5.dp)
                         Spacer(Modifier.height(10.dp))
 
-                        // All rows
                         SummaryRow("Entry Price",        "${"%.2f".format(entryPrice)} USDT",       TextPrimary)
                         SummaryRow("Stop Loss Price",    "${"%.2f".format(stopLossPrice)} USDT",    LossRed)
                         SummaryRow("Take Profit Price",  "${"%.2f".format(takeProfitPrice)} USDT",  ProfitGreen)
@@ -182,7 +172,6 @@ fun TradeConfirmationScreen(
                         Divider(color = NavyBorder, thickness = 0.5.dp)
                         Spacer(Modifier.height(10.dp))
 
-                        // Highlighted final row
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -206,7 +195,6 @@ fun TradeConfirmationScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // ── Disclaimer banner ─────────────────────────────────────
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -231,7 +219,6 @@ fun TradeConfirmationScreen(
     }
 }
 
-// ─── Summary row ──────────────────────────────────────────────────────────────
 @Composable
 private fun SummaryRow(label: String, value: String, valueColor: Color) {
     Row(

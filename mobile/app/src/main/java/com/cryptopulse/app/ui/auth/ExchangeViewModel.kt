@@ -6,6 +6,13 @@ import com.cryptopulse.app.data.api.ConnectExchangeRequest
 import com.cryptopulse.app.data.api.ExchangeService
 import com.cryptopulse.app.data.api.MarketCandidateDto
 import com.cryptopulse.app.data.api.MarketService
+import com.cryptopulse.app.data.api.StrategyDto
+import com.cryptopulse.app.data.api.StrategyService
+import com.cryptopulse.app.data.api.TechnicalAnalysisRequest
+import com.cryptopulse.app.data.api.TechnicalAnalysisResponse
+import com.cryptopulse.app.data.api.TechnicalAnalysisService
+import com.cryptopulse.app.data.api.TickerResponse
+import com.cryptopulse.app.data.api.TickerService
 import com.cryptopulse.app.data.api.ValidateExchangeRequest
 import com.cryptopulse.app.data.api.ValidationResponse
 import com.cryptopulse.app.ui.screens.MarketCandidate
@@ -33,10 +40,20 @@ data class ExchangeFormState(
     val validationMessage: String? = null,
 )
 
+data class TradeSetupState(
+    val entryPrice: Double = 0.0,
+    val stopLossPrice: Double = 0.0,
+    val takeProfitPrice: Double = 0.0,
+    val positionSize: Double = 0.0,
+)
+
 @HiltViewModel
 class ExchangeViewModel @Inject constructor(
     private val exchangeService: ExchangeService,
     private val marketService: MarketService,
+    private val strategyService: StrategyService,
+    private val technicalAnalysisService: TechnicalAnalysisService,
+    private val tickerService: TickerService,
 ) : ViewModel() {
 
     private val _formState = MutableStateFlow(ExchangeFormState())
@@ -53,6 +70,21 @@ class ExchangeViewModel @Inject constructor(
 
     private val _selectedCandidate = MutableStateFlow<MarketCandidate?>(null)
     val selectedCandidate: StateFlow<MarketCandidate?> = _selectedCandidate
+
+    private val _strategies = MutableStateFlow<List<StrategyDto>>(emptyList())
+    val strategies: StateFlow<List<StrategyDto>> = _strategies
+
+    private val _selectedStrategy = MutableStateFlow<String?>(null)
+    val selectedStrategy: StateFlow<String?> = _selectedStrategy
+
+    private val _technicalAnalysis = MutableStateFlow<TechnicalAnalysisResponse?>(null)
+    val technicalAnalysis: StateFlow<TechnicalAnalysisResponse?> = _technicalAnalysis
+
+    private val _tradeSetup = MutableStateFlow<TradeSetupState?>(null)
+    val tradeSetup: StateFlow<TradeSetupState?> = _tradeSetup
+
+    private val _ticker = MutableStateFlow<TickerResponse?>(null)
+    val ticker: StateFlow<TickerResponse?> = _ticker
 
     fun onExchangeSelected(exchange: String) {
         _formState.value = _formState.value.copy(selectedExchange = exchange)
@@ -147,9 +179,71 @@ class ExchangeViewModel @Inject constructor(
         _candidates.value = emptyList()
         _readyForCandidates.value = false
         _selectedCandidate.value = null
+        _strategies.value = emptyList()
+        _selectedStrategy.value = null
+        _technicalAnalysis.value = null
+        _tradeSetup.value = null
+        _ticker.value = null
+    }
+
+    fun setTradeSetup(entryPrice: Double, stopLoss: Double, takeProfit: Double, positionSize: Double) {
+        _tradeSetup.value = TradeSetupState(entryPrice, stopLoss, takeProfit, positionSize)
     }
 
     fun selectCandidate(candidate: MarketCandidate) {
         _selectedCandidate.value = candidate
+    }
+
+    fun fetchStrategies() {
+        viewModelScope.launch {
+            try {
+                val response = strategyService.getStrategies()
+                if (response.isSuccessful && response.body() != null) {
+                    _strategies.value = response.body()!!
+                }
+            } catch (e: Exception) {
+                // Silently fail
+            }
+        }
+    }
+
+    fun selectStrategy(strategyId: String) {
+        _selectedStrategy.value = strategyId
+    }
+
+    fun fetchTechnicalAnalysis() {
+        val candidate = _selectedCandidate.value ?: return
+        val strategy = _selectedStrategy.value ?: return
+
+        viewModelScope.launch {
+            try {
+                val response = technicalAnalysisService.getAnalysis(
+                    TechnicalAnalysisRequest(
+                        symbol = candidate.symbol,
+                        strategy = strategy,
+                    )
+                )
+                if (response.isSuccessful && response.body() != null) {
+                    _technicalAnalysis.value = response.body()
+                }
+            } catch (e: Exception) {
+                // Silently fail
+            }
+        }
+    }
+
+    fun fetchTicker() {
+        val candidate = _selectedCandidate.value ?: return
+
+        viewModelScope.launch {
+            try {
+                val response = tickerService.getTicker(candidate.symbol)
+                if (response.isSuccessful && response.body() != null) {
+                    _ticker.value = response.body()
+                }
+            } catch (e: Exception) {
+                // Silently fail
+            }
+        }
     }
 }

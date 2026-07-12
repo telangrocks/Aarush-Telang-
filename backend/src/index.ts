@@ -14,6 +14,13 @@ import {
   handleValidateExchange,
   handleConnectExchange,
   handleGetPersonalizedMarketCandidates,
+  handleGetStrategies,
+  handleGetTechnicalAnalysis,
+  handleGetTicker,
+  handleActivateTradingBot,
+  handleGetTradingBotStatus,
+  handleExecuteTrade,
+  handleStopTradingBot,
 } from "./handlers/exchange";
 
 export interface Env {
@@ -183,6 +190,17 @@ api.post("/exchange/validate", handleValidateExchange);
 api.post("/exchange/connect", handleConnectExchange);
 
 api.get("/market/candidates", handleGetPersonalizedMarketCandidates);
+
+api.get("/strategies", handleGetStrategies);
+
+api.get("/market/ticker", handleGetTicker);
+
+api.post("/market/technical-analysis", handleGetTechnicalAnalysis);
+
+api.post("/trading-bot/activate", handleActivateTradingBot);
+api.get("/trading-bot/status", handleGetTradingBotStatus);
+api.post("/trading-bot/execute-trade", handleExecuteTrade);
+api.post("/trading-bot/stop-trade", handleStopTradingBot);
 
 app.route("/api", api);
 

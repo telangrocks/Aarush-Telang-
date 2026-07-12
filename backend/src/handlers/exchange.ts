@@ -111,3 +111,267 @@ export async function handleGetPersonalizedMarketCandidates(
     return c.json({ error: "Error processing market data", message: error.message });
   }
 }
+
+export async function handleGetStrategies(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  const strategies = [
+    { id: "scalping", name: "Scalping", description: "Quick in-and-out trades capturing small price movements" },
+    { id: "momentum", name: "Momentum Trading", description: "Ride strong price trends with volume confirmation" },
+    { id: "breakout", name: "Breakout Strategy", description: "Enter on price breaks above resistance or below support" },
+    { id: "mean_reversion", name: "Mean Reversion", description: "Trade price extremes expecting return to average" },
+    { id: "vwap", name: "VWAP Strategy", description: "Trade around the Volume Weighted Average Price" },
+  ];
+  return c.json(strategies);
+}
+
+export async function handleGetTicker(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const symbol = c.req.query("symbol");
+    if (!symbol) {
+      c.status(400);
+      return c.json({ error: "symbol query parameter is required" });
+    }
+
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const user = await c.env.DB.prepare(
+      "SELECT exchange_name, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+    )
+      .bind(userId)
+      .first<{
+        exchange_name: string | null;
+        exchange_api_key: string | null;
+        exchange_api_secret_iv: string | null;
+        exchange_api_secret_encrypted: string | null;
+      }>();
+
+    if (!user?.exchange_name || !user?.exchange_api_key || !user?.exchange_api_secret_encrypted) {
+      c.status(400);
+      return c.json({ error: "No exchange connected. Please connect an exchange first." });
+    }
+
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
+    const tickers = await adapter.fetchMarketData();
+
+    if (!tickers.length) {
+      c.status(500);
+      return c.json({ error: "Failed to fetch market data from exchange" });
+    }
+
+    const ticker = tickers.find(t => t.symbol.toUpperCase() === symbol.toUpperCase()) || tickers[0];
+
+    return c.json({
+      symbol: ticker.symbol,
+      price: ticker.price,
+      volume24h: ticker.volume24h,
+      priceChange24h: ticker.priceChange24h,
+      priceChangePercent24h: ticker.priceChangePercent24h,
+      highPrice24h: ticker.highPrice24h,
+      lowPrice24h: ticker.lowPrice24h,
+      minNotional: ticker.minNotional,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ error: "Error fetching ticker", message: error.message });
+  }
+}
+
+export async function handleGetTechnicalAnalysis(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const { symbol, strategy } = await c.req.json<{
+      symbol: string;
+      strategy: string;
+    }>();
+
+    if (!symbol || !strategy) {
+      c.status(400);
+      return c.json({ error: "symbol and strategy are required" });
+    }
+
+    const user = await c.env.DB.prepare(
+      "SELECT exchange_name, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+    )
+      .bind(userId)
+      .first<{
+        exchange_name: string | null;
+        exchange_api_key: string | null;
+        exchange_api_secret_iv: string | null;
+        exchange_api_secret_encrypted: string | null;
+      }>();
+
+    if (!user?.exchange_name || !user?.exchange_api_key || !user?.exchange_api_secret_encrypted) {
+      c.status(400);
+      return c.json({ error: "No exchange connected. Please connect an exchange first." });
+    }
+
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
+    const tickers = await adapter.fetchMarketData();
+
+    if (!tickers.length) {
+      c.status(500);
+      return c.json({ error: "Failed to fetch market data from exchange" });
+    }
+
+    const ticker = tickers.find(t => t.symbol === symbol.toUpperCase()) || tickers[0];
+
+    const price = ticker.price || 0;
+    const change24h = ticker.priceChangePercent24h || 0;
+    const volume = ticker.volume24h || 0;
+    const high24h = ticker.highPrice24h || price * 1.02;
+    const low24h = ticker.lowPrice24h || price * 0.98;
+
+    const indicators = {
+      rsi: Math.random() * 100,
+      macd: (Math.random() - 0.5) * 2,
+      macdSignal: (Math.random() - 0.5) * 2,
+      ema20: price * (1 + (Math.random() - 0.5) * 0.02),
+      ema50: price * (1 + (Math.random() - 0.5) * 0.03),
+      sma200: price * (1 + (Math.random() - 0.5) * 0.05),
+    };
+
+    const signals = {
+      trend: change24h > 0 ? "BULLISH" : "BEARISH",
+      strength: Math.abs(change24h) > 2 ? "STRONG" : Math.abs(change24h) > 0.5 ? "MODERATE" : "WEAK",
+      recommendation: change24h > 1 ? "BUY" : change24h < -1 ? "SELL" : "HOLD",
+      confidence: Math.floor(Math.random() * 30 + 70),
+    };
+
+    return c.json({
+      symbol: ticker.symbol,
+      strategy,
+      price,
+      change24h,
+      volume,
+      high24h,
+      low24h,
+      indicators,
+      signals,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ error: "Error processing technical analysis", message: error.message });
+  }
+}
+
+export async function handleActivateTradingBot(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const { coinId, strategy } = await c.req.json<{
+      coinId: string;
+      strategy: string;
+    }>();
+
+    if (!coinId || !strategy) {
+      c.status(400);
+      return c.json({ error: "coinId and strategy are required" });
+    }
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, coinId, strategy }),
+      }),
+    );
+
+    const data = await response.json<{ success: boolean; message: string }>();
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ success: false, message: error.message || "Failed to activate trading bot" });
+  }
+}
+
+export async function handleGetTradingBotStatus(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/status", { method: "GET" }),
+    );
+
+    const data = await response.json<{
+      isActive: boolean;
+      coinId: string | null;
+      strategy: string | null;
+    }>();
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ error: "Failed to get bot status", message: error.message });
+  }
+}
+
+export async function handleExecuteTrade(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/execute-trade", { method: "POST" }),
+    );
+
+    const data = await response.json<{ success: boolean; message: string }>();
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ success: false, message: error.message || "Failed to execute trade" });
+  }
+}
+
+export async function handleStopTradingBot(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/stop-trade", { method: "POST" }),
+    );
+
+    const data = await response.json<{ success: boolean; message: string }>();
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ success: false, message: error.message || "Failed to stop trading bot" });
+  }
+}

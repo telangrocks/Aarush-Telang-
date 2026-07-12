@@ -32,6 +32,7 @@ import com.cryptopulse.app.ui.screens.UserOnboardingScreen
 import com.cryptopulse.app.ui.screens.WelcomeScreen
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
 import com.cryptopulse.app.ui.screens.MarketCandidate
+import com.cryptopulse.app.ui.auth.ExchangeViewModel.TradeSetupState
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -99,39 +100,109 @@ class MainActivity : ComponentActivity() {
                         composable("trade_setup") {
                             val viewModel = hiltViewModel<ExchangeViewModel>()
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                            val candidate = selectedCandidate ?: MarketCandidate(
+                                rank = 1,
+                                symbol = "BTC",
+                                pairName = "BTC/USDT",
+                                coinName = "Bitcoin",
+                                notations = 100,
+                                currentMarketPrice = 50000.0,
+                                minNotional = 10.0,
+                                coinColor = Color(0xFFF7931A),
+                            )
                             TradeSetupScreen(
-                                candidate = selectedCandidate ?: MarketCandidate(
-                                    rank = 1,
-                                    symbol = "BTC",
-                                    pairName = "BTC/USDT",
-                                    coinName = "Bitcoin",
-                                    notations = 100,
-                                    currentMarketPrice = 50000.0,
-                                    coinColor = Color(0xFFF7931A),
-                                ),
+                                candidate = candidate,
                                 onBack = { navController.popBackStack() },
-                                onProceedToConfirm = { _, _, _, _ ->
+                                onProceedToConfirm = { entryPrice, stopLoss, takeProfit, positionSize ->
+                                    viewModel.setTradeSetup(entryPrice, stopLoss, takeProfit, positionSize)
                                     navController.navigate("trade_confirmation")
                                 }
                             )
                         }
                         composable("trade_confirmation") {
+                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                            val tradeSetup by viewModel.tradeSetup.collectAsState(initial = null)
+                            val candidate = selectedCandidate ?: MarketCandidate(
+                                rank = 1,
+                                symbol = "BTC",
+                                pairName = "BTC/USDT",
+                                coinName = "Bitcoin",
+                                notations = 100,
+                                currentMarketPrice = 50000.0,
+                                minNotional = 10.0,
+                                coinColor = Color(0xFFF7931A),
+                            )
+                            val setup = tradeSetup ?: TradeSetupState(
+                                entryPrice = candidate.currentMarketPrice,
+                                stopLossPrice = candidate.currentMarketPrice * 0.99,
+                                takeProfitPrice = candidate.currentMarketPrice * 1.02,
+                                positionSize = 100.0,
+                            )
                             TradeConfirmationScreen(
-                                candidate = MarketCandidate(
-                                    rank = 1,
-                                    symbol = "BTC",
-                                    pairName = "BTC/USDT",
-                                    coinName = "Bitcoin",
-                                    notations = 100,
-                                    currentMarketPrice = 50000.0,
-                                    coinColor = Color(0xFFF7931A),
-                                ),
-                                entryPrice = 0.0,
-                                stopLossPrice = 0.0,
-                                takeProfitPrice = 0.0,
-                                positionSize = 0.0,
+                                candidate = candidate,
+                                entryPrice = setup.entryPrice,
+                                stopLossPrice = setup.stopLossPrice,
+                                takeProfitPrice = setup.takeProfitPrice,
+                                positionSize = setup.positionSize,
                                 onBack = { navController.popBackStack() },
-                                onConfirmTrade = { navController.popBackStack() }
+                                viewModel = viewModel,
+                                onConfirmTrade = {
+                                    navController.navigate("strategy_selection")
+                                }
+                            )
+                        }
+                        composable("strategy_selection") {
+                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                            val candidate = selectedCandidate ?: MarketCandidate(
+                                rank = 1,
+                                symbol = "BTC",
+                                pairName = "BTC/USDT",
+                                coinName = "Bitcoin",
+                                notations = 100,
+                                currentMarketPrice = 50000.0,
+                                minNotional = 10.0,
+                                coinColor = Color(0xFFF7931A),
+                            )
+                            LaunchedEffect(Unit) {
+                                viewModel.fetchStrategies()
+                            }
+                            StrategySelectionScreen(
+                                candidate = candidate,
+                                onBack = { navController.popBackStack() },
+                                viewModel = viewModel,
+                                onStrategySelected = { strategy ->
+                                    viewModel.selectStrategy(strategy)
+                                    viewModel.fetchTechnicalAnalysis()
+                                    navController.navigate("technical_analysis")
+                                }
+                            )
+                        }
+                        composable("technical_analysis") {
+                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                            val selectedStrategy by viewModel.selectedStrategy.collectAsState(initial = null)
+                            val candidate = selectedCandidate ?: MarketCandidate(
+                                rank = 1,
+                                symbol = "BTC",
+                                pairName = "BTC/USDT",
+                                coinName = "Bitcoin",
+                                notations = 100,
+                                currentMarketPrice = 50000.0,
+                                minNotional = 10.0,
+                                coinColor = Color(0xFFF7931A),
+                            )
+                            val strategy = selectedStrategy ?: "scalping"
+                            TechnicalAnalysisScreen(
+                                candidate = candidate,
+                                strategy = strategy,
+                                onBack = { navController.popBackStack() },
+                                onBotToggled = { isActive ->
+                                    if (isActive) {
+                                        viewModel.fetchTechnicalAnalysis()
+                                    }
+                                }
                             )
                         }
                     }

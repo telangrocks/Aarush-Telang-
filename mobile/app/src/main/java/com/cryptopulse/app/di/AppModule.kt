@@ -4,6 +4,10 @@ import android.content.Context
 import com.cryptopulse.app.data.api.AuthService
 import com.cryptopulse.app.data.api.ExchangeService
 import com.cryptopulse.app.data.api.MarketService
+import com.cryptopulse.app.data.api.StrategyService
+import com.cryptopulse.app.data.api.TechnicalAnalysisService
+import com.cryptopulse.app.data.api.TickerService
+import com.cryptopulse.app.data.api.TradingBotService
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.repository.AuthRepository
 import dagger.Module
@@ -79,5 +83,29 @@ object AppModule {
     @Singleton
     fun provideMarketService(retrofit: Retrofit): MarketService {
         return retrofit.create(MarketService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideStrategyService(retrofit: Retrofit): StrategyService {
+        return retrofit.create(StrategyService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideTechnicalAnalysisService(retrofit: Retrofit): TechnicalAnalysisService {
+        return retrofit.create(TechnicalAnalysisService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideTradingBotService(retrofit: Retrofit): TradingBotService {
+        return retrofit.create(TradingBotService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideTickerService(retrofit: Retrofit): TickerService {
+        return retrofit.create(TickerService::class.java)
     }
 }
