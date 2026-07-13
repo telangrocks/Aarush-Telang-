@@ -221,7 +221,7 @@ const scheduled = async (
     (async () => {
       console.log("Starting alert processing...");
       const { results } = await env.DB.prepare(
-        "SELECT * FROM price_alerts WHERE triggered = 0",
+        "SELECT * FROM price_alerts WHERE is_active = 1",
       ).all();
       if (!results || results.length === 0) {
         console.log("No active alerts to process.");
@@ -262,7 +262,7 @@ const scheduled = async (
 
             if (triggered) {
               await env.DB.prepare(
-                "UPDATE price_alerts SET triggered = 1, triggered_at = ? WHERE id = ?"
+                "UPDATE price_alerts SET is_active = 0, triggered_at = ? WHERE id = ?"
               ).bind(new Date().toISOString(), alert.id).run();
               console.log(`Alert ${alert.id} triggered for ${symbol} at ${currentPrice}`);
             }
