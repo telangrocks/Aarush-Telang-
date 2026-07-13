@@ -1,9 +1,20 @@
 // src/handlers/user.ts
 import { Context } from "hono";
 import { Env } from "../index";
-import { hashPassword, verifyPassword, generateJwt } from "./auth";
+import {
+  hashPassword,
+  verifyPassword,
+  generateJwt,
+  MIN_PASSWORD_LENGTH,
+  MAX_LOGIN_ATTEMPTS,
+  LOGIN_LOCKOUT_MINUTES,
+} from "./auth";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/;
+
+const MAX_REGISTRATIONS_PER_WINDOW = 10;
+const REGISTRATION_WINDOW_MS = 60 * 60 * 1000;
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -11,6 +22,67 @@ function normalizeEmail(email: string): string {
 
 function isValidEmail(email: string): boolean {
   return EMAIL_REGEX.test(email);
+}
+
+function isValidPassword(password: string): boolean {
+  return (
+    password.length >= MIN_PASSWORD_LENGTH &&
+    PASSWORD_REGEX.test(password)
+  );
+}
+
+function logAuthEvent(event: string, details: Record<string, unknown>): void {
+  console.log(JSON.stringify({ event, timestamp: new Date().toISOString(), ...details }));
+}
+
+function getClientIp(c: Context<{ Bindings: Env }>): string {
+  return (
+    c.req.header("cf-connecting-ip") ||
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
+    "unknown"
+  );
+}
+
+/**
+ * Throttles account creation to at most MAX_REGISTRATIONS_PER_WINDOW
+ * attempts per client IP per REGISTRATION_WINDOW_MS window.
+ * Returns true if the registration is allowed to proceed.
+ */
+async function isRegistrationAllowed(
+  c: Context<{ Bindings: Env }>,
+): Promise<boolean> {
+  const ip = getClientIp(c);
+  const now = Date.now();
+
+  const row = await c.env.DB.prepare(
+    "SELECT count, window_start FROM registration_attempts WHERE ip = ?",
+  )
+    .bind(ip)
+    .first<{ count: number; window_start: number }>();
+
+  if (!row || now - row.window_start >= REGISTRATION_WINDOW_MS) {
+    await c.env.DB.prepare(
+      `INSERT INTO registration_attempts (ip, count, window_start)
+       VALUES (?, 1, ?)
+       ON CONFLICT(ip) DO UPDATE SET
+         count = 1,
+         window_start = excluded.window_start`,
+    )
+      .bind(ip, now)
+      .run();
+    return true;
+  }
+
+  if (row.count >= MAX_REGISTRATIONS_PER_WINDOW) {
+    return false;
+  }
+
+  await c.env.DB.prepare(
+    "UPDATE registration_attempts SET count = count + 1 WHERE ip = ?",
+  )
+    .bind(ip)
+    .run();
+  return true;
 }
 
 /**
@@ -21,22 +93,35 @@ export async function handleRegister(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   try {
-    const { email, password } = await c.req.json<{
+    const { email, password, confirmPassword } = await c.req.json<{
       email?: string;
       password?: string;
+      confirmPassword?: string;
     }>();
+
+    if (!(await isRegistrationAllowed(c))) {
+      logAuthEvent("registration_rate_limited", {
+        ip: getClientIp(c),
+      });
+      c.status(429);
+      return c.json({
+        error: "Too many registration attempts. Please try again later.",
+      });
+    }
 
     const normalizedEmail = email ? normalizeEmail(email) : "";
     if (
       !normalizedEmail ||
       !isValidEmail(normalizedEmail) ||
       !password ||
-      password.length < 8
+      !confirmPassword ||
+      password !== confirmPassword ||
+      !isValidPassword(password)
     ) {
       c.status(400);
       return c.json({
         error:
-          "Invalid input. A valid email is required and password must be at least 8 characters.",
+          "Invalid input. A valid email is required, password must be at least 8 characters with uppercase, lowercase, number, and special character, and passwords must match.",
       });
     }
 
@@ -54,7 +139,7 @@ export async function handleRegister(
     }
 
     const hashedPassword = await hashPassword(password);
-    const createdAt = new Date().toISOString();
+    const now = new Date().toISOString();
 
     await c.env.DB.prepare(
       `INSERT INTO users (
@@ -63,21 +148,19 @@ export async function handleRegister(
          password_hash,
          created_at,
          status,
-         otp_secret,
-         otp_expires_at,
-         otp_last_sent_at,
-         otp_attempt_count
+         updated_at,
+         failed_login_attempts,
+         locked_until
        )
-       VALUES (?, ?, ?, ?, 'ACTIVE', NULL, NULL, NULL, 0)
+       VALUES (?, ?, ?, ?, 'ACTIVE', ?, 0, NULL)
        ON CONFLICT(email) DO UPDATE SET
          password_hash = excluded.password_hash,
          status = 'ACTIVE',
-         otp_secret = NULL,
-         otp_expires_at = NULL,
-         otp_last_sent_at = NULL,
-         otp_attempt_count = 0`,
+         updated_at = excluded.updated_at,
+         failed_login_attempts = 0,
+         locked_until = NULL`,
     )
-      .bind(crypto.randomUUID(), normalizedEmail, hashedPassword, createdAt)
+      .bind(crypto.randomUUID(), normalizedEmail, hashedPassword, now, now)
       .run();
 
     const user = await c.env.DB.prepare(
@@ -89,6 +172,8 @@ export async function handleRegister(
     if (!user) {
       throw new Error("Failed to load registered user.");
     }
+
+    logAuthEvent("user_registered", { userId: user.id, email: user.email });
 
     const token = await generateJwt(user.id, user.email, c.env.JWT_SECRET);
     c.status(200);
@@ -139,7 +224,7 @@ export async function handleLogin(
     }
 
     const user = await c.env.DB.prepare(
-      "SELECT id, email, password_hash, status FROM users WHERE email = ?",
+      "SELECT id, email, password_hash, status, failed_login_attempts, locked_until FROM users WHERE email = ?",
     )
       .bind(normalizedEmail)
       .first<{
@@ -147,26 +232,51 @@ export async function handleLogin(
         email: string;
         password_hash: string;
         status: string | null;
+        failed_login_attempts: number | null;
+        locked_until: number | null;
       }>();
 
     if (!user) {
+      logAuthEvent("login_failed", { email: normalizedEmail, reason: "user_not_found" });
       c.status(401);
       return c.json({ error: "Invalid credentials." });
+    }
+
+    if (user.locked_until && user.locked_until > Date.now()) {
+      logAuthEvent("login_failed", { userId: user.id, email: user.email, reason: "account_locked" });
+      c.status(429);
+      return c.json({
+        error: "Account temporarily locked due to too many failed attempts. Please try again later.",
+      });
     }
 
     const isPasswordValid = await verifyPassword(password, user.password_hash);
     if (!isPasswordValid) {
+      const newAttempts = (user.failed_login_attempts || 0) + 1;
+      const shouldLock = newAttempts >= MAX_LOGIN_ATTEMPTS;
+      const lockedUntil = shouldLock
+        ? Date.now() + LOGIN_LOCKOUT_MINUTES * 60 * 1000
+        : null;
+
+      await c.env.DB.prepare(
+        "UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?",
+      )
+        .bind(newAttempts, lockedUntil, user.id)
+        .run();
+
+      logAuthEvent("login_failed", { userId: user.id, email: user.email, reason: "invalid_password", attempts: newAttempts });
       c.status(401);
       return c.json({ error: "Invalid credentials." });
     }
 
-    if (user.status !== "ACTIVE") {
-      await c.env.DB.prepare(
-        "UPDATE users SET status = 'ACTIVE', otp_secret = NULL, otp_expires_at = NULL, otp_last_sent_at = NULL, otp_attempt_count = 0 WHERE id = ?",
-      )
-        .bind(user.id)
-        .run();
-    }
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(
+      "UPDATE users SET status = 'ACTIVE', failed_login_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?",
+    )
+      .bind(now, user.id)
+      .run();
+
+    logAuthEvent("login_success", { userId: user.id, email: user.email });
 
     const token = await generateJwt(user.id, user.email, c.env.JWT_SECRET);
     c.status(200);

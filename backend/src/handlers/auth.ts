@@ -4,6 +4,18 @@ import { sign } from "hono/jwt";
 const ITERATIONS = 100000;
 const HASH_ALGORITHM = "SHA-256";
 
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MINUTES = 15;
+
+export {
+  ITERATIONS,
+  HASH_ALGORITHM,
+  MIN_PASSWORD_LENGTH,
+  MAX_LOGIN_ATTEMPTS,
+  LOGIN_LOCKOUT_MINUTES,
+};
+
 /**
  * Hashes a password using PBKDF2 with SHA-256.
  * Generates a random salt for each password and stores it with the hash.
@@ -72,8 +84,29 @@ export async function verifyPassword(
     256,
   );
 
-  const newHash = btoa(String.fromCharCode(...new Uint8Array(key)));
-  return newHash === hash;
+  const newHash = new Uint8Array(key);
+  const expectedHash = new Uint8Array(
+    Array.from(atob(hash), (c) => c.charCodeAt(0)),
+  );
+  if (newHash.length !== expectedHash.length) {
+    return false;
+  }
+  return timingSafeEqual(newHash, expectedHash);
+}
+
+/**
+ * Constant-time byte-array comparison to prevent timing side-channel
+ * attacks when verifying password hashes.
+ */
+export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a[i] ^ b[i];
+  }
+  return diff === 0;
 }
 
 /**

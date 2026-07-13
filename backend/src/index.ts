@@ -33,8 +33,40 @@ export interface Env {
   RESEND_API_KEY: string;
   RESEND_FROM_EMAIL?: string;
   AUTH_ALLOW_DEV_OTP_FALLBACK?: string;
-  ALLOWED_ORIGINS?: string;
+  ALLOWED_ORIGINS: string;
   TRADING_BOTS: DurableObjectNamespace;
+}
+
+function validateEnv(env: Env): void {
+  const missing: string[] = [];
+  if (!env.JWT_SECRET || typeof env.JWT_SECRET !== "string") {
+    missing.push("JWT_SECRET");
+  }
+  if (!env.DB) {
+    missing.push("DB");
+  }
+  if (!env.ENCRYPTION_KEY || typeof env.ENCRYPTION_KEY !== "string") {
+    missing.push("ENCRYPTION_KEY");
+  }
+  if (!env.RESEND_API_KEY || typeof env.RESEND_API_KEY !== "string") {
+    missing.push("RESEND_API_KEY");
+  }
+  if (!env.ALLOWED_ORIGINS || env.ALLOWED_ORIGINS.trim() === "") {
+    missing.push("ALLOWED_ORIGINS");
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variables: ${missing.join(", ")}`,
+    );
+  }
+}
+
+let envValidated = false;
+function ensureEnvValidated(env: Env): void {
+  if (!envValidated) {
+    validateEnv(env);
+    envValidated = true;
+  }
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -42,25 +74,46 @@ const app = new Hono<{ Bindings: Env }>();
 // Apply security headers and CORS middleware to all routes
 app.use("*", secureHeaders());
 app.use("*", async (c, next) => {
-  // Restrict CORS to a configurable allow-list when provided; otherwise fall
-  // back to the permissive default (acceptable for a mobile/token-auth API).
-  const allowedOrigins = (c.env?.ALLOWED_ORIGINS ?? "")
-    .split(",")
+  ensureEnvValidated(c.env);
+  const allowedOrigins = c.env.ALLOWED_ORIGINS.split(",")
     .map((o) => o.trim())
     .filter(Boolean);
-  const middleware = cors(allowedOrigins.length ? { origin: allowedOrigins } : {});
+  if (allowedOrigins.length === 0) {
+    c.status(500);
+    return c.json({
+      status: "error",
+      message: "ALLOWED_ORIGINS must be configured",
+    });
+  }
+  const middleware = cors({ origin: allowedOrigins });
   return middleware(c, next);
 });
 
 // ==========================================
 // PUBLIC ENDPOINTS
 // ==========================================
+const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-otp", "/api/verify-otp"];
+
 app.get("/health", (c) => {
   return c.json({
     status: "ok",
     service: "Crypto Pulse Backend",
     timestamp: new Date().toISOString(),
   });
+});
+
+app.use("/api/*", async (c, next) => {
+  if (c.req.method === "POST" && jsonEndpoints.includes(c.req.path)) {
+    const contentType = c.req.header("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+      c.status(415);
+      return c.json({
+        error: "Unsupported Media Type",
+        message: "Content-Type must be application/json",
+      });
+    }
+  }
+  await next();
 });
 
 app.get("/db-status", async (c) => {

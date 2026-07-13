@@ -40,7 +40,7 @@ function createStatementForQuery(query: string) {
 
   if (
     query ===
-    "SELECT id, email, password_hash, status FROM users WHERE email = ?"
+    "SELECT id, email, password_hash, status, failed_login_attempts, locked_until FROM users WHERE email = ?"
   ) {
     return {
       bind: vi.fn(() => ({
@@ -49,12 +49,46 @@ function createStatementForQuery(query: string) {
           email: "login@example.com",
           password_hash: "invalid:test-hash",
           status: "PENDING_VERIFICATION",
+          failed_login_attempts: 0,
+          locked_until: null,
         }),
       })),
     };
   }
 
+  if (query === "SELECT count, window_start FROM registration_attempts WHERE ip = ?") {
+    return {
+      bind: vi.fn(() => ({
+        first: vi.fn().mockResolvedValue(null),
+      })),
+    };
+  }
+
+  if (query.includes("INSERT INTO registration_attempts")) {
+    return {
+      bind: vi.fn(() => ({
+        run: vi.fn().mockResolvedValue({ success: true }),
+      })),
+    };
+  }
+
+  if (query.includes("UPDATE registration_attempts SET count")) {
+    return {
+      bind: vi.fn(() => ({
+        run: vi.fn().mockResolvedValue({ success: true }),
+      })),
+    };
+  }
+
   if (query.includes("UPDATE users SET status = 'ACTIVE'")) {
+    return {
+      bind: vi.fn(() => ({
+        run: vi.fn().mockResolvedValue({ success: true }),
+      })),
+    };
+  }
+
+  if (query.includes("UPDATE users SET failed_login_attempts")) {
     return {
       bind: vi.fn(() => ({
         run: vi.fn().mockResolvedValue({ success: true }),
@@ -73,9 +107,33 @@ function createStatementForQuery(query: string) {
   return null;
 }
 
+function makeSimpleDb(): D1Database {
+  const statement = {
+    bind: vi.fn(() => ({
+      first: vi.fn().mockResolvedValue(null),
+      run: vi.fn().mockResolvedValue({ success: true }),
+    })),
+  };
+  return { prepare: vi.fn(() => statement) } as unknown as D1Database;
+}
+
+function baseEnv(extra: Partial<Env> = {}): Env {
+  return {
+    DB: { prepare: vi.fn() } as unknown as D1Database,
+    ENCRYPTION_KEY: "test-encryption-key",
+    JWT_SECRET: "test-secret",
+    RESEND_API_KEY: "test-resend-key",
+    ALLOWED_ORIGINS: "https://example.com",
+    ...extra,
+  } as unknown as Env;
+}
+
 describe("App Endpoints", () => {
   it("GET /health returns status ok", async () => {
-    const res = await worker.fetch(new Request("http://localhost/health"));
+    const res = await worker.fetch(
+      new Request("http://localhost/health"),
+      baseEnv(),
+    );
     expect(res.status).toBe(200);
     const data = await res.json<{
       status: string;
@@ -110,6 +168,7 @@ describe("App Endpoints", () => {
     });
 
     const mockEnv = {
+      ...baseEnv(),
       DB: {
         prepare: mockPrepare,
       } as unknown as D1Database,
@@ -138,6 +197,7 @@ describe("App Endpoints", () => {
   it("GET /db-status returns error when DB fails", async () => {
     // Mock the environment
     const mockEnv = {
+      ...baseEnv(),
       DB: {
         prepare: vi.fn().mockReturnValue({
           run: vi.fn().mockRejectedValue(new Error("Connection timeout")),
@@ -171,6 +231,7 @@ describe("App Endpoints", () => {
       RESEND_API_KEY: "test-resend-key",
       PRICE_CACHE: {} as KVNamespace,
       TRADING_BOTS: {} as DurableObjectNamespace,
+      ALLOWED_ORIGINS: "https://example.com",
     };
 
     const res = await worker.fetch(
@@ -179,7 +240,8 @@ describe("App Endpoints", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: "New@Example.com",
-          password: "TestPass123",
+          password: "TestPass123!",
+          confirmPassword: "TestPass123!",
         }),
       }),
       mockEnv as Env,
@@ -191,6 +253,105 @@ describe("App Endpoints", () => {
     expect(data.token).toBeDefined();
   });
 
+  it("POST /api/register rejects weak passwords", async () => {
+    const res = await worker.fetch(
+      new Request("http://localhost/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "weak@example.com",
+          password: "password",
+          confirmPassword: "password",
+        }),
+      }),
+      {
+        DB: makeSimpleDb(),
+        ENCRYPTION_KEY: "test-encryption-key",
+        JWT_SECRET: "test-secret",
+        RESEND_API_KEY: "test-resend-key",
+        TRADING_BOTS: {} as DurableObjectNamespace,
+        ALLOWED_ORIGINS: "https://example.com",
+      } as Env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /api/register rejects mismatched passwords", async () => {
+    const res = await worker.fetch(
+      new Request("http://localhost/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "mismatch@example.com",
+          password: "TestPass123!",
+          confirmPassword: "Different123!",
+        }),
+      }),
+      {
+        DB: makeSimpleDb(),
+        ENCRYPTION_KEY: "test-encryption-key",
+        JWT_SECRET: "test-secret",
+        RESEND_API_KEY: "test-resend-key",
+        TRADING_BOTS: {} as DurableObjectNamespace,
+        ALLOWED_ORIGINS: "https://example.com",
+      } as Env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /api/register rejects non-JSON content type with 415", async () => {
+    const res = await worker.fetch(
+      new Request("http://localhost/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: "email=foo",
+      }),
+      { ALLOWED_ORIGINS: "https://example.com" } as Env,
+    );
+    expect(res.status).toBe(415);
+  });
+
+  it("POST /api/register returns 429 when rate limit is exceeded", async () => {
+    const mockEnv = {
+      DB: {
+        prepare: vi.fn((query: string) => {
+          if (query === "SELECT count, window_start FROM registration_attempts WHERE ip = ?") {
+            return {
+              bind: vi.fn(() => ({
+                first: vi.fn().mockResolvedValue({
+                  count: 10,
+                  window_start: Date.now(),
+                }),
+              })),
+            };
+          }
+          return {
+            bind: vi.fn(() => ({ run: vi.fn().mockResolvedValue({ success: true }) })),
+          };
+        }),
+      } as unknown as D1Database,
+      ENCRYPTION_KEY: "test-encryption-key",
+      JWT_SECRET: "test-secret",
+      RESEND_API_KEY: "test-resend-key",
+      TRADING_BOTS: {} as DurableObjectNamespace,
+      ALLOWED_ORIGINS: "https://example.com",
+    };
+
+    const res = await worker.fetch(
+      new Request("http://localhost/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "limited@example.com",
+          password: "TestPass123!",
+          confirmPassword: "TestPass123!",
+        }),
+      }),
+      mockEnv as Env,
+    );
+    expect(res.status).toBe(429);
+  });
+
   it("POST /api/verify-otp returns disabled when OTP auth is not enabled", async () => {
     const res = await worker.fetch(
       new Request("http://localhost/api/verify-otp", {
@@ -198,7 +359,7 @@ describe("App Endpoints", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: "user@example.com", otp: "123456" }),
       }),
-      {} as Env,
+      { ALLOWED_ORIGINS: "https://example.com" } as Env,
     );
 
     expect(res.status).toBe(410);
@@ -227,6 +388,7 @@ describe("App Endpoints", () => {
         JWT_SECRET: "test-secret",
         RESEND_API_KEY: "test-resend-key",
         TRADING_BOTS: {} as DurableObjectNamespace,
+        ALLOWED_ORIGINS: "https://example.com",
       };
       token = await sign(
         { sub: userId, email: "test@test.com" },
@@ -362,6 +524,7 @@ describe("App Endpoints", () => {
         }),
       } as unknown as D1Database,
       RESEND_API_KEY: "test-key",
+      ALLOWED_ORIGINS: "https://example.com",
     };
     const ctx = { waitUntil: vi.fn() } as unknown as ExecutionContext;
     await worker.scheduled!({} as ScheduledEvent, mockEnv as Env, ctx);
