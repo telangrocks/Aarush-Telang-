@@ -3,6 +3,7 @@ package com.cryptopulse.app.di
 import android.content.Context
 import com.cryptopulse.app.data.api.AuthService
 import com.cryptopulse.app.data.api.ExchangeService
+import com.cryptopulse.app.data.api.KlineService
 import com.cryptopulse.app.data.api.MarketService
 import com.cryptopulse.app.data.api.StrategyService
 import com.cryptopulse.app.data.api.TechnicalAnalysisService
@@ -95,6 +96,18 @@ object AppModule {
     @Singleton
     fun provideTechnicalAnalysisService(retrofit: Retrofit): TechnicalAnalysisService {
         return retrofit.create(TechnicalAnalysisService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideTickerService(retrofit: Retrofit): TickerService {
+        return retrofit.create(TickerService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideKlineService(retrofit: Retrofit): KlineService {
+        return retrofit.create(KlineService::class.java)
     }
 
     @Provides

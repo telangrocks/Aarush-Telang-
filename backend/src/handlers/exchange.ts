@@ -182,6 +182,44 @@ export async function handleGetTicker(
   }
 }
 
+export async function handleGetKlines(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const symbol = c.req.query("symbol");
+    const interval = c.req.query("interval") || "1h";
+    const limit = parseInt(c.req.query("limit") || "100", 10);
+
+    if (!symbol) {
+      c.status(400);
+      return c.json({ error: "symbol query parameter is required" });
+    }
+
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const user = await c.env.DB.prepare(
+      "SELECT exchange_name FROM users WHERE id = ?",
+    )
+      .bind(userId)
+      .first<{ exchange_name: string | null }>();
+
+    if (!user?.exchange_name) {
+      c.status(400);
+      return c.json({ error: "No exchange connected. Please connect an exchange first." });
+    }
+
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
+    const klines = await adapter.fetchKlines(symbol, interval, limit);
+
+    return c.json(klines);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ error: "Error fetching klines", message: error.message });
+  }
+}
+
 export async function handleGetTechnicalAnalysis(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {

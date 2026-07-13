@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, Kline } from "./BaseExchange";
 import { ExchangeConfig } from "./types";
 
 async function hmacSha512(message: string, secret: string): Promise<ArrayBuffer> {
@@ -113,5 +113,9 @@ export class KrakenExchange implements IExchangeAdapter {
     } catch {
       return [];
     }
+  }
+
+  async fetchKlines(_symbol: string, _interval: string, _limit: number): Promise<Kline[]> {
+    return [];
   }
 }

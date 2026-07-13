@@ -34,15 +34,17 @@ import kotlinx.coroutines.launch
 fun TradeAlertScreen(
     onBack: () -> Unit,
     onTradeExecuted: () -> Unit,
+    candidate: MarketCandidate,
+    entryPrice: Double,
+    stopLossPrice: Double,
+    takeProfitPrice: Double,
+    estimatedPnl: Double,
     viewModel: ExchangeViewModel = hiltViewModel(),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var isProcessing by remember { mutableStateOf(false) }
-
-    val alert = viewModel.pendingAlert.collectAsState(initial = null).value
-    val candidate = viewModel.selectedCandidate.collectAsState(initial = null).value
 
     LaunchedEffect(Unit) {
         val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
@@ -137,52 +139,28 @@ fun TradeAlertScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                if (alert != null) {
-                    GlowCard {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.NotificationsActive, null, tint = Color(0xFFBB86FC), modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "TRADE DETAILS",
-                                    color = Color(0xFFBB86FC),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    letterSpacing = 1.2.sp,
-                                )
-                            }
-                            Spacer(Modifier.height(12.dp))
-                            Divider(color = NavyBorder, thickness = 0.5.dp)
-                            Spacer(Modifier.height(10.dp))
-
-                            SummaryRow("Pair", alert.symbol, TextPrimary)
-                            SummaryRow("Entry Price", "${"%.2f".format(alert.entryPrice)} USDT", TextPrimary)
-                            SummaryRow("Stop Loss", "${"%.2f".format(alert.stopLoss)} USDT", LossRed)
-                            SummaryRow("Take Profit", "${"%.2f".format(alert.takeProfit)} USDT", ProfitGreen)
-                            SummaryRow("Est. P&L", "+${"%.2f".format(alert.estimatedPnl)} USDT", ProfitGreen)
-                            SummaryRow("Strategy", alert.strategy.replaceFirstChar { it.uppercase() }, CyanPrimary)
-
-                            Spacer(Modifier.height(10.dp))
-                            Divider(color = NavyBorder, thickness = 0.5.dp)
-                            Spacer(Modifier.height(10.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(Icons.Default.Warning, null, tint = Color(0xFFFFA726), modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    "This opportunity may expire quickly.",
-                                    color = Color(0xFFFFA726),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                            }
+                GlowCard {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.NotificationsActive, null, tint = Color(0xFFBB86FC), modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "TRADE DETAILS",
+                                color = Color(0xFFBB86FC),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                letterSpacing = 1.2.sp,
+                            )
                         }
-                    }
-                }
+                        Spacer(Modifier.height(12.dp))
+                        Divider(color = NavyBorder, thickness = 0.5.dp)
+                        Spacer(Modifier.height(10.dp))
+
+                        SummaryRow("Pair", candidate.pairName, TextPrimary)
+                        SummaryRow("Entry Price", "${"%.2f".format(entryPrice)} USDT", TextPrimary)
+                        SummaryRow("Stop Loss", "${"%.2f".format(stopLossPrice)} USDT", LossRed)
+                        SummaryRow("Take Profit", "${"%.2f".format(takeProfitPrice)} USDT", ProfitGreen)
+                        SummaryRow("Est. P&L", "+${"%.2f".format(estimatedPnl)} USDT", ProfitGreen)
 
                 Spacer(Modifier.height(16.dp))
             }

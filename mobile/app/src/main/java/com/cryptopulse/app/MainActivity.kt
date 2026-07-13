@@ -215,11 +215,66 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("trade_alert") {
+                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                            val tradeSetup by viewModel.tradeSetup.collectAsState(initial = null)
+                            val candidate = selectedCandidate ?: MarketCandidate(
+                                rank = 1,
+                                symbol = "BTC",
+                                pairName = "BTC/USDT",
+                                coinName = "Bitcoin",
+                                notations = 100,
+                                currentMarketPrice = 50000.0,
+                                minNotional = 10.0,
+                                coinColor = Color(0xFFF7931A),
+                            )
+                            val setup = tradeSetup ?: TradeSetupState(
+                                entryPrice = candidate.currentMarketPrice,
+                                stopLossPrice = candidate.currentMarketPrice * 0.99,
+                                takeProfitPrice = candidate.currentMarketPrice * 1.02,
+                                positionSize = 100.0,
+                            )
                             TradeAlertScreen(
                                 onBack = { navController.popBackStack() },
                                 onTradeExecuted = {
-                                    navController.popBackStack()
-                                }
+                                    navController.navigate("live_pnl_monitoring") {
+                                        popUpTo("technical_analysis") { inclusive = false }
+                                    }
+                                },
+                                candidate = candidate,
+                                entryPrice = setup.entryPrice,
+                                stopLossPrice = setup.stopLossPrice,
+                                takeProfitPrice = setup.takeProfitPrice,
+                                positionSize = setup.positionSize,
+                            )
+                        }
+                        composable("live_pnl_monitoring") {
+                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                            val tradeSetup by viewModel.lastTrade.collectAsState(initial = null)
+                            val candidate = selectedCandidate ?: MarketCandidate(
+                                rank = 1,
+                                symbol = "BTC",
+                                pairName = "BTC/USDT",
+                                coinName = "Bitcoin",
+                                notations = 100,
+                                currentMarketPrice = 50000.0,
+                                minNotional = 10.0,
+                                coinColor = Color(0xFFF7931A),
+                            )
+                            val setup = tradeSetup ?: TradeSetupState(
+                                entryPrice = candidate.currentMarketPrice,
+                                stopLossPrice = candidate.currentMarketPrice * 0.99,
+                                takeProfitPrice = candidate.currentMarketPrice * 1.02,
+                                positionSize = 100.0,
+                            )
+                            LivePnLMonitoringScreen(
+                                candidate = candidate,
+                                entryPrice = setup.entryPrice,
+                                stopLossPrice = setup.stopLossPrice,
+                                takeProfitPrice = setup.takeProfitPrice,
+                                positionSize = setup.positionSize,
+                                onBack = { navController.popBackStack() },
                             )
                         }
                     }

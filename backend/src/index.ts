@@ -17,6 +17,7 @@ import {
   handleGetStrategies,
   handleGetTechnicalAnalysis,
   handleGetTicker,
+  handleGetKlines,
   handleActivateTradingBot,
   handleGetTradingBotStatus,
   handleExecuteTrade,
@@ -196,6 +197,7 @@ api.get("/market/candidates", handleGetPersonalizedMarketCandidates);
 api.get("/strategies", handleGetStrategies);
 
 api.get("/market/ticker", handleGetTicker);
+api.get("/market/klines", handleGetKlines);
 
 api.post("/market/technical-analysis", handleGetTechnicalAnalysis);
 

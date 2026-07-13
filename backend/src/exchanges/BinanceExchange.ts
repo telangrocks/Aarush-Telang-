@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline } from "./BaseExchange";
 import { ExchangeConfig } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
@@ -92,6 +92,30 @@ export class BinanceExchange implements IExchangeAdapter {
           lowPrice24h: parseFloat(item.lowPrice),
           minNotional: minNotionalMap.get(item.symbol) || 0,
         }));
+    } catch {
+      return [];
+    }
+  }
+
+  async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
+    try {
+      const params = new URLSearchParams({
+        symbol: `${symbol.toUpperCase()}USDT`,
+        interval,
+        limit: limit.toString(),
+      });
+      const response = await fetch(`${this.config.restUrl}/api/v3/klines?${params}`);
+      if (!response.ok) return [];
+      const data = (await response.json()) as any[];
+      return data.map((k: any[]) => ({
+        openTime: k[0],
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+        closeTime: k[6],
+      }));
     } catch {
       return [];
     }

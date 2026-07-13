@@ -92,6 +92,9 @@ class ExchangeViewModel @Inject constructor(
     private val _pendingAlert = MutableStateFlow<Map<String, Any>?>(null)
     val pendingAlert: StateFlow<Map<String, Any>?> = _pendingAlert
 
+    private val _lastTrade = MutableStateFlow<TradeSetupState?>(null)
+    val lastTrade: StateFlow<TradeSetupState?> = _lastTrade
+
     fun onExchangeSelected(exchange: String) {
         _formState.value = _formState.value.copy(selectedExchange = exchange)
     }
@@ -277,6 +280,7 @@ class ExchangeViewModel @Inject constructor(
     fun executeCurrentTrade() {
         val candidate = _selectedCandidate.value ?: return
         val alert = _pendingAlert.value ?: return
+        val tradeSetup = _tradeSetup.value
 
         viewModelScope.launch {
             try {
@@ -289,6 +293,9 @@ class ExchangeViewModel @Inject constructor(
                             tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
                         }
                         _pendingAlert.value = null
+                        if (tradeSetup != null) {
+                            _lastTrade.value = tradeSetup
+                        }
                     }
                 }
             } catch (e: Exception) {

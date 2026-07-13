@@ -17,6 +17,16 @@ export interface MarketTicker {
   minNotional: number;
 }
 
+export interface Kline {
+  openTime: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  closeTime: number;
+}
+
 export interface ValidationResult {
   success: boolean;
   message: string;
