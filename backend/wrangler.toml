@@ -13,4 +13,4 @@ bindings = [{ name = "TRADING_BOTS", class_name = "TradingBot" }]
 
 [[migrations]]
 tag = "v1"
-new_classes = ["TradingBot"]
+new_sqlite_classes = ["TradingBot"]
