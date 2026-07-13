@@ -13,6 +13,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -85,14 +86,14 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("connect_exchange") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             ConnectExchangeScreen(
                                 navController = navController,
                                 viewModel = viewModel
                             )
                         }
                         composable("market_candidates") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
                             MarketCandidatesScreen(
                                 onCandidateClick = { candidate ->
@@ -103,7 +104,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("trade_setup") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
                             val candidate = selectedCandidate ?: MarketCandidate(
                                 rank = 1,
@@ -125,7 +126,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("trade_confirmation") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
                             val tradeSetup by viewModel.tradeSetup.collectAsState(initial = null)
                             val candidate = selectedCandidate ?: MarketCandidate(
@@ -158,7 +159,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("strategy_selection") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
                             val candidate = selectedCandidate ?: MarketCandidate(
                                 rank = 1,
@@ -185,7 +186,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("technical_analysis") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
                             val selectedStrategy by viewModel.selectedStrategy.collectAsState(initial = null)
                             val candidate = selectedCandidate ?: MarketCandidate(
@@ -215,7 +216,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("trade_alert") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
                             val tradeSetup by viewModel.tradeSetup.collectAsState(initial = null)
                             val candidate = selectedCandidate ?: MarketCandidate(
@@ -234,6 +235,8 @@ class MainActivity : ComponentActivity() {
                                 takeProfitPrice = candidate.currentMarketPrice * 1.02,
                                 positionSize = 100.0,
                             )
+                            val estimatedPnl =
+                                (setup.takeProfitPrice - setup.entryPrice) / setup.entryPrice * setup.positionSize
                             TradeAlertScreen(
                                 onBack = { navController.popBackStack() },
                                 onTradeExecuted = {
@@ -245,11 +248,12 @@ class MainActivity : ComponentActivity() {
                                 entryPrice = setup.entryPrice,
                                 stopLossPrice = setup.stopLossPrice,
                                 takeProfitPrice = setup.takeProfitPrice,
+                                estimatedPnl = estimatedPnl,
                                 positionSize = setup.positionSize,
                             )
                         }
                         composable("live_pnl_monitoring") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>()
+                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
                             val tradeSetup by viewModel.lastTrade.collectAsState(initial = null)
                             val candidate = selectedCandidate ?: MarketCandidate(

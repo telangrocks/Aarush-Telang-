@@ -3,6 +3,7 @@ package com.cryptopulse.app.ui.screens
 import android.annotation.SuppressLint
 import android.view.ViewGroup
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -22,11 +23,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
+import com.google.gson.Gson
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -40,7 +43,7 @@ fun LivePnLMonitoringScreen(
     takeProfitPrice: Double,
     positionSize: Double,
     onBack: () -> Unit,
-    viewModel: ExchangeViewModel = hiltViewModel(),
+    viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
@@ -50,9 +53,14 @@ fun LivePnLMonitoringScreen(
     var lastUpdated by remember { mutableStateOf(System.currentTimeMillis()) }
     var isLoading by remember { mutableStateOf(true) }
 
+    val klines by viewModel.klines.collectAsState(initial = emptyList())
+    val webViewRef = remember { mutableStateOf<WebView?>(null) }
+    var pageReady by remember { mutableStateOf(false) }
+
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(candidate.symbol) {
+        viewModel.fetchKlines()
         while (true) {
             try {
                 val ticker = viewModel.ticker.value
@@ -75,6 +83,30 @@ fun LivePnLMonitoringScreen(
         while (true) {
             delay(5000)
             viewModel.fetchTicker()
+        }
+    }
+
+    // Push historical candles into the chart once both data and the page are ready.
+    LaunchedEffect(klines, pageReady) {
+        if (klines.isNotEmpty() && pageReady) {
+            val data = klines.map { k ->
+                mapOf(
+                    "time" to (k.openTime / 1000),
+                    "open" to k.open,
+                    "high" to k.high,
+                    "low" to k.low,
+                    "close" to k.close,
+                )
+            }
+            val json = Gson().toJson(data)
+            webViewRef.value?.evaluateJavascript("window.cpSetCandles($json)", null)
+        }
+    }
+
+    // Update the last candle with the live price.
+    LaunchedEffect(livePrice) {
+        if (pageReady) {
+            webViewRef.value?.evaluateJavascript("window.cpUpdatePrice($livePrice)", null)
         }
     }
 
@@ -153,44 +185,23 @@ fun LivePnLMonitoringScreen(
                                         settings.javaScriptEnabled = true
                                         settings.domStorageEnabled = true
                                         settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
-                                        loadUrl("about:blank")
-                                    }
+                                        webViewClient = object : WebViewClient() {
+                                            override fun onPageFinished(view: WebView?, url: String?) {
+                                                super.onPageFinished(view, url)
+                                                pageReady = true
+                                            }
+                                        }
+                                        loadDataWithBaseURL(
+                                            null,
+                                            buildChartHtml(),
+                                            "text/html",
+                                            "utf8",
+                                            null,
+                                        )
+                                    }.also { webViewRef.value = it }
                                 },
                                 update = { webView ->
-                                    val html = """
-                                        <!DOCTYPE html>
-                                        <html>
-                                        <head>
-                                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                                            <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-                                            <style>
-                                                body { margin: 0; padding: 0; background: #0a0e17; }
-                                                #chart { width: 100%; height: 100vh; }
-                                            </style>
-                                        </head>
-                                        <body>
-                                            <div id="chart"></div>
-                                            <script>
-                                                const chart = LightweightCharts.createChart(document.getElementById('chart'), {
-                                                    layout: { background: { color: '#0a0e17' }, textColor: '#d1d5db' },
-                                                    grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
-                                                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                                                    rightPriceScale: { borderColor: '#485460' },
-                                                    timeScale: { borderColor: '#485460', timeVisible: true, secondsVisible: false },
-                                                });
-                                                const candlestickSeries = chart.addCandlestickSeries({
-                                                    upColor: '#00bfa5',
-                                                    downColor: '#ff5252',
-                                                    borderVisible: false,
-                                                    wickUpColor: '#00bfa5',
-                                                    wickDownColor: '#ff5252',
-                                                });
-                                                chart.timeScale().fitContent();
-                                            </script>
-                                        </body>
-                                        </html>
-                                    """.trimIndent()
-                                    webView.loadDataWithBaseURL(null, html, "text/html", "utf8", null)
+                                    webViewRef.value = webView
                                 },
                             )
                         }
@@ -292,6 +303,65 @@ fun LivePnLMonitoringScreen(
             }
         }
     }
+}
+
+private fun buildChartHtml(): String {
+    return """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+            <style>
+                body { margin: 0; padding: 0; background: #0a0e17; }
+                #chart { width: 100%; height: 100vh; }
+            </style>
+        </head>
+        <body>
+            <div id="chart"></div>
+            <script>
+                var chart = null;
+                var series = null;
+                function initChart() {
+                    if (series) return;
+                    chart = LightweightCharts.createChart(document.getElementById('chart'), {
+                        layout: { background: { color: '#0a0e17' }, textColor: '#d1d5db' },
+                        grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
+                        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                        rightPriceScale: { borderColor: '#485460' },
+                        timeScale: { borderColor: '#485460', timeVisible: true, secondsVisible: false },
+                    });
+                    series = chart.addCandlestickSeries({
+                        upColor: '#00bfa5',
+                        downColor: '#ff5252',
+                        borderVisible: false,
+                        wickUpColor: '#00bfa5',
+                        wickDownColor: '#ff5252',
+                    });
+                    chart.timeScale().fitContent();
+                }
+                window.cpSetCandles = function (json) {
+                    initChart();
+                    var data = json;
+                    series.setData(data);
+                    chart.timeScale().fitContent();
+                };
+                window.cpUpdatePrice = function (price) {
+                    if (!series) return;
+                    var bars = series.data();
+                    if (!bars || !bars.length) return;
+                    var last = bars[bars.length - 1];
+                    var close = parseFloat(price);
+                    last.close = close;
+                    if (close > last.high) last.high = close;
+                    if (close < last.low) last.low = close;
+                    series.update(last);
+                };
+                initChart();
+            </script>
+        </body>
+        </html>
+    """.trimIndent()
 }
 
 @Composable

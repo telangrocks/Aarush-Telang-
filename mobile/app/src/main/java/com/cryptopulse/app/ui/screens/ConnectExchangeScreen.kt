@@ -53,6 +53,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavController
 import com.cryptopulse.app.ui.auth.ExchangeUiState
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
@@ -67,7 +68,7 @@ import com.cryptopulse.app.ui.theme.*
 @Composable
 fun ConnectExchangeScreen(
     navController: NavController,
-    viewModel: ExchangeViewModel = hiltViewModel(),
+    viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val formState by viewModel.formState.collectAsState()
     val uiState by viewModel.uiState.collectAsState()

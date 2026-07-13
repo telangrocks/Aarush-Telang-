@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,7 +48,7 @@ data class MarketCandidate(
 fun MarketCandidatesScreen(
     onCandidateClick: (MarketCandidate) -> Unit,
     onBack: (() -> Unit)? = null,
-    viewModel: com.cryptopulse.app.ui.auth.ExchangeViewModel = hiltViewModel(),
+    viewModel: com.cryptopulse.app.ui.auth.ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val candidates by viewModel.candidates.collectAsState(initial = emptyList())
     val mappedCandidates = remember(candidates) { candidates.toScreenCandidates() }

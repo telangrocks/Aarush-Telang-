@@ -166,27 +166,27 @@ export class TradingBot {
       case "scalping":
         entryPrice = price;
         stopLoss = isBullish ? price * 0.995 : price * 1.005;
-        takeProfit = isBullish ? price * 0.01 : price * 0.01;
+        takeProfit = isBullish ? price * 1.01 : price * 0.99;
         break;
       case "momentum":
         entryPrice = price;
         stopLoss = isBullish ? price * 0.98 : price * 1.02;
-        takeProfit = isBullish ? price * 0.04 : price * 0.04;
+        takeProfit = isBullish ? price * 1.04 : price * 0.96;
         break;
       case "breakout":
         entryPrice = price;
-        stopLoss = isBullish ? price * 0.015 : price * 0.015;
-        takeProfit = isBullish ? price * 0.03 : price * 0.03;
+        stopLoss = isBullish ? price * 0.985 : price * 1.015;
+        takeProfit = isBullish ? price * 1.03 : price * 0.97;
         break;
       case "mean_reversion":
         entryPrice = price;
-        stopLoss = isBullish ? price * 0.02 : price * 0.02;
-        takeProfit = isBullish ? price * 0.015 : price * 0.015;
+        stopLoss = isBullish ? price * 0.98 : price * 1.02;
+        takeProfit = isBullish ? price * 1.015 : price * 0.985;
         break;
       case "vwap":
         entryPrice = price;
-        stopLoss = isBullish ? price * 0.01 : price * 0.01;
-        takeProfit = isBullish ? price * 0.02 : price * 0.02;
+        stopLoss = isBullish ? price * 0.99 : price * 1.01;
+        takeProfit = isBullish ? price * 1.02 : price * 0.98;
         break;
       default:
         entryPrice = price;
@@ -195,7 +195,7 @@ export class TradingBot {
         break;
     }
 
-    const estimatedPnl = (takeProfit - entryPrice) / entryPrice * ticker.minNotional;
+    const estimatedPnl = Math.abs((takeProfit - entryPrice) / entryPrice) * ticker.minNotional;
 
     return {
       symbol: ticker.symbol,

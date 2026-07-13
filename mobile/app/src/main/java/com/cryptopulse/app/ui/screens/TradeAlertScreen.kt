@@ -39,7 +39,7 @@ fun TradeAlertScreen(
     stopLossPrice: Double,
     takeProfitPrice: Double,
     estimatedPnl: Double,
-    viewModel: ExchangeViewModel = hiltViewModel(),
+    viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val context = LocalContext.current
@@ -160,7 +160,9 @@ fun TradeAlertScreen(
                         SummaryRow("Entry Price", "${"%.2f".format(entryPrice)} USDT", TextPrimary)
                         SummaryRow("Stop Loss", "${"%.2f".format(stopLossPrice)} USDT", LossRed)
                         SummaryRow("Take Profit", "${"%.2f".format(takeProfitPrice)} USDT", ProfitGreen)
-                        SummaryRow("Est. P&L", "+${"%.2f".format(estimatedPnl)} USDT", ProfitGreen)
+                        val pnlSign = if (estimatedPnl >= 0) "+" else ""
+                        val pnlColor = if (estimatedPnl >= 0) ProfitGreen else LossRed
+                        SummaryRow("Est. P&L", "$pnlSign${"%.2f".format(estimatedPnl)} USDT", pnlColor)
 
                 Spacer(Modifier.height(16.dp))
             }

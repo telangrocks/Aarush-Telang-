@@ -115,10 +115,4 @@ object AppModule {
     fun provideTradingBotService(retrofit: Retrofit): TradingBotService {
         return retrofit.create(TradingBotService::class.java)
     }
-
-    @Provides
-    @Singleton
-    fun provideTickerService(retrofit: Retrofit): TickerService {
-        return retrofit.create(TickerService::class.java)
-    }
 }

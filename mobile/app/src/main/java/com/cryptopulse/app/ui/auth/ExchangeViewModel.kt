@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.cryptopulse.app.data.api.ActivateBotRequest
 import com.cryptopulse.app.data.api.ConnectExchangeRequest
 import com.cryptopulse.app.data.api.ExchangeService
+import com.cryptopulse.app.data.api.KlineDto
+import com.cryptopulse.app.data.api.KlineService
 import com.cryptopulse.app.data.api.MarketCandidateDto
 import com.cryptopulse.app.data.api.MarketService
 import com.cryptopulse.app.data.api.StrategyDto
@@ -55,6 +57,7 @@ class ExchangeViewModel @Inject constructor(
     private val strategyService: StrategyService,
     private val technicalAnalysisService: TechnicalAnalysisService,
     private val tickerService: TickerService,
+    private val klineService: KlineService,
     private val tradingBotService: com.cryptopulse.app.data.api.TradingBotService,
     private val tokenManager: com.cryptopulse.app.data.local.TokenManager,
 ) : ViewModel() {
@@ -88,6 +91,9 @@ class ExchangeViewModel @Inject constructor(
 
     private val _ticker = MutableStateFlow<TickerResponse?>(null)
     val ticker: StateFlow<TickerResponse?> = _ticker
+
+    private val _klines = MutableStateFlow<List<KlineDto>>(emptyList())
+    val klines: StateFlow<List<KlineDto>> = _klines
 
     private val _pendingAlert = MutableStateFlow<Map<String, Any>?>(null)
     val pendingAlert: StateFlow<Map<String, Any>?> = _pendingAlert
@@ -249,6 +255,21 @@ class ExchangeViewModel @Inject constructor(
                 val response = tickerService.getTicker(candidate.symbol)
                 if (response.isSuccessful && response.body() != null) {
                     _ticker.value = response.body()
+                }
+            } catch (e: Exception) {
+                // Silently fail
+            }
+        }
+    }
+
+    fun fetchKlines(interval: String = "1h", limit: Int = 100) {
+        val candidate = _selectedCandidate.value ?: return
+
+        viewModelScope.launch {
+            try {
+                val response = klineService.getKlines(candidate.symbol, interval, limit)
+                if (response.isSuccessful && response.body() != null) {
+                    _klines.value = response.body()!!
                 }
             } catch (e: Exception) {
                 // Silently fail

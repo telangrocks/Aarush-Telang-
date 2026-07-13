@@ -19,11 +19,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.ui.platform.LocalContext
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
+import kotlin.math.abs
 import kotlinx.coroutines.launch
 
 @Composable
@@ -34,7 +36,7 @@ fun TradeConfirmationScreen(
     takeProfitPrice: Double,
     positionSize: Double,
     onBack: () -> Unit,
-    viewModel: ExchangeViewModel = hiltViewModel(),
+    viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
     onConfirmTrade: () -> Unit = {},
 ) {
     val stopLossPct    = if (entryPrice > 0) abs((stopLossPrice - entryPrice) / entryPrice * 100) else 0.0
