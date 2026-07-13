@@ -30,10 +30,12 @@ export class DeltaExchange implements IExchangeAdapter {
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
       const timestamp = Math.floor(Date.now() / 1000).toString();
+      const requestPath = "/v2/account/wallet/balance";
       const query = `timestamp=${timestamp}`;
-      const signature = await hmacSha256(query, apiSecret);
+      const prehash = timestamp + "GET" + requestPath + "?" + query;
+      const signature = await hmacSha256(prehash, apiSecret);
 
-      const response = await fetch(`${this.config.restUrl}/v2/account/wallet/balance?${query}`, {
+      const response = await fetch(`${this.config.restUrl}${requestPath}?${query}`, {
         headers: {
           "API-Key": apiKey,
           "Signature": signature,
@@ -124,14 +126,16 @@ export class DeltaExchange implements IExchangeAdapter {
   async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, _quantity?: number): Promise<OrderResult> {
     try {
       const timestamp = Math.floor(Date.now() / 1000).toString();
+      const requestPath = "/v2/orders";
       const body = JSON.stringify({
         symbol: `${symbol.toUpperCase()}USDT`,
         side: side === "BUY" ? "buy" : "sell",
         type: "market",
         quantity: 0.001,
       });
-      const signature = await hmacSha256(timestamp + body, apiSecret);
-      const response = await fetch(`${this.config.restUrl}/v2/orders`, {
+      const prehash = timestamp + "POST" + requestPath + body;
+      const signature = await hmacSha256(prehash, apiSecret);
+      const response = await fetch(`${this.config.restUrl}${requestPath}`, {
         method: "POST",
         headers: {
           "API-Key": apiKey,

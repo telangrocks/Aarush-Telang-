@@ -33,6 +33,7 @@ export interface Env {
   RESEND_API_KEY: string;
   RESEND_FROM_EMAIL?: string;
   AUTH_ALLOW_DEV_OTP_FALLBACK?: string;
+  ALLOWED_ORIGINS?: string;
   TRADING_BOTS: DurableObjectNamespace;
 }
 
@@ -40,7 +41,16 @@ const app = new Hono<{ Bindings: Env }>();
 
 // Apply security headers and CORS middleware to all routes
 app.use("*", secureHeaders());
-app.use("*", cors());
+app.use("*", async (c, next) => {
+  // Restrict CORS to a configurable allow-list when provided; otherwise fall
+  // back to the permissive default (acceptable for a mobile/token-auth API).
+  const allowedOrigins = (c.env?.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+  const middleware = cors(allowedOrigins.length ? { origin: allowedOrigins } : {});
+  return middleware(c, next);
+});
 
 // ==========================================
 // PUBLIC ENDPOINTS

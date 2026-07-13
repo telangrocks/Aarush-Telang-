@@ -43,17 +43,27 @@ export async function verifyPassword(password: string, storedHash: string): Prom
       keyMaterial,
       { name: 'AES-GCM', length: 256 },
       true,
-      ['encrypt', 'decrypt']
+      ['encrypt', 'decrypt'],
     );
 
     const keyBytes = await crypto.subtle.exportKey('raw', derivedKey);
-    const newHashString = Array.from(new Uint8Array(keyBytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const computed = new Uint8Array(keyBytes);
+    const expected = hexToBytes(hashString);
 
-    return newHashString === hashString;
+    if (computed.length !== expected.length) return false;
+    // Constant-time comparison to avoid timing side-channels.
+    return crypto.subtle.timingSafeEqual(computed, expected);
   } catch (error) {
     console.error("Password verification error:", error);
     return false;
   }
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const matches = hex.match(/.{1,2}/g);
+  if (!matches) return new Uint8Array(0);
+  return new Uint8Array(matches.map(byte => parseInt(byte, 16)));
+}
 }
 
 /**

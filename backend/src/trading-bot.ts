@@ -10,6 +10,7 @@ interface TradeAlert {
   takeProfit: number;
   estimatedPnl: number;
   strategy: string;
+  side: 'BUY' | 'SELL';
   timestamp: string;
   status: 'pending' | 'acknowledged' | 'executed';
 }
@@ -59,7 +60,7 @@ export class TradingBot {
         const alert = alerts.find(a => a.id === alertId);
         if (alert) {
           alert.status = 'acknowledged';
-          await this.state.storage.put('alerts', alerts);
+          await this.state.storage.put('alerts', this.pruneAlerts(alerts));
         }
         return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
@@ -84,20 +85,31 @@ export class TradingBot {
 
         const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName);
         const coinId = (await this.state.storage.get('coinId')) as string;
-        
+
+        const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+        const pending = alerts.filter(a => a.status === 'pending');
+        if (pending.length === 0) {
+          return new Response(JSON.stringify({ error: 'No pending alert to execute.' }), { status: 400 });
+        }
+        const target = pending[pending.length - 1];
+        const side: 'BUY' | 'SELL' = target.side || 'BUY';
+        const orderSymbol = target.symbol || coinId;
+
         let orderResult: any = { success: true, message: 'Trade executed (simulated).' };
         try {
           if (adapter.placeOrder) {
-            orderResult = await adapter.placeOrder(coinId, 'BUY', userKeys.exchange_api_key, decryptedSecret);
+            orderResult = await adapter.placeOrder(orderSymbol, side, userKeys.exchange_api_key, decryptedSecret);
           }
         } catch (e: any) {
           orderResult = { success: false, message: e.message || 'Trade execution failed' };
         }
 
+        target.status = 'executed';
+        await this.state.storage.put('alerts', this.pruneAlerts(alerts));
         await this.state.storage.put('tradeActive', true);
         await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
 
-        return new Response(JSON.stringify({ success: orderResult.success, message: orderResult.message, order: orderResult }), { status: 200 });
+        return new Response(JSON.stringify({ success: orderResult.success, message: orderResult.message, side, order: orderResult }), { status: 200 });
       }
       case '/stop-trade': {
         await this.state.storage.put('tradeActive', false);
@@ -130,7 +142,7 @@ export class TradingBot {
 
       const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
       const tickers = await adapter.fetchMarketData();
-      const ticker = tickers.find(t => t.symbol.toUpperCase() === coinId.toUpperCase()) || tickers[0];
+      const ticker = tickers.find(t => t.symbol.toUpperCase() === coinId.toUpperCase());
 
       if (!ticker) return;
 
@@ -144,20 +156,28 @@ export class TradingBot {
           timestamp: new Date().toISOString(),
           status: 'pending',
         });
-        await this.state.storage.put('alerts', alerts);
+        await this.state.storage.put('alerts', this.pruneAlerts(alerts));
       }
     } catch (e) {
       console.error('Monitoring cycle error:', e);
     }
   }
 
-  private detectOpportunity(ticker: MarketTicker, strategy: string): { symbol: string; entryPrice: number; stopLoss: number; takeProfit: number; estimatedPnl: number } | null {
+  private pruneAlerts(alerts: TradeAlert[]): TradeAlert[] {
+    // Keep only actionable (pending) alerts and cap the retained history to
+    // avoid unbounded growth of the Durable Object's storage.
+    const pending = alerts.filter(a => a.status === 'pending');
+    return pending.slice(-100);
+  }
+
+  private detectOpportunity(ticker: MarketTicker, strategy: string): { symbol: string; entryPrice: number; stopLoss: number; takeProfit: number; estimatedPnl: number; side: 'BUY' | 'SELL' } | null {
     const change = ticker.priceChangePercent24h;
     const price = ticker.price;
 
     if (Math.abs(change) < 1.5) return null;
 
     const isBullish = change > 0;
+    const side: 'BUY' | 'SELL' = isBullish ? 'BUY' : 'SELL';
     let entryPrice = price;
     let stopLoss = price;
     let takeProfit = price;
@@ -203,6 +223,7 @@ export class TradingBot {
       stopLoss,
       takeProfit,
       estimatedPnl,
+      side,
     };
   }
 }

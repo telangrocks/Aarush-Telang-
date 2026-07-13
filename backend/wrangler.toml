@@ -7,6 +7,8 @@ compatibility_date = "2024-05-29"
 binding = "DB"
 database_name = "crypto_pulse_db"
 database_id = "15f49e2f-08bf-4dc5-8ec5-0860429fc0c4"
+# Location of the D1 schema migration files applied via `wrangler d1 migrations apply`.
+migrations_dir = "migrations"
 
 [durable_objects]
 bindings = [{ name = "TRADING_BOTS", class_name = "TradingBot" }]

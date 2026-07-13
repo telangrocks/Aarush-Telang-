@@ -162,7 +162,11 @@ export async function handleGetTicker(
       return c.json({ error: "Failed to fetch market data from exchange" });
     }
 
-    const ticker = tickers.find(t => t.symbol.toUpperCase() === symbol.toUpperCase()) || tickers[0];
+    const ticker = tickers.find(t => t.symbol.toUpperCase() === symbol.toUpperCase());
+    if (!ticker) {
+      c.status(404);
+      return c.json({ error: `Symbol '${symbol}' is not available on your connected exchange.` });
+    }
 
     return c.json({
       symbol: ticker.symbol,
@@ -261,7 +265,11 @@ export async function handleGetTechnicalAnalysis(
       return c.json({ error: "Failed to fetch market data from exchange" });
     }
 
-    const ticker = tickers.find(t => t.symbol === symbol.toUpperCase()) || tickers[0];
+    const ticker = tickers.find(t => t.symbol.toUpperCase() === symbol.toUpperCase());
+    if (!ticker) {
+      c.status(404);
+      return c.json({ error: `Symbol '${symbol}' is not available on your connected exchange.` });
+    }
 
     const price = ticker.price || 0;
     const change24h = ticker.priceChangePercent24h || 0;

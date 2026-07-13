@@ -96,20 +96,57 @@ export class CoinbaseExchange implements IExchangeAdapter {
 
       for (const pair of pairs) {
         try {
-          const response = await fetch(`${this.config.restUrl}/v2/prices/${pair}/spot`);
-          if (!response.ok) continue;
-          const data = await response.json() as any;
-          const price = parseFloat(data.data.amount);
+          const symbol = pair.split("-")[0];
+          let price = 0;
+          let priceChangePercent24h = 0;
+          let priceChange24h = 0;
+          let highPrice24h = 0;
+          let lowPrice24h = 0;
+          let volume24h = 0;
+
+          const candlesResponse = await fetch(
+            `${this.config.restUrl}/api/v3/brokerage/products/${pair}/candles?granularity=3600&limit=24`,
+          );
+          if (candlesResponse.ok) {
+            const candlesData = await candlesResponse.json() as any;
+            const candles: any[] = candlesData.candles ?? [];
+            if (candles.length > 0) {
+              // Coinbase candles: [start, low, high, open, close, volume], newest first.
+              const opens = candles.map((c) => parseFloat(c[3]));
+              const closes = candles.map((c) => parseFloat(c[4]));
+              const lows = candles.map((c) => parseFloat(c[1]));
+              const highs = candles.map((c) => parseFloat(c[2]));
+              const volumes = candles.map((c) => parseFloat(c[5]));
+              const firstOpen = opens[opens.length - 1];
+              const lastClose = closes[0];
+              price = lastClose;
+              highPrice24h = Math.max(...highs);
+              lowPrice24h = Math.min(...lows);
+              volume24h = volumes.reduce((a, b) => a + b, 0);
+              if (firstOpen > 0) {
+                priceChangePercent24h = ((lastClose - firstOpen) / firstOpen) * 100;
+                priceChange24h = lastClose - firstOpen;
+              }
+            }
+          }
+
+          if (price <= 0) {
+            const priceResponse = await fetch(`${this.config.restUrl}/v2/prices/${pair}/spot`);
+            if (priceResponse.ok) {
+              const pd = await priceResponse.json() as any;
+              price = parseFloat(pd.data?.amount || 0);
+            }
+          }
+
           if (price > 0) {
-            const symbol = pair.split("-")[0];
             results.push({
               symbol,
               price,
-              volume24h: 0,
-              priceChange24h: 0,
-              priceChangePercent24h: 0,
-              highPrice24h: price * 1.02,
-              lowPrice24h: price * 0.98,
+              volume24h,
+              priceChange24h,
+              priceChangePercent24h,
+              highPrice24h: highPrice24h || price * 1.02,
+              lowPrice24h: lowPrice24h || price * 0.98,
               minNotional: minNotionalMap.get(symbol) || 0,
             });
           }

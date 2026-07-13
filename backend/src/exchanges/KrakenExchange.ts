@@ -99,12 +99,15 @@ export class KrakenExchange implements IExchangeAdapter {
       const result = tickersData.result || {};
       return Object.values(result).map((item: any) => {
         const symbol = item.wsname?.split("/")[0] || Object.keys(result)[0];
+        const open24h = parseFloat(item.o?.[1] || item.o?.[0] || 0);
+        const last = parseFloat(item.c?.[0] || item.p?.[1] || 0);
+        const changePercent = open24h > 0 ? ((last - open24h) / open24h) * 100 : 0;
         return {
           symbol,
-          price: parseFloat(item.c?.[0] || item.p?.[1] || 0),
+          price: last,
           volume24h: parseFloat(item.v?.[1] || 0),
-          priceChange24h: parseFloat(item.p?.[1] || 0) - parseFloat(item.p?.[0] || item.p?.[1] || 0),
-          priceChangePercent24h: 0,
+          priceChange24h: last - open24h,
+          priceChangePercent24h: changePercent,
           highPrice24h: parseFloat(item.h?.[1] || 0),
           lowPrice24h: parseFloat(item.l?.[1] || 0),
           minNotional: minNotionalMap.get(symbol) || 0,
