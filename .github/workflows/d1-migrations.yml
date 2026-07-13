@@ -46,9 +46,9 @@ jobs:
 
       - name: Verify D1 token
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
         run: |
-          test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN is required"; exit 1; }
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_WORKERS_API_TOKEN is required"; exit 1; }
           echo "This workflow requires a Cloudflare API token with D1 read/write permissions on database crypto_pulse_db."
 
       - name: Install Wrangler
@@ -56,17 +56,17 @@ jobs:
 
       - name: Show D1 database info
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
         run: wrangler d1 info crypto_pulse_db --config wrangler.toml
 
       - name: Apply D1 migrations
         if: ${{ inputs.action == 'apply' }}
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
         run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote
 
       - name: Inspect remote D1 schema
         if: ${{ inputs.action == 'inspect' || inputs.action == 'apply' }}
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
         run: wrangler d1 execute crypto_pulse_db --config wrangler.toml --remote --command "${{ inputs.sql_command }}"
