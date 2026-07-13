@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, Kline } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
 import { ExchangeConfig } from "./types";
 
 async function hmacSha512(message: string, secret: string): Promise<ArrayBuffer> {
@@ -115,7 +115,63 @@ export class KrakenExchange implements IExchangeAdapter {
     }
   }
 
-  async fetchKlines(_symbol: string, _interval: string, _limit: number): Promise<Kline[]> {
-    return [];
+  async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
+    try {
+      const pair = symbol.toUpperCase();
+      const response = await fetch(`${this.config.restUrl}/0/public/OHLC?pair=${pair}USDT&interval=${interval}&count=${limit}`);
+      if (!response.ok) return [];
+      const data = await response.json() as any;
+      if (data.error && data.error.length > 0) return [];
+      const result = data.result?.[pair] || data.result?.[Object.keys(data.result || {})[0]] || [];
+      if (!Array.isArray(result)) return [];
+      return result.map((k: any[]) => ({
+        openTime: parseInt(k[0]),
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[6]),
+        closeTime: parseInt(k[0]) + 3600000,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, _quantity?: number): Promise<OrderResult> {
+    try {
+      const nonce = Date.now().toString();
+      const pair = `${symbol.toUpperCase()}USDT`;
+      const volume = "0.001";
+      const body = `nonce=${nonce}&pair=${pair}&type=${side === "BUY" ? "buy" : "sell"}&ordertype=market&volume=${volume}`;
+      const path = "/0/private/AddOrder";
+      const signature = base64Encode(await hmacSha512(path + btoa(nonce) + btoa(body), apiSecret));
+
+      const response = await fetch(`${this.config.restUrl}${path}`, {
+        method: "POST",
+        headers: {
+          "API-Key": apiKey,
+          "API-Sign": signature,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
+      });
+
+      const data = await response.json() as any;
+      if (data.error && data.error.length > 0) {
+        return { success: false, message: data.error.join(", ") };
+      }
+
+      const txid = data.result?.txid?.[0];
+      return {
+        success: true,
+        message: "Order placed successfully",
+        orderId: txid,
+        price: 0,
+        quantity: parseFloat(volume),
+      };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Network error during order placement" };
+    }
   }
 }

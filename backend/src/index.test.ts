@@ -226,7 +226,6 @@ describe("App Endpoints", () => {
         ENCRYPTION_KEY: "test-encryption-key",
         JWT_SECRET: "test-secret",
         RESEND_API_KEY: "test-resend-key",
-        PRICE_CACHE: {} as KVNamespace,
         TRADING_BOTS: {} as DurableObjectNamespace,
       };
       token = await sign(

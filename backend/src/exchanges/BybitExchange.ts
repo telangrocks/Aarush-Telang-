@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, Kline } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
 import { ExchangeConfig } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
@@ -106,7 +106,77 @@ export class BybitExchange implements IExchangeAdapter {
     }
   }
 
-  async fetchKlines(_symbol: string, _interval: string, _limit: number): Promise<Kline[]> {
-    return [];
+  async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
+    try {
+      const params = new URLSearchParams({
+        category: "spot",
+        symbol: `${symbol.toUpperCase()}USDT`,
+        interval,
+        limit: limit.toString(),
+      });
+      const response = await fetch(`${this.config.restUrl}/v5/market/kline?${params}`);
+      if (!response.ok) return [];
+      const data = await response.json() as any;
+      if (data.retCode !== 0 || !Array.isArray(data.result?.list)) return [];
+      return data.result.list.map((k: any[]) => ({
+        openTime: parseInt(k[0]),
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+        closeTime: parseInt(k[6]),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, _quantity?: number): Promise<OrderResult> {
+    try {
+      const timestamp = new Date().toISOString();
+      const recvWindow = "5000";
+      const orderId = crypto.randomUUID();
+      const body = JSON.stringify({
+        category: "spot",
+        symbol: `${symbol.toUpperCase()}USDT`,
+        side: side === "BUY" ? "Buy" : "Sell",
+        orderType: "MARKET",
+        qty: "0.001",
+        orderLinkId: orderId,
+      });
+
+      const signature = await hmacSha256(
+        timestamp + apiKey + recvWindow + body,
+        apiSecret
+      );
+
+      const response = await fetch(`${this.config.restUrl}/v5/order/create`, {
+        method: "POST",
+        headers: {
+          "X-BAPI-API-KEY": apiKey,
+          "X-BAPI-SIGN": signature,
+          "X-BAPI-TIMESTAMP": timestamp,
+          "X-BAPI-RECV-WINDOW": recvWindow,
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+
+      const data = await response.json() as any;
+      if (data.retCode !== 0) {
+        return { success: false, message: data.retMsg || "Order failed" };
+      }
+
+      return {
+        success: true,
+        message: "Order placed successfully",
+        orderId: data.result?.orderId,
+        price: parseFloat(data.result?.avgPrice || 0),
+        quantity: parseFloat(data.result?.qty || 0),
+      };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Network error during order placement" };
+    }
   }
 }

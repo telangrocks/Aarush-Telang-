@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, Kline } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
 import { ExchangeConfig } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<ArrayBuffer> {
@@ -124,7 +124,70 @@ export class CoinbaseExchange implements IExchangeAdapter {
     }
   }
 
-  async fetchKlines(_symbol: string, _interval: string, _limit: number): Promise<Kline[]> {
-    return [];
+  async fetchKlines(symbol: string, _interval: string, _limit: number): Promise<Kline[]> {
+    try {
+      const pair = `${symbol.toUpperCase()}-USD`;
+      const response = await fetch(`${this.config.restUrl}/api/v3/brokerage/products/${pair}/candles`);
+      if (!response.ok) return [];
+      const data = await response.json() as any;
+      if (data.error || data.errors || !Array.isArray(data.candles)) return [];
+      return data.candles.map((k: any[]) => ({
+        openTime: parseInt(k[0]),
+        open: parseFloat(k[3]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[1]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+        closeTime: parseInt(k[0]) + 3600000,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, _quantity?: number): Promise<OrderResult> {
+    try {
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const method = "POST";
+      const requestPath = "/api/v3/brokerage/orders";
+      const body = JSON.stringify({
+        client_order_id: crypto.randomUUID(),
+        product_id: `${symbol.toUpperCase()}-USD`,
+        side: side === "BUY" ? "BUY" : "SELL",
+        order_configuration: {
+          market_market_ioc: {
+            quote_size: "10",
+          },
+        },
+      });
+      const message = timestamp + method + requestPath + body;
+      const signature = base64Encode(await hmacSha256(message, apiSecret));
+
+      const response = await fetch(`${this.config.restUrl}${requestPath}`, {
+        method: "POST",
+        headers: {
+          "CB-ACCESS-KEY": apiKey,
+          "CB-ACCESS-SIGN": signature,
+          "CB-ACCESS-TIMESTAMP": timestamp,
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+
+      const data = await response.json() as any;
+      if (data.error || data.errors) {
+        return { success: false, message: data.error?.[0]?.message || data.errors?.[0] || "Order failed" };
+      }
+
+      return {
+        success: true,
+        message: "Order placed successfully",
+        orderId: data.order?.id,
+        price: parseFloat(data.order?.average_price || 0),
+        quantity: parseFloat(data.order?.filled_size || 0),
+      };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Network error during order placement" };
+    }
   }
 }

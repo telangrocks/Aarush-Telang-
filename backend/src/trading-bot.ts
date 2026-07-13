@@ -151,16 +151,50 @@ export class TradingBot {
     }
   }
 
-  private detectOpportunity(ticker: MarketTicker, _strategy: string): { symbol: string; entryPrice: number; stopLoss: number; takeProfit: number; estimatedPnl: number } | null {
+  private detectOpportunity(ticker: MarketTicker, strategy: string): { symbol: string; entryPrice: number; stopLoss: number; takeProfit: number; estimatedPnl: number } | null {
     const change = ticker.priceChangePercent24h;
     const price = ticker.price;
 
     if (Math.abs(change) < 1.5) return null;
 
     const isBullish = change > 0;
-    const entryPrice = price;
-    const stopLoss = isBullish ? price * 0.99 : price * 1.01;
-    const takeProfit = isBullish ? price * 1.02 : price * 0.98;
+    let entryPrice = price;
+    let stopLoss = price;
+    let takeProfit = price;
+
+    switch (strategy) {
+      case "scalping":
+        entryPrice = price;
+        stopLoss = isBullish ? price * 0.995 : price * 1.005;
+        takeProfit = isBullish ? price * 0.01 : price * 0.01;
+        break;
+      case "momentum":
+        entryPrice = price;
+        stopLoss = isBullish ? price * 0.98 : price * 1.02;
+        takeProfit = isBullish ? price * 0.04 : price * 0.04;
+        break;
+      case "breakout":
+        entryPrice = price;
+        stopLoss = isBullish ? price * 0.015 : price * 0.015;
+        takeProfit = isBullish ? price * 0.03 : price * 0.03;
+        break;
+      case "mean_reversion":
+        entryPrice = price;
+        stopLoss = isBullish ? price * 0.02 : price * 0.02;
+        takeProfit = isBullish ? price * 0.015 : price * 0.015;
+        break;
+      case "vwap":
+        entryPrice = price;
+        stopLoss = isBullish ? price * 0.01 : price * 0.01;
+        takeProfit = isBullish ? price * 0.02 : price * 0.02;
+        break;
+      default:
+        entryPrice = price;
+        stopLoss = isBullish ? price * 0.99 : price * 1.01;
+        takeProfit = isBullish ? price * 1.02 : price * 0.98;
+        break;
+    }
+
     const estimatedPnl = (takeProfit - entryPrice) / entryPrice * ticker.minNotional;
 
     return {

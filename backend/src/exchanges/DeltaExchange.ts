@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, Kline } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
 import { ExchangeConfig } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
@@ -101,7 +101,58 @@ export class DeltaExchange implements IExchangeAdapter {
     }
   }
 
-  async fetchKlines(_symbol: string, _interval: string, _limit: number): Promise<Kline[]> {
-    return [];
+  async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
+    try {
+      const response = await fetch(`${this.config.restUrl}/v2/tickers/${symbol.toUpperCase()}USDT/candles?interval=${interval}&limit=${limit}`);
+      if (!response.ok) return [];
+      const data = await response.json() as any;
+      if (!data.success || !Array.isArray(data.result)) return [];
+      return data.result.map((k: any[]) => ({
+        openTime: parseInt(k[0]),
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+        closeTime: parseInt(k[0]) + 3600000,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, _quantity?: number): Promise<OrderResult> {
+    try {
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const body = JSON.stringify({
+        symbol: `${symbol.toUpperCase()}USDT`,
+        side: side === "BUY" ? "buy" : "sell",
+        type: "market",
+        quantity: 0.001,
+      });
+      const signature = await hmacSha256(timestamp + body, apiSecret);
+      const response = await fetch(`${this.config.restUrl}/v2/orders`, {
+        method: "POST",
+        headers: {
+          "API-Key": apiKey,
+          "Signature": signature,
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+      const data = await response.json() as any;
+      if (!data.success) {
+        return { success: false, message: data.error?.message || "Order failed" };
+      }
+      return {
+        success: true,
+        message: "Order placed successfully",
+        orderId: data.result?.id,
+        price: parseFloat(data.result?.avg_price || 0),
+        quantity: parseFloat(data.result?.quantity || 0),
+      };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Network error during order placement" };
+    }
   }
 }

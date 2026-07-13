@@ -33,7 +33,6 @@ export interface Env {
   RESEND_API_KEY: string;
   RESEND_FROM_EMAIL?: string;
   AUTH_ALLOW_DEV_OTP_FALLBACK?: string;
-  PRICE_CACHE: KVNamespace;
   TRADING_BOTS: DurableObjectNamespace;
 }
 
@@ -228,7 +227,52 @@ const scheduled = async (
         console.log("No active alerts to process.");
         return;
       }
-      // ... processing logic
+
+      try {
+        const tickersResponse = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+        if (!tickersResponse.ok) {
+          console.log("Failed to fetch tickers for alert processing");
+          return;
+        }
+        const tickers = await tickersResponse.json() as any[];
+        const tickerMap = new Map<string, any>();
+        for (const ticker of tickers) {
+          const symbol = ticker.symbol.replace(/USDT$/, "");
+          tickerMap.set(symbol.toUpperCase(), ticker);
+        }
+
+        for (const alert of results as any[]) {
+          try {
+            const tokenId = alert.token_id as string;
+            const targetPrice = parseFloat(alert.target_price as string);
+            const condition = alert.condition as string;
+            const symbol = tokenId.toUpperCase();
+
+            const ticker = tickerMap.get(symbol);
+            if (!ticker) continue;
+
+            const currentPrice = parseFloat(ticker.lastPrice);
+            let triggered = false;
+
+            if (condition === "ABOVE" && currentPrice >= targetPrice) {
+              triggered = true;
+            } else if (condition === "BELOW" && currentPrice <= targetPrice) {
+              triggered = true;
+            }
+
+            if (triggered) {
+              await env.DB.prepare(
+                "UPDATE price_alerts SET triggered = 1, triggered_at = ? WHERE id = ?"
+              ).bind(new Date().toISOString(), alert.id).run();
+              console.log(`Alert ${alert.id} triggered for ${symbol} at ${currentPrice}`);
+            }
+          } catch (err) {
+            console.error("Error processing alert:", err);
+          }
+        }
+      } catch (err) {
+        console.error("Error in alert processing cycle:", err);
+      }
     })(),
   );
 };
