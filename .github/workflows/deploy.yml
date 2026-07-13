@@ -51,7 +51,7 @@ jobs:
         run: test -n "$CLOUDFLARE_WORKERS_API_TOKEN" || { echo "CLOUDFLARE_WORKERS_API_TOKEN is required"; exit 1; }
 
       - name: Install Wrangler
-        run: npm install -g wrangler@3.63.1
+        run: npm install -g wrangler@4
 
       - name: Apply D1 migrations
         env:

@@ -12,7 +12,4 @@ migrations_dir = "migrations"
 
 [durable_objects]
 bindings = [{ name = "TRADING_BOTS", class_name = "TradingBot" }]
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["TradingBot"]
+migrations = [{ tag = "v1", new_sqlite_classes = ["TradingBot"] }]
