@@ -171,11 +171,12 @@ export class BinanceExchange implements IExchangeAdapter {
         side: side,
         type: 'MARKET',
         quoteOrderQty: '10',
+        timestamp: timestamp.toString(),
+        recvWindow: recvWindow.toString(),
       });
 
-      const queryString = `timestamp=${timestamp}&recvWindow=${recvWindow}&${orderParams.toString()}`;
-      const signature = await hmacSha256(queryString, apiSecret);
-      const url = `${this.getRestUrl()}/api/v3/order?timestamp=${timestamp}&recvWindow=${recvWindow}&signature=${signature}`;
+      const signature = await hmacSha256(orderParams.toString(), apiSecret);
+      const url = `${this.getRestUrl()}/api/v3/order?${orderParams.toString()}&signature=${signature}`;
 
       const response = await fetch(url, {
         method: 'POST',
