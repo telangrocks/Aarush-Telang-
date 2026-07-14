@@ -2,7 +2,25 @@
 
 The repository's D1 workflow uses the GitHub secret `WRANGLER_API_TOKEN`.
 
-## Root cause of the current failure
+## Current CI behavior (manual apply)
+
+Because the configured Cloudflare token cannot perform D1 write operations,
+CI no longer attempts `wrangler d1 migrations apply --remote`. Instead:
+
+- The **Deploy backend** workflow and the manual **D1 migrations** workflow run
+  `backend/scripts/print-d1-migration-sql.sh`, which prints the SQL for any
+  newly added migrations (and lists all migrations for reference) to the job
+  logs and the GitHub Step Summary.
+- Copy that SQL and run it manually in the Cloudflare Dashboard
+  (**D1 → crypto_pulse_db → Console**).
+- This step never contacts the Cloudflare API, so the rest of the pipeline
+  (lint, build, tests, Worker deploy) is no longer blocked by the D1 auth error.
+
+Once the token below is granted D1 write access, automated apply can be
+re-enabled by restoring `wrangler d1 migrations apply crypto_pulse_db
+--config wrangler.toml --remote` in `.github/workflows/deploy.yml`.
+
+## Root cause of the previous failure
 
 The token currently configured can authenticate to Cloudflare and read basic D1 metadata such as `wrangler d1 info`, but it cannot execute remote D1 write/query operations such as:
 

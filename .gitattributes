@@ -1,0 +1,3 @@
+# Ensure shell scripts always use LF so they run correctly on Linux CI runners,
+# even when edited/committed from Windows.
+*.sh text eol=lf

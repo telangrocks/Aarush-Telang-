@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -53,10 +55,10 @@ jobs:
       - name: Install Wrangler
         run: npm install -g wrangler@4
 
-      - name: Apply D1 migrations
+      - name: Generate D1 migration SQL (manual apply required)
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
-        run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote
+          MIGRATION_DIFF_BASE: ${{ github.event.before }}
+        run: bash scripts/print-d1-migration-sql.sh
 
       - name: Deploy Worker
         env:
