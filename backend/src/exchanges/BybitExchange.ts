@@ -29,7 +29,7 @@ export class BybitExchange implements IExchangeAdapter {
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
-      const timestamp = new Date().toISOString();
+      const timestamp = Date.now().toString();
       const recvWindow = "5000";
       const query = `timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
       const signature = await hmacSha256(timestamp + apiKey + recvWindow + query, apiSecret);
@@ -134,7 +134,7 @@ export class BybitExchange implements IExchangeAdapter {
 
   async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, _quantity?: number): Promise<OrderResult> {
     try {
-      const timestamp = new Date().toISOString();
+      const timestamp = Date.now().toString();
       const recvWindow = "5000";
       const orderId = crypto.randomUUID();
       const body = JSON.stringify({
