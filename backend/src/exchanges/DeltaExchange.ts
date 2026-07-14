@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
-import { ExchangeConfig } from "./types";
+import { ExchangeConfig, ExchangeEnvironment } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -21,10 +21,23 @@ export class DeltaExchange implements IExchangeAdapter {
     name: "delta",
     displayName: "Delta Exchange",
     restUrl: "https://api.delta.exchange",
+    testnetUrl: "https://api-testnet.delta.exchange",
   };
+
+  private environment: ExchangeEnvironment = "mainnet";
 
   getName() {
     return this.config.displayName;
+  }
+
+  setEnvironment(environment: ExchangeEnvironment) {
+    this.environment = environment;
+  }
+
+  getRestUrl(): string {
+    return this.environment === "testnet" && this.config.testnetUrl
+      ? this.config.testnetUrl
+      : this.config.restUrl;
   }
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
@@ -35,7 +48,7 @@ export class DeltaExchange implements IExchangeAdapter {
       const prehash = timestamp + "GET" + requestPath + "?" + query;
       const signature = await hmacSha256(prehash, apiSecret);
 
-      const response = await fetch(`${this.config.restUrl}${requestPath}?${query}`, {
+      const response = await fetch(`${this.getRestUrl()}${requestPath}?${query}`, {
         headers: {
           "API-Key": apiKey,
           "Signature": signature,
@@ -61,8 +74,8 @@ export class DeltaExchange implements IExchangeAdapter {
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
       const [tickersResponse, productsResponse] = await Promise.all([
-        fetch(`${this.config.restUrl}/v2/tickers`),
-        fetch(`${this.config.restUrl}/v2/products`),
+        fetch(`${this.getRestUrl()}/v2/tickers`),
+        fetch(`${this.getRestUrl()}/v2/products`),
       ]);
 
       if (!tickersResponse.ok || !productsResponse.ok) {
@@ -105,7 +118,7 @@ export class DeltaExchange implements IExchangeAdapter {
 
   async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
     try {
-      const response = await fetch(`${this.config.restUrl}/v2/tickers/${symbol.toUpperCase()}USDT/candles?interval=${interval}&limit=${limit}`);
+      const response = await fetch(`${this.getRestUrl()}/v2/tickers/${symbol.toUpperCase()}USDT/candles?interval=${interval}&limit=${limit}`);
       if (!response.ok) return [];
       const data = await response.json() as any;
       if (!data.success || !Array.isArray(data.result)) return [];
@@ -135,7 +148,7 @@ export class DeltaExchange implements IExchangeAdapter {
       });
       const prehash = timestamp + "POST" + requestPath + body;
       const signature = await hmacSha256(prehash, apiSecret);
-      const response = await fetch(`${this.config.restUrl}${requestPath}`, {
+      const response = await fetch(`${this.getRestUrl()}${requestPath}`, {
         method: "POST",
         headers: {
           "API-Key": apiKey,

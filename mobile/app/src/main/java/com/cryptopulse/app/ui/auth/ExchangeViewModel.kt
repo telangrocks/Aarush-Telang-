@@ -35,6 +35,7 @@ sealed class ExchangeUiState {
 
 data class ExchangeFormState(
     val selectedExchange: String = "binance",
+    val environment: String = "testnet",
     val apiKey: String = "",
     val apiSecret: String = "",
     val apiKeyError: String? = null,
@@ -105,6 +106,10 @@ class ExchangeViewModel @Inject constructor(
         _formState.value = _formState.value.copy(selectedExchange = exchange)
     }
 
+    fun onEnvironmentSelected(environment: String) {
+        _formState.value = _formState.value.copy(environment = environment)
+    }
+
     fun onApiKeyChanged(apiKey: String) {
         _formState.value = _formState.value.copy(apiKey = apiKey, apiKeyError = null)
     }
@@ -136,6 +141,7 @@ class ExchangeViewModel @Inject constructor(
                     exchangeName = state.selectedExchange,
                     apiKey = state.apiKey,
                     apiSecret = state.apiSecret,
+                    environment = state.environment,
                 )
                 val validationResponse = exchangeService.validate(validationRequest)
 
@@ -152,6 +158,7 @@ class ExchangeViewModel @Inject constructor(
                     exchangeName = state.selectedExchange,
                     apiKey = state.apiKey,
                     apiSecret = state.apiSecret,
+                    environment = state.environment,
                 )
                 val connectResponse = exchangeService.connect(connectRequest)
 

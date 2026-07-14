@@ -8,6 +8,7 @@ data class ValidateExchangeRequest(
     val exchangeName: String,
     val apiKey: String,
     val apiSecret: String,
+    val environment: String = "mainnet",
 )
 
 data class ValidationResponse(
@@ -19,12 +20,14 @@ data class ConnectExchangeRequest(
     val exchangeName: String,
     val apiKey: String,
     val apiSecret: String,
+    val environment: String = "mainnet",
 )
 
 data class ConnectExchangeResponse(
     val success: Boolean,
     val message: String,
     val exchangeName: String?,
+    val environment: String? = null,
 )
 
 interface ExchangeService {

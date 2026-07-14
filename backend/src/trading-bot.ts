@@ -1,6 +1,14 @@
 import { Env } from './index';
-import { getExchangeAdapter, ExchangeName, MarketTicker } from './exchanges';
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, MarketTicker } from './exchanges';
 import { decrypt } from './crypto';
+
+/**
+ * Normalize an untrusted environment value into a valid ExchangeEnvironment,
+ * defaulting to "mainnet" unless "testnet" is explicitly stored.
+ */
+function normalizeEnvironment(value: unknown): ExchangeEnvironment {
+  return value === 'testnet' ? 'testnet' : 'mainnet';
+}
 
 interface TradeAlert {
   id: string;
@@ -71,8 +79,8 @@ export class TradingBot {
         }
 
         const userKeys = await this.env.DB.prepare(
-          'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name FROM users WHERE id = ?'
-        ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string }>();
+          'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment FROM users WHERE id = ?'
+        ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null }>();
 
         if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
           return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
@@ -83,7 +91,7 @@ export class TradingBot {
           this.env.ENCRYPTION_KEY,
         );
 
-        const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName);
+        const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment));
         const coinId = (await this.state.storage.get('coinId')) as string;
 
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
@@ -135,12 +143,12 @@ export class TradingBot {
       const userId = (await this.state.storage.get('userId')) as string;
 
       const user = await this.env.DB.prepare(
-        'SELECT exchange_name FROM users WHERE id = ?'
-      ).bind(userId).first<{ exchange_name: string }>();
+        'SELECT exchange_name, exchange_environment FROM users WHERE id = ?'
+      ).bind(userId).first<{ exchange_name: string; exchange_environment: string | null }>();
 
       if (!user?.exchange_name) return;
 
-      const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
+      const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
       const tickers = await adapter.fetchMarketData();
       const ticker = tickers.find(t => t.symbol.toUpperCase() === coinId.toUpperCase());
 

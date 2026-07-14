@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
-import { ExchangeConfig } from "./types";
+import { ExchangeConfig, ExchangeEnvironment } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<ArrayBuffer> {
   const encoder = new TextEncoder();
@@ -27,10 +27,23 @@ export class CoinbaseExchange implements IExchangeAdapter {
     name: "coinbase",
     displayName: "Coinbase Advanced Trade",
     restUrl: "https://api.coinbase.com",
+    testnetUrl: "https://api.sandbox.coinbase.com",
   };
+
+  private environment: ExchangeEnvironment = "mainnet";
 
   getName() {
     return this.config.displayName;
+  }
+
+  setEnvironment(environment: ExchangeEnvironment) {
+    this.environment = environment;
+  }
+
+  getRestUrl(): string {
+    return this.environment === "testnet" && this.config.testnetUrl
+      ? this.config.testnetUrl
+      : this.getRestUrl();
   }
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
@@ -43,7 +56,7 @@ export class CoinbaseExchange implements IExchangeAdapter {
       const message = timestamp + method + requestPath + body;
       const signature = base64Encode(await hmacSha256(message, apiSecret));
 
-      const response = await fetch(`${this.config.restUrl}${requestPath}`, {
+      const response = await fetch(`${this.getRestUrl()}${requestPath}`, {
         method: "GET",
         headers: {
           "CB-ACCESS-KEY": apiKey,
@@ -76,7 +89,7 @@ export class CoinbaseExchange implements IExchangeAdapter {
 
       const minNotionalMap = new Map<string, number>();
       try {
-        const productsResponse = await fetch(`${this.config.restUrl}/api/v3/brokerage/products`);
+        const productsResponse = await fetch(`${this.getRestUrl()}/api/v3/brokerage/products`);
         if (productsResponse.ok) {
           const productsData = await productsResponse.json() as any;
           for (const product of productsData.products ?? []) {
@@ -105,7 +118,7 @@ export class CoinbaseExchange implements IExchangeAdapter {
           let volume24h = 0;
 
           const candlesResponse = await fetch(
-            `${this.config.restUrl}/api/v3/brokerage/products/${pair}/candles?granularity=3600&limit=24`,
+            `${this.getRestUrl()}/api/v3/brokerage/products/${pair}/candles?granularity=3600&limit=24`,
           );
           if (candlesResponse.ok) {
             const candlesData = await candlesResponse.json() as any;
@@ -131,7 +144,7 @@ export class CoinbaseExchange implements IExchangeAdapter {
           }
 
           if (price <= 0) {
-            const priceResponse = await fetch(`${this.config.restUrl}/v2/prices/${pair}/spot`);
+            const priceResponse = await fetch(`${this.getRestUrl()}/v2/prices/${pair}/spot`);
             if (priceResponse.ok) {
               const pd = await priceResponse.json() as any;
               price = parseFloat(pd.data?.amount || 0);
@@ -164,7 +177,7 @@ export class CoinbaseExchange implements IExchangeAdapter {
   async fetchKlines(symbol: string, _interval: string, _limit: number): Promise<Kline[]> {
     try {
       const pair = `${symbol.toUpperCase()}-USD`;
-      const response = await fetch(`${this.config.restUrl}/api/v3/brokerage/products/${pair}/candles`);
+      const response = await fetch(`${this.getRestUrl()}/api/v3/brokerage/products/${pair}/candles`);
       if (!response.ok) return [];
       const data = await response.json() as any;
       if (data.error || data.errors || !Array.isArray(data.candles)) return [];
@@ -200,7 +213,7 @@ export class CoinbaseExchange implements IExchangeAdapter {
       const message = timestamp + method + requestPath + body;
       const signature = base64Encode(await hmacSha256(message, apiSecret));
 
-      const response = await fetch(`${this.config.restUrl}${requestPath}`, {
+      const response = await fetch(`${this.getRestUrl()}${requestPath}`, {
         method: "POST",
         headers: {
           "CB-ACCESS-KEY": apiKey,

@@ -2,6 +2,7 @@ package com.cryptopulse.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
@@ -171,6 +173,45 @@ fun ConnectExchangeScreen(
                         ExchangeDropdown(
                             selectedExchange = formState.selectedExchange,
                             onExchangeSelected = viewModel::onExchangeSelected,
+                        )
+
+                        Spacer(Modifier.height(20.dp))
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Cloud,
+                                contentDescription = null,
+                                tint = CyanPrimary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "ENVIRONMENT",
+                                color = CyanPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                letterSpacing = 1.2.sp,
+                            )
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        EnvironmentToggle(
+                            selectedEnvironment = formState.environment,
+                            onEnvironmentSelected = viewModel::onEnvironmentSelected,
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        Text(
+                            text = if (formState.environment == "testnet") {
+                                "Testnet uses the exchange's sandbox endpoints and demo funds. Use your Testnet API keys."
+                            } else {
+                                "Mainnet uses the real exchange with live funds. Use your production API keys."
+                            },
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
                         )
 
                         Spacer(Modifier.height(20.dp))
@@ -334,6 +375,54 @@ private fun ExchangeDropdown(
                         onExchangeSelected(value)
                         expanded = false
                     },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EnvironmentToggle(
+    selectedEnvironment: String,
+    onEnvironmentSelected: (String) -> Unit,
+) {
+    val options = listOf(
+        "testnet" to "Testnet",
+        "mainnet" to "Mainnet",
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(NavyCard, RoundedCornerShape(10.dp))
+            .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        options.forEach { (value, label) ->
+            val selected = selectedEnvironment == value
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .background(
+                        if (selected) CyanPrimary.copy(alpha = 0.18f) else Color.Transparent,
+                        RoundedCornerShape(8.dp),
+                    )
+                    .border(
+                        1.dp,
+                        if (selected) CyanPrimary else Color.Transparent,
+                        RoundedCornerShape(8.dp),
+                    )
+                    .clickable { onEnvironmentSelected(value) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = label,
+                    color = if (selected) CyanPrimary else TextSecondary,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    fontSize = 13.sp,
+                    letterSpacing = 0.8.sp,
                 )
             }
         }

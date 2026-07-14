@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS users (
   exchange_api_key TEXT,
   exchange_api_secret_iv TEXT,
   exchange_api_secret_encrypted TEXT,
+  exchange_name TEXT DEFAULT NULL,
+  exchange_environment TEXT NOT NULL DEFAULT 'mainnet',
   status TEXT NOT NULL DEFAULT 'PENDING_VERIFICATION',
   otp_secret TEXT,
   otp_expires_at INTEGER,

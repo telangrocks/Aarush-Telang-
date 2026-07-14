@@ -1,17 +1,28 @@
 import { Context } from "hono";
 import { Env } from "../index";
 import { encrypt } from "../crypto";
-import { getExchangeAdapter, ExchangeName } from "../exchanges";
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment } from "../exchanges";
 import { analyzeMarket } from "../market-analysis";
+
+/**
+ * Normalize an untrusted environment value into a valid ExchangeEnvironment.
+ * Anything other than the explicit string "testnet" falls back to "mainnet"
+ * so that the default behaviour is always the safe, well-defined production
+ * endpoint unless testnet is explicitly requested.
+ */
+function normalizeEnvironment(value: unknown): ExchangeEnvironment {
+  return value === "testnet" ? "testnet" : "mainnet";
+}
 
 export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   try {
-    const { exchangeName, apiKey, apiSecret } = await c.req.json<{
+    const { exchangeName, apiKey, apiSecret, environment } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
+      environment?: ExchangeEnvironment;
     }>();
 
     if (!exchangeName || !apiKey || !apiSecret) {
@@ -19,7 +30,7 @@ export async function handleValidateExchange(
       return c.json({ error: "exchangeName, apiKey, and apiSecret are required" });
     }
 
-    const adapter = getExchangeAdapter(exchangeName);
+    const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment));
     const result = await adapter.validateCredentials(apiKey, apiSecret);
 
     return c.json(result);
@@ -37,10 +48,11 @@ export async function handleConnectExchange(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
-    const { exchangeName, apiKey, apiSecret } = await c.req.json<{
+    const { exchangeName, apiKey, apiSecret, environment } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
+      environment?: ExchangeEnvironment;
     }>();
 
     if (!exchangeName || !apiKey || !apiSecret) {
@@ -48,7 +60,8 @@ export async function handleConnectExchange(
       return c.json({ error: "exchangeName, apiKey, and apiSecret are required" });
     }
 
-    const adapter = getExchangeAdapter(exchangeName);
+    const resolvedEnvironment = normalizeEnvironment(environment);
+    const adapter = getExchangeAdapter(exchangeName, resolvedEnvironment);
     const validation = await adapter.validateCredentials(apiKey, apiSecret);
     if (!validation.success) {
       c.status(401);
@@ -58,12 +71,12 @@ export async function handleConnectExchange(
     const encryptedSecret = await encrypt(apiSecret, c.env.ENCRYPTION_KEY);
 
     await c.env.DB.prepare(
-      `UPDATE users SET exchange_name = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?`,
+      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?`,
     )
-      .bind(exchangeName, apiKey, encryptedSecret.iv, encryptedSecret.encrypted, userId)
+      .bind(exchangeName, resolvedEnvironment, apiKey, encryptedSecret.iv, encryptedSecret.encrypted, userId)
       .run();
 
-    return c.json({ success: true, message: "Exchange connected successfully", exchangeName });
+    return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: resolvedEnvironment });
   } catch (e: unknown) {
     const error = e as Error;
     c.status(500);
@@ -79,11 +92,12 @@ export async function handleGetPersonalizedMarketCandidates(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
+        exchange_environment: string | null;
         exchange_api_key: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
@@ -94,7 +108,7 @@ export async function handleGetPersonalizedMarketCandidates(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
     const tickers = await adapter.fetchMarketData();
 
     if (!tickers.length) {
@@ -139,11 +153,12 @@ export async function handleGetTicker(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
+        exchange_environment: string | null;
         exchange_api_key: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
@@ -154,7 +169,7 @@ export async function handleGetTicker(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
     const tickers = await adapter.fetchMarketData();
 
     if (!tickers.length) {
@@ -203,17 +218,17 @@ export async function handleGetKlines(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment FROM users WHERE id = ?",
     )
       .bind(userId)
-      .first<{ exchange_name: string | null }>();
+      .first<{ exchange_name: string | null; exchange_environment: string | null }>();
 
     if (!user?.exchange_name) {
       c.status(400);
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
     const klines = await adapter.fetchKlines(symbol, interval, limit);
 
     return c.json(klines);
@@ -242,11 +257,12 @@ export async function handleGetTechnicalAnalysis(
     }
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
+        exchange_environment: string | null;
         exchange_api_key: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
@@ -257,7 +273,7 @@ export async function handleGetTechnicalAnalysis(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName);
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
     const tickers = await adapter.fetchMarketData();
 
     if (!tickers.length) {

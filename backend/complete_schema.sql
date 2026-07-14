@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
   exchange_name TEXT DEFAULT NULL,    -- Migration 0012
   exchange_api_key TEXT,              -- Migration 0005
   exchange_api_secret_iv TEXT,        -- Migration 0005
-  exchange_api_secret_encrypted TEXT  -- Migration 0005
+  exchange_api_secret_encrypted TEXT, -- Migration 0005
+  exchange_environment TEXT NOT NULL DEFAULT 'mainnet'  -- Migration 0013
 );
 
 -- Helpful indexes for common query patterns
@@ -115,6 +116,7 @@ SELECT
   email,
   status,
   exchange_name,
+  exchange_environment,
   created_at,
   updated_at
 FROM users
@@ -174,7 +176,8 @@ INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES
   ('0009_add_updated_at_to_users'),
   ('0010_drop_unused_users_columns'),
   ('0011_add_registration_rate_limit_table'),
-  ('0012_add_exchange_name_to_users');
+  ('0012_add_exchange_name_to_users'),
+  ('0013_add_exchange_environment_to_users');
 
 -- ============================================================================
 -- VERIFICATION QUERIES (run after execution to confirm schema)

@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
-import { ExchangeConfig } from "./types";
+import { ExchangeConfig, ExchangeEnvironment } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -21,10 +21,23 @@ export class BybitExchange implements IExchangeAdapter {
     name: "bybit",
     displayName: "Bybit",
     restUrl: "https://api.bybit.com",
+    testnetUrl: "https://api-testnet.bybit.com",
   };
+
+  private environment: ExchangeEnvironment = "mainnet";
 
   getName() {
     return this.config.displayName;
+  }
+
+  setEnvironment(environment: ExchangeEnvironment) {
+    this.environment = environment;
+  }
+
+  getRestUrl(): string {
+    return this.environment === "testnet" && this.config.testnetUrl
+      ? this.config.testnetUrl
+      : this.config.restUrl;
   }
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
@@ -34,7 +47,7 @@ export class BybitExchange implements IExchangeAdapter {
       const query = `timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
       const signature = await hmacSha256(timestamp + apiKey + recvWindow + query, apiSecret);
 
-      const response = await fetch(`${this.config.restUrl}/v5/account/info?${query}`, {
+      const response = await fetch(`${this.getRestUrl()}/v5/account/info?${query}`, {
         headers: {
           "X-BAPI-API-KEY": apiKey,
           "X-BAPI-SIGN": signature,
@@ -62,8 +75,8 @@ export class BybitExchange implements IExchangeAdapter {
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
       const [tickersResponse, instrumentsResponse] = await Promise.all([
-        fetch(`${this.config.restUrl}/v5/market/tickers?category=spot`),
-        fetch(`${this.config.restUrl}/v5/market/instruments-info?category=spot`),
+        fetch(`${this.getRestUrl()}/v5/market/tickers?category=spot`),
+        fetch(`${this.getRestUrl()}/v5/market/instruments-info?category=spot`),
       ]);
 
       if (!tickersResponse.ok || !instrumentsResponse.ok) {
@@ -114,7 +127,7 @@ export class BybitExchange implements IExchangeAdapter {
         interval,
         limit: limit.toString(),
       });
-      const response = await fetch(`${this.config.restUrl}/v5/market/kline?${params}`);
+      const response = await fetch(`${this.getRestUrl()}/v5/market/kline?${params}`);
       if (!response.ok) return [];
       const data = await response.json() as any;
       if (data.retCode !== 0 || !Array.isArray(data.result?.list)) return [];
@@ -151,7 +164,7 @@ export class BybitExchange implements IExchangeAdapter {
         apiSecret
       );
 
-      const response = await fetch(`${this.config.restUrl}/v5/order/create`, {
+      const response = await fetch(`${this.getRestUrl()}/v5/order/create`, {
         method: "POST",
         headers: {
           "X-BAPI-API-KEY": apiKey,
