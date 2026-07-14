@@ -110,6 +110,32 @@ export class BinanceExchange implements IExchangeAdapter {
     }
   }
 
+  async fetchTicker(symbol: string): Promise<MarketTicker | null> {
+    try {
+      if (!/^[A-Za-z0-9]+$/.test(symbol)) {
+        return null;
+      }
+      const response = await fetch(
+        `${this.getRestUrl()}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol.toUpperCase())}USDT`,
+      );
+      if (!response.ok) return null;
+      const item = (await response.json()) as any;
+      if (!item || !item.symbol) return null;
+      return {
+        symbol: item.symbol.replace(/USDT|BUSD$/, ""),
+        price: parseFloat(item.lastPrice || 0),
+        volume24h: parseFloat(item.volume || 0),
+        priceChange24h: parseFloat(item.priceChange || 0),
+        priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
+        highPrice24h: parseFloat(item.highPrice || 0),
+        lowPrice24h: parseFloat(item.lowPrice || 0),
+        minNotional: 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
     try {
       const params = new URLSearchParams({

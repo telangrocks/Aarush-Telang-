@@ -12,6 +12,7 @@ export interface IExchangeAdapter {
   getName(): string;
   validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult>;
   fetchMarketData(): Promise<MarketTicker[]>;
+  fetchTicker(symbol: string): Promise<MarketTicker | null>;
   fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]>;
   placeOrder?(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult>;
   setEnvironment?(environment: ExchangeEnvironment): void;

@@ -119,6 +119,35 @@ export class BybitExchange implements IExchangeAdapter {
     }
   }
 
+  async fetchTicker(symbol: string): Promise<MarketTicker | null> {
+    try {
+      if (!/^[A-Za-z0-9]+$/.test(symbol)) {
+        return null;
+      }
+      const response = await fetch(
+        `${this.getRestUrl()}/v5/market/tickers?category=spot&symbol=${encodeURIComponent(symbol.toUpperCase())}USDT`,
+      );
+      if (!response.ok) return null;
+      const data = await response.json() as any;
+      if (data.retCode !== 0 || !Array.isArray(data.result?.list) || data.result.list.length === 0) {
+        return null;
+      }
+      const item = data.result.list[0];
+      return {
+        symbol: item.symbol.replace("USDT", ""),
+        price: parseFloat(item.lastPrice || 0),
+        volume24h: parseFloat(item.volume24h || 0),
+        priceChange24h: parseFloat(item.priceChange || 0),
+        priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
+        highPrice24h: parseFloat(item.highPrice24h || 0),
+        lowPrice24h: parseFloat(item.lowPrice24h || 0),
+        minNotional: 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
     try {
       const params = new URLSearchParams({

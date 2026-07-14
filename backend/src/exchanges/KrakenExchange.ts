@@ -131,6 +131,35 @@ export class KrakenExchange implements IExchangeAdapter {
     }
   }
 
+  async fetchTicker(symbol: string): Promise<MarketTicker | null> {
+    try {
+      if (!/^[A-Za-z0-9]+$/.test(symbol)) {
+        return null;
+      }
+      const pair = `${symbol.toUpperCase()}USD`;
+      const response = await fetch(
+        `${this.getRestUrl()}/0/public/Ticker?pair=${encodeURIComponent(pair)}`,
+      );
+      if (!response.ok) return null;
+      const data = await response.json() as any;
+      const item = data?.result?.[pair];
+      if (!item) return null;
+      const last = parseFloat(item.c?.[0] || 0);
+      return {
+        symbol,
+        price: last,
+        volume24h: parseFloat(item.v?.[1] || 0),
+        priceChange24h: parseFloat(item.p?.[1] || 0),
+        priceChangePercent24h: 0,
+        highPrice24h: parseFloat(item.h?.[1] || 0),
+        lowPrice24h: parseFloat(item.l?.[1] || 0),
+        minNotional: 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
     try {
       const pair = symbol.toUpperCase();

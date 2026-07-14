@@ -149,8 +149,9 @@ export class TradingBot {
       if (!user?.exchange_name) return;
 
       const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
-      const tickers = await adapter.fetchMarketData();
-      const ticker = tickers.find(t => t.symbol.toUpperCase() === coinId.toUpperCase());
+      // Fetch market data for ONLY the user-selected trading pair (not the
+      // entire market) to minimize API calls and backend processing.
+      const ticker = await adapter.fetchTicker(coinId);
 
       if (!ticker) return;
 

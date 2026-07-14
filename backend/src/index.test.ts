@@ -7,6 +7,7 @@ vi.mock("./exchanges", () => ({
   getExchangeAdapter: () => ({
     validateCredentials: vi.fn().mockResolvedValue({ success: true, message: "OK" }),
     fetchMarketData: vi.fn().mockResolvedValue([]),
+    fetchTicker: vi.fn().mockResolvedValue(null),
   }),
   ExchangeName: "binance",
   SUPPORTED_EXCHANGES: [],

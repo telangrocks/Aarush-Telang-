@@ -174,6 +174,35 @@ export class CoinbaseExchange implements IExchangeAdapter {
     }
   }
 
+  async fetchTicker(symbol: string): Promise<MarketTicker | null> {
+    try {
+      if (!/^[A-Za-z0-9]+$/.test(symbol)) {
+        return null;
+      }
+      const productId = `${symbol.toUpperCase()}-USD`;
+      const response = await fetch(
+        `${this.getRestUrl()}/api/v3/brokerage/products/${encodeURIComponent(productId)}`,
+      );
+      if (!response.ok) return null;
+      const data = await response.json() as any;
+      const item = data?.product;
+      if (!item || !item.product_id) return null;
+      const price = parseFloat(item.price || item.current_price || 0);
+      return {
+        symbol: item.product_id.replace("-USD", ""),
+        price,
+        volume24h: parseFloat(item.volume_24h || 0),
+        priceChange24h: 0,
+        priceChangePercent24h: parseFloat(item.price_percentage_change_24h || 0),
+        highPrice24h: price,
+        lowPrice24h: price,
+        minNotional: 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async fetchKlines(symbol: string, _interval: string, _limit: number): Promise<Kline[]> {
     try {
       const pair = `${symbol.toUpperCase()}-USD`;

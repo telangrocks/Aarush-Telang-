@@ -116,6 +116,33 @@ export class DeltaExchange implements IExchangeAdapter {
     }
   }
 
+  async fetchTicker(symbol: string): Promise<MarketTicker | null> {
+    try {
+      if (!/^[A-Za-z0-9]+$/.test(symbol)) {
+        return null;
+      }
+      const response = await fetch(
+        `${this.getRestUrl()}/v2/ticker/${encodeURIComponent(symbol.toUpperCase())}USDT`,
+      );
+      if (!response.ok) return null;
+      const data = await response.json() as any;
+      const item = data?.result;
+      if (!item || !item.symbol) return null;
+      return {
+        symbol: item.symbol.replace("USDT", ""),
+        price: parseFloat(item.last_price || item.close || 0),
+        volume24h: parseFloat(item.volume || 0),
+        priceChange24h: parseFloat(item.change || 0),
+        priceChangePercent24h: parseFloat(item.change_percent || 0),
+        highPrice24h: parseFloat(item.high || 0),
+        lowPrice24h: parseFloat(item.low || 0),
+        minNotional: 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
     try {
       const response = await fetch(`${this.getRestUrl()}/v2/tickers/${symbol.toUpperCase()}USDT/candles?interval=${interval}&limit=${limit}`);
