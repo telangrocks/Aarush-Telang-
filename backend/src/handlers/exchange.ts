@@ -181,6 +181,7 @@ export async function handleGetTicker(
       symbol: ticker.symbol,
       price: ticker.price,
       volume24h: ticker.volume24h,
+      quoteVolume24h: ticker.quoteVolume24h,
       priceChange24h: ticker.priceChange24h,
       priceChangePercent24h: ticker.priceChangePercent24h,
       highPrice24h: ticker.highPrice24h,

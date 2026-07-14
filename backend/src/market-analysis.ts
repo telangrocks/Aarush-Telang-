@@ -12,7 +12,7 @@ export function analyzeMarket(tickers: MarketTicker[]): AnalysisCandidate[] {
   const MAX_DECLINE_PERCENT = -50;
   const filtered = tickers.filter(
     (ticker) =>
-      ticker.volume24h >= MIN_VOLUME_USDT &&
+      (ticker.quoteVolume24h || ticker.volume24h || 0) >= MIN_VOLUME_USDT &&
       ticker.priceChangePercent24h >= MAX_DECLINE_PERCENT,
   );
 
@@ -32,7 +32,8 @@ export function analyzeMarket(tickers: MarketTicker[]): AnalysisCandidate[] {
 }
 
 function calculateScore(ticker: MarketTicker): number {
-  const volumeScore = Math.min(Math.log10(ticker.volume24h + 1) * 5, 30);
+  const volume = ticker.quoteVolume24h || ticker.volume24h || 0;
+  const volumeScore = Math.min(Math.log10(volume + 1) * 5, 30);
 
   const volatility = Math.abs(ticker.priceChangePercent24h);
   const volatilityScore = Math.min(volatility * 3, 30);

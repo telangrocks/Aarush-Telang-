@@ -184,7 +184,7 @@ export class TradingBot {
     const change = ticker.priceChangePercent24h;
     const range = ticker.highPrice24h - ticker.lowPrice24h;
     const rangePercent = ticker.price > 0 ? (range / ticker.price) * 100 : 0;
-    const volume = ticker.volume24h;
+    const volume = ticker.quoteVolume24h || ticker.volume24h || 0;
     const minNotional = ticker.minNotional || 5;
 
     if (volume < 100_000) return null;

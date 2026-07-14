@@ -14,6 +14,7 @@ export interface MarketTicker {
   symbol: string;
   price: number;
   volume24h: number;
+  quoteVolume24h: number;
   priceChange24h: number;
   priceChangePercent24h: number;
   highPrice24h: number;
