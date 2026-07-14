@@ -9,8 +9,11 @@ export function analyzeMarket(tickers: MarketTicker[]): AnalysisCandidate[] {
   if (!tickers.length) return [];
 
   const MIN_VOLUME_USDT = 500_000;
+  const MAX_DECLINE_PERCENT = -50;
   const filtered = tickers.filter(
-    (ticker) => ticker.volume24h >= MIN_VOLUME_USDT,
+    (ticker) =>
+      ticker.volume24h >= MIN_VOLUME_USDT &&
+      ticker.priceChangePercent24h >= MAX_DECLINE_PERCENT,
   );
 
   if (!filtered.length) return [];
