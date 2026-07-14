@@ -8,7 +8,14 @@ export interface AnalysisCandidate extends MarketTicker {
 export function analyzeMarket(tickers: MarketTicker[]): AnalysisCandidate[] {
   if (!tickers.length) return [];
 
-  const scored = tickers.map((ticker) => ({
+  const MIN_VOLUME_USDT = 500_000;
+  const filtered = tickers.filter(
+    (ticker) => ticker.volume24h >= MIN_VOLUME_USDT,
+  );
+
+  if (!filtered.length) return [];
+
+  const scored = filtered.map((ticker) => ({
     ...ticker,
     score: calculateScore(ticker),
   }));
@@ -25,22 +32,21 @@ function calculateScore(ticker: MarketTicker): number {
   const volumeScore = Math.min(Math.log10(ticker.volume24h + 1) * 5, 30);
 
   const volatility = Math.abs(ticker.priceChangePercent24h);
-  const volatilityScore =
-    volatility <= 1
-      ? volatility * 10
-      : volatility >= 20
-        ? Math.max(0, 25 - (volatility - 20) * 1.5)
-        : 10 + (volatility - 1) * 0.9375;
+  const volatilityScore = Math.min(volatility * 3, 30);
 
   const range = ticker.highPrice24h - ticker.lowPrice24h;
   const rangePercent = ticker.price > 0 ? (range / ticker.price) * 100 : 0;
   const rangeScore = Math.min(rangePercent * 3, 20);
 
-  const positionInRange = range > 0 ? (ticker.price - ticker.lowPrice24h) / range : 0.5;
-  const momentumScore =
-    positionInRange >= 0.5
-      ? (positionInRange - 0.5) * 40 + 10
-      : positionInRange * 20;
+  const changePercent = ticker.priceChangePercent24h;
+  const momentumScore = Math.min(Math.abs(changePercent) * 3, 30);
+  const trendDirectionScore = changePercent >= 0 ? 10 : -5;
 
-  return volumeScore + volatilityScore + rangeScore + momentumScore;
+  return (
+    volumeScore +
+    volatilityScore +
+    rangeScore +
+    momentumScore +
+    trendDirectionScore
+  );
 }
