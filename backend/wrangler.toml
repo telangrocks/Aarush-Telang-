@@ -22,3 +22,6 @@ bindings = [{ name = "TRADING_BOTS", class_name = "TradingBot" }]
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["TradingBot"]
+
+[triggers]
+crons = ["*/5 * * * *"]
