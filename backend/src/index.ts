@@ -26,6 +26,7 @@ import {
   handleAcknowledgeAlert,
 } from "./handlers/exchange";
 import { handleRegisterFcmToken } from "./handlers/notifications";
+import { handleGetPositions, handleClosePosition } from "./handlers/positions";
 
 export interface Env {
   DB: D1Database;
@@ -287,6 +288,9 @@ api.post("/trading-bot/execute-trade", handleExecuteTrade);
 api.post("/trading-bot/stop-trade", handleStopTradingBot);
 api.get("/trading-bot/alerts", handleGetBotAlerts);
 api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
+
+api.get("/positions", handleGetPositions);
+api.post("/positions/:id/close", handleClosePosition);
 
 api.post("/fcm/register", handleRegisterFcmToken);
 

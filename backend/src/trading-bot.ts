@@ -118,6 +118,35 @@ export class TradingBot {
         await this.state.storage.put('tradeActive', true);
         await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
 
+        if (orderResult.success) {
+          const positionId = crypto.randomUUID();
+          const now = new Date().toISOString();
+          await this.env.DB.prepare(
+            `INSERT INTO trade_positions (
+              id, user_id, symbol, side, entry_price, quantity, stop_loss, take_profit,
+              status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
+          )
+            .bind(
+              positionId,
+              userId,
+              orderSymbol,
+              side,
+              target.entryPrice,
+              orderResult.quantity || 0,
+              target.stopLoss,
+              target.takeProfit,
+              userKeys.exchange_name,
+              userKeys.exchange_environment || 'mainnet',
+              target.strategy,
+              orderResult.orderId || null,
+              now,
+              now,
+              now,
+            )
+            .run();
+        }
+
         return new Response(JSON.stringify({ success: orderResult.success, message: orderResult.message, side, order: orderResult }), { status: 200 });
       }
       case '/stop-trade': {
@@ -133,6 +162,7 @@ export class TradingBot {
     const isActive = await this.state.storage.get('isActive');
     if (isActive) {
       await this.runMonitoringCycle();
+      await this.monitorOpenPositions();
       await this.state.storage.setAlarm(Date.now() + 60000);
     }
   }
@@ -175,6 +205,71 @@ export class TradingBot {
       }
     } catch (e) {
       console.error('Monitoring cycle error:', e);
+    }
+  }
+
+  private async monitorOpenPositions() {
+    try {
+      const userId = (await this.state.storage.get('userId')) as string;
+      if (!userId) return;
+
+      const { results } = await this.env.DB.prepare(
+        "SELECT * FROM trade_positions WHERE user_id = ? AND status = 'OPEN'"
+      )
+        .bind(userId)
+        .all();
+
+      if (!results || results.length === 0) return;
+
+      const user = await this.env.DB.prepare(
+        'SELECT exchange_name, exchange_environment FROM users WHERE id = ?'
+      ).bind(userId).first<{ exchange_name: string; exchange_environment: string | null }>();
+
+      if (!user?.exchange_name) return;
+
+      const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
+
+      for (const position of results as any[]) {
+        try {
+          const ticker = await adapter.fetchTicker(position.symbol);
+          if (!ticker) continue;
+
+          const currentPrice = ticker.price;
+          let closeReason: string | null = null;
+
+          if (position.side === 'BUY') {
+            if (currentPrice <= position.stop_loss) {
+              closeReason = 'stop_loss';
+            } else if (currentPrice >= position.take_profit) {
+              closeReason = 'take_profit';
+            }
+          } else {
+            if (currentPrice >= position.stop_loss) {
+              closeReason = 'stop_loss';
+            } else if (currentPrice <= position.take_profit) {
+              closeReason = 'take_profit';
+            }
+          }
+
+          if (closeReason) {
+            const priceDiff = position.side === 'BUY'
+              ? currentPrice - position.entry_price
+              : position.entry_price - currentPrice;
+            const realizedPnl = (priceDiff / position.entry_price) * position.quantity * position.entry_price;
+            const now = new Date().toISOString();
+
+            await this.env.DB.prepare(
+              "UPDATE trade_positions SET status = 'CLOSED', closed_at = ?, close_price = ?, realized_pnl = ?, close_reason = ?, updated_at = ? WHERE id = ?"
+            )
+              .bind(now, currentPrice, realizedPnl, closeReason, now, position.id)
+              .run();
+          }
+        } catch (e) {
+          console.error('Position monitoring error:', e);
+        }
+      }
+    } catch (e) {
+      console.error('Open positions monitoring error:', e);
     }
   }
 
