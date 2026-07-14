@@ -85,6 +85,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
         run: wrangler deploy --config wrangler.toml
 
+      - name: Set FCM server key
+        if: github.event_name == 'push' && ${{ secrets.FCM_SERVER_KEY }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
+          FCM_SERVER_KEY: ${{ secrets.FCM_SERVER_KEY }}
+        run: echo "$FCM_SERVER_KEY" | wrangler secret put FCM_SERVER_KEY --config wrangler.toml
+
       - name: Post-deploy smoke test
         if: github.event_name == 'push'
         env:
