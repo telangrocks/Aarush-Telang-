@@ -173,8 +173,24 @@ app.post("/api/login", handleLogin);
 // ==========================================
 const api = new Hono<{ Bindings: Env }>();
 
-// JWT Middleware with proper error handling
+// JWT Middleware with proper error handling.
+// NOTE: Hono applies sub-app (`api`) middleware to the parent app as well, so
+// this guard would otherwise run on every /api/* route. Explicitly skip the
+// public auth routes (login, register, otp, and exchange credential
+// validation, which runs before a user is authenticated) so they remain
+// publicly accessible while everything else requires a valid JWT.
+const PUBLIC_AUTH_PATHS = new Set([
+  "/api/register",
+  "/api/login",
+  "/api/resend-otp",
+  "/api/verify-otp",
+  "/api/exchange/validate",
+]);
+
 api.use("*", (c, next) => {
+  if (PUBLIC_AUTH_PATHS.has(c.req.path)) {
+    return next();
+  }
   const jwtMiddleware = jwt({
     secret: c.env.JWT_SECRET,
     cookie: "auth_token",
