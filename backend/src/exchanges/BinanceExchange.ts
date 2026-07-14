@@ -176,7 +176,7 @@ export class BinanceExchange implements IExchangeAdapter {
       });
 
       const signature = await hmacSha256(orderParams.toString(), apiSecret);
-      const url = `${this.getRestUrl()}/api/v3/order?${orderParams.toString()}&signature=${signature}`;
+      const url = `${this.getRestUrl()}/api/v3/order?signature=${signature}`;
 
       const response = await fetch(url, {
         method: 'POST',
