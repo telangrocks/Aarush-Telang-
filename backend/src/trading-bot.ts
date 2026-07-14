@@ -180,55 +180,99 @@ export class TradingBot {
   }
 
   private detectOpportunity(ticker: MarketTicker, strategy: string): { symbol: string; entryPrice: number; stopLoss: number; takeProfit: number; estimatedPnl: number; side: 'BUY' | 'SELL' } | null {
-    const change = ticker.priceChangePercent24h;
     const price = ticker.price;
+    const change = ticker.priceChangePercent24h;
+    const range = ticker.highPrice24h - ticker.lowPrice24h;
+    const rangePercent = ticker.price > 0 ? (range / ticker.price) * 100 : 0;
+    const volume = ticker.volume24h;
+    const minNotional = ticker.minNotional || 5;
 
-    if (Math.abs(change) < 1.5) return null;
+    if (volume < 100_000) return null;
+    if (rangePercent < 0.5) return null;
 
-    const isBullish = change > 0;
-    const side: 'BUY' | 'SELL' = isBullish ? 'BUY' : 'SELL';
-    let entryPrice = price;
-    let stopLoss = price;
-    let takeProfit = price;
+    const positionInRange = range > 0 ? (price - ticker.lowPrice24h) / range : 0.5;
+
+    let side: 'BUY' | 'SELL' | null = null;
+    let stopLoss = 0;
+    let takeProfit = 0;
 
     switch (strategy) {
-      case "scalping":
-        entryPrice = price;
-        stopLoss = isBullish ? price * 0.995 : price * 1.005;
-        takeProfit = isBullish ? price * 1.01 : price * 0.99;
+      case "scalping": {
+        if (Math.abs(change) < 0.5 || volume < 500_000) return null;
+        if (change > 0 && positionInRange > 0.6) {
+          side = 'BUY';
+          stopLoss = price * 0.997;
+          takeProfit = price * 1.006;
+        } else if (change < 0 && positionInRange < 0.4) {
+          side = 'SELL';
+          stopLoss = price * 1.003;
+          takeProfit = price * 0.994;
+        }
         break;
-      case "momentum":
-        entryPrice = price;
-        stopLoss = isBullish ? price * 0.98 : price * 1.02;
-        takeProfit = isBullish ? price * 1.04 : price * 0.96;
+      }
+      case "momentum": {
+        if (Math.abs(change) < 2.0 || volume < 1_000_000) return null;
+        if (change > 0 && positionInRange > 0.7) {
+          side = 'BUY';
+          stopLoss = price * 0.985;
+          takeProfit = price * 1.035;
+        } else if (change < 0 && positionInRange < 0.3) {
+          side = 'SELL';
+          stopLoss = price * 1.015;
+          takeProfit = price * 0.965;
+        }
         break;
-      case "breakout":
-        entryPrice = price;
-        stopLoss = isBullish ? price * 0.985 : price * 1.015;
-        takeProfit = isBullish ? price * 1.03 : price * 0.97;
+      }
+      case "breakout": {
+        if (rangePercent < 2.0 || volume < 750_000) return null;
+        if (change > 0 && positionInRange > 0.95) {
+          side = 'BUY';
+          stopLoss = price * 0.988;
+          takeProfit = price * 1.03;
+        } else if (change < 0 && positionInRange < 0.05) {
+          side = 'SELL';
+          stopLoss = price * 1.012;
+          takeProfit = price * 0.97;
+        }
         break;
-      case "mean_reversion":
-        entryPrice = price;
-        stopLoss = isBullish ? price * 0.98 : price * 1.02;
-        takeProfit = isBullish ? price * 1.015 : price * 0.985;
+      }
+      case "mean_reversion": {
+        if (rangePercent < 3.0 || volume < 500_000) return null;
+        if (positionInRange < 0.2 && change > 0.5) {
+          side = 'BUY';
+          stopLoss = price * 0.98;
+          takeProfit = price * 1.03;
+        } else if (positionInRange > 0.8 && change < -0.5) {
+          side = 'SELL';
+          stopLoss = price * 1.02;
+          takeProfit = price * 0.97;
+        }
         break;
-      case "vwap":
-        entryPrice = price;
-        stopLoss = isBullish ? price * 0.99 : price * 1.01;
-        takeProfit = isBullish ? price * 1.02 : price * 0.98;
+      }
+      case "vwap": {
+        if (Math.abs(change) < 0.5 || volume < 600_000 || rangePercent < 1.0) return null;
+        if (positionInRange > 0.5 && change > 0) {
+          side = 'BUY';
+          stopLoss = price * 0.99;
+          takeProfit = price * 1.02;
+        } else if (positionInRange < 0.5 && change < 0) {
+          side = 'SELL';
+          stopLoss = price * 1.01;
+          takeProfit = price * 0.98;
+        }
         break;
+      }
       default:
-        entryPrice = price;
-        stopLoss = isBullish ? price * 0.99 : price * 1.01;
-        takeProfit = isBullish ? price * 1.02 : price * 0.98;
-        break;
+        return null;
     }
 
-    const estimatedPnl = Math.abs((takeProfit - entryPrice) / entryPrice) * ticker.minNotional;
+    if (!side) return null;
+
+    const estimatedPnl = Math.abs((takeProfit - price) / price) * minNotional;
 
     return {
       symbol: ticker.symbol,
-      entryPrice,
+      entryPrice: price,
       stopLoss,
       takeProfit,
       estimatedPnl,
