@@ -170,14 +170,8 @@ export async function handleGetTicker(
     }
 
     const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
-    const tickers = await adapter.fetchMarketData();
+    const ticker = await adapter.fetchTicker(symbol);
 
-    if (!tickers.length) {
-      c.status(500);
-      return c.json({ error: "Failed to fetch market data from exchange" });
-    }
-
-    const ticker = tickers.find(t => t.symbol.toUpperCase() === symbol.toUpperCase());
     if (!ticker) {
       c.status(404);
       return c.json({ error: `Symbol '${symbol}' is not available on your connected exchange.` });
@@ -274,14 +268,8 @@ export async function handleGetTechnicalAnalysis(
     }
 
     const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
-    const tickers = await adapter.fetchMarketData();
+    const ticker = await adapter.fetchTicker(symbol);
 
-    if (!tickers.length) {
-      c.status(500);
-      return c.json({ error: "Failed to fetch market data from exchange" });
-    }
-
-    const ticker = tickers.find(t => t.symbol.toUpperCase() === symbol.toUpperCase());
     if (!ticker) {
       c.status(404);
       return c.json({ error: `Symbol '${symbol}' is not available on your connected exchange.` });
