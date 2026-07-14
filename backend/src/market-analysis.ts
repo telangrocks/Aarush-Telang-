@@ -40,7 +40,7 @@ function calculateScore(ticker: MarketTicker): number {
 
   const changePercent = ticker.priceChangePercent24h;
   const momentumScore = Math.min(Math.abs(changePercent) * 3, 30);
-  const trendDirectionScore = changePercent >= 0 ? 10 : -5;
+  const trendDirectionScore = Math.max(-40, Math.min(40, changePercent * 4));
 
   return (
     volumeScore +
