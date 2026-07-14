@@ -25,6 +25,7 @@ import {
   handleGetBotAlerts,
   handleAcknowledgeAlert,
 } from "./handlers/exchange";
+import { handleRegisterFcmToken } from "./handlers/notifications";
 
 export interface Env {
   DB: D1Database;
@@ -34,6 +35,7 @@ export interface Env {
   RESEND_FROM_EMAIL?: string;
   AUTH_ALLOW_DEV_OTP_FALLBACK?: string;
   ALLOWED_ORIGINS: string;
+  FCM_SERVER_KEY?: string;
   TRADING_BOTS: DurableObjectNamespace;
 }
 
@@ -285,6 +287,8 @@ api.post("/trading-bot/execute-trade", handleExecuteTrade);
 api.post("/trading-bot/stop-trade", handleStopTradingBot);
 api.get("/trading-bot/alerts", handleGetBotAlerts);
 api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
+
+api.post("/fcm/register", handleRegisterFcmToken);
 
 app.route("/api", api);
 

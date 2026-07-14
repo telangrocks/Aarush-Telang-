@@ -1,6 +1,7 @@
 import { Env } from './index';
 import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, MarketTicker } from './exchanges';
 import { decrypt } from './crypto';
+import { sendTradeNotification } from './handlers/notifications';
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment,
@@ -166,6 +167,11 @@ export class TradingBot {
           status: 'pending',
         });
         await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+
+        await sendTradeNotification(this.env, userId, {
+          ...opportunity,
+          strategy,
+        });
       }
     } catch (e) {
       console.error('Monitoring cycle error:', e);
