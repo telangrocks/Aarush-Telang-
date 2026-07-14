@@ -1,5 +1,5 @@
 import { IExchangeAdapter } from "./BaseExchange";
-import { ExchangeName } from "./types";
+import { ExchangeName, ExchangeEnvironment } from "./types";
 import { BinanceExchange } from "./BinanceExchange";
 import { DeltaExchange } from "./DeltaExchange";
 import { CoinbaseExchange } from "./CoinbaseExchange";
@@ -14,10 +14,13 @@ const adapters: Record<ExchangeName, IExchangeAdapter> = {
   bybit: new BybitExchange(),
 };
 
-export function getExchangeAdapter(name: ExchangeName): IExchangeAdapter {
+export function getExchangeAdapter(name: ExchangeName, environment: ExchangeEnvironment = "mainnet"): IExchangeAdapter {
   const adapter = adapters[name];
   if (!adapter) {
     throw new Error(`Unsupported exchange: ${name}`);
+  }
+  if (adapter.setEnvironment) {
+    adapter.setEnvironment(environment);
   }
   return adapter;
 }

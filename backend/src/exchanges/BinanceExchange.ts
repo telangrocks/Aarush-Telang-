@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline } from "./BaseExchange";
-import { ExchangeConfig } from "./types";
+import { ExchangeConfig, type ExchangeEnvironment } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -21,10 +21,23 @@ export class BinanceExchange implements IExchangeAdapter {
     name: "binance",
     displayName: "Binance",
     restUrl: "https://api.binance.com",
+    testnetUrl: "https://testnet.binance.vision",
   };
+
+  private environment: ExchangeEnvironment = "mainnet";
 
   getName() {
     return this.config.displayName;
+  }
+
+  setEnvironment(environment: ExchangeEnvironment) {
+    this.environment = environment;
+  }
+
+  getRestUrl(): string {
+    return this.environment === "testnet" && this.config.testnetUrl
+      ? this.config.testnetUrl
+      : this.config.restUrl;
   }
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
@@ -32,7 +45,7 @@ export class BinanceExchange implements IExchangeAdapter {
       const timestamp = Date.now();
       const query = `timestamp=${timestamp}`;
       const signature = await hmacSha256(query, apiSecret);
-      const url = `${this.config.restUrl}/api/v3/account?${query}&signature=${signature}`;
+      const url = `${this.getRestUrl()}/api/v3/account?${query}&signature=${signature}`;
 
       const response = await fetch(url, {
         headers: {
@@ -59,8 +72,8 @@ export class BinanceExchange implements IExchangeAdapter {
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
       const [tickersResponse, exchangeInfoResponse] = await Promise.all([
-        fetch(`${this.config.restUrl}/api/v3/ticker/24hr`),
-        fetch(`${this.config.restUrl}/api/v3/exchangeInfo`),
+        fetch(`${this.getRestUrl()}/api/v3/ticker/24hr`),
+        fetch(`${this.getRestUrl()}/api/v3/exchangeInfo`),
       ]);
 
       if (!tickersResponse.ok || !exchangeInfoResponse.ok) {
@@ -104,7 +117,7 @@ export class BinanceExchange implements IExchangeAdapter {
         interval,
         limit: limit.toString(),
       });
-      const response = await fetch(`${this.config.restUrl}/api/v3/klines?${params}`);
+      const response = await fetch(`${this.getRestUrl()}/api/v3/klines?${params}`);
       if (!response.ok) return [];
       const data = (await response.json()) as any[];
       return data.map((k: any[]) => ({
@@ -136,7 +149,7 @@ export class BinanceExchange implements IExchangeAdapter {
 
       const queryString = `timestamp=${timestamp}&recvWindow=${recvWindow}&${orderParams.toString()}`;
       const signature = await hmacSha256(queryString, apiSecret);
-      const url = `${this.config.restUrl}/api/v3/order?${queryString}&signature=${signature}`;
+      const url = `${this.getRestUrl()}/api/v3/order?${queryString}&signature=${signature}`;
 
       const response = await fetch(url, {
         method: 'POST',

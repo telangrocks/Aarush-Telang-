@@ -1,17 +1,18 @@
 import { Context } from "hono";
 import { Env } from "../index";
 import { encrypt } from "../crypto";
-import { getExchangeAdapter, ExchangeName } from "../exchanges";
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment } from "../exchanges";
 import { analyzeMarket } from "../market-analysis";
 
 export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   try {
-    const { exchangeName, apiKey, apiSecret } = await c.req.json<{
+    const { exchangeName, apiKey, apiSecret, environment } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
+      environment?: ExchangeEnvironment;
     }>();
 
     if (!exchangeName || !apiKey || !apiSecret) {
@@ -19,7 +20,7 @@ export async function handleValidateExchange(
       return c.json({ error: "exchangeName, apiKey, and apiSecret are required" });
     }
 
-    const adapter = getExchangeAdapter(exchangeName);
+    const adapter = getExchangeAdapter(exchangeName, environment);
     const result = await adapter.validateCredentials(apiKey, apiSecret);
 
     return c.json(result);
@@ -37,10 +38,11 @@ export async function handleConnectExchange(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
-    const { exchangeName, apiKey, apiSecret } = await c.req.json<{
+    const { exchangeName, apiKey, apiSecret, environment } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
+      environment?: ExchangeEnvironment;
     }>();
 
     if (!exchangeName || !apiKey || !apiSecret) {
@@ -48,7 +50,7 @@ export async function handleConnectExchange(
       return c.json({ error: "exchangeName, apiKey, and apiSecret are required" });
     }
 
-    const adapter = getExchangeAdapter(exchangeName);
+    const adapter = getExchangeAdapter(exchangeName, environment);
     const validation = await adapter.validateCredentials(apiKey, apiSecret);
     if (!validation.success) {
       c.status(401);

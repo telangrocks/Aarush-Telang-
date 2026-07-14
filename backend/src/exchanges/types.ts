@@ -1,9 +1,13 @@
 export type ExchangeName = "binance" | "delta" | "coinbase" | "kraken" | "bybit";
 
+export type ExchangeEnvironment = "mainnet" | "testnet";
+
 export interface ExchangeConfig {
   name: ExchangeName;
   displayName: string;
   restUrl: string;
+  testnetUrl?: string;
+  environment?: ExchangeEnvironment;
 }
 
 export interface MarketTicker {

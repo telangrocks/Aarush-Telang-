@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
-import { ExchangeConfig } from "./types";
+import { ExchangeConfig, type ExchangeEnvironment } from "./types";
 
 async function hmacSha512(message: string, secret: string): Promise<ArrayBuffer> {
   const encoder = new TextEncoder();
@@ -27,10 +27,23 @@ export class KrakenExchange implements IExchangeAdapter {
     name: "kraken",
     displayName: "Kraken",
     restUrl: "https://api.kraken.com",
+    testnetUrl: "https://sandbox.kraken.com",
   };
+
+  private environment: ExchangeEnvironment = "mainnet";
 
   getName() {
     return this.config.displayName;
+  }
+
+  setEnvironment(environment: ExchangeEnvironment) {
+    this.environment = environment;
+  }
+
+  getRestUrl(): string {
+    return this.environment === "testnet" && this.config.testnetUrl
+      ? this.config.testnetUrl
+      : this.getRestUrl();
   }
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
@@ -41,7 +54,7 @@ export class KrakenExchange implements IExchangeAdapter {
 
       const signature = base64Encode(await hmacSha512(path + btoa(nonce) + btoa(body), apiSecret));
 
-      const response = await fetch(`${this.config.restUrl}${path}`, {
+      const response = await fetch(`${this.getRestUrl()}${path}`, {
         method: "POST",
         headers: {
           "API-Key": apiKey,
@@ -71,8 +84,8 @@ export class KrakenExchange implements IExchangeAdapter {
     try {
       const pairs = "XBTUSD,ETHUSD,SOLUSD,BNBUSD,XRPUSD,DOGEUSD,ADAUSD,AVAXUSD,DOTUSD,LINKUSD,MATICUSD,NEARUSD";
       const [tickersResponse, assetPairsResponse] = await Promise.all([
-        fetch(`${this.config.restUrl}/0/public/Ticker?pair=${pairs}`),
-        fetch(`${this.config.restUrl}/0/public/AssetPairs?pair=${pairs}`),
+        fetch(`${this.getRestUrl()}/0/public/Ticker?pair=${pairs}`),
+        fetch(`${this.getRestUrl()}/0/public/AssetPairs?pair=${pairs}`),
       ]);
 
       if (!tickersResponse.ok || !assetPairsResponse.ok) {
@@ -121,7 +134,7 @@ export class KrakenExchange implements IExchangeAdapter {
   async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
     try {
       const pair = symbol.toUpperCase();
-      const response = await fetch(`${this.config.restUrl}/0/public/OHLC?pair=${pair}USDT&interval=${interval}&count=${limit}`);
+      const response = await fetch(`${this.getRestUrl()}/0/public/OHLC?pair=${pair}USDT&interval=${interval}&count=${limit}`);
       if (!response.ok) return [];
       const data = await response.json() as any;
       if (data.error && data.error.length > 0) return [];
@@ -150,7 +163,7 @@ export class KrakenExchange implements IExchangeAdapter {
       const path = "/0/private/AddOrder";
       const signature = base64Encode(await hmacSha512(path + btoa(nonce) + btoa(body), apiSecret));
 
-      const response = await fetch(`${this.config.restUrl}${path}`, {
+      const response = await fetch(`${this.getRestUrl()}${path}`, {
         method: "POST",
         headers: {
           "API-Key": apiKey,
