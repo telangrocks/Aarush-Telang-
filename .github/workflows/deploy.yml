@@ -63,6 +63,7 @@ jobs:
       - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
         run: wrangler deploy --config wrangler.toml
 
       - name: Post-deploy smoke test
