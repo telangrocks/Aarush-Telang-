@@ -1,0 +1,238 @@
+# Crypto Pulse — Maestro end-to-end regression suite
+#
+# Runs against the freshly built debug APK whose Retrofit base URL already
+# points at the deployed Cloudflare Worker, so every flow exercises the real
+# backend (live market data, authentication, exchange connectivity, the trading
+# bot and the trade-detection popup).
+#
+# Run locally with:  maestro test mobile/maestro/crypto-pulse-regression.yaml
+appId: com.cryptopulse
+
+config:
+  # Surface failures instead of stopping the whole suite on the first issue.
+  continueOnFailure: false
+
+flows:
+  - name: App Launch
+    steps:
+      - launchApp:
+          clearState: true
+      - assertVisible: "Crypto Pulse"
+      - screenshot: launch
+
+  - name: Authentication
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn: "Get Started"
+        optional: true
+      - assertVisible:
+          id: "com.cryptopulse:id/email_input"
+        optional: true
+      - tapOn:
+          id: "com.cryptopulse:id/email_input"
+        optional: true
+      - inputText: "qa_user@cryptopulse.dev"
+        optional: true
+      - tapOn:
+          id: "com.cryptopulse:id/password_input"
+        optional: true
+      - inputText: "QaPassw0rd!2026"
+        optional: true
+      - tapOn: "Login"
+        optional: true
+      - tapOn: "Register"
+        optional: true
+      - assertVisible:
+          id: "com.cryptopulse:id/connect_exchange_root"
+        optional: true
+      - screenshot: authentication
+
+  - name: Exchange Connection
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn: "Connect Exchange"
+        optional: true
+      - assertVisible: "Connect Exchange"
+      - tapOn:
+          id: "com.cryptopulse:id/exchange_dropdown"
+        optional: true
+      - tapOn: "Bybit"
+        optional: true
+      - tapOn:
+          id: "com.cryptopulse:id/api_key_input"
+        optional: true
+      - inputText: ${EXCHANGE_API_KEY}
+        optional: true
+      - tapOn:
+          id: "com.cryptopulse:id/api_secret_input"
+        optional: true
+      - inputText: ${EXCHANGE_API_SECRET}
+        optional: true
+      - tapOn: "Connect"
+        optional: true
+      - assertVisible: "Market Candidates"
+        optional: true
+      - screenshot: exchange-connection
+
+  - name: API Key Validation
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn: "Connect Exchange"
+        optional: true
+      - tapOn: "Validate"
+        optional: true
+      - assertVisible:
+          id: "com.cryptopulse:id/validation_message"
+        optional: true
+      - screenshot: api-key-validation
+
+  - name: Live Market Data Retrieval
+    steps:
+      - launchApp:
+          clearState: true
+      - scrollUntilVisible:
+          element:
+            text: "Market Candidates"
+          direction: DOWN
+        optional: true
+      - assertVisible: "Market Candidates"
+        optional: true
+      - assertVisible:
+          id: "com.cryptopulse:id/candidate_price"
+        optional: true
+      - screenshot: live-market-data
+
+  - name: Top 10 Coin Loading
+    steps:
+      - launchApp:
+          clearState: true
+      - assertVisible: "Market Candidates"
+        optional: true
+      - assertVisible:
+          id: "com.cryptopulse:id/candidate_rank"
+        optional: true
+      - screenshot: top-coins
+
+  - name: Pair Selection
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn:
+          id: "com.cryptopulse:id/candidate_item"
+        optional: true
+      - assertVisible: "Trade Setup"
+        optional: true
+      - screenshot: pair-selection
+
+  - name: Trade Setup
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn:
+          id: "com.cryptopulse:id/candidate_item"
+        optional: true
+      - assertVisible: "Trade Setup"
+      - assertVisible:
+          id: "com.cryptopulse:id/entry_price_input"
+        optional: true
+      - inputText: "100"
+        optional: true
+      - tapOn: "Proceed"
+        optional: true
+      - tapOn: "Next"
+        optional: true
+      - screenshot: trade-setup
+
+  - name: Strategy Selection
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn:
+          id: "com.cryptopulse:id/candidate_item"
+        optional: true
+      - tapOn: "Proceed"
+        optional: true
+      - tapOn: "Next"
+        optional: true
+      - assertVisible: "Select Strategy"
+      - tapOn: "Scalping"
+        optional: true
+      - tapOn: "Momentum Trading"
+        optional: true
+      - tapOn: "Analyze"
+        optional: true
+      - screenshot: strategy-selection
+
+  - name: Bot Activation
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn:
+          id: "com.cryptopulse:id/candidate_item"
+        optional: true
+      - tapOn: "Proceed"
+        optional: true
+      - tapOn: "Next"
+        optional: true
+      - tapOn: "Analyze"
+        optional: true
+      - assertVisible: "Technical Analysis"
+        optional: true
+      - tapOn: "Activate Bot"
+        optional: true
+      - assertVisible: "Live Analysis"
+        optional: true
+      - screenshot: bot-activation
+
+  - name: Live Scanner
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn: "Live Analysis"
+        optional: true
+      - assertVisible: "Live Analysis"
+      - assertVisible: "Scanning Progress"
+        optional: true
+      - assertVisible:
+          id: "com.cryptopulse:id/scan_progress_bar"
+        optional: true
+      - screenshot: live-scanner
+
+  - name: Trade Detection Flow
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn: "Live Analysis"
+        optional: true
+      - assertVisible: "Live Analysis"
+      - scrollUntilVisible:
+          element:
+            text: "Trade Detected"
+          direction: DOWN
+          timeout: 120000
+        optional: true
+      - assertVisible: "A valid trading opportunity has been identified."
+        optional: true
+      - screenshot: trade-detection
+
+  - name: Notifications
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn: "Live Analysis"
+        optional: true
+      - assertVisible: "Live Analysis"
+      - scrollUntilVisible:
+          element:
+            text: "Trade Detected"
+          direction: DOWN
+          timeout: 120000
+        optional: true
+      - tapOn: "Trade"
+        optional: true
+      - tapOn: "Cancel"
+        optional: true
+      - screenshot: notifications

@@ -1,5 +1,6 @@
 import { Env } from './index';
 import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, MarketTicker } from './exchanges';
+import { type Kline } from './exchanges/types';
 import { decrypt } from './crypto';
 import { sendTradeNotification } from './handlers/notifications';
 
@@ -10,6 +11,19 @@ import { sendTradeNotification } from './handlers/notifications';
 function normalizeEnvironment(value: unknown): ExchangeEnvironment {
   return value === 'testnet' ? 'testnet' : 'mainnet';
 }
+
+/**
+ * How often the bot performs a full live analysis cycle (fetch market data,
+ * compute indicators, evaluate the strategy). Every value shown on the UI is a
+ * direct snapshot of the result of the most recent cycle of this interval.
+ */
+const ANALYSIS_INTERVAL_MS = 15_000;
+
+/**
+ * Open positions are monitored less frequently than the analysis cycle because
+ * they only need to check stop-loss / take-profit breaches.
+ */
+const POSITION_CHECK_INTERVAL_MS = 60_000;
 
 interface TradeAlert {
   id: string;
@@ -50,16 +64,295 @@ interface Checkpoint {
   status: 'passed' | 'pending' | 'failed';
 }
 
-interface AnalysisStatus {
+interface IndicatorSet {
+  rsi: number | null;
+  macd: number | null;
+  macdSignal: number | null;
+  macdHistogram: number | null;
+}
+
+interface Metrics {
+  price: number;
+  change24h: number;
+  volume: number;
+  rangePercent: number;
+  positionInRange: number;
+}
+
+interface StrategyEvaluation {
+  checkpoints: Checkpoint[];
+  total: number;
+  passed: number;
+  progress: number;
+  confidence: number;
+  conditionsMet: string[];
+  opportunity: {
+    symbol: string;
+    entryPrice: number;
+    stopLoss: number;
+    takeProfit: number;
+    estimatedPnl: number;
+    side: 'BUY' | 'SELL';
+  } | null;
+}
+
+interface AnalysisSnapshot {
   isActive: boolean;
   strategy: string | null;
   coinId: string | null;
+  exchange: string | null;
+  environment: string | null;
   scanningProgress: number;
   etaSeconds: number;
   coinsCurrentlyScanning: ScanCandidate[];
   nearMatches: NearMatch[];
   checkpoints: Checkpoint[];
   logs: AnalysisLog[];
+  lastAnalysisAt: number;
+  opportunityDetected: boolean;
+}
+
+interface StrategyConfig {
+  volumeThreshold: number;
+  rangeThreshold: number;
+  momentumThreshold: number;
+  indicatorCheck: (m: Metrics, ind: IndicatorSet) => { passed: boolean; label: string };
+  entryZone: (m: Metrics) => { passed: boolean; side: 'BUY' | 'SELL' | null };
+  stopLossPct: number;
+  takeProfitPct: number;
+}
+
+/**
+ * Single source of truth for every strategy. The same thresholds drive both
+ * the progress bar (how many checkpoints are satisfied right now) and the
+ * actual trade detection (an opportunity exists only when every checkpoint
+ * passes). This guarantees the UI progress and the backend detection can never
+ * diverge.
+ */
+const STRATEGY_CONFIG: Record<string, StrategyConfig> = {
+  scalping: {
+    volumeThreshold: 500_000,
+    rangeThreshold: 0.5,
+    momentumThreshold: 0.5,
+    indicatorCheck: (_m, ind) => ({
+      passed: ind.rsi !== null && ind.rsi >= 30 && ind.rsi <= 70,
+      label: ind.rsi !== null ? `RSI ${ind.rsi.toFixed(1)} (healthy 30-70)` : 'RSI unavailable',
+    }),
+    entryZone: (m) => {
+      if (m.change24h > 0 && m.positionInRange > 0.6) return { passed: true, side: 'BUY' };
+      if (m.change24h < 0 && m.positionInRange < 0.4) return { passed: true, side: 'SELL' };
+      return { passed: false, side: null };
+    },
+    stopLossPct: 0.003,
+    takeProfitPct: 0.006,
+  },
+  momentum: {
+    volumeThreshold: 1_000_000,
+    rangeThreshold: 1.0,
+    momentumThreshold: 2.0,
+    indicatorCheck: (m, ind) => {
+      if (ind.rsi === null) return { passed: false, label: 'RSI unavailable' };
+      const passed = m.change24h > 0 ? ind.rsi > 55 : ind.rsi < 45;
+      return { passed, label: `RSI ${ind.rsi.toFixed(1)} (${m.change24h > 0 ? 'bullish >55' : 'bearish <45'})` };
+    },
+    entryZone: (m) => {
+      if (m.change24h > 0 && m.positionInRange > 0.7) return { passed: true, side: 'BUY' };
+      if (m.change24h < 0 && m.positionInRange < 0.3) return { passed: true, side: 'SELL' };
+      return { passed: false, side: null };
+    },
+    stopLossPct: 0.015,
+    takeProfitPct: 0.035,
+  },
+  breakout: {
+    volumeThreshold: 750_000,
+    rangeThreshold: 2.0,
+    momentumThreshold: 1.0,
+    indicatorCheck: (_m, ind) => ({
+      passed: ind.rsi !== null && ind.rsi > 50,
+      label: ind.rsi !== null ? `RSI ${ind.rsi.toFixed(1)} (upward bias >50)` : 'RSI unavailable',
+    }),
+    entryZone: (m) => {
+      if (m.change24h > 0 && m.positionInRange > 0.95) return { passed: true, side: 'BUY' };
+      if (m.change24h < 0 && m.positionInRange < 0.05) return { passed: true, side: 'SELL' };
+      return { passed: false, side: null };
+    },
+    stopLossPct: 0.012,
+    takeProfitPct: 0.03,
+  },
+  mean_reversion: {
+    volumeThreshold: 500_000,
+    rangeThreshold: 3.0,
+    momentumThreshold: 0.5,
+    indicatorCheck: (m, ind) => {
+      if (ind.rsi === null) return { passed: false, label: 'RSI unavailable' };
+      const passed = m.change24h > 0 ? ind.rsi < 35 : ind.rsi > 65;
+      return { passed, label: `RSI ${ind.rsi.toFixed(1)} (extreme ${m.change24h > 0 ? '<35' : '>65'})` };
+    },
+    entryZone: (m) => {
+      if (m.change24h > 0.5 && m.positionInRange < 0.2) return { passed: true, side: 'BUY' };
+      if (m.change24h < -0.5 && m.positionInRange > 0.8) return { passed: true, side: 'SELL' };
+      return { passed: false, side: null };
+    },
+    stopLossPct: 0.02,
+    takeProfitPct: 0.03,
+  },
+  vwap: {
+    volumeThreshold: 600_000,
+    rangeThreshold: 1.0,
+    momentumThreshold: 0.5,
+    indicatorCheck: (_m, ind) => ({
+      passed: ind.rsi !== null && ind.rsi >= 45 && ind.rsi <= 75,
+      label: ind.rsi !== null ? `RSI ${ind.rsi.toFixed(1)} (trend 45-75)` : 'RSI unavailable',
+    }),
+    entryZone: (m) => {
+      if (m.change24h > 0 && m.positionInRange > 0.5) return { passed: true, side: 'BUY' };
+      if (m.change24h < 0 && m.positionInRange < 0.5) return { passed: true, side: 'SELL' };
+      return { passed: false, side: null };
+    },
+    stopLossPct: 0.01,
+    takeProfitPct: 0.02,
+  },
+};
+
+function getStrategyConfig(strategy: string | null): StrategyConfig {
+  return STRATEGY_CONFIG[strategy ?? ''] ?? STRATEGY_CONFIG['momentum'];
+}
+
+// ---------------------------------------------------------------------------
+// Real indicator math (computed from live exchange klines, never simulated).
+// ---------------------------------------------------------------------------
+
+function computeEMA(values: number[], period: number): number[] {
+  if (values.length === 0) return [];
+  const k = 2 / (period + 1);
+  const out: number[] = [];
+  let prev = values[0];
+  for (let i = 0; i < values.length; i++) {
+    prev = i === 0 ? values[0] : values[i] * k + prev * (1 - k);
+    out.push(prev);
+  }
+  return out;
+}
+
+function computeRSI(closes: number[], period = 14): number | null {
+  if (closes.length < period + 1) return null;
+  let gains = 0;
+  let losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+  if (losses === 0) return 100;
+  const rs = gains / losses;
+  return 100 - 100 / (1 + rs);
+}
+
+function computeIndicators(closes: number[]): IndicatorSet {
+  const rsi = computeRSI(closes, 14);
+  let macd: number | null = null;
+  let macdSignal: number | null = null;
+  let macdHistogram: number | null = null;
+  if (closes.length >= 26) {
+    const ema12 = computeEMA(closes, 12);
+    const ema26 = computeEMA(closes, 26);
+    const macdLine = ema12.map((v, i) => v - ema26[i]);
+    const signal = computeEMA(macdLine, 9);
+    const last = macdLine.length - 1;
+    macd = macdLine[last];
+    macdSignal = signal[last];
+    macdHistogram = macdLine[last] - signal[last];
+  }
+  return { rsi, macd, macdSignal, macdHistogram };
+}
+
+function toMetrics(ticker: MarketTicker): Metrics {
+  const price = ticker.price;
+  const change24h = ticker.priceChangePercent24h;
+  const volume = ticker.quoteVolume24h || ticker.volume24h || 0;
+  const range = ticker.highPrice24h - ticker.lowPrice24h;
+  const rangePercent = price > 0 ? (range / price) * 100 : 0;
+  const positionInRange = range > 0 ? (price - ticker.lowPrice24h) / range : 0.5;
+  return { price, change24h, volume, rangePercent, positionInRange };
+}
+
+/**
+ * Evaluate the configured strategy against REAL live market metrics. The
+ * returned `progress` is the percentage of strategy checkpoints currently
+ * satisfied by the live data, and `opportunity` is non-null only when every
+ * checkpoint passes (i.e. progress === 100). This is the single function that
+ * drives both the UI progress bar and the backend trade detection.
+ */
+function evaluateStrategy(ticker: MarketTicker, ind: IndicatorSet, strategyKey: string | null): StrategyEvaluation {
+  const config = getStrategyConfig(strategyKey);
+  const m = toMetrics(ticker);
+  const checkpoints: Checkpoint[] = [];
+  let passed = 0;
+  const total = 6;
+
+  const feedPassed = m.price > 0;
+  checkpoints.push({ name: 'Live Market Feed', status: feedPassed ? 'passed' : 'failed' });
+  if (feedPassed) passed++;
+
+  const volPassed = m.volume >= config.volumeThreshold;
+  checkpoints.push({ name: 'Volume Filter', status: volPassed ? 'passed' : 'failed' });
+  if (volPassed) passed++;
+
+  const rangePassed = m.rangePercent >= config.rangeThreshold;
+  checkpoints.push({ name: 'Volatility Range', status: rangePassed ? 'passed' : 'failed' });
+  if (rangePassed) passed++;
+
+  const momPassed = Math.abs(m.change24h) >= config.momentumThreshold;
+  checkpoints.push({ name: 'Momentum Check', status: momPassed ? 'passed' : 'failed' });
+  if (momPassed) passed++;
+
+  const indRes = config.indicatorCheck(m, ind);
+  checkpoints.push({ name: 'Indicator Confirmation', status: indRes.passed ? 'passed' : 'failed' });
+  if (indRes.passed) passed++;
+
+  const ez = config.entryZone(m);
+  checkpoints.push({ name: 'Entry Zone Validation', status: ez.passed ? 'passed' : 'failed' });
+  if (ez.passed) passed++;
+
+  const progress = Math.round((passed / total) * 100);
+  const confidence =
+    passed === total
+      ? Math.min(98, 92 + Math.round(((ind.rsi ?? 50) / 50) * 5))
+      : Math.round(50 + (passed / total) * 45);
+  const conditionsMet = checkpoints.filter((c) => c.status === 'passed').map((c) => c.name);
+
+  let opportunity: StrategyEvaluation['opportunity'] = null;
+  if (passed === total && ez.side) {
+    const entry = m.price;
+    const sign = ez.side === 'BUY' ? 1 : -1;
+    const stopLoss = entry * (1 - config.stopLossPct * sign);
+    const takeProfit = entry * (1 + config.takeProfitPct * sign);
+    const minNotional = ticker.minNotional || 5;
+    const estimatedPnl = Math.abs((takeProfit - entry) / entry) * minNotional;
+    opportunity = { symbol: ticker.symbol, entryPrice: entry, stopLoss, takeProfit, estimatedPnl, side: ez.side };
+  }
+
+  return { checkpoints, total, passed, progress, confidence, conditionsMet, opportunity };
+}
+
+/**
+ * Lightweight, fully real evaluation used to populate the "scanning coins" row
+ * for comparison symbols. Reuses the strategy's universal filters
+ * (volume / volatility / momentum) so every number on the screen is genuine.
+ */
+function quickEvaluate(ticker: MarketTicker, config: StrategyConfig): { progress: number; status: ScanCandidate['status'] } {
+  const m = toMetrics(ticker);
+  let passed = 0;
+  const total = 3;
+  if (m.volume >= config.volumeThreshold) passed++;
+  if (m.rangePercent >= config.rangeThreshold) passed++;
+  if (Math.abs(m.change24h) >= config.momentumThreshold) passed++;
+  const progress = Math.round((passed / total) * 100);
+  return { progress, status: progress >= 100 ? 'queued' : 'scanning' };
+}
+
+function normalizeSymbol(symbol: string): string {
+  return symbol.replace('/USDT', '').replace('USDT', '').toUpperCase();
 }
 
 export class TradingBot {
@@ -82,18 +375,29 @@ export class TradingBot {
         await this.state.storage.put('strategy', strategy);
         await this.state.storage.put('userId', userId);
         await this.state.storage.put('alerts', [] as TradeAlert[]);
-        await this.state.storage.put('logs', [] as AnalysisLog[]);
+        await this.state.storage.put('tradeActive', false);
+        await this.state.storage.put(
+          'logs',
+          [
+            { timestamp: new Date().toISOString(), level: 'info' as const, message: `Bot activated for strategy: ${strategy || 'default'}` },
+            { timestamp: new Date().toISOString(), level: 'info' as const, message: `Monitoring pair: ${coinId || 'N/A'}` },
+          ] as AnalysisLog[],
+        );
         await this.state.storage.put('activatedAt', Date.now());
-        await this.state.storage.setAlarm(Date.now() + 60000);
+        await this.state.storage.delete('lastPositionCheckAt');
+
+        // Run the first real analysis immediately so the UI is never empty.
+        await this.runAnalysisCycle();
+
+        await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS);
         return new Response(JSON.stringify({ success: true, message: 'Bot activated.' }), { status: 200 });
       }
       case '/deactivate': {
         await this.state.storage.put('isActive', false);
-        await this.state.storage.put('logs', (await this.state.storage.get('logs') as AnalysisLog[]).concat([{
-          timestamp: new Date().toISOString(),
-          level: 'info',
-          message: 'Bot deactivated by user.',
-        }]));
+        const existingLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
+        await this.state.storage.put('logs', (existingLogs ?? []).concat([
+          { timestamp: new Date().toISOString(), level: 'info' as const, message: 'Bot deactivated by user.' },
+        ]));
         try { await this.state.storage.deleteAlarm(); } catch (e) { /* ignore */ }
         return new Response(JSON.stringify({ success: true, message: 'Bot deactivated.' }), { status: 200 });
       }
@@ -105,58 +409,44 @@ export class TradingBot {
       }
       case '/analysis-status': {
         const isActive = (await this.state.storage.get('isActive')) || false;
-        const coinId = (await this.state.storage.get('coinId')) as string | null;
-        const strategy = (await this.state.storage.get('strategy')) as string | null;
-        const activatedAt = (await this.state.storage.get('activatedAt') as number | undefined) || Date.now();
-        const logs = (await this.state.storage.get('logs') as AnalysisLog[]) || [];
-
         if (!isActive) {
+          const logs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
           return new Response(JSON.stringify({
             isActive: false,
             strategy: null,
             coinId: null,
+            exchange: null,
+            environment: null,
             scanningProgress: 0,
             etaSeconds: 0,
             coinsCurrentlyScanning: [],
             nearMatches: [],
             checkpoints: [],
-            logs: logs.slice(-50),
-          }), { status: 200 });
+            logs: logs ? logs.slice(-50) : [],
+            lastAnalysisAt: 0,
+            opportunityDetected: false,
+          } as AnalysisSnapshot), { status: 200 });
         }
 
-        const elapsedMs = Date.now() - activatedAt;
-        const elapsedSeconds = Math.floor(elapsedMs / 1000);
-        const cycleDuration = 60;
-        const cycleProgress = Math.min(100, Math.floor((elapsedSeconds % cycleDuration) / cycleDuration * 100));
-        const etaSeconds = cycleDuration - (elapsedSeconds % cycleDuration);
+        // The UI is a pure visualization of the most recent real analysis
+        // cycle. If for some reason no snapshot exists yet, produce one now.
+        let snapshot = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
+        if (!snapshot) {
+          await this.runAnalysisCycle();
+          snapshot = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
+        }
 
-        const candidates = this.generateScanCandidates(coinId, cycleProgress, strategy);
-        const checkpoints = this.generateCheckpoints(strategy, cycleProgress);
-        const nearMatches = this.generateNearMatches(coinId, strategy, cycleProgress);
-
-        const enrichedLogs = this.ensureRecentLogs(logs, coinId, strategy, candidates, nearMatches);
-
-        return new Response(JSON.stringify({
-          isActive: true,
-          strategy,
-          coinId,
-          scanningProgress: cycleProgress,
-          etaSeconds,
-          coinsCurrentlyScanning: candidates,
-          nearMatches,
-          checkpoints,
-          logs: enrichedLogs.slice(-50),
-        }), { status: 200 });
+        return new Response(JSON.stringify(snapshot), { status: 200 });
       }
       case '/alerts': {
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-        const pending = alerts.filter(a => a.status === 'pending');
+        const pending = alerts.filter((a) => a.status === 'pending');
         return new Response(JSON.stringify(pending), { status: 200 });
       }
       case '/acknowledge': {
         const { alertId } = await request.json<{ alertId: string }>();
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-        const alert = alerts.find(a => a.id === alertId);
+        const alert = alerts.find((a) => a.id === alertId);
         if (alert) {
           alert.status = 'acknowledged';
           await this.state.storage.put('alerts', this.pruneAlerts(alerts));
@@ -186,7 +476,7 @@ export class TradingBot {
         const coinId = (await this.state.storage.get('coinId')) as string;
 
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-        const pending = alerts.filter(a => a.status === 'pending');
+        const pending = alerts.filter((a) => a.status === 'pending');
         if (pending.length === 0) {
           return new Response(JSON.stringify({ error: 'No pending alert to execute.' }), { status: 400 });
         }
@@ -250,52 +540,252 @@ export class TradingBot {
 
   async alarm() {
     const isActive = await this.state.storage.get('isActive');
-    if (isActive) {
-      await this.runMonitoringCycle();
+    if (!isActive) return;
+
+    // Every analysis cycle produces the real data the UI visualizes.
+    await this.runAnalysisCycle();
+
+    const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;
+    if (!lastPositionCheckAt || Date.now() - lastPositionCheckAt > POSITION_CHECK_INTERVAL_MS) {
       await this.monitorOpenPositions();
-      await this.state.storage.setAlarm(Date.now() + 60000);
+      await this.state.storage.put('lastPositionCheckAt', Date.now());
     }
+
+    await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS);
   }
 
-  private async runMonitoringCycle() {
+  /**
+   * The core synchronized workflow: fetch live market data from the user's
+   * connected exchange (any of the supported exchanges, mainnet or testnet),
+   * compute real indicators, evaluate the strategy, and — only if every
+   * strategy condition is satisfied — raise a genuine trade alert. The
+   * resulting snapshot is persisted so the UI can render it verbatim (no
+   * time-based animation).
+   */
+  private async runAnalysisCycle() {
     try {
       const coinId = (await this.state.storage.get('coinId')) as string;
       const strategy = (await this.state.storage.get('strategy')) as string;
       const userId = (await this.state.storage.get('userId')) as string;
+      const config = getStrategyConfig(strategy);
+      const baseSymbol = normalizeSymbol(coinId);
 
+      // Resolve the live feed from the user's connected exchange and its
+      // configured environment so the analysis is fully exchange-agnostic.
+      // There is intentionally no default exchange: the bot uses whichever
+      // exchange the user validated and connected.
       const user = await this.env.DB.prepare(
-        'SELECT exchange_name, exchange_environment FROM users WHERE id = ?'
-      ).bind(userId).first<{ exchange_name: string; exchange_environment: string | null }>();
+        'SELECT exchange_name, exchange_environment FROM users WHERE id = ?',
+      ).bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null }>();
 
-      if (!user?.exchange_name) return;
-
-      const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
-      // Fetch market data for ONLY the user-selected trading pair (not the
-      // entire market) to minimize API calls and backend processing.
-      const ticker = await adapter.fetchTicker(coinId);
-
-      if (!ticker) return;
-
-      const opportunity = this.detectOpportunity(ticker, strategy);
-      if (opportunity) {
-        const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-        alerts.push({
-          id: crypto.randomUUID(),
-          ...opportunity,
+      if (!user?.exchange_name) {
+        await this.persistAnalysis({
+          isActive: true,
           strategy,
-          timestamp: new Date().toISOString(),
-          status: 'pending',
+          coinId,
+          exchange: null,
+          environment: null,
+          scanningProgress: 0,
+          etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
+          coinsCurrentlyScanning: [],
+          nearMatches: [],
+          checkpoints: [],
+          logs: this.appendLog([], 'No exchange connected. Connect an exchange to start live analysis.', 'rejected'),
+          lastAnalysisAt: Date.now(),
+          opportunityDetected: false,
         });
-        await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+        return;
+      }
 
-        await sendTradeNotification(this.env, userId, {
-          ...opportunity,
+      const exchangeName = user.exchange_name as ExchangeName;
+      const environment = normalizeEnvironment(user.exchange_environment);
+      const adapter = getExchangeAdapter(exchangeName, environment);
+
+      const ticker = await adapter.fetchTicker(baseSymbol);
+      if (!ticker) {
+        await this.persistAnalysis({
+          isActive: true,
           strategy,
+          coinId,
+          exchange: exchangeName,
+          environment,
+          scanningProgress: 0,
+          etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
+          coinsCurrentlyScanning: [],
+          nearMatches: [],
+          checkpoints: [],
+          logs: this.appendLog([], `Live feed unavailable for ${baseSymbol} on ${exchangeName} (${environment}) — retrying next cycle.`, 'rejected'),
+          lastAnalysisAt: Date.now(),
+          opportunityDetected: false,
+        });
+        return;
+      }
+
+      const klines = await adapter.fetchKlines(baseSymbol, '1h', 100);
+      const closes = klines.map((k: Kline) => k.close);
+      const indicators = computeIndicators(closes);
+
+      const evaluation = evaluateStrategy(ticker, indicators, strategy);
+      const m = toMetrics(ticker);
+
+      // Build the real "scanning coins" row from a live market snapshot.
+      const candidates = await this.buildScanCandidates(adapter, baseSymbol, config);
+
+      const nearMatches: NearMatch[] = [];
+      if (evaluation.progress >= 60) {
+        nearMatches.push({
+          symbol: ticker.symbol,
+          confidence: evaluation.confidence,
+          estimatedEntry: evaluation.opportunity?.entryPrice ?? m.price,
+          currentPrice: m.price,
+          conditionsMet: evaluation.conditionsMet,
         });
       }
+
+      const prevLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
+      let logs = prevLogs ?? [];
+      if (evaluation.opportunity) {
+        logs = this.appendLog(
+          logs,
+          `OPPORTUNITY DETECTED — ${evaluation.opportunity.side} ${ticker.symbol} @ $${evaluation.opportunity.entryPrice.toFixed(2)}`,
+          'accepted',
+        );
+      } else {
+        logs = this.appendLog(
+          logs,
+          `Analysis cycle: ${evaluation.passed}/${evaluation.total} conditions met for ${ticker.symbol} (RSI ${indicators.rsi?.toFixed(1) ?? 'n/a'})`,
+          'scanning',
+        );
+      }
+
+      await this.state.storage.put('logs', logs.slice(-50));
+
+      const snapshot: AnalysisSnapshot = {
+        isActive: true,
+        strategy,
+        coinId,
+        exchange: exchangeName,
+        environment,
+        scanningProgress: evaluation.progress,
+        etaSeconds: evaluation.opportunity
+          ? 0
+          : Math.max(0, Math.ceil((ANALYSIS_INTERVAL_MS - (Date.now() - (await this.lastAnalysisStamp()))) / 1000)),
+        coinsCurrentlyScanning: candidates,
+        nearMatches,
+        checkpoints: evaluation.checkpoints,
+        logs: logs.slice(-50),
+        lastAnalysisAt: Date.now(),
+        opportunityDetected: evaluation.opportunity !== null,
+      };
+
+      // When the live data satisfies every strategy condition, raise the alarm
+      // and surface the trade opportunity popup on the client exactly once.
+      if (evaluation.opportunity) {
+        await this.raiseOpportunityAlert(userId, strategy, evaluation.opportunity);
+      }
+
+      await this.persistAnalysis(snapshot);
     } catch (e) {
-      console.error('Monitoring cycle error:', e);
+      console.error('Analysis cycle error:', e);
+      const prevLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
+      await this.persistAnalysis({
+        isActive: true,
+        strategy: (await this.state.storage.get('strategy')) as string,
+        coinId: (await this.state.storage.get('coinId')) as string,
+        exchange: null,
+        environment: null,
+        scanningProgress: 0,
+        etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
+        coinsCurrentlyScanning: [],
+        nearMatches: [],
+        checkpoints: [],
+        logs: this.appendLog(prevLogs ?? [], `Analysis error: ${(e as Error).message}`, 'rejected'),
+        lastAnalysisAt: Date.now(),
+        opportunityDetected: false,
+      });
     }
+  }
+
+  private async lastAnalysisStamp(): Promise<number> {
+    const stored = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
+    return stored?.lastAnalysisAt ?? Date.now();
+  }
+
+  private async persistAnalysis(snapshot: AnalysisSnapshot) {
+    await this.state.storage.put('analysis', snapshot);
+  }
+
+  private async buildScanCandidates(
+    adapter: ReturnType<typeof getExchangeAdapter>,
+    baseSymbol: string,
+    config: StrategyConfig,
+  ): Promise<ScanCandidate[]> {
+    const candidates: ScanCandidate[] = [];
+
+    const primary = await adapter.fetchTicker(baseSymbol);
+    if (primary) {
+      const q = quickEvaluate(primary, config);
+      candidates.push({
+        symbol: `${primary.symbol}/USDT`,
+        price: primary.price,
+        progress: q.progress,
+        status: q.status,
+      });
+    }
+
+    const comparison = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA'].filter((s) => s !== baseSymbol);
+    for (let i = 0; i < Math.min(4, comparison.length); i++) {
+      try {
+        const t = await adapter.fetchTicker(comparison[i]);
+        if (!t) continue;
+        const q = quickEvaluate(t, config);
+        candidates.push({
+          symbol: `${t.symbol}/USDT`,
+          price: t.price,
+          progress: q.progress,
+          status: q.status,
+        });
+      } catch {
+        /* skip unavailable symbol */
+      }
+    }
+
+    return candidates;
+  }
+
+  private async raiseOpportunityAlert(
+    userId: string,
+    strategy: string,
+    opportunity: NonNullable<StrategyEvaluation['opportunity']>,
+  ) {
+    const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+    const pending = alerts.filter((a) => a.status === 'pending');
+    // Avoid duplicate alarms while a previous opportunity is still unhandled.
+    if (pending.length > 0) return;
+
+    alerts.push({
+      id: crypto.randomUUID(),
+      symbol: opportunity.symbol,
+      entryPrice: opportunity.entryPrice,
+      stopLoss: opportunity.stopLoss,
+      takeProfit: opportunity.takeProfit,
+      estimatedPnl: opportunity.estimatedPnl,
+      strategy,
+      side: opportunity.side,
+      timestamp: new Date().toISOString(),
+      status: 'pending',
+    });
+    await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+
+    await sendTradeNotification(this.env, userId, {
+      symbol: opportunity.symbol,
+      entryPrice: opportunity.entryPrice,
+      stopLoss: opportunity.stopLoss,
+      takeProfit: opportunity.takeProfit,
+      estimatedPnl: opportunity.estimatedPnl,
+      side: opportunity.side,
+      strategy,
+    });
   }
 
   private async monitorOpenPositions() {
@@ -364,223 +854,11 @@ export class TradingBot {
   }
 
   private pruneAlerts(alerts: TradeAlert[]): TradeAlert[] {
-    // Keep only actionable (pending) alerts and cap the retained history to
-    // avoid unbounded growth of the Durable Object's storage.
-    const pending = alerts.filter(a => a.status === 'pending');
+    const pending = alerts.filter((a) => a.status === 'pending');
     return pending.slice(-100);
   }
 
-  private generateScanCandidates(primaryCoin: string | null, progress: number, strategy: string | null): ScanCandidate[] {
-    const baseCoins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'DOT', 'LINK'];
-    const candidates: ScanCandidate[] = [];
-    const primaryProgress = Math.min(100, progress + 15);
-
-    if (primaryCoin) {
-      const symbol = primaryCoin.replace('/USDT', '');
-      candidates.push({
-        symbol: `${symbol}/USDT`,
-        price: this.estimatePrice(symbol),
-        progress: primaryProgress,
-        status: primaryProgress >= 100 ? 'queued' : 'scanning',
-      });
-    }
-
-    for (let i = 0; i < Math.min(4, baseCoins.length); i++) {
-      const coin = baseCoins[i];
-      if (primaryCoin && primaryCoin.includes(coin)) continue;
-      const candidateProgress = Math.max(0, Math.min(100, progress - 10 - i * 12));
-      candidates.push({
-        symbol: `${coin}/USDT`,
-        price: this.estimatePrice(coin),
-        progress: candidateProgress,
-        status: candidateProgress >= 100 ? 'queued' : 'scanning',
-      });
-    }
-
-    return candidates;
-  }
-
-  private generateCheckpoints(strategy: string | null, progress: number): Checkpoint[] {
-    if (!strategy) return [];
-    const checkpoints: Checkpoint[] = [
-      { name: 'Data Fetch', status: 'passed' as const },
-      { name: 'Volume Filter', status: progress >= 20 ? 'passed' as const : 'pending' as const },
-      { name: 'RSI / MACD Check', status: progress >= 45 ? 'passed' as const : 'pending' as const },
-      { name: 'Entry Zone Validation', status: progress >= 70 ? 'passed' as const : 'pending' as const },
-      { name: 'Risk Assessment', status: progress >= 90 ? 'passed' as const : 'pending' as const },
-    ];
-    return checkpoints;
-  }
-
-  private generateNearMatches(primaryCoin: string | null, strategy: string | null, progress: number): NearMatch[] {
-    if (!primaryCoin || progress < 60) return [];
-    const symbol = primaryCoin.replace('/USDT', '');
-    const price = this.estimatePrice(symbol);
-    const confidence = Math.min(98, 65 + Math.floor(progress / 5));
-    const conditions = this.conditionsForStrategy(strategy);
-
-    return [{
-      symbol: primaryCoin,
-      confidence,
-      estimatedEntry: price,
-      currentPrice: price,
-      conditionsMet: conditions,
-    }];
-  }
-
-  private conditionsForStrategy(strategy: string | null): string[] {
-    switch (strategy) {
-      case 'scalping': return ['RSI near oversold', 'MACD bullish cross', 'Volume spike detected'];
-      case 'momentum': return ['Strong momentum', 'Above VWAP', 'Increasing volume'];
-      case 'breakout': return ['Near resistance', 'Volume buildup', 'Narrow range'];
-      case 'mean_reversion': return ['Oversold zone', 'Below Bollinger lower', 'Divergence bullish'];
-      case 'vwap': return ['Price above VWAP', 'VWAP slope up', 'Volume above average'];
-      default: return ['General conditions met'];
-    }
-  }
-
-  private ensureRecentLogs(logs: AnalysisLog[], coinId: string | null, strategy: string | null, candidates: ScanCandidate[], nearMatches: NearMatch[]): AnalysisLog[] {
-    if (logs.length === 0) {
-      return [
-        { timestamp: new Date().toISOString(), level: 'info', message: `Bot activated for strategy: ${strategy || 'default'}` },
-        { timestamp: new Date().toISOString(), level: 'info', message: `Monitoring coin: ${coinId || 'N/A'}` },
-        { timestamp: new Date().toISOString(), level: 'scanning', message: 'Fetching market data...' },
-      ];
-    }
-
-    const lastLog = logs[logs.length - 1];
-    const lastTime = new Date(lastLog.timestamp).getTime();
-    if (Date.now() - lastTime > 5000) {
-      const scanning = candidates.find(c => c.status === 'scanning');
-      if (scanning) {
-        return logs.concat([{
-          timestamp: new Date().toISOString(),
-          level: 'scanning',
-          message: `Scanning ${scanning.symbol} at $${scanning.price.toFixed(2)}`,
-        }]);
-      }
-      if (nearMatches.length > 0) {
-        const match = nearMatches[0];
-        return logs.concat([{
-          timestamp: new Date().toISOString(),
-          level: 'accepted',
-          message: `${match.symbol} passed checks (${match.confidence}% confidence)`,
-        }]);
-      }
-    }
-
-    return logs;
-  }
-
-  private estimatePrice(symbol: string): number {
-    const basePrices: Record<string, number> = {
-      BTC: 67250, ETH: 3421, SOL: 178, BNB: 612, XRP: 0.62,
-      ADA: 0.45, AVAX: 38, DOGE: 0.16, DOT: 7.2, LINK: 18.5,
-    };
-    const clean = symbol.replace('/USDT', '').toUpperCase();
-    const base = basePrices[clean] || 100;
-    const variance = base * 0.02;
-    return base + (Math.random() * variance * 2 - variance);
-  }
-
-  private detectOpportunity(ticker: MarketTicker, strategy: string): { symbol: string; entryPrice: number; stopLoss: number; takeProfit: number; estimatedPnl: number; side: 'BUY' | 'SELL' } | null {
-    const price = ticker.price;
-    const change = ticker.priceChangePercent24h;
-    const range = ticker.highPrice24h - ticker.lowPrice24h;
-    const rangePercent = ticker.price > 0 ? (range / ticker.price) * 100 : 0;
-    const volume = ticker.quoteVolume24h || ticker.volume24h || 0;
-    const minNotional = ticker.minNotional || 5;
-
-    if (volume < 100_000) return null;
-    if (rangePercent < 0.5) return null;
-
-    const positionInRange = range > 0 ? (price - ticker.lowPrice24h) / range : 0.5;
-
-    let side: 'BUY' | 'SELL' | null = null;
-    let stopLoss = 0;
-    let takeProfit = 0;
-
-    switch (strategy) {
-      case "scalping": {
-        if (Math.abs(change) < 0.5 || volume < 500_000) return null;
-        if (change > 0 && positionInRange > 0.6) {
-          side = 'BUY';
-          stopLoss = price * 0.997;
-          takeProfit = price * 1.006;
-        } else if (change < 0 && positionInRange < 0.4) {
-          side = 'SELL';
-          stopLoss = price * 1.003;
-          takeProfit = price * 0.994;
-        }
-        break;
-      }
-      case "momentum": {
-        if (Math.abs(change) < 2.0 || volume < 1_000_000) return null;
-        if (change > 0 && positionInRange > 0.7) {
-          side = 'BUY';
-          stopLoss = price * 0.985;
-          takeProfit = price * 1.035;
-        } else if (change < 0 && positionInRange < 0.3) {
-          side = 'SELL';
-          stopLoss = price * 1.015;
-          takeProfit = price * 0.965;
-        }
-        break;
-      }
-      case "breakout": {
-        if (rangePercent < 2.0 || volume < 750_000) return null;
-        if (change > 0 && positionInRange > 0.95) {
-          side = 'BUY';
-          stopLoss = price * 0.988;
-          takeProfit = price * 1.03;
-        } else if (change < 0 && positionInRange < 0.05) {
-          side = 'SELL';
-          stopLoss = price * 1.012;
-          takeProfit = price * 0.97;
-        }
-        break;
-      }
-      case "mean_reversion": {
-        if (rangePercent < 3.0 || volume < 500_000) return null;
-        if (positionInRange < 0.2 && change > 0.5) {
-          side = 'BUY';
-          stopLoss = price * 0.98;
-          takeProfit = price * 1.03;
-        } else if (positionInRange > 0.8 && change < -0.5) {
-          side = 'SELL';
-          stopLoss = price * 1.02;
-          takeProfit = price * 0.97;
-        }
-        break;
-      }
-      case "vwap": {
-        if (Math.abs(change) < 0.5 || volume < 600_000 || rangePercent < 1.0) return null;
-        if (positionInRange > 0.5 && change > 0) {
-          side = 'BUY';
-          stopLoss = price * 0.99;
-          takeProfit = price * 1.02;
-        } else if (positionInRange < 0.5 && change < 0) {
-          side = 'SELL';
-          stopLoss = price * 1.01;
-          takeProfit = price * 0.98;
-        }
-        break;
-      }
-      default:
-        return null;
-    }
-
-    if (!side) return null;
-
-    const estimatedPnl = Math.abs((takeProfit - price) / price) * minNotional;
-
-    return {
-      symbol: ticker.symbol,
-      entryPrice: price,
-      stopLoss,
-      takeProfit,
-      estimatedPnl,
-      side,
-    };
+  private appendLog(logs: AnalysisLog[], message: string, level: AnalysisLog['level']): AnalysisLog[] {
+    return logs.concat([{ timestamp: new Date().toISOString(), level, message }]);
   }
 }

@@ -33,6 +33,7 @@ import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
 import com.cryptopulse.app.data.api.AnalysisStatusResponse
+import com.cryptopulse.app.data.api.BotAlert
 import com.cryptopulse.app.data.api.ScanCandidate
 import com.cryptopulse.app.data.api.NearMatch
 import com.cryptopulse.app.data.api.Checkpoint
@@ -43,6 +44,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun LiveAnalysisScreen(
     onStopBot: () -> Unit,
+    onOpportunity: (BotAlert) -> Unit = {},
     onBack: () -> Unit = {},
     viewModel: LiveAnalysisViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
@@ -50,10 +52,23 @@ fun LiveAnalysisScreen(
     val analysisState by viewModel.analysisState.collectAsState(initial = null)
     val isLoading by viewModel.isLoading.collectAsState()
     val error by viewModel.error.collectAsState()
+    val pendingAlert by viewModel.pendingAlert.collectAsState()
     var isStopping by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         viewModel.startPolling()
+    }
+
+    // The analysis screen and the trade detection engine are one synchronized
+    // workflow. The moment the backend raises a genuine opportunity (analysis
+    // at 100%), surface the trade popup in lock-step with the engine.
+    LaunchedEffect(pendingAlert) {
+        pendingAlert?.let { alert ->
+            if (alert.id.isNotEmpty()) {
+                viewModel.clearPendingAlert()
+                onOpportunity(alert)
+            }
+        }
     }
 
     DisposableEffect(Unit) {
@@ -169,6 +184,8 @@ private fun LiveAnalysisContent(
                 etaSeconds = state.etaSeconds,
                 strategy = state.strategy,
                 coinId = state.coinId,
+                exchange = state.exchange,
+                environment = state.environment,
             )
         }
 
@@ -227,6 +244,8 @@ private fun ScanningProgressCard(
     etaSeconds: Int,
     strategy: String?,
     coinId: String?,
+    exchange: String?,
+    environment: String?,
 ) {
     GlowCard {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -292,6 +311,10 @@ private fun ScanningProgressCard(
             ) {
                 InfoChip(label = "Strategy", value = strategy ?: "N/A")
                 InfoChip(label = "Primary Pair", value = coinId ?: "N/A")
+                InfoChip(
+                    label = "Exchange",
+                    value = buildExchangeLabel(exchange, environment),
+                )
             }
         }
     }
@@ -303,6 +326,17 @@ private fun InfoChip(label: String, value: String) {
         Text(text = label, color = TextSecondary, fontSize = 10.sp, letterSpacing = 0.5.sp)
         Text(text = value, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
     }
+}
+
+private fun buildExchangeLabel(exchange: String?, environment: String?): String {
+    val name = when (exchange?.lowercase()) {
+        "binance" -> "Binance"
+        "delta" -> "Delta"
+        "bybit" -> "Bybit"
+        else -> exchange ?: "N/A"
+    }
+    val env = if (environment?.lowercase() == "testnet") "Testnet" else "Mainnet"
+    return "$name · $env"
 }
 
 @Composable

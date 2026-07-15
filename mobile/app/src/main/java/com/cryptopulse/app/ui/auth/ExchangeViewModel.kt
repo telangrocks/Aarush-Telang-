@@ -327,6 +327,19 @@ class ExchangeViewModel @Inject constructor(
         _pendingAlert.value = alert
     }
 
+    fun setPendingBotAlert(alert: com.cryptopulse.app.data.api.BotAlert) {
+        _pendingAlert.value = mapOf(
+            "id" to alert.id,
+            "symbol" to alert.symbol,
+            "entryPrice" to alert.entryPrice,
+            "stopLoss" to alert.stopLoss,
+            "takeProfit" to alert.takeProfit,
+            "estimatedPnl" to alert.estimatedPnl,
+            "strategy" to (alert.strategy ?: ""),
+            "side" to (alert.side ?: "BUY"),
+        )
+    }
+
     fun dismissCurrentAlert() {
         val alertId = _pendingAlert.value?.get("id") as? String
         if (alertId != null) {
@@ -345,7 +358,6 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun executeCurrentTrade() {
-        val candidate = _selectedCandidate.value ?: return
         val alert = _pendingAlert.value ?: return
         val tradeSetup = _tradeSetup.value
 
@@ -360,9 +372,21 @@ class ExchangeViewModel @Inject constructor(
                             tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
                         }
                         _pendingAlert.value = null
-                        if (tradeSetup != null) {
-                            _lastTrade.value = tradeSetup
-                        }
+                        // Prefer the real detected opportunity; fall back to the
+                        // manual trade setup if present.
+                        val entryPrice = (alert["entryPrice"] as? Double)
+                            ?: tradeSetup?.entryPrice ?: 0.0
+                        val stopLoss = (alert["stopLoss"] as? Double)
+                            ?: tradeSetup?.stopLossPrice ?: entryPrice * 0.99
+                        val takeProfit = (alert["takeProfit"] as? Double)
+                            ?: tradeSetup?.takeProfitPrice ?: entryPrice * 1.02
+                        val positionSize = tradeSetup?.positionSize ?: 100.0
+                        _lastTrade.value = TradeSetupState(
+                            entryPrice = entryPrice,
+                            stopLossPrice = stopLoss,
+                            takeProfitPrice = takeProfit,
+                            positionSize = positionSize,
+                        )
                     }
                 }
             } catch (e: Exception) {

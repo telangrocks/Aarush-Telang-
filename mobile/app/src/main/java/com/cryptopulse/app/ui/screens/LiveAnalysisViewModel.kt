@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cryptopulse.app.data.api.AnalysisLog
 import com.cryptopulse.app.data.api.AnalysisStatusResponse
+import com.cryptopulse.app.data.api.BotAlert
 import com.cryptopulse.app.data.api.Checkpoint
 import com.cryptopulse.app.data.api.NearMatch
 import com.cryptopulse.app.data.api.ScanCandidate
@@ -30,6 +31,15 @@ class LiveAnalysisViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
+    /**
+     * The genuine trade opportunity detected by the backend analysis engine.
+     * When the backend's strategy conditions are all satisfied (analysis at
+     * 100%) it raises a real alert; this flow surfaces it so the UI can show
+     * the trade popup in lock-step with the engine.
+     */
+    private val _pendingAlert = MutableStateFlow<BotAlert?>(null)
+    val pendingAlert: StateFlow<BotAlert?> = _pendingAlert
+
     private var pollingJob: Job? = null
 
     fun startPolling() {
@@ -48,6 +58,19 @@ class LiveAnalysisViewModel @Inject constructor(
                         _error.value = "Failed to load analysis status"
                         _isLoading.value = false
                     }
+
+                    // The analysis screen and the trade detection engine are the
+                    // same workflow: poll the live alert queue so a detected
+                    // opportunity appears the instant the backend raises it.
+                    try {
+                        val alertsResponse = tradingBotService.getAlerts()
+                        if (alertsResponse.isSuccessful && alertsResponse.body() != null) {
+                            val alerts = alertsResponse.body()!!
+                            _pendingAlert.value = if (alerts.isNotEmpty()) BotAlert.fromMap(alerts.first()) else null
+                        }
+                    } catch (e: Exception) {
+                        // Alert polling is best-effort; never block analysis rendering.
+                    }
                 } catch (e: Exception) {
                     _error.value = e.message ?: "Network error"
                     _isLoading.value = false
@@ -55,6 +78,10 @@ class LiveAnalysisViewModel @Inject constructor(
                 delay(2000)
             }
         }
+    }
+
+    fun clearPendingAlert() {
+        _pendingAlert.value = null
     }
 
     fun stopPolling() {

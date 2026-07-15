@@ -47,6 +47,8 @@ data class AnalysisStatusResponse(
     val isActive: Boolean,
     val strategy: String?,
     val coinId: String?,
+    val exchange: String? = null,
+    val environment: String? = null,
     val scanningProgress: Int,
     val etaSeconds: Int,
     val coinsCurrentlyScanning: List<ScanCandidate>,
@@ -54,6 +56,32 @@ data class AnalysisStatusResponse(
     val checkpoints: List<Checkpoint>,
     val logs: List<AnalysisLog>,
 )
+
+data class BotAlert(
+    val id: String,
+    val symbol: String,
+    val entryPrice: Double,
+    val stopLoss: Double,
+    val takeProfit: Double,
+    val estimatedPnl: Double,
+    val strategy: String?,
+    val side: String?,
+    val timestamp: String?,
+) {
+    companion object {
+        fun fromMap(map: Map<String, Any>): BotAlert = BotAlert(
+            id = (map["id"] as? String) ?: "",
+            symbol = (map["symbol"] as? String) ?: "UNKNOWN",
+            entryPrice = (map["entryPrice"] as? Number)?.toDouble() ?: 0.0,
+            stopLoss = (map["stopLoss"] as? Number)?.toDouble() ?: 0.0,
+            takeProfit = (map["takeProfit"] as? Number)?.toDouble() ?: 0.0,
+            estimatedPnl = (map["estimatedPnl"] as? Number)?.toDouble() ?: 0.0,
+            strategy = map["strategy"] as? String,
+            side = map["side"] as? String,
+            timestamp = map["timestamp"] as? String,
+        )
+    }
+}
 
 data class PositionResponse(
     val id: String,

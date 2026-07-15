@@ -28,6 +28,7 @@ import {
 } from "./handlers/exchange";
 import { handleRegisterFcmToken, sendPriceAlertNotification } from "./handlers/notifications";
 import { handleGetPositions, handleClosePosition } from "./handlers/positions";
+import { getExchangeAdapter, type ExchangeName, type ExchangeEnvironment } from "./exchanges";
 
 export interface Env {
   DB: D1Database;
@@ -317,57 +318,66 @@ const scheduled = async (
         return;
       }
 
-      try {
-        const tickersResponse = await fetch("https://api.binance.com/api/v3/ticker/24hr");
-        if (!tickersResponse.ok) {
-          console.log("Failed to fetch tickers for alert processing");
-          return;
-        }
-        const tickers = await tickersResponse.json() as any[];
-        const tickerMap = new Map<string, any>();
-        for (const ticker of tickers) {
-          const symbol = ticker.symbol.replace(/USDT$/, "");
-          tickerMap.set(symbol.toUpperCase(), ticker);
-        }
+      // Resolve each user's connected exchange + environment so price alerts
+      // are checked against the correct exchange (mainnet or testnet) — never
+      // hard-coded to a single venue.
+      const exchangeCache = new Map<string, { name: ExchangeName; environment: ExchangeEnvironment } | null>();
+      for (const alert of results as any[]) {
+        try {
+          const tokenId = alert.token_id as string;
+          const targetPrice = parseFloat(alert.target_price as string);
+          const condition = alert.condition as string;
+          const userId = alert.user_id as string;
+          const symbol = tokenId.toUpperCase();
 
-        for (const alert of results as any[]) {
-          try {
-            const tokenId = alert.token_id as string;
-            const targetPrice = parseFloat(alert.target_price as string);
-            const condition = alert.condition as string;
-            const symbol = tokenId.toUpperCase();
-
-            const ticker = tickerMap.get(symbol);
-            if (!ticker) continue;
-
-            const currentPrice = parseFloat(ticker.lastPrice);
-            let triggered = false;
-
-            if (condition === "ABOVE" && currentPrice >= targetPrice) {
-              triggered = true;
-            } else if (condition === "BELOW" && currentPrice <= targetPrice) {
-              triggered = true;
-            }
-
-            if (triggered) {
-              await env.DB.prepare(
-                "UPDATE price_alerts SET is_active = 0, triggered_at = ? WHERE id = ?"
-              ).bind(new Date().toISOString(), alert.id).run();
-              console.log(`Alert ${alert.id} triggered for ${symbol} at ${currentPrice}`);
-
-              await sendPriceAlertNotification(env, alert.user_id, {
-                tokenId,
-                targetPrice,
-                condition: condition as "ABOVE" | "BELOW",
-                currentPrice,
-              });
-            }
-          } catch (err) {
-            console.error("Error processing alert:", err);
+          let cached = exchangeCache.get(userId);
+          if (cached === undefined) {
+            const user = await env.DB.prepare(
+              "SELECT exchange_name, exchange_environment FROM users WHERE id = ?"
+            ).bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null }>();
+            cached = user?.exchange_name
+              ? {
+                  name: user.exchange_name as ExchangeName,
+                  environment: user.exchange_environment === "testnet" ? "testnet" : "mainnet",
+                }
+              : null;
+            exchangeCache.set(userId, cached);
           }
+
+          if (!cached) {
+            console.log(`Skipping price alert ${alert.id}: no exchange connected for user ${userId}`);
+            continue;
+          }
+
+          const adapter = getExchangeAdapter(cached.name, cached.environment);
+          const ticker = await adapter.fetchTicker(symbol);
+          if (!ticker) continue;
+
+          const currentPrice = ticker.price;
+          let triggered = false;
+
+          if (condition === "ABOVE" && currentPrice >= targetPrice) {
+            triggered = true;
+          } else if (condition === "BELOW" && currentPrice <= targetPrice) {
+            triggered = true;
+          }
+
+          if (triggered) {
+            await env.DB.prepare(
+              "UPDATE price_alerts SET is_active = 0, triggered_at = ? WHERE id = ?"
+            ).bind(new Date().toISOString(), alert.id).run();
+            console.log(`Alert ${alert.id} triggered for ${symbol} at ${currentPrice}`);
+
+            await sendPriceAlertNotification(env, userId, {
+              tokenId,
+              targetPrice,
+              condition: condition as "ABOVE" | "BELOW",
+              currentPrice,
+            });
+          }
+        } catch (err) {
+          console.error("Error processing alert:", err);
         }
-      } catch (err) {
-        console.error("Error in alert processing cycle:", err);
       }
     })(),
   );
