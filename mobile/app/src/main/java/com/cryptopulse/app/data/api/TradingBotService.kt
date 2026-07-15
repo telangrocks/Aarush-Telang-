@@ -43,6 +43,18 @@ data class Checkpoint(
     val status: String,
 )
 
+data class TimeframeAnalysis(
+    val timeframe: String,
+    val interval: String,
+    val trend: String,
+    val momentum: String,
+    val volumeProfile: String,
+    val emaCross: String,
+    val rsi: Double,
+    val confidence: Int,
+    val reasoning: List<String>,
+)
+
 data class AnalysisStatusResponse(
     val isActive: Boolean,
     val strategy: String?,
@@ -51,6 +63,10 @@ data class AnalysisStatusResponse(
     val environment: String? = null,
     val scanningProgress: Int,
     val etaSeconds: Int,
+    val confluenceScore: Int,
+    val alignment: String,
+    val primarySignal: String,
+    val timeframes: List<TimeframeAnalysis>,
     val coinsCurrentlyScanning: List<ScanCandidate>,
     val nearMatches: List<NearMatch>,
     val checkpoints: List<Checkpoint>,

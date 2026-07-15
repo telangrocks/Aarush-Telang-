@@ -37,6 +37,7 @@ import com.cryptopulse.app.data.api.BotAlert
 import com.cryptopulse.app.data.api.ScanCandidate
 import com.cryptopulse.app.data.api.NearMatch
 import com.cryptopulse.app.data.api.Checkpoint
+import com.cryptopulse.app.data.api.TimeframeAnalysis
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -186,11 +187,29 @@ private fun LiveAnalysisContent(
                 coinId = state.coinId,
                 exchange = state.exchange,
                 environment = state.environment,
+                confluenceScore = state.confluenceScore,
+                alignment = state.alignment,
+                primarySignal = state.primarySignal,
             )
         }
 
         item {
             CheckpointTimeline(checkpoints = state.checkpoints)
+        }
+
+        if (state.timeframes.isNotEmpty()) {
+            item {
+                Text(
+                    text = "MULTI-TIMEFRAME ANALYSIS",
+                    color = TextSecondary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    letterSpacing = 1.sp,
+                )
+            }
+            item {
+                TimeframeAnalysisGrid(timeframes = state.timeframes)
+            }
         }
 
         if (state.coinsCurrentlyScanning.isNotEmpty()) {
@@ -246,6 +265,9 @@ private fun ScanningProgressCard(
     coinId: String?,
     exchange: String?,
     environment: String?,
+    confluenceScore: Int,
+    alignment: String,
+    primarySignal: String,
 ) {
     GlowCard {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -256,7 +278,7 @@ private fun ScanningProgressCard(
             ) {
                 Column {
                     Text(
-                        text = "Scanning Progress",
+                        text = "Analysis Progress",
                         color = TextPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp,
@@ -316,6 +338,66 @@ private fun ScanningProgressCard(
                     value = buildExchangeLabel(exchange, environment),
                 )
             }
+
+            Spacer(Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(
+                        text = "Confluence Score",
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        text = "$confluenceScore%",
+                        color = when {
+                            confluenceScore >= 75 -> ProfitGreen
+                            confluenceScore >= 50 -> WarningOrange
+                            else -> LossRed
+                        },
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 18.sp,
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "Alignment",
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        text = alignment,
+                        color = when (alignment) {
+                            "STRONG" -> ProfitGreen
+                            "MODERATE" -> WarningOrange
+                            else -> LossRed
+                        },
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "Signal",
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                    )
+                    Text(
+                        text = primarySignal,
+                        color = when (primarySignal) {
+                            "BUY" -> ProfitGreen
+                            "SELL" -> LossRed
+                            else -> TextSecondary
+                        },
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 16.sp,
+                    )
+                }
+            }
         }
     }
 }
@@ -337,6 +419,169 @@ private fun buildExchangeLabel(exchange: String?, environment: String?): String 
     }
     val env = if (environment?.lowercase() == "testnet") "Testnet" else "Mainnet"
     return "$name · $env"
+}
+
+@Composable
+private fun TimeframeAnalysisGrid(timeframes: List<com.cryptopulse.app.data.api.TimeframeAnalysis>) {
+    GlowCard {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "Timeframe Confluence",
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+            )
+            Spacer(Modifier.height(10.dp))
+
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(vertical = 4.dp),
+            ) {
+                items(timeframes) { tf ->
+                    TimeframeCard(tf = tf)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimeframeCard(tf: com.cryptopulse.app.data.api.TimeframeAnalysis) {
+    val trendColor = when (tf.trend) {
+        "BULLISH" -> ProfitGreen
+        "BEARISH" -> LossRed
+        else -> TextSecondary
+    }
+    val momentumColor = when (tf.momentum) {
+        "OVERSOLD" -> WarningOrange
+        "OVERBOUGHT" -> LossRed
+        else -> TextSecondary
+    }
+    val signalColor = when {
+        tf.trend == "BULLISH" && tf.momentum == "OVERSOLD" -> ProfitGreen
+        tf.trend == "BEARISH" && tf.momentum == "OVERBOUGHT" -> LossRed
+        else -> TextSecondary
+    }
+
+    Box(
+        modifier = Modifier
+            .width(150.dp)
+            .background(NavyMid, RoundedCornerShape(12.dp))
+            .border(1.dp, NavyBorder, RoundedCornerShape(12.dp))
+            .padding(12.dp),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = tf.timeframe,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                )
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(signalColor, shape = RoundedCornerShape(4.dp))
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(thickness = 0.5.dp, color = NavyBorder)
+            Spacer(Modifier.height(10.dp))
+
+            AnalysisRow("Trend", tf.trend, trendColor)
+            AnalysisRow("Momentum", tf.momentum, momentumColor)
+            AnalysisRow("EMA Cross", tf.emaCross, TextPrimary)
+            AnalysisRow("Volume", tf.volumeProfile, TextPrimary)
+
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider(thickness = 0.5.dp, color = NavyBorder)
+            Spacer(Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "RSI",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                )
+                Text(
+                    text = String.format("%.1f", tf.rsi),
+                    color = when {
+                        tf.rsi > 70 -> LossRed
+                        tf.rsi < 30 -> ProfitGreen
+                        else -> TextPrimary
+                    },
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Confidence",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                )
+                Text(
+                    text = "${tf.confidence}%",
+                    color = when {
+                        tf.confidence >= 75 -> ProfitGreen
+                        tf.confidence >= 50 -> WarningOrange
+                        else -> LossRed
+                    },
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 12.sp,
+                )
+            }
+
+            if (tf.reasoning.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = tf.reasoning.first(),
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnalysisRow(label: String, value: String, valueColor: Color) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            color = TextMuted,
+            fontSize = 11.sp,
+        )
+        Text(
+            text = value,
+            color = valueColor,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
 }
 
 @Composable

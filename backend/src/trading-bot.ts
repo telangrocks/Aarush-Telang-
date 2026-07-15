@@ -104,12 +104,33 @@ interface AnalysisSnapshot {
   environment: string | null;
   scanningProgress: number;
   etaSeconds: number;
+  confluenceScore: number;
+  timeframes: TimeframeAnalysis[];
   coinsCurrentlyScanning: ScanCandidate[];
   nearMatches: NearMatch[];
   checkpoints: Checkpoint[];
   logs: AnalysisLog[];
   lastAnalysisAt: number;
   opportunityDetected: boolean;
+}
+
+interface TimeframeAnalysis {
+  timeframe: string;
+  interval: string;
+  trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  momentum: 'OVERBOUGHT' | 'OVERSOLD' | 'NEUTRAL';
+  volumeProfile: 'HIGH' | 'NORMAL' | 'LOW';
+  emaCross: 'GOLDEN' | 'DEATH' | 'NONE';
+  rsi: number;
+  confidence: number;
+  reasoning: string[];
+}
+
+interface ConfluenceResult {
+  score: number;
+  alignment: 'STRONG' | 'MODERATE' | 'WEAK' | 'NONE';
+  timeframes: TimeframeAnalysis[];
+  primarySignal: 'BUY' | 'SELL' | 'HOLD';
 }
 
 interface StrategyConfig {
@@ -419,6 +440,8 @@ export class TradingBot {
             environment: null,
             scanningProgress: 0,
             etaSeconds: 0,
+            confluenceScore: 0,
+            timeframes: [],
             coinsCurrentlyScanning: [],
             nearMatches: [],
             checkpoints: [],
@@ -587,6 +610,8 @@ export class TradingBot {
           environment: null,
           scanningProgress: 0,
           etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
+          confluenceScore: 0,
+          timeframes: [],
           coinsCurrentlyScanning: [],
           nearMatches: [],
           checkpoints: [],
@@ -611,6 +636,8 @@ export class TradingBot {
           environment,
           scanningProgress: 0,
           etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
+          confluenceScore: 0,
+          timeframes: [],
           coinsCurrentlyScanning: [],
           nearMatches: [],
           checkpoints: [],
@@ -642,18 +669,27 @@ export class TradingBot {
         });
       }
 
+      // Run multi-timeframe analysis to get confluence score and per-TF breakdown.
+      const confluence = await this.analyzeMultiTimeframe(adapter, baseSymbol, strategy, ticker);
+
       const prevLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
       let logs = prevLogs ?? [];
-      if (evaluation.opportunity) {
+      if (evaluation.opportunity && confluence.score >= 75) {
         logs = this.appendLog(
           logs,
-          `OPPORTUNITY DETECTED — ${evaluation.opportunity.side} ${ticker.symbol} @ $${evaluation.opportunity.entryPrice.toFixed(2)}`,
+          `OPPORTUNITY DETECTED — ${evaluation.opportunity.side} ${ticker.symbol} @ $${evaluation.opportunity.entryPrice.toFixed(2)} (confluence ${confluence.score}%)`,
           'accepted',
+        );
+      } else if (evaluation.opportunity) {
+        logs = this.appendLog(
+          logs,
+          `Single-TF opportunity found, but confluence only ${confluence.score}% — waiting for multi-TF alignment.`,
+          'scanning',
         );
       } else {
         logs = this.appendLog(
           logs,
-          `Analysis cycle: ${evaluation.passed}/${evaluation.total} conditions met for ${ticker.symbol} (RSI ${indicators.rsi?.toFixed(1) ?? 'n/a'})`,
+          `Analysis cycle: ${evaluation.passed}/${evaluation.total} conditions met for ${ticker.symbol} (RSI ${indicators.rsi?.toFixed(1) ?? 'n/a'}) — confluence ${confluence.score}%`,
           'scanning',
         );
       }
@@ -670,17 +706,19 @@ export class TradingBot {
         etaSeconds: evaluation.opportunity
           ? 0
           : Math.max(0, Math.ceil((ANALYSIS_INTERVAL_MS - (Date.now() - (await this.lastAnalysisStamp()))) / 1000)),
+        confluenceScore: confluence.score,
+        timeframes: confluence.timeframes,
         coinsCurrentlyScanning: candidates,
         nearMatches,
         checkpoints: evaluation.checkpoints,
         logs: logs.slice(-50),
         lastAnalysisAt: Date.now(),
-        opportunityDetected: evaluation.opportunity !== null,
+        opportunityDetected: evaluation.opportunity !== null && confluence.score >= 75,
       };
 
-      // When the live data satisfies every strategy condition, raise the alarm
-      // and surface the trade opportunity popup on the client exactly once.
-      if (evaluation.opportunity) {
+      // Only raise the alarm when BOTH single-TF strategy passes AND
+      // multi-timeframe confluence is strong enough.
+      if (evaluation.opportunity && confluence.score >= 75) {
         await this.raiseOpportunityAlert(userId, strategy, evaluation.opportunity);
       }
 
@@ -696,6 +734,8 @@ export class TradingBot {
         environment: null,
         scanningProgress: 0,
         etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
+        confluenceScore: 0,
+        timeframes: [],
         coinsCurrentlyScanning: [],
         nearMatches: [],
         checkpoints: [],
@@ -786,6 +826,194 @@ export class TradingBot {
       side: opportunity.side,
       strategy,
     });
+  }
+
+  private async analyzeMultiTimeframe(adapter: ReturnType<typeof getExchangeAdapter>, coinId: string, strategy: string, ticker: MarketTicker): Promise<ConfluenceResult> {
+    const timeframes = [
+      { timeframe: '1H', interval: '60', weight: 0.40 },
+      { timeframe: '30m', interval: '30', weight: 0.25 },
+      { timeframe: '15m', interval: '15', weight: 0.20 },
+      { timeframe: '5m', interval: '5', weight: 0.15 },
+    ];
+
+    const results: TimeframeAnalysis[] = [];
+    let totalScore = 0;
+    let totalWeight = 0;
+
+    for (const tf of timeframes) {
+      try {
+        const klines = await adapter.fetchKlines(coinId, tf.interval, 50);
+        if (klines.length < 20) {
+          results.push({
+            timeframe: tf.timeframe,
+            interval: tf.interval,
+            trend: 'NEUTRAL',
+            momentum: 'NEUTRAL',
+            volumeProfile: 'NORMAL',
+            emaCross: 'NONE',
+            rsi: 50,
+            confidence: 0,
+            reasoning: ['Insufficient data'],
+          });
+          continue;
+        }
+
+        const analysis = this.analyzeKlines(klines, strategy);
+        results.push({
+          timeframe: tf.timeframe,
+          interval: tf.interval,
+          ...analysis,
+        });
+
+        totalScore += analysis.confidence * tf.weight;
+        totalWeight += tf.weight;
+      } catch (e) {
+        results.push({
+          timeframe: tf.timeframe,
+          interval: tf.interval,
+          trend: 'NEUTRAL',
+          momentum: 'NEUTRAL',
+          volumeProfile: 'NORMAL',
+          emaCross: 'NONE',
+          rsi: 50,
+          confidence: 0,
+          reasoning: ['Analysis failed'],
+        });
+      }
+    }
+
+    const finalScore = totalWeight > 0 ? Math.round(totalScore / totalWeight) : 0;
+    let alignment: ConfluenceResult['alignment'] = 'NONE';
+    let primarySignal: ConfluenceResult['primarySignal'] = 'HOLD';
+
+    if (finalScore >= 75) {
+      alignment = 'STRONG';
+      const bullishCount = results.filter(r => r.trend === 'BULLISH' && r.momentum !== 'OVERBOUGHT').length;
+      const bearishCount = results.filter(r => r.trend === 'BEARISH' && r.momentum !== 'OVERSOLD').length;
+      primarySignal = bullishCount > bearishCount ? 'BUY' : bearishCount > bullishCount ? 'SELL' : 'HOLD';
+    } else if (finalScore >= 50) {
+      alignment = 'MODERATE';
+      primarySignal = 'HOLD';
+    } else if (finalScore >= 25) {
+      alignment = 'WEAK';
+      primarySignal = 'HOLD';
+    }
+
+    return {
+      score: finalScore,
+      alignment,
+      timeframes: results,
+      primarySignal,
+    };
+  }
+
+  private analyzeKlines(klines: Kline[], strategy: string): Omit<TimeframeAnalysis, 'timeframe' | 'interval'> {
+    const closes = klines.map((k) => k.close);
+    const volumes = klines.map((k) => k.volume);
+    const highs = klines.map((k) => k.high);
+    const lows = klines.map((k) => k.low);
+
+    const ema20 = this.calculateEMA(closes, 20);
+    const ema50 = this.calculateEMA(closes, 50);
+    const rsi = this.calculateRSI(closes, 14);
+    const avgVolume = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+    const currentVolume = volumes[volumes.length - 1];
+
+    let trend: TimeframeAnalysis['trend'] = 'NEUTRAL';
+    let momentum: TimeframeAnalysis['momentum'] = 'NEUTRAL';
+    let volumeProfile: TimeframeAnalysis['volumeProfile'] = 'NORMAL';
+    let emaCross: TimeframeAnalysis['emaCross'] = 'NONE';
+    const reasoning: string[] = [];
+
+    if (ema20 > ema50) {
+      trend = 'BULLISH';
+      emaCross = 'GOLDEN';
+      reasoning.push('EMA 20 > EMA 50');
+    } else if (ema20 < ema50) {
+      trend = 'BEARISH';
+      emaCross = 'DEATH';
+      reasoning.push('EMA 20 < EMA 50');
+    }
+
+    if (rsi > 70) {
+      momentum = 'OVERBOUGHT';
+      reasoning.push(`RSI ${rsi.toFixed(1)} > 70`);
+    } else if (rsi < 30) {
+      momentum = 'OVERSOLD';
+      reasoning.push(`RSI ${rsi.toFixed(1)} < 30`);
+    } else if (rsi > 60) {
+      reasoning.push(`RSI ${rsi.toFixed(1)} bullish`);
+    } else if (rsi < 40) {
+      reasoning.push(`RSI ${rsi.toFixed(1)} bearish`);
+    }
+
+    if (currentVolume > avgVolume * 1.5) {
+      volumeProfile = 'HIGH';
+      reasoning.push('Volume spike');
+    } else if (currentVolume < avgVolume * 0.5) {
+      volumeProfile = 'LOW';
+      reasoning.push('Low volume');
+    }
+
+    const lastClose = closes[closes.length - 1];
+    const highestHigh = Math.max(...highs.slice(-20));
+    const lowestLow = Math.min(...lows.slice(-20));
+    const rangePosition = (highestHigh - lowestLow) > 0 ? (lastClose - lowestLow) / (highestHigh - lowestLow) : 0.5;
+
+    let confidence = 0;
+    if (trend === 'BULLISH') confidence += 30;
+    if (trend === 'BEARISH') confidence += 30;
+    if (momentum === 'OVERSOLD' && trend === 'BULLISH') confidence += 25;
+    if (momentum === 'OVERBOUGHT' && trend === 'BEARISH') confidence += 25;
+    if (volumeProfile === 'HIGH') confidence += 15;
+    if (emaCross !== 'NONE') confidence += 10;
+    confidence = Math.min(100, Math.max(0, confidence));
+
+    if (strategy === 'scalping' && confidence < 40) confidence = Math.max(0, confidence - 10);
+    if (strategy === 'breakout' && rangePosition < 0.9 && trend === 'BULLISH') confidence = Math.max(0, confidence - 5);
+
+    return {
+      trend,
+      momentum,
+      volumeProfile,
+      emaCross,
+      rsi,
+      confidence,
+      reasoning,
+    };
+  }
+
+  private calculateEMA(closes: number[], period: number): number {
+    if (closes.length < period) return closes[closes.length - 1] || 0;
+    const multiplier = 2 / (period + 1);
+    let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    for (let i = period; i < closes.length; i++) {
+      ema = (closes[i] - ema) * multiplier + ema;
+    }
+    return ema;
+  }
+
+  private calculateRSI(closes: number[], period: number): number {
+    if (closes.length < period + 1) return 50;
+    let gains = 0;
+    let losses = 0;
+    for (let i = 1; i <= period; i++) {
+      const change = closes[i] - closes[i - 1];
+      if (change > 0) gains += change;
+      else losses -= change;
+    }
+    let avgGain = gains / period;
+    let avgLoss = losses / period;
+    for (let i = period + 1; i < closes.length; i++) {
+      const change = closes[i] - closes[i - 1];
+      const gain = change > 0 ? change : 0;
+      const loss = change < 0 ? -change : 0;
+      avgGain = (avgGain * (period - 1) + gain) / period;
+      avgLoss = (avgLoss * (period - 1) + loss) / period;
+    }
+    if (avgLoss === 0) return 100;
+    const rs = avgGain / avgLoss;
+    return 100 - 100 / (1 + rs);
   }
 
   private async monitorOpenPositions() {
