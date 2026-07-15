@@ -129,7 +129,8 @@ class MainActivity : ComponentActivity() {
                                 onProceedToConfirm = { entryPrice, stopLoss, takeProfit, positionSize ->
                                     viewModel.setTradeSetup(entryPrice, stopLoss, takeProfit, positionSize)
                                     navController.navigate("trade_confirmation")
-                                }
+                                },
+                                viewModel = viewModel,
                             )
                         }
                         composable("trade_confirmation") {

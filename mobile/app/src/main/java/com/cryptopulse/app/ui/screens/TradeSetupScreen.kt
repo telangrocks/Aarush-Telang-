@@ -20,45 +20,68 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.cryptopulse.app.data.api.KlineDto
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.components.ColoredGlowCard
 import com.cryptopulse.app.ui.components.GradientButton
+import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
 import kotlin.math.abs
+import kotlin.math.max
 
-/**
- * Trade Setup Screen — entirely new screen matching the reference design.
- *
- * Allows the user to enter:
- *   • Entry price
- *   • Stop Loss price (auto-calculates risk %)
- *   • Take Profit price (auto-calculates reward %)
- *   • Position size
- *
- * Shows a real-time Estimated P&L panel. On "Calculate P&L" / "Proceed",
- * navigates to the Trade Confirmation screen with all values passed forward.
- *
- * No existing functionality is removed — this is an additive new screen.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TradeSetupScreen(
     candidate: MarketCandidate,
     onBack: () -> Unit,
     onProceedToConfirm: (entryPrice: Double, stopLoss: Double, takeProfit: Double, positionSize: Double) -> Unit,
+    viewModel: ExchangeViewModel = hiltViewModel(),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
     var entryPriceText by remember { mutableStateOf("") }
     var positionSizeText by remember { mutableStateOf("") }
     var entryPriceError by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    val ticker by viewModel.ticker.collectAsState(initial = null)
+    val klines by viewModel.klines.collectAsState(initial = emptyList())
 
     val entryPrice = entryPriceText.toDoubleOrNull()
     val positionSize = positionSizeText.toDoubleOrNull()
 
-    val stopLoss = entryPrice?.let { it * 0.99 }
-    val takeProfit = entryPrice?.let { it * 1.02 }
+    val defaultPositionSize = max(candidate.minNotional * 10.0, 100.0)
+
+    LaunchedEffect(Unit) {
+        viewModel.fetchTicker()
+        viewModel.fetchKlines("1h", 100)
+    }
+
+    LaunchedEffect(ticker, klines) {
+        if (ticker != null && klines.isNotEmpty()) {
+            isLoading = false
+            if (entryPriceText.isEmpty()) {
+                entryPriceText = String.format("%.2f", ticker!!.price)
+            }
+            if (positionSizeText.isEmpty()) {
+                positionSizeText = String.format("%.2f", defaultPositionSize)
+            }
+        }
+    }
+
+    val atr = remember(klines) {
+        calculateAtr(klines, 14)
+    }
+
+    val stopLoss = entryPrice?.let { price ->
+        if (atr > 0) price - (atr * 1.0) else price * 0.99
+    }
+
+    val takeProfit = entryPrice?.let { price ->
+        if (atr > 0) price + (atr * 2.0) else price * 1.02
+    }
 
     val riskPct = if (entryPrice != null && entryPrice > 0 && stopLoss != null)
         abs((stopLoss - entryPrice) / entryPrice * 100) else null
@@ -105,14 +128,14 @@ fun TradeSetupScreen(
                         .padding(horizontal = 20.dp, vertical = 12.dp)
                 ) {
                     GradientButton(
-                        text = "Submit",
+                        text = if (isLoading) "Loading..." else "Proceed to Confirmation",
                         onClick = {
                             if (canProceed) {
                                 onProceedToConfirm(entryPrice!!, stopLoss!!, takeProfit!!, positionSize!!)
                             }
                         },
-                        enabled = canProceed,
-                        leadingIcon = Icons.Default.Check,
+                        enabled = canProceed && !isLoading,
+                        leadingIcon = if (isLoading) Icons.Default.HourglassEmpty else Icons.Default.Check,
                     )
                 }
             }
@@ -128,7 +151,6 @@ fun TradeSetupScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // ── Page title ────────────────────────────────────────────
                 Text(
                     text = "TRADE SETUP",
                     color = CyanPrimary,
@@ -140,7 +162,7 @@ fun TradeSetupScreen(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "Enter your trade details to calculate potential profit.",
+                    text = "Review auto-calculated SL/TP based on ATR, then confirm.",
                     color = TextSecondary,
                     fontSize = 12.sp,
                     textAlign = TextAlign.Center,
@@ -149,49 +171,60 @@ fun TradeSetupScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                // ── Coin info card ────────────────────────────────────────
                 CoinInfoCard(candidate = candidate)
 
                 Spacer(Modifier.height(14.dp))
 
-                // ── Entry price card ──────────────────────────────────────
-                GlowCard {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        SectionHeader(icon = Icons.Default.AttachMoney, title = "ENTER ENTRY PRICE")
-                        Spacer(Modifier.height(10.dp))
-                        TradeFieldLabel("ENTRY PRICE (USDT)")
-                        Spacer(Modifier.height(4.dp))
-                        TradeTextField(
-                            value = entryPriceText,
-                            onValueChange = { entryPriceText = it },
-                            placeholder = "Enter entry price",
-                            isError = entryPriceError != null,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        if (entryPriceError != null) {
-                            Text(
-                                text = entryPriceError!!,
-                                color = LossRed,
-                                fontSize = 11.sp,
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(120.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = CyanPrimary)
+                            Spacer(Modifier.height(12.dp))
+                            Text("Fetching latest market data...", color = TextSecondary, fontSize = 13.sp)
+                        }
+                    }
+                } else {
+                    GlowCard {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            SectionHeader(icon = Icons.Default.AttachMoney, title = "ENTRY PRICE")
+                            Spacer(Modifier.height(10.dp))
+                            TradeFieldLabel("ENTRY PRICE (USDT)")
+                            Spacer(Modifier.height(4.dp))
+                            TradeTextField(
+                                value = entryPriceText,
+                                onValueChange = { entryPriceText = it },
+                                placeholder = "Enter entry price",
+                                isError = entryPriceError != null,
                             )
-                        } else {
-                            Text(
-                                text = "Current Market Price: ${String.format("%.2f", candidate.currentMarketPrice)} USDT | Min Notional: $${String.format("%.2f", candidate.minNotional)}",
-                                color = CyanPrimary,
-                                fontSize = 11.sp,
-                            )
+                            Spacer(Modifier.height(4.dp))
+                            if (entryPriceError != null) {
+                                Text(
+                                    text = entryPriceError!!,
+                                    color = LossRed,
+                                    fontSize = 11.sp,
+                                )
+                            } else if (ticker != null) {
+                                Text(
+                                    text = "Live Price: ${String.format("%.2f", ticker!!.price)} USDT | Min Notional: $${String.format("%.2f", candidate.minNotional)}",
+                                    color = CyanPrimary,
+                                    fontSize = 11.sp,
+                                )
+                            }
                         }
                     }
                 }
 
                 Spacer(Modifier.height(12.dp))
 
-                // ── Stop Loss + Take Profit side by side ──────────────────
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    // Stop Loss
                     ColoredGlowCard(
                         modifier = Modifier.weight(1f),
                         borderColor = LossRed,
@@ -199,7 +232,7 @@ fun TradeSetupScreen(
                         Column(modifier = Modifier.fillMaxWidth()) {
                             SectionHeader(
                                 icon = Icons.Default.Shield,
-                                title = "STOP LOSS",
+                                title = "STOP LOSS (ATR)",
                                 iconTint = LossRed,
                                 textColor = LossRed,
                             )
@@ -233,10 +266,17 @@ fun TradeSetupScreen(
                                     fontWeight = FontWeight.Bold,
                                 )
                             }
+                            if (atr > 0) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = "ATR (14): ${"%.2f".format(atr)}",
+                                    color = TextMuted,
+                                    fontSize = 10.sp,
+                                )
+                            }
                         }
                     }
 
-                    // Take Profit
                     ColoredGlowCard(
                         modifier = Modifier.weight(1f),
                         borderColor = ProfitGreen,
@@ -244,7 +284,7 @@ fun TradeSetupScreen(
                         Column(modifier = Modifier.fillMaxWidth()) {
                             SectionHeader(
                                 icon = Icons.Default.TrendingUp,
-                                title = "TAKE PROFIT",
+                                title = "TAKE PROFIT (ATR)",
                                 iconTint = ProfitGreen,
                                 textColor = ProfitGreen,
                             )
@@ -284,13 +324,11 @@ fun TradeSetupScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // ── Estimated P&L card ────────────────────────────────────
                 GlowCard {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         SectionHeader(icon = Icons.Default.TrendingUp, title = "ESTIMATED P&L")
                         Spacer(Modifier.height(12.dp))
 
-                        // Three-column summary
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -316,7 +354,6 @@ fun TradeSetupScreen(
 
                         Spacer(Modifier.height(14.dp))
 
-                        // Position size field
                         TradeFieldLabel("POSITION SIZE (USDT)")
                         Spacer(Modifier.height(4.dp))
                         TradeTextField(
@@ -329,9 +366,8 @@ fun TradeSetupScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // Footer disclaimer
                 Text(
-                    text = "ⓘ  Entry price must be at least the minimum notional value. Stop Loss and Take Profit are auto-calculated.",
+                    text = "ⓘ  SL and TP are auto-calculated using 14-period ATR. Default Risk/Reward = 1:2.",
                     color = TextMuted,
                     fontSize = 10.sp,
                     textAlign = TextAlign.Center,
@@ -342,6 +378,18 @@ fun TradeSetupScreen(
             }
         }
     }
+}
+
+private fun calculateAtr(klines: List<KlineDto>, period: Int): Double {
+    if (klines.size < period + 1) return 0.0
+    val trueRanges = klines.zipWithNext { prev, curr ->
+        val tr1 = curr.high - curr.low
+        val tr2 = abs(curr.high - prev.close)
+        val tr3 = abs(curr.low - prev.close)
+        maxOf(tr1, tr2, tr3)
+    }
+    val recentTrs = trueRanges.takeLast(period)
+    return recentTrs.average()
 }
 
 // ─── Shared sub-composables ───────────────────────────────────────────────────
@@ -356,7 +404,6 @@ internal fun CoinInfoCard(candidate: MarketCandidate) {
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Avatar
         Box(
             modifier = Modifier
                 .size(44.dp)
@@ -372,7 +419,6 @@ internal fun CoinInfoCard(candidate: MarketCandidate) {
             Text(candidate.coinName, color = TextSecondary, fontSize = 12.sp)
         }
         Column(horizontalAlignment = Alignment.End) {
-            // Rank badge
             Box(
                 modifier = Modifier
                     .border(1.dp, ProfitGreen, RoundedCornerShape(6.dp))
