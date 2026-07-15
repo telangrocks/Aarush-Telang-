@@ -41,6 +41,7 @@ import com.cryptopulse.app.ui.screens.PositionsScreen
 import com.cryptopulse.app.ui.screens.StrategySelectionScreen
 import com.cryptopulse.app.ui.screens.TechnicalAnalysisScreen
 import com.cryptopulse.app.ui.screens.LiveAnalysisScreen
+import com.cryptopulse.app.ui.screens.LiveAnalysisViewModel
 import com.cryptopulse.app.service.BackgroundMonitoringService
 import com.cryptopulse.app.service.AlertBus
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
@@ -230,6 +231,8 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("live_analysis") {
+                            val viewModel = hiltViewModel<LiveAnalysisViewModel>(LocalContext.current as ComponentActivity)
+                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             LiveAnalysisScreen(
                                 onBack = { navController.popBackStack() },
                                 onStopBot = {
@@ -237,30 +240,39 @@ class MainActivity : ComponentActivity() {
                                         popUpTo("live_analysis") { inclusive = true }
                                     }
                                 },
+                                onOpportunity = { alert ->
+                                    exchangeViewModel.setPendingBotAlert(alert)
+                                    navController.navigate("trade_alert")
+                                },
                             )
                         }
                         composable("trade_alert") {
                             val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                            val tradeSetup by viewModel.tradeSetup.collectAsState(initial = null)
-                            val candidate = selectedCandidate ?: MarketCandidate(
+                            val alert by viewModel.pendingAlert.collectAsState(initial = null)
+                            val candidate by viewModel.selectedCandidate.collectAsState(initial = null)
+
+                            // Render the popup directly from the genuine opportunity
+                            // the backend detected — not from any stale manual setup.
+                            val alertSymbol = (alert?.get("symbol") as? String) ?: candidate?.symbol ?: "BTC"
+                            val entryPrice = (alert?.get("entryPrice") as? Double)
+                                ?: candidate?.currentMarketPrice ?: 0.0
+                            val stopLossPrice = (alert?.get("stopLoss") as? Double)
+                                ?: (entryPrice * 0.99)
+                            val takeProfitPrice = (alert?.get("takeProfit") as? Double)
+                                ?: (entryPrice * 1.02)
+                            val estimatedPnl = (alert?.get("estimatedPnl") as? Double)
+                                ?: if (entryPrice > 0) (takeProfitPrice - entryPrice) / entryPrice * 100.0 else 0.0
+
+                            val marketCandidate = candidate ?: MarketCandidate(
                                 rank = 1,
-                                symbol = "BTC",
-                                pairName = "BTC/USDT",
-                                coinName = "Bitcoin",
+                                symbol = alertSymbol,
+                                pairName = "$alertSymbol/USDT",
+                                coinName = alertSymbol,
                                 notations = 100,
-                                currentMarketPrice = 50000.0,
+                                currentMarketPrice = entryPrice,
                                 minNotional = 10.0,
                                 coinColor = Color(0xFFF7931A),
                             )
-                            val setup = tradeSetup ?: TradeSetupState(
-                                entryPrice = candidate.currentMarketPrice,
-                                stopLossPrice = candidate.currentMarketPrice * 0.99,
-                                takeProfitPrice = candidate.currentMarketPrice * 1.02,
-                                positionSize = 100.0,
-                            )
-                            val estimatedPnl =
-                                (setup.takeProfitPrice - setup.entryPrice) / setup.entryPrice * setup.positionSize
                             TradeAlertScreen(
                                 onBack = { navController.popBackStack() },
                                 onTradeExecuted = {
@@ -268,10 +280,10 @@ class MainActivity : ComponentActivity() {
                                         popUpTo("technical_analysis") { inclusive = false }
                                     }
                                 },
-                                candidate = candidate,
-                                entryPrice = setup.entryPrice,
-                                stopLossPrice = setup.stopLossPrice,
-                                takeProfitPrice = setup.takeProfitPrice,
+                                candidate = marketCandidate,
+                                entryPrice = entryPrice,
+                                stopLossPrice = stopLossPrice,
+                                takeProfitPrice = takeProfitPrice,
                                 estimatedPnl = estimatedPnl,
                             )
                         }

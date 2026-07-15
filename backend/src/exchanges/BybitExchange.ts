@@ -16,6 +16,32 @@ async function hmacSha256(message: string, secret: string): Promise<string> {
     .join("");
 }
 
+/**
+ * Bybit's v5 kline endpoint expects interval in its own format (numeric
+ * minutes, or D/W/M), whereas the rest of the codebase and the mobile app use
+ * the conventional "1h"/"1d" style. Normalize either form so klines work
+ * consistently across all supported exchanges.
+ */
+function normalizeKlineInterval(interval: string): string {
+  const map: Record<string, string> = {
+    "1m": "1",
+    "3m": "3",
+    "5m": "5",
+    "15m": "15",
+    "30m": "30",
+    "1h": "60",
+    "2h": "120",
+    "4h": "240",
+    "6h": "360",
+    "12h": "720",
+    "1d": "D",
+    "1w": "W",
+    "1M": "M",
+  };
+  if (/^\d+$/.test(interval)) return interval;
+  return map[interval] ?? "60";
+}
+
 export class BybitExchange implements IExchangeAdapter {
   readonly config: ExchangeConfig = {
     name: "bybit",
@@ -155,7 +181,7 @@ export class BybitExchange implements IExchangeAdapter {
       const params = new URLSearchParams({
         category: "spot",
         symbol: `${symbol.toUpperCase()}USDT`,
-        interval,
+        interval: normalizeKlineInterval(interval),
         limit: limit.toString(),
       });
       const response = await fetch(`${this.getRestUrl()}/v5/market/kline?${params}`);
