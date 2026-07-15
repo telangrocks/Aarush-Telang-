@@ -323,16 +323,7 @@ export async function handleActivateTradingBot(
   try {
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
-
-    const { coinId, strategy } = await c.req.json<{
-      coinId: string;
-      strategy: string;
-    }>();
-
-    if (!coinId || !strategy) {
-      c.status(400);
-      return c.json({ error: "coinId and strategy are required" });
-    }
+    const { coinId, strategy } = await c.req.json<{ coinId: string; strategy: string }>();
 
     const botId = c.env.TRADING_BOTS.idFromName(userId);
     const bot = c.env.TRADING_BOTS.get(botId);
@@ -368,16 +359,46 @@ export async function handleGetTradingBotStatus(
       new Request("http://bot/status", { method: "GET" }),
     );
 
-    const data = await response.json<{
-      isActive: boolean;
-      coinId: string | null;
-      strategy: string | null;
-    }>();
+    const data = await response.json<{ isActive: boolean; coinId: string | null; strategy: string | null }>();
     return c.json(data);
   } catch (e: unknown) {
     const error = e as Error;
     c.status(500);
-    return c.json({ error: "Failed to get bot status", message: error.message });
+    return c.json({ isActive: false, coinId: null, strategy: null, message: error.message || "Failed to get bot status" });
+  }
+}
+
+export async function handleGetAnalysisStatus(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/analysis-status", { method: "GET" }),
+    );
+
+    const data = await response.json<any>();
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({
+      isActive: false,
+      strategy: null,
+      coinId: null,
+      scanningProgress: 0,
+      etaSeconds: 0,
+      coinsCurrentlyScanning: [],
+      nearMatches: [],
+      checkpoints: [],
+      logs: [],
+      message: error.message || "Failed to get analysis status",
+    });
   }
 }
 

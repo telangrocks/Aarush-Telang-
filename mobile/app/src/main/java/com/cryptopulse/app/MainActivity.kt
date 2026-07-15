@@ -40,6 +40,7 @@ import com.cryptopulse.app.ui.screens.LivePnLMonitoringScreen
 import com.cryptopulse.app.ui.screens.PositionsScreen
 import com.cryptopulse.app.ui.screens.StrategySelectionScreen
 import com.cryptopulse.app.ui.screens.TechnicalAnalysisScreen
+import com.cryptopulse.app.ui.screens.LiveAnalysisScreen
 import com.cryptopulse.app.service.BackgroundMonitoringService
 import com.cryptopulse.app.service.AlertBus
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
@@ -220,7 +221,22 @@ class MainActivity : ComponentActivity() {
                                 candidate = candidate,
                                 strategy = strategy,
                                 onBack = { navController.popBackStack() },
+                                onBotActivated = {
+                                    navController.navigate("live_analysis") {
+                                        popUpTo("technical_analysis") { inclusive = false }
+                                    }
+                                },
                                 viewModel = viewModel,
+                            )
+                        }
+                        composable("live_analysis") {
+                            LiveAnalysisScreen(
+                                onBack = { navController.popBackStack() },
+                                onStopBot = {
+                                    navController.navigate("positions") {
+                                        popUpTo("live_analysis") { inclusive = true }
+                                    }
+                                },
                             )
                         }
                         composable("trade_alert") {

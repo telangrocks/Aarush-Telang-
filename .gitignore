@@ -48,6 +48,7 @@ android/build/
 ios/build/
 *.jks
 *.keystore
+local.properties
 
 # Python
 __pycache__/

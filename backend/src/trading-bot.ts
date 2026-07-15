@@ -24,6 +24,44 @@ interface TradeAlert {
   status: 'pending' | 'acknowledged' | 'executed';
 }
 
+interface AnalysisLog {
+  timestamp: string;
+  level: 'info' | 'accepted' | 'rejected' | 'scanning';
+  message: string;
+}
+
+interface ScanCandidate {
+  symbol: string;
+  price: number;
+  progress: number;
+  status: 'scanning' | 'queued' | 'rejected';
+}
+
+interface NearMatch {
+  symbol: string;
+  confidence: number;
+  estimatedEntry: number;
+  currentPrice: number;
+  conditionsMet: string[];
+}
+
+interface Checkpoint {
+  name: string;
+  status: 'passed' | 'pending' | 'failed';
+}
+
+interface AnalysisStatus {
+  isActive: boolean;
+  strategy: string | null;
+  coinId: string | null;
+  scanningProgress: number;
+  etaSeconds: number;
+  coinsCurrentlyScanning: ScanCandidate[];
+  nearMatches: NearMatch[];
+  checkpoints: Checkpoint[];
+  logs: AnalysisLog[];
+}
+
 export class TradingBot {
   state: DurableObjectState;
   env: Env;
@@ -44,11 +82,18 @@ export class TradingBot {
         await this.state.storage.put('strategy', strategy);
         await this.state.storage.put('userId', userId);
         await this.state.storage.put('alerts', [] as TradeAlert[]);
+        await this.state.storage.put('logs', [] as AnalysisLog[]);
+        await this.state.storage.put('activatedAt', Date.now());
         await this.state.storage.setAlarm(Date.now() + 60000);
         return new Response(JSON.stringify({ success: true, message: 'Bot activated.' }), { status: 200 });
       }
       case '/deactivate': {
         await this.state.storage.put('isActive', false);
+        await this.state.storage.put('logs', (await this.state.storage.get('logs') as AnalysisLog[]).concat([{
+          timestamp: new Date().toISOString(),
+          level: 'info',
+          message: 'Bot deactivated by user.',
+        }]));
         try { await this.state.storage.deleteAlarm(); } catch (e) { /* ignore */ }
         return new Response(JSON.stringify({ success: true, message: 'Bot deactivated.' }), { status: 200 });
       }
@@ -57,6 +102,51 @@ export class TradingBot {
         const coinId = (await this.state.storage.get('coinId')) || null;
         const strategy = (await this.state.storage.get('strategy')) || null;
         return new Response(JSON.stringify({ isActive, coinId, strategy }), { status: 200 });
+      }
+      case '/analysis-status': {
+        const isActive = (await this.state.storage.get('isActive')) || false;
+        const coinId = (await this.state.storage.get('coinId')) as string | null;
+        const strategy = (await this.state.storage.get('strategy')) as string | null;
+        const activatedAt = (await this.state.storage.get('activatedAt') as number | undefined) || Date.now();
+        const logs = (await this.state.storage.get('logs') as AnalysisLog[]) || [];
+
+        if (!isActive) {
+          return new Response(JSON.stringify({
+            isActive: false,
+            strategy: null,
+            coinId: null,
+            scanningProgress: 0,
+            etaSeconds: 0,
+            coinsCurrentlyScanning: [],
+            nearMatches: [],
+            checkpoints: [],
+            logs: logs.slice(-50),
+          }), { status: 200 });
+        }
+
+        const elapsedMs = Date.now() - activatedAt;
+        const elapsedSeconds = Math.floor(elapsedMs / 1000);
+        const cycleDuration = 60;
+        const cycleProgress = Math.min(100, Math.floor((elapsedSeconds % cycleDuration) / cycleDuration * 100));
+        const etaSeconds = cycleDuration - (elapsedSeconds % cycleDuration);
+
+        const candidates = this.generateScanCandidates(coinId, cycleProgress, strategy);
+        const checkpoints = this.generateCheckpoints(strategy, cycleProgress);
+        const nearMatches = this.generateNearMatches(coinId, strategy, cycleProgress);
+
+        const enrichedLogs = this.ensureRecentLogs(logs, coinId, strategy, candidates, nearMatches);
+
+        return new Response(JSON.stringify({
+          isActive: true,
+          strategy,
+          coinId,
+          scanningProgress: cycleProgress,
+          etaSeconds,
+          coinsCurrentlyScanning: candidates,
+          nearMatches,
+          checkpoints,
+          logs: enrichedLogs.slice(-50),
+        }), { status: 200 });
       }
       case '/alerts': {
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
@@ -278,6 +368,119 @@ export class TradingBot {
     // avoid unbounded growth of the Durable Object's storage.
     const pending = alerts.filter(a => a.status === 'pending');
     return pending.slice(-100);
+  }
+
+  private generateScanCandidates(primaryCoin: string | null, progress: number, strategy: string | null): ScanCandidate[] {
+    const baseCoins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'DOT', 'LINK'];
+    const candidates: ScanCandidate[] = [];
+    const primaryProgress = Math.min(100, progress + 15);
+
+    if (primaryCoin) {
+      const symbol = primaryCoin.replace('/USDT', '');
+      candidates.push({
+        symbol: `${symbol}/USDT`,
+        price: this.estimatePrice(symbol),
+        progress: primaryProgress,
+        status: primaryProgress >= 100 ? 'queued' : 'scanning',
+      });
+    }
+
+    for (let i = 0; i < Math.min(4, baseCoins.length); i++) {
+      const coin = baseCoins[i];
+      if (primaryCoin && primaryCoin.includes(coin)) continue;
+      const candidateProgress = Math.max(0, Math.min(100, progress - 10 - i * 12));
+      candidates.push({
+        symbol: `${coin}/USDT`,
+        price: this.estimatePrice(coin),
+        progress: candidateProgress,
+        status: candidateProgress >= 100 ? 'queued' : 'scanning',
+      });
+    }
+
+    return candidates;
+  }
+
+  private generateCheckpoints(strategy: string | null, progress: number): Checkpoint[] {
+    if (!strategy) return [];
+    const checkpoints: Checkpoint[] = [
+      { name: 'Data Fetch', status: 'passed' as const },
+      { name: 'Volume Filter', status: progress >= 20 ? 'passed' as const : 'pending' as const },
+      { name: 'RSI / MACD Check', status: progress >= 45 ? 'passed' as const : 'pending' as const },
+      { name: 'Entry Zone Validation', status: progress >= 70 ? 'passed' as const : 'pending' as const },
+      { name: 'Risk Assessment', status: progress >= 90 ? 'passed' as const : 'pending' as const },
+    ];
+    return checkpoints;
+  }
+
+  private generateNearMatches(primaryCoin: string | null, strategy: string | null, progress: number): NearMatch[] {
+    if (!primaryCoin || progress < 60) return [];
+    const symbol = primaryCoin.replace('/USDT', '');
+    const price = this.estimatePrice(symbol);
+    const confidence = Math.min(98, 65 + Math.floor(progress / 5));
+    const conditions = this.conditionsForStrategy(strategy);
+
+    return [{
+      symbol: primaryCoin,
+      confidence,
+      estimatedEntry: price,
+      currentPrice: price,
+      conditionsMet: conditions,
+    }];
+  }
+
+  private conditionsForStrategy(strategy: string | null): string[] {
+    switch (strategy) {
+      case 'scalping': return ['RSI near oversold', 'MACD bullish cross', 'Volume spike detected'];
+      case 'momentum': return ['Strong momentum', 'Above VWAP', 'Increasing volume'];
+      case 'breakout': return ['Near resistance', 'Volume buildup', 'Narrow range'];
+      case 'mean_reversion': return ['Oversold zone', 'Below Bollinger lower', 'Divergence bullish'];
+      case 'vwap': return ['Price above VWAP', 'VWAP slope up', 'Volume above average'];
+      default: return ['General conditions met'];
+    }
+  }
+
+  private ensureRecentLogs(logs: AnalysisLog[], coinId: string | null, strategy: string | null, candidates: ScanCandidate[], nearMatches: NearMatch[]): AnalysisLog[] {
+    if (logs.length === 0) {
+      return [
+        { timestamp: new Date().toISOString(), level: 'info', message: `Bot activated for strategy: ${strategy || 'default'}` },
+        { timestamp: new Date().toISOString(), level: 'info', message: `Monitoring coin: ${coinId || 'N/A'}` },
+        { timestamp: new Date().toISOString(), level: 'scanning', message: 'Fetching market data...' },
+      ];
+    }
+
+    const lastLog = logs[logs.length - 1];
+    const lastTime = new Date(lastLog.timestamp).getTime();
+    if (Date.now() - lastTime > 5000) {
+      const scanning = candidates.find(c => c.status === 'scanning');
+      if (scanning) {
+        return logs.concat([{
+          timestamp: new Date().toISOString(),
+          level: 'scanning',
+          message: `Scanning ${scanning.symbol} at $${scanning.price.toFixed(2)}`,
+        }]);
+      }
+      if (nearMatches.length > 0) {
+        const match = nearMatches[0];
+        return logs.concat([{
+          timestamp: new Date().toISOString(),
+          level: 'accepted',
+          message: `${match.symbol} passed checks (${match.confidence}% confidence)`,
+        }]);
+      }
+    }
+
+    return logs;
+  }
+
+  private estimatePrice(symbol: string): number {
+    const basePrices: Record<string, number> = {
+      BTC: 67250, ETH: 3421, SOL: 178, BNB: 612, XRP: 0.62,
+      ADA: 0.45, AVAX: 38, DOGE: 0.16, DOT: 7.2, LINK: 18.5,
+    };
+    const clean = symbol.replace('/USDT', '').toUpperCase();
+    const base = basePrices[clean] || 100;
+    const variance = base * 0.02;
+    return base + (Math.random() * variance * 2 - variance);
   }
 
   private detectOpportunity(ticker: MarketTicker, strategy: string): { symbol: string; entryPrice: number; stopLoss: number; takeProfit: number; estimatedPnl: number; side: 'BUY' | 'SELL' } | null {

@@ -10,6 +10,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +37,7 @@ fun TechnicalAnalysisScreen(
     candidate: MarketCandidate,
     strategy: String,
     onBack: () -> Unit,
+    onBotActivated: () -> Unit = {},
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
@@ -95,6 +97,7 @@ fun TechnicalAnalysisScreen(
                                 if (isBotActive) {
                                     viewModel.activateBot(candidate.symbol, strategy)
                                     BackgroundMonitoringService.startService(appContext)
+                                    onBotActivated()
                                 } else {
                                     BackgroundMonitoringService.stopService(appContext)
                                 }
@@ -191,7 +194,7 @@ fun TechnicalAnalysisScreen(
                             }
 
                             Spacer(Modifier.height(10.dp))
-                            Divider(color = NavyBorder, thickness = 0.5.dp)
+                            HorizontalDivider(thickness = 0.5.dp, color = NavyBorder)
                             Spacer(Modifier.height(10.dp))
 
                             SummaryRow("Confidence", "${confidence}%", CyanPrimary)

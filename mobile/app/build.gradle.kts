@@ -49,8 +49,8 @@ android {
 
 dependencies {
     // Core & UI
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.1")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation(platform("androidx.compose:compose-bom:2024.02.02"))
     implementation("androidx.compose.ui:ui")
@@ -65,8 +65,8 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.7.7")
 
     // Hilt
-    implementation("com.google.dagger:hilt-android:2.51.1")
-    kapt("com.google.dagger:hilt-compiler:2.51.1")
+    implementation(libs.hilt.android)
+    kapt(libs.hilt.compiler)
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
     // Networking
@@ -86,4 +86,12 @@ dependencies {
 
     // Accompanist for WebView
     implementation("com.google.accompanist:accompanist-webview:0.32.0")
+}
+
+tasks.register("prepareKotlinBuildScriptModel") {
+    group = "build"
+    description = "Compatibility task for Android Studio Kotlin sync"
+    doFirst {
+        logger.info("prepareKotlinBuildScriptModel invoked for IDE sync compatibility")
+    }
 }

@@ -17,6 +17,44 @@ data class BotStatusResponse(
     val strategy: String?,
 )
 
+data class AnalysisLog(
+    val timestamp: String,
+    val level: String,
+    val message: String,
+)
+
+data class ScanCandidate(
+    val symbol: String,
+    val price: Double,
+    val progress: Int,
+    val status: String,
+)
+
+data class NearMatch(
+    val symbol: String,
+    val confidence: Int,
+    val estimatedEntry: Double,
+    val currentPrice: Double,
+    val conditionsMet: List<String>,
+)
+
+data class Checkpoint(
+    val name: String,
+    val status: String,
+)
+
+data class AnalysisStatusResponse(
+    val isActive: Boolean,
+    val strategy: String?,
+    val coinId: String?,
+    val scanningProgress: Int,
+    val etaSeconds: Int,
+    val coinsCurrentlyScanning: List<ScanCandidate>,
+    val nearMatches: List<NearMatch>,
+    val checkpoints: List<Checkpoint>,
+    val logs: List<AnalysisLog>,
+)
+
 data class PositionResponse(
     val id: String,
     val userId: String,
@@ -48,6 +86,9 @@ interface TradingBotService {
 
     @GET("/api/trading-bot/status")
     suspend fun getStatus(): Response<BotStatusResponse>
+
+    @GET("/api/trading-bot/analysis-status")
+    suspend fun getAnalysisStatus(): Response<AnalysisStatusResponse>
 
     @POST("/api/trading-bot/execute-trade")
     suspend fun executeTrade(): Response<Map<String, Any>>
