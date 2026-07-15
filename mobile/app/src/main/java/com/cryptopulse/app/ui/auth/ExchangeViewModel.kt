@@ -62,6 +62,7 @@ class ExchangeViewModel @Inject constructor(
     private val tradingBotService: com.cryptopulse.app.data.api.TradingBotService,
     private val tokenManager: com.cryptopulse.app.data.local.TokenManager,
     private val fcmApi: com.cryptopulse.app.data.api.FcmApi,
+    private val exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager,
 ) : ViewModel() {
 
     private val _formState = MutableStateFlow(ExchangeFormState())
@@ -211,6 +212,8 @@ class ExchangeViewModel @Inject constructor(
                 _formState.value = _formState.value.copy(isLoading = false)
                 _uiState.value = ExchangeUiState.Connected(state.selectedExchange)
 
+                exchangeConnectionManager.saveConnection(state.selectedExchange, state.environment)
+
                 fetchMarketCandidates()
             } catch (e: Exception) {
                 val msg = e.localizedMessage ?: "Network error"
@@ -245,6 +248,13 @@ class ExchangeViewModel @Inject constructor(
         _technicalAnalysis.value = null
         _tradeSetup.value = null
         _ticker.value = null
+        _klines.value = emptyList()
+        _pendingAlert.value = null
+        _lastTrade.value = null
+        _positions.value = emptyList()
+        viewModelScope.launch {
+            exchangeConnectionManager.clearConnection()
+        }
     }
 
     fun setTradeSetup(entryPrice: Double, stopLoss: Double, takeProfit: Double, positionSize: Double) {

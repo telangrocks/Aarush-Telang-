@@ -11,6 +11,7 @@ import com.cryptopulse.app.data.api.TechnicalAnalysisService
 import com.cryptopulse.app.data.api.TickerService
 import com.cryptopulse.app.data.api.TradingBotService
 import com.cryptopulse.app.data.local.TokenManager
+import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import com.cryptopulse.app.data.repository.AuthRepository
 import dagger.Module
 import dagger.Provides
@@ -32,6 +33,12 @@ object AppModule {
     @Singleton
     fun provideTokenManager(@ApplicationContext context: Context): TokenManager {
         return TokenManager(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideExchangeConnectionManager(@ApplicationContext context: Context): ExchangeConnectionManager {
+        return ExchangeConnectionManager(context)
     }
 
     private class AuthInterceptor(private val tokenManager: TokenManager) : Interceptor {

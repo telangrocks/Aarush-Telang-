@@ -25,6 +25,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.activity.viewModels
 import com.cryptopulse.app.data.local.TokenManager
+import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import com.cryptopulse.app.ui.auth.AuthScreen
 import com.cryptopulse.app.ui.auth.AuthViewModel
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
@@ -57,6 +58,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var tokenManager: TokenManager
 
+    @Inject
+    lateinit var exchangeConnectionManager: ExchangeConnectionManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -71,7 +75,7 @@ class MainActivity : ComponentActivity() {
 
                     NavHost(navController = navController, startDestination = startDestination) {
                         composable("splash") {
-                            SplashScreen(navController = navController, tokenManager = tokenManager)
+                            SplashScreen(navController = navController, tokenManager = tokenManager, exchangeConnectionManager = exchangeConnectionManager)
                         }
                         composable("welcome") {
                             WelcomeScreen(navController = navController)

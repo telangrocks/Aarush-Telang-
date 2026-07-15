@@ -72,6 +72,7 @@ import com.cryptopulse.app.ui.theme.*
 fun ConnectExchangeScreen(
     navController: NavController,
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
+    exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager = com.cryptopulse.app.data.local.ExchangeConnectionManager(LocalContext.current.applicationContext),
 ) {
     val formState by viewModel.formState.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
@@ -80,6 +81,15 @@ fun ConnectExchangeScreen(
 
     LaunchedEffect(readyForCandidates, candidates) {
         if (readyForCandidates && candidates.isNotEmpty()) {
+            navController.navigate("market_candidates") {
+                popUpTo("welcome") { inclusive = true }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val (isConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
+        if (isConnected) {
             navController.navigate("market_candidates") {
                 popUpTo("welcome") { inclusive = true }
             }

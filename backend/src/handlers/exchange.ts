@@ -84,6 +84,37 @@ export async function handleConnectExchange(
   }
 }
 
+export async function handleGetExchangeStatus(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const user = await c.env.DB.prepare(
+      "SELECT exchange_name, exchange_environment, exchange_api_key FROM users WHERE id = ?",
+    )
+      .bind(userId)
+      .first<{
+        exchange_name: string | null;
+        exchange_environment: string | null;
+        exchange_api_key: string | null;
+      }>();
+
+    const isConnected = user?.exchange_name !== null && user?.exchange_api_key !== null;
+
+    return c.json({
+      isConnected,
+      exchangeName: user?.exchange_name ?? null,
+      environment: user?.exchange_environment ?? null,
+    });
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ isConnected: false, exchangeName: null, environment: null, message: error.message || "Failed to get exchange status" });
+  }
+}
+
 export async function handleGetPersonalizedMarketCandidates(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {

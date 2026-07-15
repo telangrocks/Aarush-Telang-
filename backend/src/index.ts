@@ -13,6 +13,7 @@ import {
 import {
   handleValidateExchange,
   handleConnectExchange,
+  handleGetExchangeStatus,
   handleGetPersonalizedMarketCandidates,
   handleGetStrategies,
   handleGetTechnicalAnalysis,
@@ -274,6 +275,7 @@ api.post("/alerts", async (c) => {
 api.post("/exchange/validate", handleValidateExchange);
 
 api.post("/exchange/connect", handleConnectExchange);
+api.get("/exchange/status", handleGetExchangeStatus);
 
 api.get("/market/candidates", handleGetPersonalizedMarketCandidates);
 
