@@ -56,24 +56,28 @@ class AuthViewModel @Inject constructor(
                 passwordError = "Password is required."
                 isValid = false
             }
-            password.length < 8 -> {
-                passwordError = "Password must be at least 8 characters."
+            !PASSWORD_REGEX.matches(password) -> {
+                passwordError = "Min. 8 characters with uppercase, lowercase, number and a symbol (@\$!%*?&)."
                 isValid = false
             }
         }
 
-        when {
-            confirmPassword.isBlank() -> {
-                confirmPasswordError = "Please confirm your password."
-                isValid = false
-            }
-            password != confirmPassword -> {
-                confirmPasswordError = "Passwords do not match."
-                isValid = false
-            }
+        if (password != confirmPassword) {
+            confirmPasswordError = "Passwords do not match."
+            isValid = false
         }
 
         return isValid
+    }
+
+    fun clearError() {
+        errorMessage = null
+    }
+
+    companion object {
+        // Mirrors the server-side password policy in backend/src/handlers/user.ts
+        private val PASSWORD_REGEX =
+            Regex("^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@\$!%*?&])[A-Za-z\\d@\$!%*?&]+")
     }
 
     fun register() {
@@ -130,9 +134,5 @@ class AuthViewModel @Inject constructor(
             }
             isLoading = false
         }
-    }
-
-    fun clearError() {
-        errorMessage = null
     }
 }

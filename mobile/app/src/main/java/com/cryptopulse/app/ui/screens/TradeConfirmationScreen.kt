@@ -1,5 +1,6 @@
 package com.cryptopulse.app.ui.screens
 
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*

@@ -1,5 +1,6 @@
 package com.cryptopulse.app.ui.screens
 
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,14 +32,18 @@ import java.util.*
 
 // ─── Data model for the screen ────────────────────────────────────────────────
 data class MarketCandidate(
-    val rank: Int,
-    val symbol: String,
-    val pairName: String,
-    val coinName: String,
-    val notations: Int,
-    val currentMarketPrice: Double,
-    val minNotional: Double,
-    val coinColor: Color,
+    val rank: Int = 0,
+    val symbol: String = "",
+    val pairName: String = "",
+    val coinName: String = "",
+    val notations: Int = 0,
+    val currentMarketPrice: Double = 0.0,
+    val minNotional: Double = 0.0,
+    val coinColor: Color = Color.Unspecified,
+    val volume24h: Double = 0.0,
+    val quoteVolume24h: Double = 0.0,
+    val priceChangePercent24h: Double = 0.0,
+    val score: Double = 0.0,
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -347,10 +352,14 @@ fun List<MarketCandidateDto>.toScreenCandidates(): List<MarketCandidate> {
             symbol = symbol,
             pairName = "$symbol/USDT",
             coinName = symbol,
-            notations = dto.score,
+            notations = dto.score.toInt(),
             currentMarketPrice = dto.currentMarketPrice,
             minNotional = dto.minNotional,
             coinColor = coinColors[symbol] ?: Color(0xFF00B4FF),
+            volume24h = dto.volume24h,
+            quoteVolume24h = dto.quoteVolume24h,
+            priceChangePercent24h = dto.priceChangePercent24h,
+            score = dto.score,
         )
     }
 }

@@ -38,6 +38,63 @@ export async function handleRegisterFcmToken(
   }
 }
 
+export async function sendPriceAlertNotification(
+  env: Env,
+  userId: string,
+  alert: {
+    tokenId: string;
+    targetPrice: number;
+    condition: "ABOVE" | "BELOW";
+    currentPrice: number;
+  },
+): Promise<void> {
+  if (!env.FCM_SERVER_KEY) {
+    return;
+  }
+
+  const user = await env.DB.prepare(
+    "SELECT fcm_token FROM users WHERE id = ?",
+  )
+    .bind(userId)
+    .first<{ fcm_token: string | null }>();
+
+  const fcmToken = user?.fcm_token;
+  if (!fcmToken) {
+    return;
+  }
+
+  const title = "Price Alert Triggered";
+  const body = `${alert.tokenId} is now ${alert.condition === "ABOVE" ? "above" : "below"} $${alert.targetPrice.toFixed(2)} (current: $${alert.currentPrice.toFixed(2)})`;
+
+  try {
+    await fetch("https://fcm.googleapis.com/fcm/send", {
+      method: "POST",
+      headers: {
+        Authorization: `key=${env.FCM_SERVER_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: fcmToken,
+        notification: {
+          title,
+          body,
+          sound: "default",
+          priority: "high",
+        },
+        data: {
+          type: "price_alert",
+          tokenId: alert.tokenId,
+          targetPrice: alert.targetPrice.toString(),
+          condition: alert.condition,
+          currentPrice: alert.currentPrice.toString(),
+        },
+      }),
+    });
+  } catch (error) {
+    console.error("FCM price alert notification failed:", error);
+  }
+}
+
 export async function sendTradeNotification(
   env: Env,
   userId: string,

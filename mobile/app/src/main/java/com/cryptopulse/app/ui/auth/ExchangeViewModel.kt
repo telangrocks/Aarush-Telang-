@@ -61,6 +61,7 @@ class ExchangeViewModel @Inject constructor(
     private val klineService: KlineService,
     private val tradingBotService: com.cryptopulse.app.data.api.TradingBotService,
     private val tokenManager: com.cryptopulse.app.data.local.TokenManager,
+    private val fcmApi: com.cryptopulse.app.data.api.FcmApi,
 ) : ViewModel() {
 
     private val _formState = MutableStateFlow(ExchangeFormState())
@@ -102,6 +103,38 @@ class ExchangeViewModel @Inject constructor(
     private val _lastTrade = MutableStateFlow<TradeSetupState?>(null)
     val lastTrade: StateFlow<TradeSetupState?> = _lastTrade
 
+    private val _positions = MutableStateFlow<List<Map<String, Any>>>(emptyList())
+    val positions: StateFlow<List<Map<String, Any>>> = _positions
+
+    fun fetchPositions() {
+        viewModelScope.launch {
+            try {
+                val token = tokenManager.getToken()
+                if (token != null) {
+                    val response = tradingBotService.getPositions()
+                    if (response.isSuccessful && response.body() != null) {
+                        _positions.value = response.body()!!.map { it as Map<String, Any> }
+                    }
+                }
+            } catch (e: Exception) {
+                // Silently fail
+            }
+        }
+    }
+
+    fun closePosition(positionId: String) {
+        viewModelScope.launch {
+            try {
+                val token = tokenManager.getToken()
+                if (token != null) {
+                    tradingBotService.closePosition(positionId)
+                }
+            } catch (e: Exception) {
+                // Silently fail
+            }
+        }
+    }
+
     fun onExchangeSelected(exchange: String) {
         _formState.value = _formState.value.copy(selectedExchange = exchange)
     }
@@ -120,17 +153,23 @@ class ExchangeViewModel @Inject constructor(
 
     fun validateAndConnect() {
         val state = _formState.value
-        var hasError = false
+        var apiKeyError: String? = null
+        var apiSecretError: String? = null
 
         if (state.apiKey.isBlank()) {
-            _formState.value = state.copy(apiKeyError = "API Key is required")
-            hasError = true
+            apiKeyError = "API Key is required"
         }
         if (state.apiSecret.isBlank()) {
-            _formState.value = state.copy(apiSecretError = "API Secret is required")
-            hasError = true
+            apiSecretError = "API Secret is required"
         }
-        if (hasError) return
+
+        if (apiKeyError != null || apiSecretError != null) {
+            _formState.value = state.copy(
+                apiKeyError = apiKeyError,
+                apiSecretError = apiSecretError,
+            )
+            return
+        }
 
         viewModelScope.launch {
             _uiState.value = ExchangeUiState.Validating
@@ -343,6 +382,20 @@ class ExchangeViewModel @Inject constructor(
                             strategy = strategy,
                         )
                     )
+                }
+            } catch (e: Exception) {
+                // Silently fail
+            }
+        }
+    }
+
+    fun registerFcmToken(fcmToken: String) {
+        viewModelScope.launch {
+            try {
+                val token = tokenManager.getToken()
+                if (token != null) {
+                    val request = mapOf("fcmToken" to fcmToken)
+                    fcmApi.registerToken("Bearer $token", request)
                 }
             } catch (e: Exception) {
                 // Silently fail

@@ -1,5 +1,6 @@
 package com.cryptopulse.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -9,6 +10,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -21,6 +23,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.activity.viewModels
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.ui.auth.AuthScreen
 import com.cryptopulse.app.ui.auth.AuthViewModel
@@ -33,11 +36,15 @@ import com.cryptopulse.app.ui.screens.TradeSetupScreen
 import com.cryptopulse.app.ui.screens.UserOnboardingScreen
 import com.cryptopulse.app.ui.screens.WelcomeScreen
 import com.cryptopulse.app.ui.screens.TradeAlertScreen
+import com.cryptopulse.app.ui.screens.LivePnLMonitoringScreen
+import com.cryptopulse.app.ui.screens.PositionsScreen
+import com.cryptopulse.app.ui.screens.StrategySelectionScreen
+import com.cryptopulse.app.ui.screens.TechnicalAnalysisScreen
 import com.cryptopulse.app.service.BackgroundMonitoringService
 import com.cryptopulse.app.service.AlertBus
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
 import com.cryptopulse.app.ui.screens.MarketCandidate
-import com.cryptopulse.app.ui.auth.ExchangeViewModel.TradeSetupState
+import com.cryptopulse.app.ui.auth.TradeSetupState
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -249,7 +256,6 @@ class MainActivity : ComponentActivity() {
                                 stopLossPrice = setup.stopLossPrice,
                                 takeProfitPrice = setup.takeProfitPrice,
                                 estimatedPnl = estimatedPnl,
-                                positionSize = setup.positionSize,
                             )
                         }
                         composable("live_pnl_monitoring") {
@@ -279,9 +285,34 @@ class MainActivity : ComponentActivity() {
                                 takeProfitPrice = setup.takeProfitPrice,
                                 positionSize = setup.positionSize,
                                 onBack = { navController.popBackStack() },
+                                onNavigateToPositions = { navController.navigate("positions") },
+                            )
+                        }
+                        composable("positions") {
+                            PositionsScreen(
+                                onBack = { navController.popBackStack() }
                             )
                         }
                     }
+                }
+            }
+
+            lifecycleScope.launch {
+                try {
+                    val token = tokenManager.getToken()
+                    if (!token.isNullOrEmpty()) {
+                        val fcmToken = try {
+                            com.google.firebase.messaging.FirebaseMessaging.getInstance().token.result
+                        } catch (e: Exception) {
+                            null
+                        }
+                        if (!fcmToken.isNullOrEmpty()) {
+                            val viewModel: ExchangeViewModel by viewModels()
+                            viewModel.registerFcmToken(fcmToken)
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Silently fail - FCM registration is optional
                 }
             }
         }
@@ -318,7 +349,7 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
     Text(
         text = "Welcome to $name!",
         modifier = modifier.padding(16.dp)
-    }
+    )
 }
 
 @Preview(showBackground = true)

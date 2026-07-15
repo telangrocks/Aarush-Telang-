@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -18,15 +19,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
+import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
 import com.google.gson.Gson
@@ -43,6 +45,7 @@ fun LivePnLMonitoringScreen(
     takeProfitPrice: Double,
     positionSize: Double,
     onBack: () -> Unit,
+    onNavigateToPositions: () -> Unit = {},
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
@@ -100,6 +103,15 @@ fun LivePnLMonitoringScreen(
             }
             val json = Gson().toJson(data)
             webViewRef.value?.evaluateJavascript("window.cpSetCandles($json)", null)
+        }
+    }
+
+    // Draw entry/SL/TP lines once chart is ready.
+    LaunchedEffect(pageReady, entryPrice, stopLossPrice, takeProfitPrice) {
+        if (pageReady) {
+            webViewRef.value?.evaluateJavascript("window.cpDrawLine('entry', $entryPrice, '#00b4ff', 'Entry')", null)
+            webViewRef.value?.evaluateJavascript("window.cpDrawLine('stop', $stopLossPrice, '#ff5252', 'Stop Loss')", null)
+            webViewRef.value?.evaluateJavascript("window.cpDrawLine('tp', $takeProfitPrice, '#00bfa5', 'Take Profit')", null)
         }
     }
 
@@ -291,6 +303,15 @@ fun LivePnLMonitoringScreen(
 
                 Spacer(Modifier.height(12.dp))
 
+                GradientButton(
+                    text = "View All Positions",
+                    onClick = onNavigateToPositions,
+                    leadingIcon = Icons.Default.List,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Spacer(Modifier.height(12.dp))
+
                 Text(
                     text = "Last updated: ${java.text.SimpleDateFormat("HH:mm:ss").format(java.util.Date(lastUpdated))}",
                     color = TextMuted,
@@ -322,6 +343,7 @@ private fun buildChartHtml(): String {
             <script>
                 var chart = null;
                 var series = null;
+                var lines = {};
                 function initChart() {
                     if (series) return;
                     chart = LightweightCharts.createChart(document.getElementById('chart'), {
@@ -356,6 +378,21 @@ private fun buildChartHtml(): String {
                     if (close > last.high) last.high = close;
                     if (close < last.low) last.low = close;
                     series.update(last);
+                };
+                window.cpDrawLine = function (id, price, color, label) {
+                    initChart();
+                    if (lines[id]) {
+                        lines[id].setPrice(price);
+                        return;
+                    }
+                    lines[id] = series.createPriceLine({
+                        price: price,
+                        color: color,
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: label,
+                    });
                 };
                 initChart();
             </script>

@@ -10,8 +10,10 @@ data class MarketCandidateDto(
     val symbol: String,
     @SerializedName("price") val currentMarketPrice: Double,
     val volume24h: Double,
+    val quoteVolume24h: Double,
+    val priceChange24h: Double,
     val priceChangePercent24h: Double,
-    val score: Int,
+    val score: Double,
     val minNotional: Double,
 )
 

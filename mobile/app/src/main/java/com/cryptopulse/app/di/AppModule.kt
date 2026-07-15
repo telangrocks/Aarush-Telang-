@@ -3,6 +3,7 @@ package com.cryptopulse.app.di
 import android.content.Context
 import com.cryptopulse.app.data.api.AuthService
 import com.cryptopulse.app.data.api.ExchangeService
+import com.cryptopulse.app.data.api.FcmApi
 import com.cryptopulse.app.data.api.KlineService
 import com.cryptopulse.app.data.api.MarketService
 import com.cryptopulse.app.data.api.StrategyService
@@ -114,5 +115,11 @@ object AppModule {
     @Singleton
     fun provideTradingBotService(retrofit: Retrofit): TradingBotService {
         return retrofit.create(TradingBotService::class.java)
+    }
+
+    @Provides
+    @Singleton
+    fun provideFcmApi(retrofit: Retrofit): FcmApi {
+        return retrofit.create(FcmApi::class.java)
     }
 }

@@ -8,6 +8,7 @@ data class TickerResponse(
     val symbol: String,
     val price: Double,
     val volume24h: Double,
+    val quoteVolume24h: Double,
     val priceChange24h: Double,
     val priceChangePercent24h: Double,
     val highPrice24h: Double,

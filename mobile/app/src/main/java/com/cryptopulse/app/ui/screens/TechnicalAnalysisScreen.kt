@@ -1,5 +1,6 @@
 package com.cryptopulse.app.ui.screens
 
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -26,6 +27,7 @@ import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
 import com.cryptopulse.app.service.BackgroundMonitoringService
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -39,28 +41,26 @@ fun TechnicalAnalysisScreen(
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
     var isBotActive by remember { mutableStateOf(false) }
-    var analysisResult by remember { mutableStateOf<Map<String, Any>?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var lastUpdated by remember { mutableStateOf(System.currentTimeMillis()) }
 
+    val analysisResult by viewModel.technicalAnalysis.collectAsState(initial = null)
     val scope = rememberCoroutineScope()
+    val appContext = LocalContext.current.applicationContext
 
-    LaunchedEffect(strategy) {
+    LaunchedEffect(strategy, candidate.symbol) {
         isLoading = true
-        delay(1500)
-        analysisResult = mapOf(
-            "trend" to "BULLISH",
-            "strength" to "STRONG",
-            "recommendation" to "BUY",
-            "confidence" to 87,
-            "rsi" to 62.5,
-            "macd" to 1.24,
-            "macdSignal" to 0.85,
-            "ema20" to candidate.currentMarketPrice * 1.005,
-            "ema50" to candidate.currentMarketPrice * 1.01,
-            "sma200" to candidate.currentMarketPrice * 1.03,
-        )
-        isLoading = false
+        viewModel.fetchTechnicalAnalysis()
+        delay(10000)
+        if (analysisResult == null) {
+            isLoading = false
+        }
+    }
+
+    LaunchedEffect(analysisResult) {
+        if (analysisResult != null) {
+            isLoading = false
+        }
     }
 
     LaunchedEffect(isBotActive) {
@@ -94,13 +94,9 @@ fun TechnicalAnalysisScreen(
                             scope.launch {
                                 if (isBotActive) {
                                     viewModel.activateBot(candidate.symbol, strategy)
-                                    BackgroundMonitoringService.startService(
-                                        LocalContext.current.applicationContext
-                                    )
+                                    BackgroundMonitoringService.startService(appContext)
                                 } else {
-                                    BackgroundMonitoringService.stopService(
-                                        LocalContext.current.applicationContext
-                                    )
+                                    BackgroundMonitoringService.stopService(appContext)
                                 }
                             }
                         },
@@ -158,16 +154,17 @@ fun TechnicalAnalysisScreen(
                         }
                     }
                 } else if (analysisResult != null) {
-                    val trend = analysisResult!!["trend"] as String
-                    val strength = analysisResult!!["strength"] as String
-                    val recommendation = analysisResult!!["recommendation"] as String
-                    val confidence = analysisResult!!["confidence"] as Int
-                    val rsi = analysisResult!!["rsi"] as Double
-                    val macd = analysisResult!!["macd"] as Double
-                    val macdSignal = analysisResult!!["macdSignal"] as Double
-                    val ema20 = analysisResult!!["ema20"] as Double
-                    val ema50 = analysisResult!!["ema50"] as Double
-                    val sma200 = analysisResult!!["sma200"] as Double
+                    val result = analysisResult!!
+                    val trend = result.signals["trend"] as? String ?: "NEUTRAL"
+                    val strength = result.signals["strength"] as? String ?: "WEAK"
+                    val recommendation = result.signals["recommendation"] as? String ?: "HOLD"
+                    val confidence = (result.signals["confidence"] as? Number)?.toInt() ?: 0
+                    val rsi = result.indicators["rsi"] as? Double ?: 0.0
+                    val macd = result.indicators["macd"] as? Double ?: 0.0
+                    val macdSignal = result.indicators["macdSignal"] as? Double ?: 0.0
+                    val ema20 = result.indicators["ema20"] as? Double ?: 0.0
+                    val ema50 = result.indicators["ema50"] as? Double ?: 0.0
+                    val sma200 = result.indicators["sma200"] as? Double ?: 0.0
 
                     GlowCard {
                         Column(modifier = Modifier.fillMaxWidth()) {

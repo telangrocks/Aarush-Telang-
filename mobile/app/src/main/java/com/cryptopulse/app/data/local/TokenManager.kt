@@ -10,8 +10,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "auth_prefs")
 
@@ -21,7 +24,7 @@ class TokenManager(private val context: Context) {
     }
 
     private val _tokenFlow = MutableStateFlow<String?>(null)
-    val tokenFlow: Flow<String?> = _tokenFlow.asStateFlow()
+    val tokenFlow: StateFlow<String?> = _tokenFlow.asStateFlow()
 
     init {
         CoroutineScope(Dispatchers.IO).launch {

@@ -25,7 +25,7 @@ import {
   handleGetBotAlerts,
   handleAcknowledgeAlert,
 } from "./handlers/exchange";
-import { handleRegisterFcmToken } from "./handlers/notifications";
+import { handleRegisterFcmToken, sendPriceAlertNotification } from "./handlers/notifications";
 import { handleGetPositions, handleClosePosition } from "./handlers/positions";
 
 export interface Env {
@@ -352,6 +352,13 @@ const scheduled = async (
                 "UPDATE price_alerts SET is_active = 0, triggered_at = ? WHERE id = ?"
               ).bind(new Date().toISOString(), alert.id).run();
               console.log(`Alert ${alert.id} triggered for ${symbol} at ${currentPrice}`);
+
+              await sendPriceAlertNotification(env, alert.user_id, {
+                tokenId,
+                targetPrice,
+                condition: condition as "ABOVE" | "BELOW",
+                currentPrice,
+              });
             }
           } catch (err) {
             console.error("Error processing alert:", err);

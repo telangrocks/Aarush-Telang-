@@ -1,5 +1,6 @@
 package com.cryptopulse.app.ui.screens
 
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +21,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.components.GradientButton

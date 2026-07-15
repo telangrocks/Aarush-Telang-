@@ -14,7 +14,6 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.cryptopulse.app.MainActivity
-import com.cryptopulse.app.R
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.api.TradingBotService
 import dagger.hilt.android.AndroidEntryPoint
@@ -149,8 +148,14 @@ class BackgroundMonitoringService : Service() {
                         if (latestAlert["id"] != lastAlertId) {
                             lastAlertId = latestAlert["id"] as? String
                             showTradeAlert(latestAlert)
+                        } else {
+                            // no-op
                         }
+                    } else {
+                        // no-op
                     }
+                } else {
+                    // no-op
                 }
             } catch (e: Exception) {
                 Log.e("BackgroundMonitoring", "Failed to poll alerts", e)

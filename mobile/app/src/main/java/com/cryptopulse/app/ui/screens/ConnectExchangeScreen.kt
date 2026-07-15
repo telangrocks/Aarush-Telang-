@@ -1,5 +1,6 @@
 package com.cryptopulse.app.ui.screens
 
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -334,8 +335,6 @@ private fun ExchangeDropdown(
     val exchanges = listOf(
         "binance" to "Binance",
         "delta" to "Delta Exchange",
-        "coinbase" to "Coinbase Advanced Trade",
-        "kraken" to "Kraken",
         "bybit" to "Bybit",
     )
     var expanded by remember { mutableStateOf(false) }

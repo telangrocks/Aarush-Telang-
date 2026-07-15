@@ -12,7 +12,7 @@ class AuthRepository(
 ) {
     suspend fun register(email: String, password: String): AuthResult<Unit> {
         return try {
-            val response = api.register(RegisterRequest(email, password))
+            val response = api.register(RegisterRequest(email, password, password))
             if (response.isSuccessful && response.body()?.token != null) {
                 tokenManager.saveToken(response.body()!!.token!!)
                 AuthResult.Success(Unit)

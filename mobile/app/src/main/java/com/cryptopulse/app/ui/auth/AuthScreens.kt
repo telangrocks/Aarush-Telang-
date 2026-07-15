@@ -39,7 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberSaveable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,7 +71,7 @@ fun AuthScreen(
     viewModel: AuthViewModel,
     onAuthSuccess: () -> Unit,
 ) {
-    var isLoginMode by rememberSaveable { mutableStateOf(false) }
+    var isLoginMode by remember { mutableStateOf(true) }
 
     LaunchedEffect(viewModel.isAuthenticated) {
         if (viewModel.isAuthenticated) onAuthSuccess()
@@ -216,7 +216,7 @@ fun AuthScreen(
                         DarkTextField(
                             value = viewModel.password,
                             onValueChange = { viewModel.password = it },
-                            placeholder = if (isLoginMode) "Enter your password" else "Min. 8 characters",
+                            placeholder = if (isLoginMode) "Enter your password" else "Min. 8 chars, A-Z, a-z, 0-9, symbol",
                             keyboardType = KeyboardType.Password,
                             visualTransformation = PasswordVisualTransformation(),
                             trailingIcon = {
