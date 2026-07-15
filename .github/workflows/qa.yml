@@ -1,0 +1,221 @@
+name: QA Validation
+
+# Runs ONLY after the "Deploy backend" workflow has completed successfully and
+# the Cloudflare Worker + D1 database are live. It does NOT redeploy anything
+# or duplicate deploy logic — it validates the freshly deployed services, builds
+# the Android APK, and runs Maestro end-to-end tests against the real backend.
+on:
+  workflow_run:
+    workflows: ["Deploy backend"]
+    types: [completed]
+
+concurrency:
+  group: qa-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  WORKER_URL: https://crypto-pulse-backend.telangrocks.workers.dev
+  CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Backend QA — health, D1, auth, endpoints, exchange connectivity, no-mock
+  # ---------------------------------------------------------------------------
+  backend-qa:
+    name: Backend QA
+    runs-on: ubuntu-latest
+    # Only validate real main-branch deployments (not PR lint/build gates).
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout (deployed commit)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Cloudflare Worker deployment
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
+        run: |
+          npm install -g wrangler@4
+          echo "Recent Worker deployments:"
+          wrangler deployments list --config wrangler.toml
+
+      - name: Run backend QA validation
+        env:
+          WORKER_URL: ${{ env.WORKER_URL }}
+          QA_EMAIL: "qa+${{ github.run_id }}@cryptopulse.dev"
+          QA_PASSWORD: "QaPassw0rd!${{ github.run_id }}"
+          QA_EXCHANGE_NAME: ${{ secrets.QA_EXCHANGE_NAME }}
+          QA_EXCHANGE_API_KEY: ${{ secrets.QA_EXCHANGE_API_KEY }}
+          QA_EXCHANGE_API_SECRET: ${{ secrets.QA_EXCHANGE_API_SECRET }}
+          QA_EXCHANGE_ENVIRONMENT: ${{ secrets.QA_EXCHANGE_ENVIRONMENT }}
+        run: node scripts/qa-validation.js
+
+      - name: Upload backend QA report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-qa-report
+          path: |
+            backend/qa-report.json
+            backend/qa-report.md
+
+  # ---------------------------------------------------------------------------
+  # 2. Build the latest Android APK
+  # ---------------------------------------------------------------------------
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    needs: backend-qa
+    steps:
+      - name: Checkout (deployed commit)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Grant execute permission for gradlew
+        working-directory: mobile
+        run: chmod +x ./gradlew
+
+      - name: Build debug APK
+        working-directory: mobile
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: mobile/app/build/outputs/apk/debug/app-debug.apk
+
+  # ---------------------------------------------------------------------------
+  # 3. Maestro end-to-end tests on an Android emulator
+  # ---------------------------------------------------------------------------
+  maestro-tests:
+    name: Maestro E2E Tests
+    runs-on: ubuntu-latest
+    needs: build-apk
+    steps:
+      - name: Checkout (deployed commit)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: app-debug-apk
+          path: mobile/app/build/outputs/apk/debug
+
+      - name: Run Maestro flows on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_4
+          force-avd-create: true
+          disable-animations: true
+          script: |
+            adb install -r mobile/app/build/outputs/apk/debug/app-debug.apk
+            curl -Ls "https://get.maestro.mobile.dev" | bash
+            export PATH="$PATH:$HOME/.maestro/bin"
+            maestro test mobile/maestro/crypto-pulse-regression.yaml \
+              --debug-output --format junit > maestro-report.xml
+            maestro screenshot || true
+
+      - name: Upload Maestro artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-artifacts
+          path: |
+            maestro-report.xml
+            mobile/maestro/*.png
+            ~/.maestro/screenshots/**
+
+  # ---------------------------------------------------------------------------
+  # 4. Consolidated QA summary (always runs; fails if a blocking job failed)
+  # ---------------------------------------------------------------------------
+  qa-summary:
+    name: QA Summary
+    runs-on: ubuntu-latest
+    needs: [backend-qa, build-apk, maestro-tests]
+    if: always()
+    steps:
+      - name: Download all QA artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: qa-artifacts
+
+      - name: Generate consolidated QA summary
+        run: |
+          {
+            echo "# 🧪 Crypto Pulse — QA Validation Summary"
+            echo ""
+            echo "**Trigger:** workflow_run of \`Deploy backend\` (run ${{ github.event.workflow_run.run_id }})"
+            echo "**Commit:** ${{ github.event.workflow_run.head_sha }}"
+            echo "**Worker:** ${{ env.WORKER_URL }}"
+            echo ""
+            echo "## Artifacts"
+            echo "- \`backend-qa-report\` — health, D1, auth, endpoints, exchange connectivity, no-mock scan"
+            echo "- \`app-debug-apk\` — freshly built Android APK"
+            echo "- \`maestro-artifacts\` — E2E screenshots, logs, JUnit report"
+            echo ""
+            echo "## Job status"
+            echo "- Backend QA: ${{ needs.backend-qa.result }}"
+            echo "- Build APK:   ${{ needs.build-apk.result }}"
+            echo "- Maestro:     ${{ needs.maestro-tests.result }}"
+            echo ""
+            if [ -f "qa-artifacts/backend-qa-report/qa-report.md" ]; then
+              echo "## Backend QA detail"
+              echo ""
+              cat "qa-artifacts/backend-qa-report/qa-report.md"
+            fi
+            echo ""
+            echo "> Final verdict: ${{ (needs.backend-qa.result == 'success' && needs.build-apk.result == 'success' && needs.maestro-tests.result == 'success') && '✅ ALL CHECKS PASSED' || '❌ SOME CHECKS FAILED — review artifacts' }}"
+          } > summary.md
+          cat summary.md
+
+      - name: Upload QA summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-summary
+          path: summary.md
+
+      - name: Fail workflow on blocking failure
+        if: needs.backend-qa.result == 'failure' || needs.build-apk.result == 'failure' || needs.maestro-tests.result == 'failure'
+        run: |
+          echo "❌ One or more QA jobs failed. See uploaded artifacts for details."
+          exit 1
