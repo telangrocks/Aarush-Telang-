@@ -14,6 +14,8 @@ data class ValidateExchangeRequest(
 data class ValidationResponse(
     val success: Boolean,
     val message: String,
+    val code: String? = null,
+    val hint: String? = null,
 )
 
 data class ConnectExchangeRequest(
@@ -28,6 +30,8 @@ data class ConnectExchangeResponse(
     val message: String,
     val exchangeName: String?,
     val environment: String? = null,
+    val code: String? = null,
+    val hint: String? = null,
 )
 
 interface ExchangeService {

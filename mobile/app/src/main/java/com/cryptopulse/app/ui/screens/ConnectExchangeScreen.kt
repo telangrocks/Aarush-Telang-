@@ -104,6 +104,7 @@ fun ConnectExchangeScreen(
         containerColor = Color.Transparent,
         snackbarHost = {
             if (uiState is ExchangeUiState.Error) {
+                val errorState = uiState as ExchangeUiState.Error
                 Snackbar(
                     modifier = Modifier.padding(16.dp),
                     containerColor = Color(0xFF1A0A10),
@@ -113,7 +114,19 @@ fun ConnectExchangeScreen(
                             Text("Dismiss", color = LossRed)
                         }
                     },
-                ) { Text((uiState as ExchangeUiState.Error).message) }
+                ) {
+                    Column {
+                        Text(errorState.message)
+                        if (!errorState.hint.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = errorState.hint!!,
+                                color = LossRed.copy(alpha = 0.8f),
+                                fontSize = 12.sp,
+                            )
+                        }
+                    }
+                }
             }
         },
     ) { padding ->

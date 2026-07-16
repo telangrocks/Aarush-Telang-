@@ -52,6 +52,10 @@ export interface Kline {
 export interface ValidationResult {
   success: boolean;
   message: string;
+  /** Stable error code for user-friendly mapping (optional). */
+  code?: string;
+  /** Plain-language, actionable message safe to show the user (optional). */
+  friendlyMessage?: string;
 }
 
 export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [

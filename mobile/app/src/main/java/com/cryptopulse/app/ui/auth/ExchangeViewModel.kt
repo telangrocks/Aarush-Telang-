@@ -33,7 +33,7 @@ sealed class ExchangeUiState {
     object Validating : ExchangeUiState()
     object Connecting : ExchangeUiState()
     data class Connected(val exchangeName: String) : ExchangeUiState()
-    data class Error(val message: String) : ExchangeUiState()
+    data class Error(val message: String, val hint: String? = null) : ExchangeUiState()
 }
 
 data class ExchangeFormState(
@@ -158,8 +158,7 @@ class ExchangeViewModel @Inject constructor(
     private fun getUserFriendlyErrorMessage(
         response: retrofit2.Response<*>? = null,
         exception: Exception? = null
-    ): String {
-        // Log the technical error for debugging
+    ): Pair<String, String?> {
         if (response != null) {
             println("Exchange API error: ${response.code()} ${response.message()}")
             val errorBody = response.errorBody()
@@ -169,46 +168,44 @@ class ExchangeViewModel @Inject constructor(
             exception.printStackTrace()
         }
 
-        // Determine user-friendly message
-        return when {
-            response != null && !response.isSuccessful -> {
-                when (response.code()) {
-                    400 -> "Invalid request. Please check your API key and secret."
-                    401 -> "Authentication failed. Invalid API key or secret."
-                    403 -> "Access forbidden. Check your IP whitelist or permissions."
-                    404 -> "Exchange endpoint not found. Please check your exchange selection."
-                    429 -> "Rate limit exceeded. Please try again later."
-                    500, 502, 503, 504 -> "Exchange service unavailable. Please try again later."
-                    else -> "Request failed. Please try again."
+        if (response != null && response.isSuccessful && response.body() != null) {
+            val body = response.body()!!
+            when (body) {
+                is ValidationResponse -> {
+                    if (!body.success) {
+                        return body.message to body.hint
+                    }
+                }
+                is com.cryptopulse.app.data.api.ConnectExchangeResponse -> {
+                    if (!body.success) {
+                        return body.message to body.hint
+                    }
                 }
             }
-            response != null -> {
-                // Response successful but body success is false
-                val message = when (response.body()) {
-                    is ValidationResponse -> response.body()?.message
-                    is com.cryptopulse.app.data.api.ConnectExchangeResponse -> response.body()?.message
-                    else -> null
-                }
-                when (message?.lowercase()) {
-                    "invalid api key" -> "Invalid API Key"
-                    "invalid api secret" -> "Invalid API Secret"
-                    "invalid credentials" -> "Invalid API Key or Secret"
-                    "ip not allowed" -> "IP address not whitelisted"
-                    "permission denied" -> "Missing required permissions"
-                    "testnet mode", "must be testnet", "must be mainnet" -> "Testnet/Realnet mismatch. Please check your environment."
-                    else -> message ?: "Operation failed"
-                }
-            }
-            exception != null -> {
-                when (exception) {
-                    is SocketTimeoutException -> "Connection timeout. Please check your internet connection."
-                    is UnknownHostException -> "No internet connection. Please check your network."
-                    is IOException -> "Network error. Please check your internet connection."
-                    else -> "An unexpected error occurred. Please try again."
-                }
-            }
-            else -> "An unknown error occurred. Please try again."
         }
+
+        if (response != null && !response.isSuccessful) {
+            return when (response.code()) {
+                400 -> "Invalid request. Please check your API key and secret." to null
+                401 -> "Authentication failed. Invalid API key or secret." to null
+                403 -> "Access forbidden. Check your IP whitelist or permissions." to null
+                404 -> "Exchange endpoint not found. Please check your exchange selection." to null
+                429 -> "Rate limit exceeded. Please try again later." to null
+                500, 502, 503, 504 -> "Exchange service unavailable. Please try again later." to null
+                else -> "Request failed. Please try again." to null
+            }
+        }
+
+        if (exception != null) {
+            return when (exception) {
+                is SocketTimeoutException -> "Connection timeout. Please check your internet connection." to null
+                is UnknownHostException -> "No internet connection. Please check your network." to null
+                is IOException -> "Network error. Please check your internet connection." to null
+                else -> "An unexpected error occurred. Please try again." to null
+            }
+        }
+
+        return "An unknown error occurred. Please try again." to null
     }
 
     fun validateAndConnect() {
@@ -245,8 +242,8 @@ class ExchangeViewModel @Inject constructor(
                 val validationResponse = exchangeService.validate(validationRequest)
 
                 if (!validationResponse.isSuccessful || validationResponse.body()?.success != true) {
-                    val userMessage = getUserFriendlyErrorMessage(response = validationResponse)
-                    _uiState.value = ExchangeUiState.Error(userMessage)
+                    val (userMessage, hint) = getUserFriendlyErrorMessage(response = validationResponse)
+                    _uiState.value = ExchangeUiState.Error(userMessage, hint)
                     _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
                     return@launch
                 }
@@ -262,8 +259,8 @@ class ExchangeViewModel @Inject constructor(
                 val connectResponse = exchangeService.connect(connectRequest)
 
                 if (!connectResponse.isSuccessful || connectResponse.body()?.success != true) {
-                    val userMessage = getUserFriendlyErrorMessage(response = connectResponse)
-                    _uiState.value = ExchangeUiState.Error(userMessage)
+                    val (userMessage, hint) = getUserFriendlyErrorMessage(response = connectResponse)
+                    _uiState.value = ExchangeUiState.Error(userMessage, hint)
                     _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
                     return@launch
                 }
@@ -275,8 +272,8 @@ class ExchangeViewModel @Inject constructor(
 
                 fetchMarketCandidates()
             } catch (e: Exception) {
-                val userMessage = getUserFriendlyErrorMessage(exception = e)
-                _uiState.value = ExchangeUiState.Error(userMessage)
+                val (userMessage, hint) = getUserFriendlyErrorMessage(exception = e)
+                _uiState.value = ExchangeUiState.Error(userMessage, hint)
                 _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
             }
         }

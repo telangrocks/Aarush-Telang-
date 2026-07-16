@@ -6,6 +6,10 @@ export interface OrderResult {
   orderId?: string;
   price?: number;
   quantity?: number;
+  /** Stable error code for user-friendly mapping (optional). */
+  code?: string;
+  /** Plain-language, actionable message safe to show the user (optional). */
+  friendlyMessage?: string;
 }
 
 export interface IExchangeAdapter {

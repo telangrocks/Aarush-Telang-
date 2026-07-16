@@ -1,5 +1,6 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion } from "./types";
+import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -99,17 +100,21 @@ export class BybitExchange implements IExchangeAdapter {
 
       if (!response.ok) {
         const bodyText = await response.text();
-        return { success: false, message: `HTTP ${response.status}: ${bodyText}` };
+        const err: ClassifiedError = classifyExchangeResponse(response.status, bodyText, this.config.displayName);
+        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
       }
 
       const data = await response.json() as any;
       if (data.retCode !== 0) {
-        return { success: false, message: data.retMsg || "Invalid API credentials" };
+        const detail = data.retMsg || "Invalid API credentials";
+        const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
+        return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
       }
 
       return { success: true, message: "Bybit credentials validated successfully" };
     } catch (e: any) {
-      return { success: false, message: e.message || "Network error during validation" };
+      const err = classifyException(e, this.config.displayName);
+      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
     }
   }
 
@@ -271,7 +276,9 @@ export class BybitExchange implements IExchangeAdapter {
 
       const data = await response.json() as any;
       if (data.retCode !== 0) {
-        return { success: false, message: data.retMsg || "Order failed" };
+        const detail = data.retMsg || "Order failed";
+        const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
+        return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
       }
 
       return {
@@ -282,7 +289,8 @@ export class BybitExchange implements IExchangeAdapter {
         quantity: parseFloat(data.result?.qty || qty.toString()),
       };
     } catch (e: any) {
-      return { success: false, message: e.message || "Network error during order placement" };
+      const err = classifyException(e, this.config.displayName);
+      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
     }
   }
 }

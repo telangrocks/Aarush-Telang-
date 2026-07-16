@@ -2,6 +2,7 @@ import { Context } from "hono";
 import { Env } from "../index";
 import { encrypt } from "../crypto";
 import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion } from "../exchanges";
+import { FRIENDLY_MESSAGES, type ExchangeErrorCode } from "../exchanges/errors";
 import {
   computeEMA,
   computeIndicators,
@@ -35,6 +36,34 @@ function normalizeRegion(value: unknown): ExchangeRegion {
   return value === "global" || value === "india" ? value : "india";
 }
 
+/**
+ * Shape an adapter ValidationResult into the response the app consumes.
+ *
+ * The user-facing payload (`message`, `code`, `hint`) is plain-language and
+ * actionable. The raw/technical adapter `message` is logged server-side via
+ * `logTechnical` and is never sent to the client.
+ */
+function shapeValidation(
+  result: { success: boolean; message: string; code?: string; friendlyMessage?: string },
+  exchangeName: string,
+  logTechnical: (detail: string) => void,
+) {
+  if (result.success) {
+    return { success: true as const, message: "Credentials verified. You're all set." };
+  }
+
+  logTechnical(`[exchange-auth] ${exchangeName}: ${result.message}`);
+
+  const code = (result.code as ExchangeErrorCode) ?? "UNKNOWN_EXCHANGE_ERROR";
+  const info = FRIENDLY_MESSAGES[code] ?? FRIENDLY_MESSAGES.UNKNOWN_EXCHANGE_ERROR;
+  return {
+    success: false as const,
+    code,
+    message: result.friendlyMessage || info.friendlyMessage,
+    hint: info.hint,
+  };
+}
+
 export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
@@ -56,11 +85,17 @@ export async function handleValidateExchange(
     const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment), resolvedRegion);
     const result = await adapter.validateCredentials(apiKey, apiSecret);
 
-    return c.json(result);
+    return c.json(shapeValidation(result, exchangeName, (d) => console.error(d)));
   } catch (e: unknown) {
     const error = e as Error;
+    console.error(`[exchange-auth] validate exception: ${error?.stack || error?.message || e}`);
     c.status(400);
-    return c.json({ success: false, message: error.message || "Invalid exchange or parameters" });
+    return c.json({
+      success: false,
+      code: "UNKNOWN_EXCHANGE_ERROR" as ExchangeErrorCode,
+      message: FRIENDLY_MESSAGES.UNKNOWN_EXCHANGE_ERROR.friendlyMessage,
+      hint: FRIENDLY_MESSAGES.UNKNOWN_EXCHANGE_ERROR.hint,
+    });
   }
 }
 
@@ -90,7 +125,7 @@ export async function handleConnectExchange(
     const validation = await adapter.validateCredentials(apiKey, apiSecret);
     if (!validation.success) {
       c.status(401);
-      return c.json(validation);
+      return c.json(shapeValidation(validation, exchangeName, (d) => console.error(d)));
     }
 
     const encryptedSecret = await encrypt(apiSecret, c.env.ENCRYPTION_KEY);
@@ -104,8 +139,14 @@ export async function handleConnectExchange(
     return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: resolvedEnvironment, region: resolvedRegion });
   } catch (e: unknown) {
     const error = e as Error;
+    console.error(`[exchange-auth] connect exception: ${error?.stack || error?.message || e}`);
     c.status(500);
-    return c.json({ success: false, message: error.message || "Failed to connect exchange" });
+    return c.json({
+      success: false,
+      code: "UNKNOWN_EXCHANGE_ERROR" as ExchangeErrorCode,
+      message: FRIENDLY_MESSAGES.UNKNOWN_EXCHANGE_ERROR.friendlyMessage,
+      hint: FRIENDLY_MESSAGES.UNKNOWN_EXCHANGE_ERROR.hint,
+    });
   }
 }
 
@@ -413,12 +454,18 @@ export async function handleActivateTradingBot(
       }),
     );
 
-    const data = await response.json<{ success: boolean; message: string }>();
+    const data = await response.json<{ success: boolean; message: string; code?: string; hint?: string }>();
     return c.json(data);
   } catch (e: unknown) {
     const error = e as Error;
+    console.error(`[trading-bot] activate exception: ${error?.stack || error?.message || e}`);
     c.status(500);
-    return c.json({ success: false, message: error.message || "Failed to activate trading bot" });
+    return c.json({
+      success: false,
+      code: "UNKNOWN_EXCHANGE_ERROR" as ExchangeErrorCode,
+      message: "We couldn't start the trading bot right now.",
+      hint: "Please try again in a moment. If this keeps happening, check your exchange connection.",
+    });
   }
 }
 
