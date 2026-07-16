@@ -29,7 +29,7 @@ import {
 } from "./handlers/exchange";
 import { handleRegisterFcmToken, sendPriceAlertNotification } from "./handlers/notifications";
 import { handleGetPositions, handleClosePosition } from "./handlers/positions";
-import { getExchangeAdapter, type ExchangeName, type ExchangeEnvironment } from "./exchanges";
+import { getExchangeAdapter, type ExchangeName, type ExchangeEnvironment, type ExchangeRegion } from "./exchanges";
 
 export interface Env {
   DB: D1Database;
@@ -323,7 +323,7 @@ const scheduled = async (
       // Resolve each user's connected exchange + environment so price alerts
       // are checked against the correct exchange (mainnet or testnet) — never
       // hard-coded to a single venue.
-      const exchangeCache = new Map<string, { name: ExchangeName; environment: ExchangeEnvironment } | null>();
+      const exchangeCache = new Map<string, { name: ExchangeName; environment: ExchangeEnvironment; region: ExchangeRegion } | null>();
       for (const alert of results as any[]) {
         try {
           const tokenId = alert.token_id as string;
@@ -335,12 +335,13 @@ const scheduled = async (
           let cached = exchangeCache.get(userId);
           if (cached === undefined) {
             const user = await env.DB.prepare(
-              "SELECT exchange_name, exchange_environment FROM users WHERE id = ?"
-            ).bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null }>();
+              "SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?"
+            ).bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
             cached = user?.exchange_name
               ? {
                   name: user.exchange_name as ExchangeName,
                   environment: user.exchange_environment === "testnet" ? "testnet" : "mainnet",
+                  region: user.exchange_region === "global" ? "global" : "india",
                 }
               : null;
             exchangeCache.set(userId, cached);
@@ -351,7 +352,7 @@ const scheduled = async (
             continue;
           }
 
-          const adapter = getExchangeAdapter(cached.name, cached.environment);
+          const adapter = getExchangeAdapter(cached.name, cached.environment, cached.region);
           const ticker = await adapter.fetchTicker(symbol);
           if (!ticker) continue;
 

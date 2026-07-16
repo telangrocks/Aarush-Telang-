@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS users (
   exchange_api_key TEXT,              -- Migration 0005
   exchange_api_secret_iv TEXT,        -- Migration 0005
   exchange_api_secret_encrypted TEXT, -- Migration 0005
-  exchange_environment TEXT NOT NULL DEFAULT 'mainnet'  -- Migration 0013
+  exchange_environment TEXT NOT NULL DEFAULT 'mainnet',  -- Migration 0013
+  exchange_region TEXT NOT NULL DEFAULT 'india'           -- Migration 0016 (Delta India routing)
 );
 
 -- Helpful indexes for common query patterns

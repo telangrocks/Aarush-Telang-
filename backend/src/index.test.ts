@@ -505,11 +505,12 @@ describe("App Endpoints", () => {
       const data = await res.json<{ success: boolean }>();
       expect(data.success).toBe(true);
       expect(mockEnv.DB?.prepare).toHaveBeenCalledWith(
-        "UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?",
+        "UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?",
       );
       expect(mockEnv.DB?.prepare("stmt").bind).toHaveBeenCalledWith(
         "binance",
         "testnet",
+        "india",
         "test-api-key",
         expect.any(String),
         expect.any(String),

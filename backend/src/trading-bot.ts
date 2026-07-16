@@ -1,5 +1,5 @@
 import { Env } from './index';
-import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, MarketTicker, normalizeQuantity } from './exchanges';
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion, MarketTicker, normalizeQuantity } from './exchanges';
 import { type Kline } from './exchanges/types';
 import { decrypt } from './crypto';
 import { sendTradeNotification } from './handlers/notifications';
@@ -10,6 +10,15 @@ import { sendTradeNotification } from './handlers/notifications';
  */
 function normalizeEnvironment(value: unknown): ExchangeEnvironment {
   return value === 'testnet' ? 'testnet' : 'mainnet';
+}
+
+/**
+ * Normalize an untrusted region value into a valid ExchangeRegion, defaulting
+ * to "india" so Delta Exchange India accounts reach the India domain even if
+ * no region was previously persisted.
+ */
+function normalizeRegion(value: unknown): ExchangeRegion {
+  return value === 'global' || value === 'india' ? value : 'india';
 }
 
 /**
@@ -509,8 +518,8 @@ export class TradingBot {
         }
 
         const userKeys = await this.env.DB.prepare(
-          'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment FROM users WHERE id = ?'
-        ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null }>();
+          'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
+        ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
 
         if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
           return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
@@ -521,7 +530,7 @@ export class TradingBot {
           this.env.ENCRYPTION_KEY,
         );
 
-        const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment));
+        const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
         const coinId = (await this.state.storage.get('coinId')) as string;
 
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
@@ -631,8 +640,8 @@ export class TradingBot {
       // There is intentionally no default exchange: the bot uses whichever
       // exchange the user validated and connected.
       const user = await this.env.DB.prepare(
-        'SELECT exchange_name, exchange_environment FROM users WHERE id = ?',
-      ).bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null }>();
+        'SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?',
+      ).bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
 
       if (!user?.exchange_name) {
         await this.persistAnalysis({
@@ -659,7 +668,8 @@ export class TradingBot {
 
       const exchangeName = user.exchange_name as ExchangeName;
       const environment = normalizeEnvironment(user.exchange_environment);
-      const adapter = getExchangeAdapter(exchangeName, environment);
+      const region = normalizeRegion(user.exchange_region);
+      const adapter = getExchangeAdapter(exchangeName, environment, region);
 
       const ticker = await adapter.fetchTicker(baseSymbol);
       if (!ticker) {
@@ -1076,12 +1086,12 @@ export class TradingBot {
       if (!results || results.length === 0) return;
 
       const user = await this.env.DB.prepare(
-        'SELECT exchange_name, exchange_environment FROM users WHERE id = ?'
-      ).bind(userId).first<{ exchange_name: string; exchange_environment: string | null }>();
+        'SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
+      ).bind(userId).first<{ exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
 
       if (!user?.exchange_name) return;
 
-      const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
+      const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
 
       for (const position of results as any[]) {
         try {

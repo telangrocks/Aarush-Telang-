@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
-import { ExchangeConfig, ExchangeEnvironment } from "./types";
+import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -20,11 +20,21 @@ export class DeltaExchange implements IExchangeAdapter {
   readonly config: ExchangeConfig = {
     name: "delta",
     displayName: "Delta Exchange",
-    restUrl: "https://api.delta.exchange",
-    testnetUrl: "https://api-testnet.delta.exchange",
+    // Indian accounts cannot reach the global domain (CloudFront 403), so the
+    // default region is "india" which points at api.india.delta.exchange.
+    defaultRegion: "india",
+    regionUrls: {
+      global: "https://api.delta.exchange",
+      india: "https://api.india.delta.exchange",
+    },
+    regionTestnetUrls: {
+      global: "https://api-testnet.delta.exchange",
+      india: "https://api-staging.india.delta.exchange",
+    },
   };
 
   private environment: ExchangeEnvironment = "mainnet";
+  private region: ExchangeRegion = "india";
 
   getName() {
     return this.config.displayName;
@@ -34,10 +44,17 @@ export class DeltaExchange implements IExchangeAdapter {
     this.environment = environment;
   }
 
+  setRegion(region: ExchangeRegion) {
+    this.region = region;
+  }
+
   getRestUrl(): string {
-    return this.environment === "testnet" && this.config.testnetUrl
-      ? this.config.testnetUrl
-      : this.config.restUrl;
+    const urls = this.config.regionUrls;
+    const testnet = this.config.regionTestnetUrls;
+    if (this.environment === "testnet" && testnet && testnet[this.region]) {
+      return testnet[this.region]!;
+    }
+    return urls[this.region] ?? urls.global;
   }
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {

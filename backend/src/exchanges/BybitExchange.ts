@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
-import { ExchangeConfig, ExchangeEnvironment } from "./types";
+import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -46,11 +46,19 @@ export class BybitExchange implements IExchangeAdapter {
   readonly config: ExchangeConfig = {
     name: "bybit",
     displayName: "Bybit",
-    restUrl: "https://api.bybit.com",
-    testnetUrl: "https://api-testnet.bybit.com",
+    defaultRegion: "global",
+    regionUrls: {
+      global: "https://api.bybit.com",
+      india: "https://api.bybit.com",
+    },
+    regionTestnetUrls: {
+      global: "https://api-testnet.bybit.com",
+      india: "https://api-testnet.bybit.com",
+    },
   };
 
   private environment: ExchangeEnvironment = "mainnet";
+  private region: ExchangeRegion = "global";
 
   getName() {
     return this.config.displayName;
@@ -60,10 +68,17 @@ export class BybitExchange implements IExchangeAdapter {
     this.environment = environment;
   }
 
+  setRegion(region: ExchangeRegion) {
+    this.region = region;
+  }
+
   getRestUrl(): string {
-    return this.environment === "testnet" && this.config.testnetUrl
-      ? this.config.testnetUrl
-      : this.config.restUrl;
+    const urls = this.config.regionUrls;
+    const testnet = this.config.regionTestnetUrls;
+    if (this.environment === "testnet" && testnet && testnet[this.region]) {
+      return testnet[this.region]!;
+    }
+    return urls[this.region] ?? urls.global;
   }
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {

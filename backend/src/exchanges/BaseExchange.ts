@@ -1,4 +1,4 @@
-import { type ValidationResult, type MarketTicker, type Kline, type ExchangeEnvironment } from "./types";
+import { type ValidationResult, type MarketTicker, type Kline, type ExchangeEnvironment, type ExchangeRegion, type ExchangeConfig } from "./types";
 
 export interface OrderResult {
   success: boolean;
@@ -9,6 +9,7 @@ export interface OrderResult {
 }
 
 export interface IExchangeAdapter {
+  readonly config: ExchangeConfig;
   getName(): string;
   validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult>;
   fetchMarketData(): Promise<MarketTicker[]>;
@@ -16,6 +17,7 @@ export interface IExchangeAdapter {
   fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]>;
   placeOrder?(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult>;
   setEnvironment?(environment: ExchangeEnvironment): void;
+  setRegion?(region: ExchangeRegion): void;
   getRestUrl(): string;
 }
 

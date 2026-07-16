@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline } from "./BaseExchange";
-import { ExchangeConfig, ExchangeEnvironment } from "./types";
+import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion } from "./types";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -20,11 +20,19 @@ export class BinanceExchange implements IExchangeAdapter {
   readonly config: ExchangeConfig = {
     name: "binance",
     displayName: "Binance",
-    restUrl: "https://api.binance.com",
-    testnetUrl: "https://testnet.binance.vision",
+    defaultRegion: "global",
+    regionUrls: {
+      global: "https://api.binance.com",
+      india: "https://api.binance.com",
+    },
+    regionTestnetUrls: {
+      global: "https://testnet.binance.vision",
+      india: "https://testnet.binance.vision",
+    },
   };
 
   private environment: ExchangeEnvironment = "mainnet";
+  private region: ExchangeRegion = "global";
 
   getName() {
     return this.config.displayName;
@@ -34,10 +42,17 @@ export class BinanceExchange implements IExchangeAdapter {
     this.environment = environment;
   }
 
+  setRegion(region: ExchangeRegion) {
+    this.region = region;
+  }
+
   getRestUrl(): string {
-    return this.environment === "testnet" && this.config.testnetUrl
-      ? this.config.testnetUrl
-      : this.config.restUrl;
+    const urls = this.config.regionUrls;
+    const testnet = this.config.regionTestnetUrls;
+    if (this.environment === "testnet" && testnet && testnet[this.region]) {
+      return testnet[this.region]!;
+    }
+    return urls[this.region] ?? urls.global;
   }
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {

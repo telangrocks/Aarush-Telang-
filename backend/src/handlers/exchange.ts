@@ -1,7 +1,7 @@
 import { Context } from "hono";
 import { Env } from "../index";
 import { encrypt } from "../crypto";
-import { getExchangeAdapter, ExchangeName, ExchangeEnvironment } from "../exchanges";
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion } from "../exchanges";
 import {
   computeEMA,
   computeIndicators,
@@ -25,15 +25,26 @@ function normalizeEnvironment(value: unknown): ExchangeEnvironment {
   return value === "testnet" ? "testnet" : "mainnet";
 }
 
+/**
+ * Normalize an untrusted region value into a valid ExchangeRegion. Anything
+ * other than "global" or "india" falls back to "india" so that Delta Exchange
+ * India accounts reach the India domain (api.india.delta.exchange) by default
+ * instead of the geo-blocked global endpoint.
+ */
+function normalizeRegion(value: unknown): ExchangeRegion {
+  return value === "global" || value === "india" ? value : "india";
+}
+
 export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   try {
-    const { exchangeName, apiKey, apiSecret, environment } = await c.req.json<{
+    const { exchangeName, apiKey, apiSecret, environment, region } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
       environment?: ExchangeEnvironment;
+      region?: ExchangeRegion;
     }>();
 
     if (!exchangeName || !apiKey || !apiSecret) {
@@ -41,7 +52,8 @@ export async function handleValidateExchange(
       return c.json({ error: "exchangeName, apiKey, and apiSecret are required" });
     }
 
-    const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment));
+    const resolvedRegion = normalizeRegion(region);
+    const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment), resolvedRegion);
     const result = await adapter.validateCredentials(apiKey, apiSecret);
 
     return c.json(result);
@@ -59,11 +71,12 @@ export async function handleConnectExchange(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
-    const { exchangeName, apiKey, apiSecret, environment } = await c.req.json<{
+    const { exchangeName, apiKey, apiSecret, environment, region } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
       environment?: ExchangeEnvironment;
+      region?: ExchangeRegion;
     }>();
 
     if (!exchangeName || !apiKey || !apiSecret) {
@@ -72,7 +85,8 @@ export async function handleConnectExchange(
     }
 
     const resolvedEnvironment = normalizeEnvironment(environment);
-    const adapter = getExchangeAdapter(exchangeName, resolvedEnvironment);
+    const resolvedRegion = normalizeRegion(region);
+    const adapter = getExchangeAdapter(exchangeName, resolvedEnvironment, resolvedRegion);
     const validation = await adapter.validateCredentials(apiKey, apiSecret);
     if (!validation.success) {
       c.status(401);
@@ -82,12 +96,12 @@ export async function handleConnectExchange(
     const encryptedSecret = await encrypt(apiSecret, c.env.ENCRYPTION_KEY);
 
     await c.env.DB.prepare(
-      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?`,
+      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?`,
     )
-      .bind(exchangeName, resolvedEnvironment, apiKey, encryptedSecret.iv, encryptedSecret.encrypted, userId)
+      .bind(exchangeName, resolvedEnvironment, resolvedRegion, apiKey, encryptedSecret.iv, encryptedSecret.encrypted, userId)
       .run();
 
-    return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: resolvedEnvironment });
+    return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: resolvedEnvironment, region: resolvedRegion });
   } catch (e: unknown) {
     const error = e as Error;
     c.status(500);
@@ -103,12 +117,13 @@ export async function handleGetExchangeStatus(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_api_key FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
+        exchange_region: string | null;
         exchange_api_key: string | null;
       }>();
 
@@ -118,6 +133,7 @@ export async function handleGetExchangeStatus(
       isConnected,
       exchangeName: user?.exchange_name ?? null,
       environment: user?.exchange_environment ?? null,
+      region: user?.exchange_region ?? null,
     });
   } catch (e: unknown) {
     const error = e as Error;
@@ -134,12 +150,13 @@ export async function handleGetPersonalizedMarketCandidates(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
+        exchange_region: string | null;
         exchange_api_key: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
@@ -150,7 +167,7 @@ export async function handleGetPersonalizedMarketCandidates(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
     const tickers = await adapter.fetchMarketData();
 
     if (!tickers.length) {
@@ -195,12 +212,13 @@ export async function handleGetTicker(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
+        exchange_region: string | null;
         exchange_api_key: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
@@ -211,7 +229,7 @@ export async function handleGetTicker(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
     const ticker = await adapter.fetchTicker(symbol);
 
     if (!ticker) {
@@ -259,17 +277,17 @@ export async function handleGetKlines(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?",
     )
       .bind(userId)
-      .first<{ exchange_name: string | null; exchange_environment: string | null }>();
+      .first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
 
     if (!user?.exchange_name) {
       c.status(400);
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
     const klines = await adapter.fetchKlines(symbol, interval, limit);
 
     return c.json(klines);
@@ -298,12 +316,13 @@ export async function handleGetTechnicalAnalysis(
     }
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
+        exchange_region: string | null;
         exchange_api_key: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
@@ -314,7 +333,7 @@ export async function handleGetTechnicalAnalysis(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment));
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
     const ticker = await adapter.fetchTicker(symbol);
 
     if (!ticker) {
