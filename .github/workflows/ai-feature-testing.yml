@@ -211,7 +211,7 @@ jobs:
   maestro-feature-test:
     name: Maestro 11-phase journey
     needs: build-apk
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 120
     steps:
       - name: Checkout code
