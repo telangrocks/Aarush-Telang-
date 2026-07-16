@@ -212,7 +212,7 @@ jobs:
     name: Maestro 11-phase journey
     needs: build-apk
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -229,8 +229,8 @@ jobs:
           name: ai-feature-test-apk
           path: mobile/app/build/outputs/apk/debug
 
-      - name: Run Maestro flow (transient-aware retry)
-        id: maestro
+      - name: Boot Android emulator
+        id: emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 30
@@ -238,19 +238,51 @@ jobs:
           arch: x86_64
           profile: pixel_4
           force-avd-create: true
-          disable-animations: true
-          script: |
-            adb install -r mobile/app/build/outputs/apk/debug/app-debug.apk
-            curl -Ls "https://get.maestro.mobile.dev" | bash
-            export PATH="$PATH:$HOME/.maestro/bin"
-            mkdir -p ai-feature-artifacts
-            maestro test mobile/maestro/ai-feature-testing.yaml \
+          boot-timeout: 600
+          script: echo "Emulator ready"
+
+      - name: Install APK on emulator
+        run: adb install -r mobile/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Install Maestro CLI
+        run: curl -Ls "https://get.maestro.mobile.dev" | bash
+
+      - name: Run Maestro 11-phase flow (transient-aware retry)
+        id: maestro
+        env:
+          PATH: "${{ env.HOME }}/.maestro/bin:$PATH"
+        run: |
+          set -euo pipefail
+          mkdir -p ai-feature-artifacts
+          max_retries="${{ github.event.inputs.max_transient_retries || '3' }}"
+          attempt=0
+          while [ $attempt -lt $max_retries ]; do
+            attempt=$((attempt + 1))
+            echo "::group::Maestro attempt $attempt/$max_retries"
+            if maestro test mobile/maestro/ai-feature-testing.yaml \
               --env EXCHANGE_NAME="${{ github.event.inputs.primary_exchange || 'bybit' }}" \
               --env EXCHANGE_ENVIRONMENT="${{ github.event.inputs.primary_environment || 'mainnet' }}" \
               --env EXCHANGE_API_KEY="${{ secrets.QA_EXCHANGE_API_KEY }}" \
               --env EXCHANGE_API_SECRET="${{ secrets.QA_EXCHANGE_API_SECRET }}" \
-              --debug-output --format junit > ai-feature-artifacts/ai-feature-report.xml || true
-            maestro screenshot || true
+              --debug-output --format junit > ai-feature-artifacts/ai-feature-report.xml; then
+              echo "::endgroup::"
+              break
+            fi
+            echo "::endgroup::"
+            if [ $attempt -lt $max_retries ]; then
+              echo "⚠️ Transient Maestro/emulator failure — retrying ($attempt/$max_retries)"
+              sleep 20
+              continue
+            fi
+            echo "Maestro failed after $attempt attempts"
+            exit 1
+          done
+
+      - name: Capture final screenshot
+        if: always()
+        env:
+          PATH: "${{ env.HOME }}/.maestro/bin:$PATH"
+        run: maestro screenshot || true
 
       - name: Upload Maestro artifacts
         if: always()
@@ -261,6 +293,7 @@ jobs:
             ai-feature-artifacts/
             mobile/maestro/*.png
             ~/.maestro/screenshots/**
+          if-no-files-found: warn
 
   # ───────────────────────────────────────────────────────────────────────
   # Aggregated, per-phase / per-category reporting.
