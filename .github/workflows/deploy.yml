@@ -38,6 +38,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -59,19 +61,40 @@ jobs:
         run: npm run build
 
       - name: Run tests
-        run: npm test
+        run: npm test -- --run
 
-      - name: Generate D1 migration SQL (manual apply required)
+      - name: Verify Cloudflare API token
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
+        run: test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_WORKERS_API_TOKEN is required"; exit 1; }
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@4
+
+      # The following steps deploy to production and only run on pushes to
+      # main. Pull requests run the lint/build/test gate above without
+      # touching the live Worker or database.
+      - name: Apply D1 migrations (remote)
         if: github.event_name == 'push'
         env:
-          MIGRATION_DIFF_BASE: ${{ github.event.before }}
-        run: bash scripts/print-d1-migration-sql.sh
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
+        run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote
+
+      - name: Show D1 migration status
+        if: github.event_name == 'push'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
+        run: wrangler d1 migrations list crypto_pulse_db --config wrangler.toml --remote
 
       - name: Deploy Worker
         if: github.event_name == 'push'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
-        run: npx wrangler deploy --config wrangler.toml
+          CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
+        run: wrangler deploy --config wrangler.toml
 
       - name: Set JWT_SECRET
         if: github.event_name == 'push'
@@ -80,7 +103,7 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           if [ -n "$JWT_SECRET" ]; then
-            echo "$JWT_SECRET" | npx wrangler secret put JWT_SECRET --config wrangler.toml
+            echo "$JWT_SECRET" | wrangler secret put JWT_SECRET --config wrangler.toml
           fi
 
       - name: Set ENCRYPTION_KEY
@@ -90,7 +113,7 @@ jobs:
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
         run: |
           if [ -n "$ENCRYPTION_KEY" ]; then
-            echo "$ENCRYPTION_KEY" | npx wrangler secret put ENCRYPTION_KEY --config wrangler.toml
+            echo "$ENCRYPTION_KEY" | wrangler secret put ENCRYPTION_KEY --config wrangler.toml
           fi
 
       - name: Set RESEND_API_KEY
@@ -100,7 +123,7 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: |
           if [ -n "$RESEND_API_KEY" ]; then
-            echo "$RESEND_API_KEY" | npx wrangler secret put RESEND_API_KEY --config wrangler.toml
+            echo "$RESEND_API_KEY" | wrangler secret put RESEND_API_KEY --config wrangler.toml
           fi
 
       - name: Set ALLOWED_ORIGINS
@@ -110,7 +133,7 @@ jobs:
           ALLOWED_ORIGINS: ${{ secrets.ALLOWED_ORIGINS }}
         run: |
           if [ -n "$ALLOWED_ORIGINS" ]; then
-            echo "$ALLOWED_ORIGINS" | npx wrangler secret put ALLOWED_ORIGINS --config wrangler.toml
+            echo "$ALLOWED_ORIGINS" | wrangler secret put ALLOWED_ORIGINS --config wrangler.toml
           fi
 
       - name: Set FCM server key
@@ -120,11 +143,12 @@ jobs:
           FCM_SERVER_KEY: ${{ secrets.FCM_SERVER_KEY }}
         run: |
           if [ -n "$FCM_SERVER_KEY" ]; then
-            echo "$FCM_SERVER_KEY" | npx wrangler secret put FCM_SERVER_KEY --config wrangler.toml
+            echo "$FCM_SERVER_KEY" | wrangler secret put FCM_SERVER_KEY --config wrangler.toml
           fi
 
       - name: Post-deploy smoke test
         if: github.event_name == 'push'
         env:
           WORKER_URL: https://crypto-pulse-backend.telangrocks.workers.dev
+          CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
         run: node -e "fetch(process.env.WORKER_URL + '/health').then(async (res) => { const body = await res.text(); if (res.status !== 200) { console.error(body); process.exit(1); } console.log(body); }).catch((err) => { console.error(err); process.exit(1); })"
