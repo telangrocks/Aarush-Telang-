@@ -28,6 +28,7 @@ import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
 import com.cryptopulse.app.service.BackgroundMonitoringService
+import com.cryptopulse.app.data.api.Checkpoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -163,26 +164,67 @@ fun TechnicalAnalysisScreen(
                     val strength = result.signals["strength"] as? String ?: "WEAK"
                     val recommendation = result.signals["recommendation"] as? String ?: "HOLD"
                     val confidence = (result.signals["confidence"] as? Number)?.toInt() ?: 0
-                    val rsi = result.indicators["rsi"] as? Double ?: 0.0
-                    val macd = result.indicators["macd"] as? Double ?: 0.0
-                    val macdSignal = result.indicators["macdSignal"] as? Double ?: 0.0
-                    val ema20 = result.indicators["ema20"] as? Double ?: 0.0
-                    val ema50 = result.indicators["ema50"] as? Double ?: 0.0
-                    val sma200 = result.indicators["sma200"] as? Double ?: 0.0
+                    val progress = result.progress
+                    val checkpoints = result.checkpoints
+                    val conditionsMet = result.conditionsMet
+                    val opportunity = result.opportunity
 
                     GlowCard {
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.AutoAwesome, null, tint = Color(0xFFBB86FC), modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "ANALYSIS RESULT",
-                                    color = Color(0xFFBB86FC),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    letterSpacing = 1.2.sp,
-                                )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "Analysis Progress",
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .background(ProfitGreen, shape = RoundedCornerShape(4.dp))
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            text = "Live",
+                                            color = ProfitGreen,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                        )
+                                    }
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        text = "$progress%",
+                                        color = CyanPrimary,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 20.sp,
+                                    )
+                                    Text(
+                                        text = "Conditions met: ${conditionsMet.size}/${checkpoints.size}",
+                                        color = TextSecondary,
+                                        fontSize = 11.sp,
+                                    )
+                                }
                             }
+
+                            Spacer(Modifier.height(12.dp))
+
+                            LinearProgressIndicator(
+                                progress = { progress / 100f },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp),
+                                color = if (progress >= 100) ProfitGreen else CyanPrimary,
+                                trackColor = NavyBorder,
+                            )
+
                             Spacer(Modifier.height(12.dp))
 
                             Row(
@@ -198,18 +240,65 @@ fun TechnicalAnalysisScreen(
                             HorizontalDivider(thickness = 0.5.dp, color = NavyBorder)
                             Spacer(Modifier.height(10.dp))
 
-                            SummaryRow("Confidence", "${confidence}%", CyanPrimary)
-                            SummaryRow("RSI", String.format("%.2f", rsi), TextPrimary)
-                            SummaryRow("MACD", String.format("%.4f", macd), TextPrimary)
-                            SummaryRow("MACD Signal", String.format("%.4f", macdSignal), TextPrimary)
-                            SummaryRow("EMA 20", String.format("%.2f", ema20), TextPrimary)
-                            SummaryRow("EMA 50", String.format("%.2f", ema50), TextPrimary)
-                            SummaryRow("SMA 200", String.format("%.2f", sma200), TextPrimary)
+                            Text(
+                                text = "Confidence: $confidence%",
+                                color = TextSecondary,
+                                fontSize = 13.sp,
+                            )
+
+                            if (opportunity != null) {
+                                Spacer(Modifier.height(8.dp))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(ProfitGreen.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                                        .padding(8.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = ProfitGreen,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = "Opportunity detected: ${opportunity["side"]} @ $${"%.2f".format(opportunity["entryPrice"] as? Double ?: 0.0)}",
+                                        color = ProfitGreen,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(14.dp))
+
+                if (analysisResult != null) {
+                    val checkpoints = analysisResult!!.checkpoints
+                    if (checkpoints.isNotEmpty()) {
+                        GlowCard {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    text = "STRATEGY CHECKPOINTS",
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                )
+                                Spacer(Modifier.height(10.dp))
+                                checkpoints.forEach { checkpoint ->
+                                    CheckpointRow(checkpoint = checkpoint)
+                                    if (checkpoint != checkpoints.last()) {
+                                        Spacer(Modifier.height(4.dp))
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(14.dp))
+                    }
+                }
 
                 if (isBotActive) {
                     GlowCard {
@@ -230,7 +319,7 @@ fun TechnicalAnalysisScreen(
                             }
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                text = "The trading bot is monitoring ${candidate.pairName} using the $strategy strategy. It will automatically execute trades based on real-time signals.",
+                                text = "The trading bot is monitoring ${candidate.pairName} using the $strategy strategy. Live updates are shown on the Live Analysis screen.",
                                 color = TextSecondary,
                                 fontSize = 11.sp,
                                 lineHeight = 16.sp,
@@ -256,6 +345,47 @@ fun TechnicalAnalysisScreen(
 }
 
 @Composable
+private fun CheckpointRow(checkpoint: Checkpoint) {
+    val statusColor = when (checkpoint.status) {
+        "passed" -> ProfitGreen
+        "failed" -> LossRed
+        else -> TextMuted
+    }
+    val icon = when (checkpoint.status) {
+        "passed" -> Icons.Default.CheckCircle
+        "failed" -> Icons.Default.Cancel
+        else -> Icons.Default.Schedule
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = statusColor,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = checkpoint.name,
+            color = if (checkpoint.status == "pending") TextSecondary else TextPrimary,
+            fontSize = 13.sp,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = checkpoint.status.uppercase(),
+            color = statusColor,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+@Composable
 private fun AnalysisBadge(label: String, value: String, color: Color) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, color = TextMuted, fontSize = 9.sp, letterSpacing = 0.5.sp)
@@ -269,17 +399,3 @@ private fun AnalysisBadge(label: String, value: String, color: Color) {
         }
     }
 }
-
-@Composable
-private fun SummaryRow(label: String, value: String, valueColor: Color) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(label, color = TextSecondary, fontSize = 13.sp)
-        Text(value, color = valueColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
-

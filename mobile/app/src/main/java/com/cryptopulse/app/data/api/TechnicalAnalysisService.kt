@@ -19,6 +19,10 @@ data class TechnicalAnalysisResponse(
     val low24h: Double,
     val indicators: Map<String, Any>,
     val signals: Map<String, Any>,
+    val checkpoints: List<com.cryptopulse.app.data.api.Checkpoint>,
+    val progress: Int,
+    val conditionsMet: List<String>,
+    val opportunity: Map<String, Any>?,
     val timestamp: String,
 )
 

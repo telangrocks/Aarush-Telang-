@@ -60,19 +60,19 @@ interface NearMatch {
   conditionsMet: string[];
 }
 
-interface Checkpoint {
+export interface Checkpoint {
   name: string;
   status: 'passed' | 'pending' | 'failed';
 }
 
-interface IndicatorSet {
+export interface IndicatorSet {
   rsi: number | null;
   macd: number | null;
   macdSignal: number | null;
   macdHistogram: number | null;
 }
 
-interface Metrics {
+export interface Metrics {
   price: number;
   change24h: number;
   volume: number;
@@ -80,7 +80,7 @@ interface Metrics {
   positionInRange: number;
 }
 
-interface StrategyEvaluation {
+export interface StrategyEvaluation {
   checkpoints: Checkpoint[];
   total: number;
   passed: number;
@@ -107,6 +107,8 @@ interface AnalysisSnapshot {
   scanningProgress: number;
   etaSeconds: number;
   confluenceScore: number;
+  alignment: 'STRONG' | 'MODERATE' | 'WEAK' | 'NONE';
+  primarySignal: 'BUY' | 'SELL' | 'HOLD';
   timeframes: TimeframeAnalysis[];
   coinsCurrentlyScanning: ScanCandidate[];
   nearMatches: NearMatch[];
@@ -237,7 +239,7 @@ const STRATEGY_CONFIG: Record<string, StrategyConfig> = {
   },
 };
 
-function getStrategyConfig(strategy: string | null): StrategyConfig {
+export function getStrategyConfig(strategy: string | null): StrategyConfig {
   return STRATEGY_CONFIG[strategy ?? ''] ?? STRATEGY_CONFIG['momentum'];
 }
 
@@ -245,7 +247,7 @@ function getStrategyConfig(strategy: string | null): StrategyConfig {
 // Real indicator math (computed from live exchange klines, never simulated).
 // ---------------------------------------------------------------------------
 
-function computeEMA(values: number[], period: number): number[] {
+export function computeEMA(values: number[], period: number): number[] {
   if (values.length === 0) return [];
   const k = 2 / (period + 1);
   const out: number[] = [];
@@ -257,7 +259,7 @@ function computeEMA(values: number[], period: number): number[] {
   return out;
 }
 
-function computeRSI(closes: number[], period = 14): number | null {
+export function computeRSI(closes: number[], period = 14): number | null {
   if (closes.length < period + 1) return null;
   let gains = 0;
   let losses = 0;
@@ -271,7 +273,7 @@ function computeRSI(closes: number[], period = 14): number | null {
   return 100 - 100 / (1 + rs);
 }
 
-function calculateAtr(highs: number[], lows: number[], closes: number[], period = 14): number {
+export function calculateAtr(highs: number[], lows: number[], closes: number[], period = 14): number {
   if (highs.length < period + 1) return 0;
   let atr = 0;
   for (let i = 1; i <= period; i++) {
@@ -285,7 +287,7 @@ function calculateAtr(highs: number[], lows: number[], closes: number[], period 
   return atr / period;
 }
 
-function computeIndicators(closes: number[]): IndicatorSet {
+export function computeIndicators(closes: number[]): IndicatorSet {
   const rsi = computeRSI(closes, 14);
   let macd: number | null = null;
   let macdSignal: number | null = null;
@@ -303,7 +305,7 @@ function computeIndicators(closes: number[]): IndicatorSet {
   return { rsi, macd, macdSignal, macdHistogram };
 }
 
-function toMetrics(ticker: MarketTicker): Metrics {
+export function toMetrics(ticker: MarketTicker): Metrics {
   const price = ticker.price;
   const change24h = ticker.priceChangePercent24h;
   const volume = ticker.quoteVolume24h || ticker.volume24h || 0;
@@ -320,7 +322,7 @@ function toMetrics(ticker: MarketTicker): Metrics {
  * checkpoint passes (i.e. progress === 100). This is the single function that
  * drives both the UI progress bar and the backend trade detection.
  */
-function evaluateStrategy(
+export function evaluateStrategy(
   ticker: MarketTicker,
   ind: IndicatorSet,
   strategyKey: string | null,
@@ -463,6 +465,8 @@ export class TradingBot {
             scanningProgress: 0,
             etaSeconds: 0,
             confluenceScore: 0,
+            alignment: 'NONE',
+            primarySignal: 'HOLD',
             timeframes: [],
             coinsCurrentlyScanning: [],
             nearMatches: [],
@@ -640,6 +644,8 @@ export class TradingBot {
           scanningProgress: 0,
           etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
           confluenceScore: 0,
+          alignment: 'NONE',
+          primarySignal: 'HOLD',
           timeframes: [],
           coinsCurrentlyScanning: [],
           nearMatches: [],
@@ -666,6 +672,8 @@ export class TradingBot {
           scanningProgress: 0,
           etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
           confluenceScore: 0,
+          alignment: 'NONE',
+          primarySignal: 'HOLD',
           timeframes: [],
           coinsCurrentlyScanning: [],
           nearMatches: [],
@@ -740,6 +748,8 @@ export class TradingBot {
           ? 0
           : Math.max(0, Math.ceil((ANALYSIS_INTERVAL_MS - (Date.now() - (await this.lastAnalysisStamp()))) / 1000)),
         confluenceScore: confluence.score,
+        alignment: confluence.alignment,
+        primarySignal: confluence.primarySignal,
         timeframes: confluence.timeframes,
         coinsCurrentlyScanning: candidates,
         nearMatches,
@@ -768,6 +778,8 @@ export class TradingBot {
         scanningProgress: 0,
         etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
         confluenceScore: 0,
+        alignment: 'NONE',
+        primarySignal: 'HOLD',
         timeframes: [],
         coinsCurrentlyScanning: [],
         nearMatches: [],

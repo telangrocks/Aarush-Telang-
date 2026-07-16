@@ -72,6 +72,7 @@ data class AnalysisStatusResponse(
     val nearMatches: List<NearMatch>,
     val checkpoints: List<Checkpoint>,
     val logs: List<AnalysisLog>,
+    val opportunityDetected: Boolean,
 )
 
 data class BotAlert(

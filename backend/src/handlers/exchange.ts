@@ -2,6 +2,17 @@ import { Context } from "hono";
 import { Env } from "../index";
 import { encrypt } from "../crypto";
 import { getExchangeAdapter, ExchangeName, ExchangeEnvironment } from "../exchanges";
+import {
+  computeEMA,
+  computeIndicators,
+  evaluateStrategy,
+  calculateAtr,
+  toMetrics,
+  type IndicatorSet,
+  type StrategyEvaluation,
+  type Metrics,
+} from "../trading-bot";
+import { type Kline } from "../exchanges/types";
 import { analyzeMarket } from "../market-analysis";
 
 /**
@@ -317,20 +328,20 @@ export async function handleGetTechnicalAnalysis(
     const high24h = ticker.highPrice24h || price * 1.02;
     const low24h = ticker.lowPrice24h || price * 0.98;
 
-    const indicators = {
-      rsi: Math.random() * 100,
-      macd: (Math.random() - 0.5) * 2,
-      macdSignal: (Math.random() - 0.5) * 2,
-      ema20: price * (1 + (Math.random() - 0.5) * 0.02),
-      ema50: price * (1 + (Math.random() - 0.5) * 0.03),
-      sma200: price * (1 + (Math.random() - 0.5) * 0.05),
-    };
+    const klines = await adapter.fetchKlines(symbol, "1h", 100);
+    const closes = klines.map((k: Kline) => k.close);
+    const highs = klines.map((k: Kline) => k.high);
+    const lows = klines.map((k: Kline) => k.low);
+    const indicators: IndicatorSet = computeIndicators(closes);
+    const atr = calculateAtr(highs, lows, closes, 14);
+    const metrics: Metrics = toMetrics(ticker);
+    const evaluation: StrategyEvaluation = evaluateStrategy(ticker, indicators, strategy, atr, 100);
 
     const signals = {
-      trend: change24h > 0 ? "BULLISH" : "BEARISH",
-      strength: Math.abs(change24h) > 2 ? "STRONG" : Math.abs(change24h) > 0.5 ? "MODERATE" : "WEAK",
-      recommendation: change24h > 1 ? "BUY" : change24h < -1 ? "SELL" : "HOLD",
-      confidence: Math.floor(Math.random() * 30 + 70),
+      trend: metrics.change24h > 0 ? "BULLISH" : metrics.change24h < 0 ? "BEARISH" : "NEUTRAL",
+      strength: Math.abs(metrics.change24h) > 2 ? "STRONG" : Math.abs(metrics.change24h) > 0.5 ? "MODERATE" : "WEAK",
+      recommendation: evaluation.opportunity?.side || "HOLD",
+      confidence: evaluation.confidence,
     };
 
     return c.json({
@@ -341,8 +352,20 @@ export async function handleGetTechnicalAnalysis(
       volume,
       high24h,
       low24h,
-      indicators,
+      indicators: {
+        rsi: indicators.rsi,
+        macd: indicators.macd,
+        macdSignal: indicators.macdSignal,
+        ema20: computeEMA(closes, 20).at(-1) || price,
+        ema50: computeEMA(closes, 50).at(-1) || price,
+        sma200: closes.slice(-200).reduce((a, b) => a + b, 0) / Math.min(closes.length, 200),
+        atr: atr,
+      },
       signals,
+      checkpoints: evaluation.checkpoints,
+      progress: evaluation.progress,
+      conditionsMet: evaluation.conditionsMet,
+      opportunity: evaluation.opportunity,
       timestamp: new Date().toISOString(),
     });
   } catch (e: unknown) {
