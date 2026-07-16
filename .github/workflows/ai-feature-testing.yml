@@ -229,9 +229,10 @@ jobs:
           name: ai-feature-test-apk
           path: mobile/app/build/outputs/apk/debug
 
-      - name: Boot Android emulator
-        id: emulator
+      - name: Run Maestro 11-phase flow on emulator
+        id: maestro
         uses: reactivecircus/android-emulator-runner@v2
+        timeout-minutes: 110
         with:
           api-level: 30
           target: google_apis
@@ -239,50 +240,37 @@ jobs:
           profile: pixel_4
           force-avd-create: true
           boot-timeout: 600
-          script: echo "Emulator ready"
-
-      - name: Install APK on emulator
-        run: adb install -r mobile/app/build/outputs/apk/debug/app-debug.apk
-
-      - name: Install Maestro CLI
-        run: curl -Ls "https://get.maestro.mobile.dev" | bash
-
-      - name: Run Maestro 11-phase flow (transient-aware retry)
-        id: maestro
-        env:
-          PATH: "${{ env.HOME }}/.maestro/bin:$PATH"
-        run: |
-          set -euo pipefail
-          mkdir -p ai-feature-artifacts
-          max_retries="${{ github.event.inputs.max_transient_retries || '3' }}"
-          attempt=0
-          while [ $attempt -lt $max_retries ]; do
-            attempt=$((attempt + 1))
-            echo "::group::Maestro attempt $attempt/$max_retries"
-            if maestro test mobile/maestro/ai-feature-testing.yaml \
-              --env EXCHANGE_NAME="${{ github.event.inputs.primary_exchange || 'bybit' }}" \
-              --env EXCHANGE_ENVIRONMENT="${{ github.event.inputs.primary_environment || 'mainnet' }}" \
-              --env EXCHANGE_API_KEY="${{ secrets.QA_EXCHANGE_API_KEY }}" \
-              --env EXCHANGE_API_SECRET="${{ secrets.QA_EXCHANGE_API_SECRET }}" \
-              --debug-output --format junit > ai-feature-artifacts/ai-feature-report.xml; then
+          script: |
+            adb wait-for-device
+            sleep 5
+            adb install -r mobile/app/build/outputs/apk/debug/app-debug.apk
+            curl -Ls "https://get.maestro.mobile.dev" | bash
+            export PATH="$PATH:$HOME/.maestro/bin"
+            mkdir -p ai-feature-artifacts
+            max_retries="${{ github.event.inputs.max_transient_retries || '3' }}"
+            attempt=0
+            while [ $attempt -lt $max_retries ]; do
+              attempt=$((attempt + 1))
+              echo "::group::Maestro attempt $attempt/$max_retries"
+              if maestro test mobile/maestro/ai-feature-testing.yaml \
+                --env EXCHANGE_NAME="${{ github.event.inputs.primary_exchange || 'bybit' }}" \
+                --env EXCHANGE_ENVIRONMENT="${{ github.event.inputs.primary_environment || 'mainnet' }}" \
+                --env EXCHANGE_API_KEY="${{ secrets.QA_EXCHANGE_API_KEY }}" \
+                --env EXCHANGE_API_SECRET="${{ secrets.QA_EXCHANGE_API_SECRET }}" \
+                --debug-output --format junit > ai-feature-artifacts/ai-feature-report.xml; then
+                echo "::endgroup::"
+                break
+              fi
               echo "::endgroup::"
-              break
-            fi
-            echo "::endgroup::"
-            if [ $attempt -lt $max_retries ]; then
-              echo "⚠️ Transient Maestro/emulator failure — retrying ($attempt/$max_retries)"
-              sleep 20
-              continue
-            fi
-            echo "Maestro failed after $attempt attempts"
-            exit 1
-          done
-
-      - name: Capture final screenshot
-        if: always()
-        env:
-          PATH: "${{ env.HOME }}/.maestro/bin:$PATH"
-        run: maestro screenshot || true
+              if [ $attempt -lt $max_retries ]; then
+                echo "⚠️ Transient Maestro/emulator failure — retrying ($attempt/$max_retries)"
+                sleep 20
+                continue
+              fi
+              echo "Maestro failed after $attempt attempts"
+              exit 1
+            done
+            maestro screenshot || true
 
       - name: Upload Maestro artifacts
         if: always()
