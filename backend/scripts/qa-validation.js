@@ -296,6 +296,210 @@ async function run() {
     });
   }
 
+  // 10. User-friendly error handling (HIGH)
+  {
+    const start = Date.now();
+    try {
+      const badLogin = await request("POST", "/api/login", { body: { email: "invalid", password: "wrong" } });
+      const badRegister = await request("POST", "/api/register", { body: { email: "bad", password: "x" } });
+      const noContentType = await request("POST", "/api/login", { body: { email: QA_EMAIL, password: QA_PASSWORD }, headers: {} });
+
+      const loginMsg = (badLogin.json?.error || badLogin.json?.message || "").toLowerCase();
+      const registerMsg = (badRegister.json?.error || badRegister.json?.message || "").toLowerCase();
+      const contentTypeMsg = (noContentType.json?.error || noContentType.json?.message || "").toLowerCase();
+
+      const ok = badLogin.status === 401 &&
+                 badRegister.status === 400 &&
+                 noContentType.status === 415 &&
+                 loginMsg.includes("invalid credentials") &&
+                 registerMsg.includes("invalid input") &&
+                 contentTypeMsg.includes("content-type");
+
+      recordCheck({
+        id: "error-handling",
+        name: "User-friendly error handling — meaningful messages, no raw stack traces",
+        severity: "high",
+        status: ok ? "PASS" : "FAIL",
+        details: ok ? "login=401, register=400, contentType=415" : `login=${badLogin.status}, register=${badRegister.status}, contentType=${noContentType.status}`,
+        durationMs: Date.now() - start,
+      });
+    } catch (e) {
+      recordCheck({ id: "error-handling", name: "User-friendly error handling", severity: "high", status: "FAIL", details: e.message, durationMs: Date.now() - start });
+    }
+  }
+
+  // 11. Watchlist CRUD (MEDIUM)
+  {
+    const start = Date.now();
+    try {
+      if (!authToken) throw new Error("No auth token");
+      const getEmpty = await request("GET", "/api/watchlist", { headers: authHeaders });
+      const addItem = await request("POST", "/api/watchlist", { headers: authHeaders, body: { token_id: "bitcoin" } });
+      const getAfterAdd = await request("GET", "/api/watchlist", { headers: authHeaders });
+      const deleteItem = await request("DELETE", `/api/watchlist/${getAfterAdd.json?.[0]?.id}`, { headers: authHeaders });
+      const getAfterDelete = await request("GET", "/api/watchlist", { headers: authHeaders });
+
+      const ok = getEmpty.status === 200 &&
+                 addItem.status === 200 &&
+                 getAfterAdd.status === 200 && Array.isArray(getAfterAdd.json) && getAfterAdd.json.length > 0 &&
+                 deleteItem.status === 200 &&
+                 getAfterDelete.status === 200 && Array.isArray(getAfterDelete.json) && getAfterDelete.json.length === 0;
+
+      recordCheck({
+        id: "watchlist",
+        name: "Watchlist CRUD — add and remove tokens",
+        severity: "medium",
+        status: ok ? "PASS" : "FAIL",
+        details: ok ? "CRUD operations successful" : `add=${addItem.status}, delete=${deleteItem.status}`,
+        durationMs: Date.now() - start,
+      });
+    } catch (e) {
+      recordCheck({ id: "watchlist", name: "Watchlist CRUD", severity: "medium", status: "FAIL", details: e.message, durationMs: Date.now() - start });
+    }
+  }
+
+  // 12. Price alerts (MEDIUM)
+  {
+    const start = Date.now();
+    try {
+      if (!authToken) throw new Error("No auth token");
+      const createAlert = await request("POST", "/api/alerts", {
+        headers: authHeaders,
+        body: { token_id: "bitcoin", target_price: 50000, condition: "ABOVE" }
+      });
+
+      const ok = createAlert.status === 200 && createAlert.json?.id;
+
+      recordCheck({
+        id: "price-alerts",
+        name: "Price alerts — create alert",
+        severity: "medium",
+        status: ok ? "PASS" : "FAIL",
+        details: ok ? `alert id=${createAlert.json.id}` : `status=${createAlert.status}`,
+        durationMs: Date.now() - start,
+      });
+    } catch (e) {
+      recordCheck({ id: "price-alerts", name: "Price alerts", severity: "medium", status: "FAIL", details: e.message, durationMs: Date.now() - start });
+    }
+  }
+
+  // 13. Technical analysis (HIGH, requires connected exchange)
+  if (hasExchangeCreds && authToken) {
+    const start = Date.now();
+    try {
+      const ta = await request("POST", "/api/market/technical-analysis", {
+        headers: authHeaders,
+        body: { symbol: "BTCUSDT", strategy: "scalping" }
+      });
+
+      const indicators = ta.json?.indicators || {};
+      const signals = ta.json?.signals || {};
+      const hasIndicators = indicators.rsi !== undefined && indicators.macd !== undefined;
+      const hasSignals = signals.trend && signals.recommendation;
+      const ok = ta.status === 200 && hasIndicators && hasSignals && !scanForMockData("technical analysis");
+
+      recordCheck({
+        id: "technical-analysis",
+        name: "Technical analysis — genuine indicators and signals",
+        severity: "high",
+        status: ok ? "PASS" : "FAIL",
+        details: ok ? `RSI=${indicators.rsi?.toFixed(2)}, recommendation=${signals.recommendation}` : `status=${ta.status}`,
+        durationMs: Date.now() - start,
+      });
+    } catch (e) {
+      recordCheck({ id: "technical-analysis", name: "Technical analysis", severity: "high", status: "FAIL", details: e.message, durationMs: Date.now() - start });
+    }
+  } else {
+    recordCheck({
+      id: "technical-analysis",
+      name: "Technical analysis (requires connected exchange)",
+      severity: "high",
+      status: "SKIP",
+      details: "requires exchange test credentials",
+      durationMs: 0,
+    });
+  }
+
+  // 14. Market ticker + klines (HIGH, requires connected exchange)
+  if (hasExchangeCreds && authToken) {
+    const start = Date.now();
+    try {
+      const ticker = await request("GET", "/api/market/ticker?symbol=BTCUSDT", { headers: authHeaders });
+      const klines = await request("GET", "/api/market/klines?symbol=BTCUSDT&interval=1h&limit=10", { headers: authHeaders });
+
+      const tickerOk = ticker.status === 200 && ticker.json?.lastPrice > 0;
+      const klinesOk = klines.status === 200 && Array.isArray(klines.json) && klines.json.length > 0;
+      const ok = tickerOk && klinesOk;
+
+      recordCheck({
+        id: "market-data-detail",
+        name: "Market ticker + klines — real data",
+        severity: "high",
+        status: ok ? "PASS" : "FAIL",
+        details: ok ? `ticker=${ticker.json.lastPrice}, klines=${klines.json.length}` : `ticker=${ticker.status}, klines=${klines.status}`,
+        durationMs: Date.now() - start,
+      });
+    } catch (e) {
+      recordCheck({ id: "market-data-detail", name: "Market ticker + klines", severity: "high", status: "FAIL", details: e.message, durationMs: Date.now() - start });
+    }
+  } else {
+    recordCheck({
+      id: "market-data-detail",
+      name: "Market ticker + klines (requires connected exchange)",
+      severity: "high",
+      status: "SKIP",
+      details: "requires exchange test credentials",
+      durationMs: 0,
+    });
+  }
+
+  // 15. FCM token registration (MEDIUM)
+  {
+    const start = Date.now();
+    try {
+      if (!authToken) throw new Error("No auth token");
+      const fcm = await request("POST", "/api/fcm/register", {
+        headers: authHeaders,
+        body: { fcmToken: "test_fcm_token_qa" }
+      });
+
+      const ok = fcm.status === 200 && fcm.json?.success !== false;
+
+      recordCheck({
+        id: "fcm-register",
+        name: "FCM token registration",
+        severity: "medium",
+        status: ok ? "PASS" : "FAIL",
+        details: ok ? "token registered" : `status=${fcm.status}`,
+        durationMs: Date.now() - start,
+      });
+    } catch (e) {
+      recordCheck({ id: "fcm-register", name: "FCM token registration", severity: "medium", status: "FAIL", details: e.message, durationMs: Date.now() - start });
+    }
+  }
+
+  // 16. Exchange status (MEDIUM)
+  {
+    const start = Date.now();
+    try {
+      if (!authToken) throw new Error("No auth token");
+      const status = await request("GET", "/api/exchange/status", { headers: authHeaders });
+
+      const ok = status.status === 200 && typeof status.json?.isConnected === "boolean";
+
+      recordCheck({
+        id: "exchange-status",
+        name: "Exchange connection status",
+        severity: "medium",
+        status: ok ? "PASS" : "FAIL",
+        details: ok ? `connected=${status.json.isConnected}` : `status=${status.status}`,
+        durationMs: Date.now() - start,
+      });
+    } catch (e) {
+      recordCheck({ id: "exchange-status", name: "Exchange connection status", severity: "medium", status: "FAIL", details: e.message, durationMs: Date.now() - start });
+    }
+  }
+
   // Report + exit
   const passed = checks.filter((c) => c.status === "PASS").length;
   const failed = checks.filter((c) => c.status === "FAIL").length;

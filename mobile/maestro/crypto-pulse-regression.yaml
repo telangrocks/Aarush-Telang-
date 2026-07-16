@@ -236,3 +236,43 @@ flows:
       - tapOn: "Cancel"
         optional: true
       - screenshot: notifications
+
+  - name: Error Handling
+    steps:
+      - launchApp:
+          clearState: true
+      - tapOn: "Connect Exchange"
+        optional: true
+      - tapOn:
+          id: "com.cryptopulse:id/exchange_dropdown"
+        optional: true
+      - tapOn: "Bybit"
+        optional: true
+      - tapOn:
+          id: "com.cryptopulse:id/api_key_input"
+        optional: true
+      - inputText: "invalid_key"
+        optional: true
+      - tapOn:
+          id: "com.cryptopulse:id/api_secret_input"
+        optional: true
+      - inputText: "invalid_secret"
+        optional: true
+      - tapOn: "Connect"
+        optional: true
+      - assertVisible:
+          id: "com.cryptopulse:id/validation_message"
+        optional: true
+      - screenshot: error-handling
+
+  - name: Portfolio and Trade History
+    steps:
+      - launchApp:
+          clearState: true
+      - assertVisible: "Positions"
+        optional: true
+      - tapOn: "Positions"
+        optional: true
+      - assertVisible: "Portfolio"
+        optional: true
+      - screenshot: portfolio
