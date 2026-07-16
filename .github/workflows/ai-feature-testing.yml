@@ -239,9 +239,13 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_4
-          force-avd-create: true
-          boot-timeout: 600
-          disable-animations: false
+          force-avd-creation: true
+          emulator-boot-timeout: 600
+          disable-animations: true
+          disable-spellchecker: true
+          cores: 2
+          ram-size: 2048
+          emulator-options: -no-snapshot -noaudio -no-boot-anim -metrics-to-console
           script: |
             adb wait-for-device
             sleep 5
