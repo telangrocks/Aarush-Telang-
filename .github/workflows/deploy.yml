@@ -64,11 +64,13 @@ jobs:
         run: npm test -- --run
 
       - name: Verify Cloudflare API token
+        if: github.event_name == 'push'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
         run: test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_WORKERS_API_TOKEN is required"; exit 1; }
 
       - name: Install Wrangler
+        if: github.event_name == 'push'
         run: npm install -g wrangler@4
 
       # The following steps deploy to production and only run on pushes to
