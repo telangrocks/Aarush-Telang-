@@ -116,31 +116,46 @@ export class BybitExchange implements IExchangeAdapter {
         return [];
       }
 
-      const minNotionalMap = new Map<string, number>();
+      const lotSizeMap = new Map<string, { minQty: number; maxQty: number; tickSize: number; lotSize: number }>();
       for (const instrument of instrumentsData.result?.list ?? []) {
         const symbol = instrument.symbol;
         const lotSize = instrument.lotSizeFilter ?? {};
+        const priceFilter = instrument.priceFilter ?? {};
         const minOrderQty = parseFloat(lotSize.minOrderQty ?? "0");
-        const minOrderAmt = parseFloat(lotSize.minOrderAmt ?? "0");
-        if (symbol && (minOrderAmt > 0 || minOrderQty > 0)) {
-          minNotionalMap.set(symbol, minOrderAmt || minOrderQty);
+        const maxOrderQty = parseFloat(lotSize.maxOrderQty ?? "0");
+        const qtyStep = parseFloat(lotSize.qtyStep ?? "1");
+        const tickSize = parseFloat(priceFilter.tickSize ?? "0.01");
+        if (symbol) {
+          lotSizeMap.set(symbol, {
+            minQty: minOrderQty,
+            maxQty: maxOrderQty || 999999999,
+            tickSize: tickSize || 0.01,
+            lotSize: qtyStep || 1,
+          });
         }
       }
 
       return tickersData.result.list
         .filter((item: any) => item.symbol.endsWith("USDT"))
         .slice(0, 50)
-        .map((item: any) => ({
-          symbol: item.symbol.replace("USDT", ""),
-          price: parseFloat(item.lastPrice || 0),
-          volume24h: parseFloat(item.volume24h || 0),
-          quoteVolume24h: parseFloat(item.volume24h || 0) * parseFloat(item.lastPrice || 0),
-          priceChange24h: parseFloat(item.priceChange || 0),
-          priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
-          highPrice24h: parseFloat(item.highPrice24h || 0),
-          lowPrice24h: parseFloat(item.lowPrice24h || 0),
-          minNotional: minNotionalMap.get(item.symbol) || 0,
-        }));
+        .map((item: any) => {
+          const lot = lotSizeMap.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+          return {
+            symbol: item.symbol.replace("USDT", ""),
+            price: parseFloat(item.lastPrice || 0),
+            volume24h: parseFloat(item.volume24h || 0),
+            quoteVolume24h: parseFloat(item.volume24h || 0) * parseFloat(item.lastPrice || 0),
+            priceChange24h: parseFloat(item.priceChange || 0),
+            priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
+            highPrice24h: parseFloat(item.highPrice24h || 0),
+            lowPrice24h: parseFloat(item.lowPrice24h || 0),
+            minNotional: lot.minQty * (parseFloat(item.lastPrice || 0) || 1),
+            minOrderQty: lot.minQty,
+            maxOrderQty: lot.maxQty,
+            tickSize: lot.tickSize,
+            lotSize: lot.lotSize,
+          };
+        });
     } catch {
       return [];
     }
@@ -160,6 +175,7 @@ export class BybitExchange implements IExchangeAdapter {
         return null;
       }
       const item = data.result.list[0];
+      const defaults = { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
       return {
         symbol: item.symbol.replace("USDT", ""),
         price: parseFloat(item.lastPrice || 0),
@@ -169,7 +185,11 @@ export class BybitExchange implements IExchangeAdapter {
         priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
         highPrice24h: parseFloat(item.highPrice24h || 0),
         lowPrice24h: parseFloat(item.lowPrice24h || 0),
-        minNotional: 0,
+        minNotional: defaults.minQty * (parseFloat(item.lastPrice || 0) || 1),
+        minOrderQty: defaults.minQty,
+        maxOrderQty: defaults.maxQty,
+        tickSize: defaults.tickSize,
+        lotSize: defaults.lotSize,
       };
     } catch {
       return null;
@@ -202,17 +222,18 @@ export class BybitExchange implements IExchangeAdapter {
     }
   }
 
-  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, _quantity?: number): Promise<OrderResult> {
+  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult> {
     try {
       const timestamp = Date.now().toString();
       const recvWindow = "5000";
       const orderId = crypto.randomUUID();
+      const qty = quantity ?? 0.001;
       const body = JSON.stringify({
         category: "spot",
         symbol: `${symbol.toUpperCase()}USDT`,
         side: side === "BUY" ? "Buy" : "Sell",
         orderType: "MARKET",
-        qty: "0.001",
+        qty: qty.toString(),
         orderLinkId: orderId,
       });
 
@@ -243,7 +264,7 @@ export class BybitExchange implements IExchangeAdapter {
         message: "Order placed successfully",
         orderId: data.result?.orderId,
         price: parseFloat(data.result?.avgPrice || 0),
-        quantity: parseFloat(data.result?.qty || 0),
+        quantity: parseFloat(data.result?.qty || qty.toString()),
       };
     } catch (e: any) {
       return { success: false, message: e.message || "Network error during order placement" };

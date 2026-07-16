@@ -38,6 +38,7 @@ fun TechnicalAnalysisScreen(
     strategy: String,
     onBack: () -> Unit,
     onBotActivated: () -> Unit = {},
+    positionSize: Double? = null,
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
@@ -95,7 +96,7 @@ fun TechnicalAnalysisScreen(
                             isBotActive = !isBotActive
                             scope.launch {
                                 if (isBotActive) {
-                                    viewModel.activateBot(candidate.symbol, strategy)
+                                    viewModel.activateBot(candidate.symbol, strategy, positionSize)
                                     BackgroundMonitoringService.startService(appContext)
                                     onBotActivated()
                                 } else {

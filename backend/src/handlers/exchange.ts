@@ -218,6 +218,10 @@ export async function handleGetTicker(
       highPrice24h: ticker.highPrice24h,
       lowPrice24h: ticker.lowPrice24h,
       minNotional: ticker.minNotional,
+      minOrderQty: ticker.minOrderQty,
+      maxOrderQty: ticker.maxOrderQty,
+      tickSize: ticker.tickSize,
+      lotSize: ticker.lotSize,
       timestamp: new Date().toISOString(),
     });
   } catch (e: unknown) {
@@ -354,7 +358,7 @@ export async function handleActivateTradingBot(
   try {
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
-    const { coinId, strategy } = await c.req.json<{ coinId: string; strategy: string }>();
+    const { coinId, strategy, positionSize } = await c.req.json<{ coinId: string; strategy: string; positionSize?: number }>();
 
     const botId = c.env.TRADING_BOTS.idFromName(userId);
     const bot = c.env.TRADING_BOTS.get(botId);
@@ -363,7 +367,7 @@ export async function handleActivateTradingBot(
       new Request("http://bot/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, coinId, strategy }),
+        body: JSON.stringify({ userId, coinId, strategy, positionSize }),
       }),
     );
 

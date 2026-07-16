@@ -73,6 +73,7 @@ fun TradeConfirmationScreen(
                             if (!isLoading) {
                                 isLoading = true
                                 scope.launch {
+                                    viewModel.setTradeSetup(entryPrice, stopLossPrice, takeProfitPrice, positionSize)
                                     viewModel.fetchTechnicalAnalysis()
                                     onConfirmTrade()
                                     isLoading = false

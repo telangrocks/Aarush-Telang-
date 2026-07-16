@@ -14,6 +14,10 @@ data class TickerResponse(
     val highPrice24h: Double,
     val lowPrice24h: Double,
     val minNotional: Double,
+    val minOrderQty: Double,
+    val maxOrderQty: Double,
+    val tickSize: Double,
+    val lotSize: Double,
     val timestamp: String,
 )
 

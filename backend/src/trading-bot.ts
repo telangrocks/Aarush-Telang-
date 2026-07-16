@@ -1,5 +1,5 @@
 import { Env } from './index';
-import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, MarketTicker } from './exchanges';
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, MarketTicker, normalizeQuantity } from './exchanges';
 import { type Kline } from './exchanges/types';
 import { decrypt } from './crypto';
 import { sendTradeNotification } from './handlers/notifications';
@@ -32,6 +32,7 @@ interface TradeAlert {
   stopLoss: number;
   takeProfit: number;
   estimatedPnl: number;
+  positionSize: number;
   strategy: string;
   side: 'BUY' | 'SELL';
   timestamp: string;
@@ -92,6 +93,7 @@ interface StrategyEvaluation {
     stopLoss: number;
     takeProfit: number;
     estimatedPnl: number;
+    positionSize: number;
     side: 'BUY' | 'SELL';
   } | null;
 }
@@ -269,6 +271,20 @@ function computeRSI(closes: number[], period = 14): number | null {
   return 100 - 100 / (1 + rs);
 }
 
+function calculateAtr(highs: number[], lows: number[], closes: number[], period = 14): number {
+  if (highs.length < period + 1) return 0;
+  let atr = 0;
+  for (let i = 1; i <= period; i++) {
+    const tr = Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1]),
+    );
+    atr += tr;
+  }
+  return atr / period;
+}
+
 function computeIndicators(closes: number[]): IndicatorSet {
   const rsi = computeRSI(closes, 14);
   let macd: number | null = null;
@@ -304,7 +320,13 @@ function toMetrics(ticker: MarketTicker): Metrics {
  * checkpoint passes (i.e. progress === 100). This is the single function that
  * drives both the UI progress bar and the backend trade detection.
  */
-function evaluateStrategy(ticker: MarketTicker, ind: IndicatorSet, strategyKey: string | null): StrategyEvaluation {
+function evaluateStrategy(
+  ticker: MarketTicker,
+  ind: IndicatorSet,
+  strategyKey: string | null,
+  atr: number,
+  positionSize: number,
+): StrategyEvaluation {
   const config = getStrategyConfig(strategyKey);
   const m = toMetrics(ticker);
   const checkpoints: Checkpoint[] = [];
@@ -345,12 +367,11 @@ function evaluateStrategy(ticker: MarketTicker, ind: IndicatorSet, strategyKey: 
   let opportunity: StrategyEvaluation['opportunity'] = null;
   if (passed === total && ez.side) {
     const entry = m.price;
-    const sign = ez.side === 'BUY' ? 1 : -1;
-    const stopLoss = entry * (1 - config.stopLossPct * sign);
-    const takeProfit = entry * (1 + config.takeProfitPct * sign);
-    const minNotional = ticker.minNotional || 5;
-    const estimatedPnl = Math.abs((takeProfit - entry) / entry) * minNotional;
-    opportunity = { symbol: ticker.symbol, entryPrice: entry, stopLoss, takeProfit, estimatedPnl, side: ez.side };
+    const atrMultiplier = atr > 0 ? atr : entry * 0.01;
+    const stopLoss = ez.side === 'BUY' ? entry - (atrMultiplier * 1.0) : entry + (atrMultiplier * 1.0);
+    const takeProfit = ez.side === 'BUY' ? entry + (atrMultiplier * 2.0) : entry - (atrMultiplier * 2.0);
+    const estimatedPnl = Math.abs((takeProfit - entry) / entry) * positionSize;
+    opportunity = { symbol: ticker.symbol, entryPrice: entry, stopLoss, takeProfit, estimatedPnl, positionSize, side: ez.side };
   }
 
   return { checkpoints, total, passed, progress, confidence, conditionsMet, opportunity };
@@ -390,11 +411,12 @@ export class TradingBot {
 
     switch (url.pathname) {
       case '/activate': {
-        const { userId, coinId, strategy } = await request.json<{ userId: string; coinId: string; strategy: string }>();
+        const { userId, coinId, strategy, positionSize } = await request.json<{ userId: string; coinId: string; strategy: string; positionSize?: number }>();
         await this.state.storage.put('isActive', true);
         await this.state.storage.put('coinId', coinId);
         await this.state.storage.put('strategy', strategy);
         await this.state.storage.put('userId', userId);
+        await this.state.storage.put('positionSize', positionSize ?? 100);
         await this.state.storage.put('alerts', [] as TradeAlert[]);
         await this.state.storage.put('tradeActive', false);
         await this.state.storage.put(
@@ -510,7 +532,14 @@ export class TradingBot {
         let orderResult: any = { success: true, message: 'Trade executed (simulated).' };
         try {
           if (adapter.placeOrder) {
-            orderResult = await adapter.placeOrder(orderSymbol, side, userKeys.exchange_api_key, decryptedSecret);
+            const ticker = await adapter.fetchTicker(orderSymbol);
+            const rawQty = target.positionSize > 0 && target.entryPrice > 0
+              ? target.positionSize / target.entryPrice
+              : undefined;
+            const qty = rawQty != null && ticker
+              ? normalizeQuantity(rawQty, ticker.lotSize, ticker.minOrderQty, ticker.maxOrderQty)
+              : rawQty;
+            orderResult = await adapter.placeOrder(orderSymbol, side, userKeys.exchange_api_key, decryptedSecret, qty);
           }
         } catch (e: any) {
           orderResult = { success: false, message: e.message || 'Trade execution failed' };
@@ -650,9 +679,13 @@ export class TradingBot {
 
       const klines = await adapter.fetchKlines(baseSymbol, '1h', 100);
       const closes = klines.map((k: Kline) => k.close);
+      const highs = klines.map((k: Kline) => k.high);
+      const lows = klines.map((k: Kline) => k.low);
       const indicators = computeIndicators(closes);
+      const atr = calculateAtr(highs, lows, closes, 14);
+      const positionSize = (await this.state.storage.get('positionSize')) as number || 100;
 
-      const evaluation = evaluateStrategy(ticker, indicators, strategy);
+      const evaluation = evaluateStrategy(ticker, indicators, strategy, atr, positionSize);
       const m = toMetrics(ticker);
 
       // Build the real "scanning coins" row from a live market snapshot.
@@ -810,6 +843,7 @@ export class TradingBot {
       stopLoss: opportunity.stopLoss,
       takeProfit: opportunity.takeProfit,
       estimatedPnl: opportunity.estimatedPnl,
+      positionSize: opportunity.positionSize,
       strategy,
       side: opportunity.side,
       timestamp: new Date().toISOString(),
@@ -828,7 +862,7 @@ export class TradingBot {
     });
   }
 
-  private async analyzeMultiTimeframe(adapter: ReturnType<typeof getExchangeAdapter>, coinId: string, strategy: string, ticker: MarketTicker): Promise<ConfluenceResult> {
+  private async analyzeMultiTimeframe(adapter: ReturnType<typeof getExchangeAdapter>, coinId: string, strategy: string, _ticker: MarketTicker): Promise<ConfluenceResult> {
     const timeframes = [
       { timeframe: '1H', interval: '60', weight: 0.40 },
       { timeframe: '30m', interval: '30', weight: 0.25 },

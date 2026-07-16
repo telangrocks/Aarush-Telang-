@@ -9,6 +9,7 @@ import retrofit2.http.Path
 data class ActivateBotRequest(
     val coinId: String,
     val strategy: String,
+    val positionSize: Double? = null,
 )
 
 data class BotStatusResponse(

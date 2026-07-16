@@ -20,6 +20,10 @@ export interface MarketTicker {
   highPrice24h: number;
   lowPrice24h: number;
   minNotional: number;
+  minOrderQty: number;
+  maxOrderQty: number;
+  tickSize: number;
+  lotSize: number;
 }
 
 export interface Kline {

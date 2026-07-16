@@ -405,7 +405,7 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
-    fun activateBot(symbol: String, strategy: String) {
+    fun activateBot(symbol: String, strategy: String, positionSize: Double? = null) {
         viewModelScope.launch {
             try {
                 val token = tokenManager.getToken()
@@ -414,6 +414,7 @@ class ExchangeViewModel @Inject constructor(
                         ActivateBotRequest(
                             coinId = symbol,
                             strategy = strategy,
+                            positionSize = positionSize,
                         )
                     )
                 }

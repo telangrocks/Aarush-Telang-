@@ -41,18 +41,20 @@ fun TradeSetupScreen(
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
-    var entryPriceText by remember { mutableStateOf("") }
     var positionSizeText by remember { mutableStateOf("") }
-    var entryPriceError by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
 
     val ticker by viewModel.ticker.collectAsState(initial = null)
     val klines by viewModel.klines.collectAsState(initial = emptyList())
 
-    val entryPrice = entryPriceText.toDoubleOrNull()
+    val marketPrice = ticker?.price ?: candidate.currentMarketPrice
     val positionSize = positionSizeText.toDoubleOrNull()
+    val minNotional = ticker?.minNotional ?: candidate.minNotional
+    val minOrderQty = ticker?.minOrderQty ?: 0.001
+    val maxOrderQty = ticker?.maxOrderQty ?: 999999999.0
+    val lotSize = ticker?.lotSize ?: 1.0
 
-    val defaultPositionSize = max(candidate.minNotional * 10.0, 100.0)
+    val defaultPositionSize = max(minNotional * 10.0, 100.0)
 
     LaunchedEffect(Unit) {
         viewModel.fetchTicker()
@@ -62,9 +64,6 @@ fun TradeSetupScreen(
     LaunchedEffect(ticker, klines) {
         if (ticker != null && klines.isNotEmpty()) {
             isLoading = false
-            if (entryPriceText.isEmpty()) {
-                entryPriceText = String.format("%.2f", ticker!!.price)
-            }
             if (positionSizeText.isEmpty()) {
                 positionSizeText = String.format("%.2f", defaultPositionSize)
             }
@@ -75,40 +74,38 @@ fun TradeSetupScreen(
         calculateAtr(klines, 14)
     }
 
-    val stopLoss = entryPrice?.let { price ->
-        if (atr > 0) price - (atr * 1.0) else price * 0.99
+    val entryPrice = marketPrice
+    val stopLoss = if (atr > 0) entryPrice - (atr * 1.0) else entryPrice * 0.99
+    val takeProfit = if (atr > 0) entryPrice + (atr * 2.0) else entryPrice * 1.02
+
+    val estimatedQuantity = if (positionSize != null && positionSize > 0 && entryPrice > 0)
+        positionSize / entryPrice else null
+
+    val normalizedQuantity = estimatedQuantity?.let { qty ->
+        kotlin.math.floor(qty / lotSize) * lotSize
+            .coerceAtLeast(minOrderQty)
+            .coerceAtMost(maxOrderQty)
     }
 
-    val takeProfit = entryPrice?.let { price ->
-        if (atr > 0) price + (atr * 2.0) else price * 1.02
-    }
+    val riskPct = abs((stopLoss - entryPrice) / entryPrice * 100)
+    val rewardPct = abs((takeProfit - entryPrice) / entryPrice * 100)
+    val rrRatio = "%.2f : 1".format(rewardPct / riskPct)
 
-    val riskPct = if (entryPrice != null && entryPrice > 0 && stopLoss != null)
-        abs((stopLoss - entryPrice) / entryPrice * 100) else null
+    val estimatedProfit = (takeProfit - entryPrice) / entryPrice * (positionSize ?: 0.0)
+    val estimatedLoss = (entryPrice - stopLoss) / entryPrice * (positionSize ?: 0.0)
 
-    val rewardPct = if (entryPrice != null && entryPrice > 0 && takeProfit != null)
-        abs((takeProfit - entryPrice) / entryPrice * 100) else null
+    val canProceed = positionSize != null && positionSize > 0 &&
+                     positionSize >= minNotional &&
+                     (normalizedQuantity ?: 0.0) >= minOrderQty
 
-    val rrRatio = if (riskPct != null && riskPct > 0 && rewardPct != null)
-        "%.2f : 1".format(rewardPct / riskPct) else "0.00 : 1"
-
-    val estimatedProfit = if (entryPrice != null && takeProfit != null && positionSize != null && entryPrice > 0)
-        (takeProfit - entryPrice) / entryPrice * positionSize else null
-
-    val estimatedLoss = if (entryPrice != null && stopLoss != null && positionSize != null && entryPrice > 0)
-        (entryPrice - stopLoss) / entryPrice * positionSize else null
-
-    val canProceed = entryPrice != null && entryPrice > 0 &&
-                     positionSize != null && positionSize > 0 &&
-                     entryPrice >= candidate.minNotional
-
-    LaunchedEffect(entryPriceText) {
-        if (entryPriceText.isNotEmpty() && entryPrice == null) {
-            entryPriceError = "Invalid price format"
-        } else if (entryPrice != null && entryPrice < candidate.minNotional) {
-            entryPriceError = "Entry price must be at least $${String.format("%.2f", candidate.minNotional)}"
-        } else {
-            entryPriceError = null
+    var positionSizeError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(positionSizeText) {
+        val ps = positionSizeText.toDoubleOrNull()
+        when {
+            positionSizeText.isNotEmpty() && ps == null -> positionSizeError = "Invalid amount"
+            ps != null && ps < minNotional -> positionSizeError = "Minimum: $${String.format("%.2f", minNotional)}"
+            ps != null && (normalizedQuantity ?: 0.0) < minOrderQty -> positionSizeError = "Min qty: ${minOrderQty} ${candidate.symbol}"
+            else -> positionSizeError = null
         }
     }
 
@@ -130,8 +127,8 @@ fun TradeSetupScreen(
                     GradientButton(
                         text = if (isLoading) "Loading..." else "Proceed to Confirmation",
                         onClick = {
-                            if (canProceed) {
-                                onProceedToConfirm(entryPrice!!, stopLoss!!, takeProfit!!, positionSize!!)
+                            if (canProceed && stopLoss != null && takeProfit != null) {
+                                onProceedToConfirm(entryPrice, stopLoss, takeProfit, positionSize!!)
                             }
                         },
                         enabled = canProceed && !isLoading,
@@ -191,30 +188,45 @@ fun TradeSetupScreen(
                 } else {
                     GlowCard {
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            SectionHeader(icon = Icons.Default.AttachMoney, title = "ENTRY PRICE")
+                            SectionHeader(icon = Icons.Default.AttachMoney, title = "MARKET PRICE")
                             Spacer(Modifier.height(10.dp))
-                            TradeFieldLabel("ENTRY PRICE (USDT)")
-                            Spacer(Modifier.height(4.dp))
-                            TradeTextField(
-                                value = entryPriceText,
-                                onValueChange = { entryPriceText = it },
-                                placeholder = "Enter entry price",
-                                isError = entryPriceError != null,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            if (entryPriceError != null) {
-                                Text(
-                                    text = entryPriceError!!,
-                                    color = LossRed,
-                                    fontSize = 11.sp,
-                                )
-                            } else if (ticker != null) {
-                                Text(
-                                    text = "Live Price: ${String.format("%.2f", ticker!!.price)} USDT | Min Notional: $${String.format("%.2f", candidate.minNotional)}",
-                                    color = CyanPrimary,
-                                    fontSize = 11.sp,
-                                )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(NavyCard, RoundedCornerShape(10.dp))
+                                    .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 12.dp, vertical = 14.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "${String.format("%.2f", entryPrice)} USDT",
+                                        color = ProfitGreen,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                    Text(
+                                        text = "LIVE",
+                                        color = ProfitGreen,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier
+                                            .background(ProfitGreen.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                                    )
+                                }
                             }
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "Min notional: $${String.format("%.2f", minNotional)} | Min qty: $minOrderQty ${
+                                    candidate.symbol
+                                } | Lot: $lotSize",
+                                color = TextMuted,
+                                fontSize = 10.sp,
+                            )
                         }
                     }
                 }
@@ -324,45 +336,64 @@ fun TradeSetupScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                GlowCard {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        SectionHeader(icon = Icons.Default.TrendingUp, title = "ESTIMATED P&L")
-                        Spacer(Modifier.height(12.dp))
+                 GlowCard {
+                     Column(modifier = Modifier.fillMaxWidth()) {
+                         SectionHeader(icon = Icons.Default.TrendingUp, title = "ESTIMATED P&L")
+                         Spacer(Modifier.height(12.dp))
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            PnlMetric(
-                                label = "ESTIMATED PROFIT",
-                                value = estimatedProfit?.let { "+${"%.2f".format(it)} USDT" } ?: "0.00 USDT",
-                                subValue = estimatedProfit?.let { rewardPct?.let { r -> "(+${"%.2f".format(r)}%)" } } ?: "(0.00%)",
-                                color = ProfitGreen,
-                            )
-                            PnlMetric(
-                                label = "RISK / REWARD",
-                                value = rrRatio,
-                                color = TextPrimary,
-                            )
-                            PnlMetric(
-                                label = "ESTIMATED LOSS",
-                                value = estimatedLoss?.let { "-${"%.2f".format(it)} USDT" } ?: "0.00 USDT",
-                                subValue = estimatedLoss?.let { riskPct?.let { r -> "(-${"%.2f".format(r)}%)" } } ?: "(0.00%)",
-                                color = LossRed,
-                            )
-                        }
+                         Row(
+                             modifier = Modifier.fillMaxWidth(),
+                             horizontalArrangement = Arrangement.SpaceBetween,
+                         ) {
+                             PnlMetric(
+                                 label = "ESTIMATED PROFIT",
+                                 value = estimatedProfit?.let { "+${"%.2f".format(it)} USDT" } ?: "0.00 USDT",
+                                 subValue = estimatedProfit?.let { rewardPct?.let { r -> "(+${"%.2f".format(r)}%)" } } ?: "(0.00%)",
+                                 color = ProfitGreen,
+                             )
+                             PnlMetric(
+                                 label = "RISK / REWARD",
+                                 value = rrRatio,
+                                 color = TextPrimary,
+                             )
+                             PnlMetric(
+                                 label = "ESTIMATED LOSS",
+                                 value = estimatedLoss?.let { "-${"%.2f".format(it)} USDT" } ?: "0.00 USDT",
+                                 subValue = estimatedLoss?.let { riskPct?.let { r -> "(-${"%.2f".format(r)}%)" } } ?: "(0.00%)",
+                                 color = LossRed,
+                             )
+                         }
 
-                        Spacer(Modifier.height(14.dp))
+                         Spacer(Modifier.height(14.dp))
 
-                        TradeFieldLabel("POSITION SIZE (USDT)")
-                        Spacer(Modifier.height(4.dp))
-                        TradeTextField(
-                            value = positionSizeText,
-                            onValueChange = { positionSizeText = it },
-                            placeholder = "Enter position size",
-                        )
-                    }
-                }
+                         TradeFieldLabel("POSITION SIZE (USDT)")
+                         Spacer(Modifier.height(4.dp))
+                         TradeTextField(
+                             value = positionSizeText,
+                             onValueChange = { positionSizeText = it },
+                             placeholder = "Enter position size in USDT",
+                             isError = positionSizeError != null,
+                         )
+                         Spacer(Modifier.height(4.dp))
+                         if (positionSizeError != null) {
+                             Text(
+                                 text = positionSizeError!!,
+                                 color = LossRed,
+                                 fontSize = 11.sp,
+                             )
+                         }
+                         if (normalizedQuantity != null && normalizedQuantity > 0) {
+                             Spacer(Modifier.height(4.dp))
+                             Text(
+                                 text = "Est. quantity: ${String.format("%.4f", normalizedQuantity)} ${
+                                     candidate.symbol
+                                 } (lot: $lotSize)",
+                                 color = CyanPrimary,
+                                 fontSize = 11.sp,
+                             )
+                         }
+                     }
+                 }
 
                 Spacer(Modifier.height(12.dp))
 

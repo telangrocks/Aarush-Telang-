@@ -89,29 +89,45 @@ export class DeltaExchange implements IExchangeAdapter {
         return [];
       }
 
-      const minNotionalMap = new Map<string, number>();
+      const lotSizeMap = new Map<string, { minQty: number; maxQty: number; tickSize: number; lotSize: number }>();
       for (const product of productsData.result ?? []) {
         const symbol = product.symbol;
-        const minNotional = parseFloat(product.min_notional ?? product.min_notional_value ?? "0");
+        const minQty = parseFloat(product.min_notional_value ?? product.min_notional ?? "0");
+        const maxQty = parseFloat(product.max_notional_value ?? product.max_notional ?? "999999999");
+        const lotSize = parseFloat(product.lot_size ?? product.step_size ?? "1");
+        const tickSize = parseFloat(product.tick_size ?? "0.01");
         if (symbol) {
-          minNotionalMap.set(symbol, minNotional);
+          lotSizeMap.set(symbol, {
+            minQty: minQty > 0 ? minQty : 0.001,
+            maxQty: maxQty > 0 ? maxQty : 999999999,
+            tickSize: tickSize > 0 ? tickSize : 0.01,
+            lotSize: lotSize > 0 ? lotSize : 1,
+          });
         }
       }
 
       return tickersData.result
         .filter((item: any) => item.symbol && (item.symbol.includes("USDT") || item.symbol.includes("USDC")))
         .slice(0, 50)
-        .map((item: any) => ({
-          symbol: item.symbol.replace(/USDT$|USDC$/, ""),
-          price: parseFloat(item.close || item.last_price || 0),
-          volume24h: parseFloat(item.volume || 0),
-          quoteVolume24h: parseFloat(item.volume || 0) * parseFloat(item.close || item.last_price || 0),
-          priceChange24h: parseFloat(item.price_change || 0),
-          priceChangePercent24h: parseFloat(item.price_change_percent || 0),
-          highPrice24h: parseFloat(item.high_24h || item.high || 0),
-          lowPrice24h: parseFloat(item.low_24h || item.low || 0),
-          minNotional: minNotionalMap.get(item.symbol) || 0,
-        }));
+        .map((item: any) => {
+          const lot = lotSizeMap.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+          const price = parseFloat(item.close || item.last_price || 0);
+          return {
+            symbol: item.symbol.replace(/USDT$|USDC$/, ""),
+            price: price,
+            volume24h: parseFloat(item.volume || 0),
+            quoteVolume24h: parseFloat(item.volume || 0) * price,
+            priceChange24h: parseFloat(item.price_change || 0),
+            priceChangePercent24h: parseFloat(item.price_change_percent || 0),
+            highPrice24h: parseFloat(item.high_24h || item.high || 0),
+            lowPrice24h: parseFloat(item.low_24h || item.low || 0),
+            minNotional: lot.minQty * (price || 1),
+            minOrderQty: lot.minQty,
+            maxOrderQty: lot.maxQty,
+            tickSize: lot.tickSize,
+            lotSize: lot.lotSize,
+          };
+        });
     } catch {
       return [];
     }
@@ -129,6 +145,7 @@ export class DeltaExchange implements IExchangeAdapter {
       const data = await response.json() as any;
       const item = data?.result;
       if (!item || !item.symbol) return null;
+      const defaults = { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
       return {
         symbol: item.symbol.replace("USDT", ""),
         price: parseFloat(item.last_price || item.close || 0),
@@ -138,7 +155,11 @@ export class DeltaExchange implements IExchangeAdapter {
         priceChangePercent24h: parseFloat(item.change_percent || 0),
         highPrice24h: parseFloat(item.high || 0),
         lowPrice24h: parseFloat(item.low || 0),
-        minNotional: 0,
+        minNotional: defaults.minQty * (parseFloat(item.last_price || item.close || 0) || 1),
+        minOrderQty: defaults.minQty,
+        maxOrderQty: defaults.maxQty,
+        tickSize: defaults.tickSize,
+        lotSize: defaults.lotSize,
       };
     } catch {
       return null;
@@ -165,15 +186,16 @@ export class DeltaExchange implements IExchangeAdapter {
     }
   }
 
-  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, _quantity?: number): Promise<OrderResult> {
+  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult> {
     try {
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const requestPath = "/v2/orders";
+      const qty = quantity ?? 0.001;
       const body = JSON.stringify({
         symbol: `${symbol.toUpperCase()}USDT`,
         side: side === "BUY" ? "buy" : "sell",
         type: "market",
-        quantity: 0.001,
+        quantity: qty,
       });
       const prehash = timestamp + "POST" + requestPath + body;
       const signature = await hmacSha256(prehash, apiSecret);
@@ -195,7 +217,7 @@ export class DeltaExchange implements IExchangeAdapter {
         message: "Order placed successfully",
         orderId: data.result?.id,
         price: parseFloat(data.result?.avg_price || 0),
-        quantity: parseFloat(data.result?.quantity || 0),
+        quantity: parseFloat(data.result?.quantity || qty.toString()),
       };
     } catch (e: any) {
       return { success: false, message: e.message || "Network error during order placement" };

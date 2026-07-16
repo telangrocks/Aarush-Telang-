@@ -1,4 +1,4 @@
-export { type IExchangeAdapter, type ValidationResult, type MarketTicker } from "./BaseExchange";
+export { type IExchangeAdapter, type ValidationResult, type MarketTicker, normalizeQuantity } from "./BaseExchange";
 export { type ExchangeConfig, type ExchangeName, type ExchangeEnvironment } from "./types";
 export { BinanceExchange } from "./BinanceExchange";
 export { DeltaExchange } from "./DeltaExchange";
