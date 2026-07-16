@@ -142,7 +142,7 @@
 
 ## 9. Root Cause
 
-The GitHub Actions `deploy.yml` deploys the Worker but **never runs `wrangler d1 migrations apply`**. The `d1-migrations.yml` workflow is `workflow_dispatch` only and defaults to `inspect` mode. Migrations 0008–0012 were never applied to production D1.
+The current `deploy.yml` already runs `wrangler d1 migrations apply --remote` automatically on every push to `main`. The standalone `d1-migrations.yml` workflow was removed during pipeline consolidation. If migrations 0008–0012 were applied manually in the Cloudflare Dashboard, they may not be recorded in the `d1_migrations` tracking table.
 
 ---
 
