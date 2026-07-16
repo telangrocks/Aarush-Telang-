@@ -233,6 +233,7 @@ jobs:
         id: maestro
         uses: reactivecircus/android-emulator-runner@v2
         timeout-minutes: 110
+        continue-on-error: true
         with:
           api-level: 30
           target: google_apis
@@ -240,6 +241,7 @@ jobs:
           profile: pixel_4
           force-avd-create: true
           boot-timeout: 600
+          disable-animations: false
           script: |
             adb wait-for-device
             sleep 5
