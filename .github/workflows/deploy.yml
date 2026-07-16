@@ -90,35 +90,35 @@ jobs:
       # this keeps the worker's required env vars (JWT_SECRET, ENCRYPTION_KEY,
       # RESEND_API_KEY, ALLOWED_ORIGINS) in sync with production on every push.
       - name: Set JWT_SECRET
-        if: github.event_name == 'push' && ${{ secrets.JWT_SECRET }}
+        if: github.event_name == 'push' && secrets.JWT_SECRET != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: echo "$JWT_SECRET" | wrangler secret put JWT_SECRET --config wrangler.toml
 
       - name: Set ENCRYPTION_KEY
-        if: github.event_name == 'push' && ${{ secrets.ENCRYPTION_KEY }}
+        if: github.event_name == 'push' && secrets.ENCRYPTION_KEY != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
         run: echo "$ENCRYPTION_KEY" | wrangler secret put ENCRYPTION_KEY --config wrangler.toml
 
       - name: Set RESEND_API_KEY
-        if: github.event_name == 'push' && ${{ secrets.RESEND_API_KEY }}
+        if: github.event_name == 'push' && secrets.RESEND_API_KEY != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: echo "$RESEND_API_KEY" | wrangler secret put RESEND_API_KEY --config wrangler.toml
 
       - name: Set ALLOWED_ORIGINS
-        if: github.event_name == 'push' && ${{ secrets.ALLOWED_ORIGINS }}
+        if: github.event_name == 'push' && secrets.ALLOWED_ORIGINS != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
           ALLOWED_ORIGINS: ${{ secrets.ALLOWED_ORIGINS }}
         run: echo "$ALLOWED_ORIGINS" | wrangler secret put ALLOWED_ORIGINS --config wrangler.toml
 
       - name: Set FCM server key
-        if: github.event_name == 'push' && ${{ secrets.FCM_SERVER_KEY }}
+        if: github.event_name == 'push' && secrets.FCM_SERVER_KEY != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
           FCM_SERVER_KEY: ${{ secrets.FCM_SERVER_KEY }}
