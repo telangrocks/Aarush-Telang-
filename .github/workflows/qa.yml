@@ -1,9 +1,5 @@
 name: QA Validation
 
-# Runs ONLY after the "Deploy backend" workflow has completed successfully and
-# the Cloudflare Worker + D1 database are live. It does NOT redeploy anything
-# or duplicate deploy logic — it validates the freshly deployed services, builds
-# the Android APK, and runs Maestro end-to-end tests against the real backend.
 on:
   workflow_run:
     workflows: ["Deploy backend"]
@@ -15,20 +11,18 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 env:
   WORKER_URL: https://crypto-pulse-backend.telangrocks.workers.dev
   CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
+  GRADLE_USER_HOME: ~/.gradle
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # 1. Backend QA — health, D1, auth, endpoints, exchange connectivity, no-mock
-  # ---------------------------------------------------------------------------
   backend-qa:
     name: Backend QA
     runs-on: ubuntu-latest
-    # Only validate real main-branch deployments (not PR lint/build gates).
+    timeout-minutes: 30
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     defaults:
       run:
@@ -53,9 +47,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
         run: |
-          npm install -g wrangler@4
           echo "Recent Worker deployments:"
-          wrangler deployments list --config wrangler.toml
+          npx wrangler deployments list --config wrangler.toml
 
       - name: Run backend QA validation
         env:
@@ -77,12 +70,10 @@ jobs:
             backend/qa-report.json
             backend/qa-report.md
 
-  # ---------------------------------------------------------------------------
-  # 2. Build the latest Android APK
-  # ---------------------------------------------------------------------------
   build-apk:
     name: Build Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: backend-qa
     steps:
       - name: Checkout (deployed commit)
@@ -97,7 +88,14 @@ jobs:
           java-version: 17
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
 
       - name: Grant execute permission for gradlew
         working-directory: mobile
@@ -113,12 +111,10 @@ jobs:
           name: app-debug-apk
           path: mobile/app/build/outputs/apk/debug/app-debug.apk
 
-  # ---------------------------------------------------------------------------
-  # 3. Maestro end-to-end tests on an Android emulator
-  # ---------------------------------------------------------------------------
   maestro-tests:
     name: Maestro E2E Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     needs: build-apk
     steps:
       - name: Checkout (deployed commit)
@@ -165,12 +161,10 @@ jobs:
             mobile/maestro/*.png
             ~/.maestro/screenshots/**
 
-  # ---------------------------------------------------------------------------
-  # 4. Consolidated QA summary (always runs; fails if a blocking job failed)
-  # ---------------------------------------------------------------------------
   qa-summary:
     name: QA Summary
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [backend-qa, build-apk, maestro-tests]
     if: always()
     steps:
