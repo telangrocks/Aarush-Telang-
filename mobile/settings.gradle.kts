@@ -15,3 +15,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "Crypto Pulse"
 include(":app")
+
+// CI trigger: workflow verification
