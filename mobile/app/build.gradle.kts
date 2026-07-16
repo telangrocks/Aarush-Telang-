@@ -104,7 +104,7 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging-ktx")
 
     // Accompanist for WebView
-    implementation("com.google.accompanist:accompanist-webview:0.32.0")
+    implementation("com.google.accompanist:accompanist-webview:0.36.0")
 
     // Unit tests
     testImplementation("junit:junit:4.13.2")
