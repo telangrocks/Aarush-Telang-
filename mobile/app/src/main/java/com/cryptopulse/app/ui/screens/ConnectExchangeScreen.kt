@@ -47,6 +47,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -119,14 +120,15 @@ fun ConnectExchangeScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(bgGradient),
+                .background(bgGradient)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .testTag("connect_exchange_root"),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Spacer(Modifier.height(8.dp))
@@ -253,6 +255,7 @@ fun ConnectExchangeScreen(
                             onValueChange = viewModel::onApiKeyChanged,
                             placeholder = "Enter your API Key",
                             isError = formState.apiKeyError != null,
+                            testTag = "api_key_input",
                             trailingIcon = {
                                 Icon(Icons.Default.Key, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                             },
@@ -277,6 +280,7 @@ fun ConnectExchangeScreen(
                             placeholder = "Enter your API Secret",
                             visualTransformation = PasswordVisualTransformation(),
                             isError = formState.apiSecretError != null,
+                            testTag = "api_secret_input",
                             trailingIcon = {
                                 Icon(Icons.Default.Lock, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                             },
@@ -328,6 +332,7 @@ fun ConnectExchangeScreen(
                         is ExchangeUiState.Error -> Icons.Default.Error
                         else -> Icons.Default.ArrowForward
                     },
+                    testTag = "exchange_connect_button",
                 )
 
                 Spacer(Modifier.height(20.dp))
@@ -353,11 +358,15 @@ private fun ExchangeDropdown(
         expanded = expanded,
         onExpandedChange = { expanded = !expanded },
     ) {
-        OutlinedTextField(
-            value = exchanges.find { it.first == selectedExchange }?.second ?: selectedExchange,
-            onValueChange = {},
-            readOnly = true,
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                            OutlinedTextField(
+                                value = exchanges.find { it.first == selectedExchange }?.second ?: selectedExchange,
+                                onValueChange = {},
+                                readOnly = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor()
+                                    .testTag("exchange_dropdown"),
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = CyanPrimary,
                 unfocusedBorderColor = NavyBorder,
@@ -368,9 +377,6 @@ private fun ExchangeDropdown(
                 unfocusedContainerColor = NavyCard,
             ),
             shape = RoundedCornerShape(10.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .menuAnchor(),
         )
         ExposedDropdownMenu(
             expanded = expanded,
@@ -437,3 +443,5 @@ private fun EnvironmentToggle(
         }
     }
 }
+
+

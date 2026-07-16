@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -235,6 +236,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                     enabled = !viewModel.isLoading,
                     leadingIcon = Icons.Default.Shield,
                     trailingIcon = Icons.Default.ArrowForward,
+                    testTag = "onboarding_create_account_button",
                 )
 
                 Spacer(Modifier.height(14.dp))
@@ -265,3 +267,5 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
         }
     }
 }
+
+

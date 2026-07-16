@@ -42,6 +42,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -204,6 +205,7 @@ fun AuthScreen(
                             onValueChange = { viewModel.email = it },
                             placeholder = "Enter your email address",
                             keyboardType = KeyboardType.Email,
+                            testTag = "auth_email_input",
                             trailingIcon = {
                                 Icon(Icons.Default.Email, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                             }
@@ -219,6 +221,7 @@ fun AuthScreen(
                             placeholder = if (isLoginMode) "Enter your password" else "Min. 8 chars, A-Z, a-z, 0-9, symbol",
                             keyboardType = KeyboardType.Password,
                             visualTransformation = PasswordVisualTransformation(),
+                            testTag = "auth_password_input",
                             trailingIcon = {
                                 Icon(Icons.Default.Lock, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                             }
@@ -269,6 +272,7 @@ fun AuthScreen(
                     enabled = !viewModel.isLoading,
                     leadingIcon = if (isLoginMode) Icons.Default.Login else Icons.Default.Shield,
                     trailingIcon = Icons.Default.ArrowForward,
+                    testTag = if (isLoginMode) "auth_sign_in_button" else "auth_create_account_button",
                 )
 
                 Spacer(Modifier.height(14.dp))
@@ -337,6 +341,7 @@ fun DarkTextField(
     keyboardType: KeyboardType = KeyboardType.Text,
     visualTransformation: VisualTransformation = VisualTransformation.None,
     isError: Boolean = false,
+    testTag: String? = null,
     trailingIcon: @Composable (() -> Unit)? = null,
 ) {
     OutlinedTextField(
@@ -360,6 +365,10 @@ fun DarkTextField(
             errorCursorColor = LossRed,
         ),
         shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().then(
+            if (testTag != null) Modifier.testTag(testTag) else Modifier
+        ),
     )
 }
+
+

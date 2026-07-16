@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -57,7 +58,8 @@ fun PositionsScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 16.dp)
+                    .testTag("positions_root"),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
                 item {
@@ -279,3 +281,5 @@ private fun PositionCard(position: Map<String, Any>, onClose: () -> Unit) {
         }
     }
 }
+
+

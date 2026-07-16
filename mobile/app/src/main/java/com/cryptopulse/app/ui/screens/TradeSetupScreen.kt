@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -114,7 +115,7 @@ fun TradeSetupScreen(
             .fillMaxSize()
             .background(bgGradient)
     ) {
-        Scaffold(
+                Scaffold(
             topBar = { CryptoPulseTopBar(onBack = onBack) },
             containerColor = Color.Transparent,
             bottomBar = {
@@ -133,6 +134,7 @@ fun TradeSetupScreen(
                         },
                         enabled = canProceed && !isLoading,
                         leadingIcon = if (isLoading) Icons.Default.HourglassEmpty else Icons.Default.Check,
+                        testTag = "trade_setup_proceed_button",
                     )
                 }
             }
@@ -143,7 +145,8 @@ fun TradeSetupScreen(
                     .fillMaxSize()
                     .padding(padding)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 16.dp)
+                    .testTag("trade_setup_root"),
             ) {
 
                 Spacer(Modifier.height(12.dp))
@@ -195,6 +198,7 @@ fun TradeSetupScreen(
                                     .fillMaxWidth()
                                     .background(NavyCard, RoundedCornerShape(10.dp))
                                     .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
+                                    .testTag("trade_setup_market_price")
                                     .padding(horizontal = 12.dp, vertical = 14.dp),
                             ) {
                                 Row(
@@ -256,6 +260,7 @@ fun TradeSetupScreen(
                                     .fillMaxWidth()
                                     .background(NavyCard, RoundedCornerShape(10.dp))
                                     .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
+                                    .testTag("trade_setup_stop_loss")
                                     .padding(horizontal = 12.dp, vertical = 14.dp),
                             ) {
                                 Text(
@@ -308,6 +313,7 @@ fun TradeSetupScreen(
                                     .fillMaxWidth()
                                     .background(NavyCard, RoundedCornerShape(10.dp))
                                     .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
+                                    .testTag("trade_setup_take_profit")
                                     .padding(horizontal = 12.dp, vertical = 14.dp),
                             ) {
                                 Text(
@@ -368,12 +374,13 @@ fun TradeSetupScreen(
 
                          TradeFieldLabel("POSITION SIZE (USDT)")
                          Spacer(Modifier.height(4.dp))
-                         TradeTextField(
-                             value = positionSizeText,
-                             onValueChange = { positionSizeText = it },
-                             placeholder = "Enter position size in USDT",
-                             isError = positionSizeError != null,
-                         )
+                          TradeTextField(
+                              value = positionSizeText,
+                              onValueChange = { positionSizeText = it },
+                              placeholder = "Enter position size in USDT",
+                              isError = positionSizeError != null,
+                              testTag = "trade_setup_position_size",
+                          )
                          Spacer(Modifier.height(4.dp))
                          if (positionSizeError != null) {
                              Text(
@@ -493,6 +500,7 @@ private fun TradeTextField(
     onValueChange: (String) -> Unit,
     placeholder: String,
     isError: Boolean = false,
+    testTag: String? = null,
 ) {
     OutlinedTextField(
         value = value,
@@ -515,7 +523,9 @@ private fun TradeTextField(
             unfocusedContainerColor = NavyCard,
         ),
         shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().then(
+            if (testTag != null) Modifier.testTag(testTag) else Modifier
+        ),
     )
 }
 
@@ -535,3 +545,5 @@ private fun PnlMetric(
         }
     }
 }
+
+

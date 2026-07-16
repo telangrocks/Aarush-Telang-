@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -76,6 +77,7 @@ fun StrategySelectionScreen(
                         },
                         enabled = selectedStrategy != null,
                         leadingIcon = Icons.Default.PlayArrow,
+                        testTag = "strategy_start_analysis_button",
                     )
                 }
             }
@@ -161,6 +163,7 @@ fun StrategySelectionScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { selectedStrategy = strategy.id }
+                                    .testTag("strategy_option_${strategy.id}")
                                     .background(
                                         if (isSelected) CyanPrimary.copy(alpha = 0.12f) else Color.Transparent,
                                         RoundedCornerShape(10.dp),
@@ -241,3 +244,5 @@ private data class StrategyItem(
     val description: String,
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
 )
+
+

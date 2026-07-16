@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -83,6 +84,7 @@ fun TradeConfirmationScreen(
                         leadingIcon = if (isLoading) Icons.Default.HourglassEmpty else Icons.Default.Shield,
                         trailingIcon = if (!isLoading) Icons.Default.ArrowForward else null,
                         enabled = !isLoading,
+                        testTag = "trade_confirm_button",
                     )
                     Spacer(Modifier.height(6.dp))
                     Row(
@@ -108,7 +110,8 @@ fun TradeConfirmationScreen(
                     .fillMaxSize()
                     .padding(padding)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 16.dp)
+                    .testTag("trade_confirmation_root"),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
 
@@ -235,3 +238,5 @@ private fun SummaryRow(label: String, value: String, valueColor: Color) {
         Text(value, color = valueColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
+
+

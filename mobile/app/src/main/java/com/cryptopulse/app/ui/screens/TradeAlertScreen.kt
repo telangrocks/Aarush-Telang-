@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -85,6 +86,7 @@ fun TradeAlertScreen(
                             leadingIcon = Icons.Default.Close,
                             modifier = Modifier.weight(1f),
                             enabled = !isProcessing,
+                            testTag = "trade_alert_cancel_button",
                         )
                         GradientButton(
                             text = "Trade",
@@ -99,6 +101,7 @@ fun TradeAlertScreen(
                             leadingIcon = Icons.Default.Check,
                             modifier = Modifier.weight(1f),
                             enabled = !isProcessing,
+                            testTag = "trade_alert_trade_button",
                         )
                     }
                 }
@@ -122,7 +125,7 @@ fun TradeAlertScreen(
                     fontSize = 24.sp,
                     letterSpacing = 2.sp,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("trade_alert_header"),
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -158,10 +161,10 @@ fun TradeAlertScreen(
                         Divider(color = NavyBorder, thickness = 0.5.dp)
                         Spacer(Modifier.height(10.dp))
 
-                        SummaryRow("Pair", candidate.pairName, TextPrimary)
-                        SummaryRow("Entry Price", "${"%.2f".format(entryPrice)} USDT", TextPrimary)
-                        SummaryRow("Stop Loss", "${"%.2f".format(stopLossPrice)} USDT", LossRed)
-                        SummaryRow("Take Profit", "${"%.2f".format(takeProfitPrice)} USDT", ProfitGreen)
+                        SummaryRow("Pair", candidate.pairName, TextPrimary, "trade_alert_pair")
+                        SummaryRow("Entry Price", "${"%.2f".format(entryPrice)} USDT", TextPrimary, "trade_alert_entry")
+                        SummaryRow("Stop Loss", "${"%.2f".format(stopLossPrice)} USDT", LossRed, "trade_alert_stop_loss")
+                        SummaryRow("Take Profit", "${"%.2f".format(takeProfitPrice)} USDT", ProfitGreen, "trade_alert_take_profit")
                         val pnlSign = if (estimatedPnl >= 0) "+" else ""
                         val pnlColor = if (estimatedPnl >= 0) ProfitGreen else LossRed
                         SummaryRow("Est. P&L", "$pnlSign${"%.2f".format(estimatedPnl)} USDT", pnlColor)
@@ -175,14 +178,17 @@ fun TradeAlertScreen(
 }
 
 @Composable
-private fun SummaryRow(label: String, value: String, valueColor: Color) {
+private fun SummaryRow(label: String, value: String, valueColor: Color, testTag: String? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
+            .padding(vertical = 4.dp)
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(label, color = TextSecondary, fontSize = 13.sp)
         Text(value, color = valueColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
+
+

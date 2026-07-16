@@ -330,7 +330,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            lifecycleScope.launch {
+            LaunchedEffect(Unit) {
                 try {
                     val token = tokenManager.getToken()
                     if (!token.isNullOrEmpty()) {
@@ -392,3 +392,4 @@ fun GreetingPreview() {
         Greeting("Crypto Pulse")
     }
 }
+

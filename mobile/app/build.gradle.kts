@@ -5,6 +5,7 @@ plugins {
     id("com.google.dagger.hilt.android")
 }
 
+
 android {
     namespace = "com.cryptopulse"
     compileSdk = 34
@@ -45,7 +46,14 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    kapt {
+        correctErrorTypes = true
+    }
+
+
 }
+
 
 dependencies {
     // Core & UI
@@ -88,10 +96,14 @@ dependencies {
     implementation("com.google.accompanist:accompanist-webview:0.32.0")
 }
 
+
 tasks.register("prepareKotlinBuildScriptModel") {
-    group = "build"
-    description = "Compatibility task for Android Studio Kotlin sync"
-    doFirst {
-        logger.info("prepareKotlinBuildScriptModel invoked for IDE sync compatibility")
+        group = "build"
+        description = "Compatibility task for Android Studio Kotlin sync"
+        doFirst {
+            logger.info("prepareKotlinBuildScriptModel invoked for IDE sync compatibility")
+        }
     }
-}
+
+
+

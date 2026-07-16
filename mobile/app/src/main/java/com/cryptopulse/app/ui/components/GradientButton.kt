@@ -9,6 +9,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -37,6 +38,7 @@ fun GradientButton(
     leadingIcon: ImageVector? = null,
     trailingIcon: ImageVector? = null,
     enabled: Boolean = true,
+    testTag: String? = null,
 ) {
     val gradient = Brush.horizontalGradient(
         colors = if (enabled)
@@ -56,7 +58,8 @@ fun GradientButton(
         contentPadding = PaddingValues(0.dp),
         modifier = modifier
             .fillMaxWidth()
-            .height(56.dp),
+            .height(56.dp)
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
     ) {
         Box(
             modifier = Modifier
@@ -97,3 +100,5 @@ fun GradientButton(
         }
     }
 }
+
+

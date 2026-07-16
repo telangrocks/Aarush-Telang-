@@ -17,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -149,7 +150,7 @@ fun LiveAnalysisScreen(
                 } else {
                     LiveAnalysisContent(
                         state = state,
-                        modifier = Modifier.padding(padding),
+                        modifier = Modifier.padding(padding).testTag("live_analysis_root"),
                     )
                 }
             }
@@ -198,15 +199,16 @@ private fun LiveAnalysisContent(
         }
 
         if (state.timeframes.isNotEmpty()) {
-            item {
-                Text(
-                    text = "MULTI-TIMEFRAME ANALYSIS",
-                    color = TextSecondary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    letterSpacing = 1.sp,
-                )
-            }
+                item {
+                    Text(
+                        text = "MULTI-TIMEFRAME ANALYSIS",
+                        color = TextSecondary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        letterSpacing = 1.sp,
+                        modifier = Modifier.testTag("live_analysis_timeframes_header"),
+                    )
+                }
             item {
                 TimeframeAnalysisGrid(timeframes = state.timeframes)
             }
@@ -305,6 +307,7 @@ private fun ScanningProgressCard(
                         color = CyanPrimary,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 20.sp,
+                        modifier = Modifier.testTag("live_analysis_progress_percent"),
                     )
                     Text(
                         text = "ETA ~${etaSeconds}s",
@@ -320,7 +323,8 @@ private fun ScanningProgressCard(
                 progress = { progress / 100f },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(6.dp),
+                    .height(6.dp)
+                    .testTag("live_analysis_progress_bar"),
                 color = CyanPrimary,
                 trackColor = NavyBorder,
             )
@@ -361,6 +365,7 @@ private fun ScanningProgressCard(
                         },
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 18.sp,
+                        modifier = Modifier.testTag("live_analysis_confluence_score"),
                     )
                 }
                 Column(horizontalAlignment = Alignment.End) {
@@ -395,6 +400,7 @@ private fun ScanningProgressCard(
                         },
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 16.sp,
+                        modifier = Modifier.testTag("live_analysis_signal"),
                     )
                 }
             }
@@ -857,3 +863,5 @@ private fun LogEntry(log: com.cryptopulse.app.data.api.AnalysisLog) {
         }
     }
 }
+
+

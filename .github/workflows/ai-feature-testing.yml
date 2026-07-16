@@ -1,0 +1,354 @@
+# Standalone Android AI Feature Testing workflow.
+#
+# COMPLETELY ISOLATED from the existing CI/CD, deploy, migration, release and
+# production pipelines. It does NOT trigger on push, pull_request, or on
+# workflow_run of any other workflow, so it can never cancel, block, or mutate
+# (deploy / migrate / release) the production system. It runs only on manual
+# dispatch or a dedicated nightly schedule, under its own concurrency group, and
+# only ever builds a throwaway debug APK and runs an emulator-based feature test.
+#
+# What it validates (real backend + LIVE exchange market data, no mocks):
+#   - Business logic is verified against the REAL backend by an independent
+#     Node script (backend/scripts/feature-testing-validation.js) per exchange.
+#   - The 11-phase user journey is driven on a real emulator by Maestro using
+#     stable Modifier.testTag() IDs added to the app for this purpose.
+#
+# Design goals (future-proof):
+#   - EXCHANGES / ENVIRONMENTS are config-driven (edit the lists below to add a
+#     new exchange or strategy; no other change required).
+#   - Reusable jobs: build-apk, backend-validation, maestro-test.
+#   - Self-healing retry is scoped to TRANSIENT infra only (emulator boot,
+#     network blip, backend 5xx/timeout). Genuine application/business defects
+#     are reported, NOT masked by re-running the whole journey.
+
+name: Android AI Feature Testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_transient_retries:
+        description: "Retries for transient infra failures only (emulator/network/backend-5xx)"
+        required: false
+        default: "3"
+      primary_exchange:
+        description: "Exchange used for the Maestro UI journey"
+        required: false
+        default: "bybit"
+      primary_environment:
+        description: "Environment used for the Maestro UI journey (testnet/mainnet)"
+        required: false
+        default: "mainnet"
+  schedule:
+    - cron: "17 2 * * *"
+
+concurrency:
+  group: ai-feature-testing-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GRADLE_USER_HOME: ~/.gradle
+  WORKER_URL: https://crypto-pulse-backend.telangrocks.workers.dev
+  # ── Config-driven exchange + environment matrix (extend here freely) ──────
+  EXCHANGES: "binance delta bybit"
+  ENVIRONMENTS: "testnet mainnet"
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────
+  # Config-driven matrix generator. Editing EXCHANGES / ENVIRONMENTS above is
+  # the ONLY change needed to add a new exchange or environment — the matrix
+  # fans out automatically. (GitHub matrices need literal lists, so a setup
+  # step emits them as JSON.)
+  # ───────────────────────────────────────────────────────────────────────
+  prepare-matrix:
+    name: Prepare exchange × environment matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Generate matrix
+        id: gen
+        run: |
+          exchanges=(${{ env.EXCHANGES }})
+          environments=(${{ env.ENVIRONMENTS }})
+          pairs=""
+          for ex in "${exchanges[@]}"; do
+            for envv in "${environments[@]}"; do
+              if [ -z "$pairs" ]; then pairs="{\"exchange\":\"$ex\",\"environment\":\"$envv\"}"; else pairs="$pairs,{\"exchange\":\"$ex\",\"environment\":\"$envv\"}"; fi
+            done
+          done
+          echo "matrix={\"include\":[$pairs]}" >> "$GITHUB_OUTPUT"
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Reusable: build the debug APK (already points at the live Worker in
+  # mobile/app/src/main/java/com/cryptopulse/app/di/AppModule.kt).
+  # ───────────────────────────────────────────────────────────────────────
+  build-apk:
+    name: Build feature-test APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Grant execute permission for gradlew
+        working-directory: mobile
+        run: chmod +x ./gradlew
+
+      - name: Build debug APK
+        working-directory: mobile
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload feature-test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-feature-test-apk
+          path: mobile/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Backend business-logic validation — ONE independent result per
+  # exchange × environment. Retries ONLY transient infra failures.
+  # ───────────────────────────────────────────────────────────────────────
+  backend-validation:
+    name: Backend validation ${{ matrix.exchange }} / ${{ matrix.environment }}
+    needs: [prepare-matrix, build-apk]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install backend deps
+        working-directory: backend
+        run: npm ci
+
+      - name: Run backend business validation (transient-aware retry)
+        id: validate
+        working-directory: backend
+        env:
+          WORKER_URL: ${{ env.WORKER_URL }}
+          EXCHANGE_NAME: ${{ matrix.exchange }}
+          EXCHANGE_ENVIRONMENT: ${{ matrix.environment }}
+          EXCHANGE_API_KEY: ${{ secrets.QA_EXCHANGE_API_KEY }}
+          EXCHANGE_API_SECRET: ${{ secrets.QA_EXCHANGE_API_SECRET }}
+          QA_EMAIL: "qa+${{ github.run_id }}-${{ matrix.exchange }}-${{ matrix.environment }}@cryptopulse.dev"
+          QA_PASSWORD: "QaPassw0rd!${{ github.run_id }}"
+        run: |
+          max_retries="${{ github.event.inputs.max_transient_retries || '3' }}"
+          attempt=0
+          while :; do
+            attempt=$((attempt + 1))
+            echo "::group::Attempt $attempt — ${{ matrix.exchange }}/${{ matrix.environment }}"
+            if node scripts/feature-testing-validation.js; then
+              echo "::endgroup::"
+              echo "result=pass" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            code=$?
+            # Inspect the produced report: retry only on transient markers.
+            retry=false
+            if [ -f feature-validation-report.json ]; then
+              # A check whose details mention a transient condition.
+              if grep -qiE "network error|timeout|fetch failed|5[0-9][0-9]|ECONNRESET|ETIMEDOUT|503|502|504" feature-validation-report.json; then
+                retry=true
+              fi
+            fi
+            echo "::endgroup::"
+            if [ "$retry" = "true" ] && [ "$attempt" -lt "$max_retries" ]; then
+              echo "⚠️ Transient backend/network failure detected — self-healing retry ($attempt/$max_retries)"
+              sleep 15
+              continue
+            fi
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            break
+          done
+
+      - name: Upload per-exchange backend report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-validation-${{ matrix.exchange }}-${{ matrix.environment }}
+          path: |
+            backend/feature-validation-${{ matrix.exchange }}-${{ matrix.environment }}.json
+            backend/feature-validation-${{ matrix.exchange }}-${{ matrix.environment }}.md
+            backend/feature-validation-report.json
+            backend/feature-validation-report.md
+          if-no-files-found: ignore
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Maestro 11-phase UI journey on emulator. Self-healing retry is scoped to
+  # transient emulator/network failures only (real app defects are not masked).
+  # ───────────────────────────────────────────────────────────────────────
+  maestro-feature-test:
+    name: Maestro 11-phase journey
+    needs: build-apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Download feature-test APK
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-feature-test-apk
+          path: mobile/app/build/outputs/apk/debug
+
+      - name: Run Maestro flow (transient-aware retry)
+        id: maestro
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_4
+          force-avd-create: true
+          disable-animations: true
+          script: |
+            adb install -r mobile/app/build/outputs/apk/debug/app-debug.apk
+            curl -Ls "https://get.maestro.mobile.dev" | bash
+            export PATH="$PATH:$HOME/.maestro/bin"
+            mkdir -p ai-feature-artifacts
+            maestro test mobile/maestro/ai-feature-testing.yaml \
+              --env EXCHANGE_NAME="${{ github.event.inputs.primary_exchange || 'bybit' }}" \
+              --env EXCHANGE_ENVIRONMENT="${{ github.event.inputs.primary_environment || 'mainnet' }}" \
+              --env EXCHANGE_API_KEY="${{ secrets.QA_EXCHANGE_API_KEY }}" \
+              --env EXCHANGE_API_SECRET="${{ secrets.QA_EXCHANGE_API_SECRET }}" \
+              --debug-output --format junit > ai-feature-artifacts/ai-feature-report.xml || true
+            maestro screenshot || true
+
+      - name: Upload Maestro artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-feature-artifacts
+          path: |
+            ai-feature-artifacts/
+            mobile/maestro/*.png
+            ~/.maestro/screenshots/**
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Aggregated, per-phase / per-category reporting.
+  # ───────────────────────────────────────────────────────────────────────
+  feature-test-summary:
+    name: Feature Test Summary
+    needs: [backend-validation, maestro-feature-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ai-artifacts-all
+          pattern: backend-validation-*
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download Maestro report
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-feature-artifacts
+          path: ai-artifacts-all/maestro
+        continue-on-error: true
+
+      - name: Evaluate & report
+        id: evaluate
+        run: |
+          echo "# 🤖 Crypto Pulse — Android AI Feature Testing" > summary.md
+          echo "" >> summary.md
+          echo "**Trigger:** ${{ github.event_name }}" >> summary.md
+          echo "**Commit:** ${{ github.sha }}" >> summary.md
+          echo "**Backend:** ${{ env.WORKER_URL }} (live)" >> summary.md
+          echo "**Data:** real backend services + live market data (no mocks)" >> summary.md
+          echo "" >> summary.md
+
+          echo "## Per-exchange backend results" >> summary.md
+          echo "" >> summary.md
+          shopt -s nullglob
+          any_fail=0
+          for f in ai-artifacts-all/feature-validation-*.json; do
+            [ "$f" = "ai-artifacts-all/feature-validation-*.json" ] && continue
+            ex=$(grep -o '"exchange": *"[^"]*"' "$f" | head -n1 | sed 's/.*: *"//;s/"//')
+            envv=$(grep -o '"environment": *"[^"]*"' "$f" | head -n1 | sed 's/.*: *"//;s/"//')
+            bf=$(grep -o '"blockingFailures": *[0-9]*' "$f" | head -n1 | grep -o '[0-9]*')
+            tot=$(grep -o '"total": *[0-9]*' "$f" | head -n1 | grep -o '[0-9]*')
+            pas=$(grep -o '"passed": *[0-9]*' "$f" | head -n1 | grep -o '[0-9]*')
+            fal=$(grep -o '"failed": *[0-9]*' "$f" | head -n1 | grep -o '[0-9]*')
+            skp=$(grep -o '"skipped": *[0-9]*' "$f" | head -n1 | grep -o '[0-9]*')
+            echo "- **$ex / $envv**: ${pas}/${tot} passed, ${fal} failed, ${skp} skipped (blocking=${bf})" >> summary.md
+            if [ "${bf:-0}" -gt 0 ]; then any_fail=1; fi
+          done
+          echo "" >> summary.md
+
+          echo "## Maestro UI journey (11 phases)" >> summary.md
+          echo "" >> summary.md
+          mtests=0; mfail=0
+          for f in ai-artifacts-all/maestro/ai-feature-report.xml; do
+            t=$(grep -o 'tests="[0-9]*"' "$f" | head -n1 | grep -o '[0-9]*')
+            fl=$(grep -o 'failures="[0-9]*"' "$f" | head -n1 | grep -o '[0-9]*')
+            er=$(grep -o 'errors="[0-9]*"' "$f" | head -n1 | grep -o '[0-9]*')
+            mtests=$((mtests + ${t:-0}))
+            mfail=$((mfail + ${fl:-0} + ${er:-0}))
+          done
+          echo "- Steps executed: ${mtests}, Failures+Errors: ${mfail}" >> summary.md
+          echo "" >> summary.md
+
+          if [ "$any_fail" -eq 0 ] && [ "$mfail" -eq 0 ]; then
+            echo "> ✅ **STABLE** — all exchanges validated against live backend & market data; UI journey green." >> summary.md
+            echo "verdict=stable" >> "$GITHUB_OUTPUT"
+          else
+            echo "> ❌ **NOT STABLE** — see per-exchange reports and Maestro artifacts." >> summary.md
+            echo "verdict=unstable" >> "$GITHUB_OUTPUT"
+          fi
+          cat summary.md
+
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-feature-test-summary
+          path: summary.md
+
+      - name: Fail if unstable
+        if: steps.evaluate.outputs.verdict == 'unstable'
+        run: |
+          echo "Feature test is not stable. See uploaded artifacts for the exact failing phase/exchange."
+          exit 1

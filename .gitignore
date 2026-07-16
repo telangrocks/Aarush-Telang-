@@ -69,6 +69,10 @@ env/
 .gradle/
 .android/
 
+# Local credentials / secrets (never commit)
+creds.txt
+*.pem
+
 # Keep package-lock.json — required for reproducible CI installs
 # Ignore other lock files
 yarn.lock

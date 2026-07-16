@@ -8,6 +8,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
@@ -74,6 +75,7 @@ fun SplashScreen(navController: NavController, tokenManager: TokenManager, excha
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .testTag("splash_root")
             .background(
                 Brush.verticalGradient(
                     listOf(NavyDeep, NavyDark, Color(0xFF071020))

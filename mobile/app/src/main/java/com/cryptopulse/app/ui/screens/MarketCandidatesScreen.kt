@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -70,7 +71,7 @@ fun MarketCandidatesScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(bgGradient),
+            .background(bgGradient)
     ) {
         Scaffold(
             topBar = { CryptoPulseTopBar(onBack = onBack) },
@@ -81,7 +82,8 @@ fun MarketCandidatesScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(padding),
+                        .padding(padding)
+                        .testTag("market_candidates_loading"),
                     contentAlignment = Alignment.Center,
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -97,7 +99,8 @@ fun MarketCandidatesScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 16.dp)
+                    .testTag("market_candidates_list"),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
 
@@ -210,6 +213,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
+            .testTag("candidate_item")
             .padding(vertical = 12.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -363,3 +367,5 @@ fun List<MarketCandidateDto>.toScreenCandidates(): List<MarketCandidate> {
         )
     }
 }
+
+

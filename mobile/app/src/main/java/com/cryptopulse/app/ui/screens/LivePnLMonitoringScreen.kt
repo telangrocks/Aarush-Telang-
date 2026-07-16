@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -137,7 +138,8 @@ fun LivePnLMonitoringScreen(
                     .fillMaxSize()
                     .padding(padding)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 16.dp)
+                    .testTag("live_pnl_root"),
             ) {
                 Spacer(Modifier.height(12.dp))
 
@@ -261,6 +263,7 @@ fun LivePnLMonitoringScreen(
                                     color = if (pnl >= 0) ProfitGreen else LossRed,
                                     fontSize = 18.sp,
                                     fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.testTag("live_pnl_price"),
                                 )
                             }
                             Column(horizontalAlignment = Alignment.End) {
@@ -270,11 +273,13 @@ fun LivePnLMonitoringScreen(
                                     color = if (pnl >= 0) ProfitGreen else LossRed,
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.testTag("live_pnl_value"),
                                 )
                                 Text(
                                     text = "${if (pnlPercent >= 0) "+" else ""}${"%.2f".format(pnlPercent)}%",
                                     color = if (pnlPercent >= 0) ProfitGreen else LossRed,
                                     fontSize = 12.sp,
+                                    modifier = Modifier.testTag("live_pnl_percent"),
                                 )
                             }
                         }
@@ -308,6 +313,7 @@ fun LivePnLMonitoringScreen(
                     onClick = onNavigateToPositions,
                     leadingIcon = Icons.Default.List,
                     modifier = Modifier.fillMaxWidth(),
+                    testTag = "live_pnl_view_positions_button",
                 )
 
                 Spacer(Modifier.height(12.dp))
@@ -413,3 +419,5 @@ private fun SummaryRow(label: String, value: String, valueColor: Color) {
         Text(value, color = valueColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
+
+
