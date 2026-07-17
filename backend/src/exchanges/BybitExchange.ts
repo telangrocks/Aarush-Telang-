@@ -111,6 +111,28 @@ export class BybitExchange implements IExchangeAdapter {
         return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
       }
 
+      // Query key permissions metadata
+      const apiInfoResponse = await fetch(`${this.getRestUrl()}/v5/user/query-api?${query}`, {
+        headers: {
+          "X-BAPI-API-KEY": apiKey,
+          "X-BAPI-SIGN": signature,
+          "X-BAPI-TIMESTAMP": timestamp,
+          "X-BAPI-RECV-WINDOW": recvWindow,
+        },
+      });
+
+      if (apiInfoResponse.ok) {
+        const apiInfo = await apiInfoResponse.json() as any;
+        if (apiInfo.retCode === 0 && apiInfo.result && apiInfo.result.readOnly === 1) {
+          return {
+            success: false,
+            message: "INSUFFICIENT_PERMISSIONS: API key is read-only",
+            code: "INSUFFICIENT_PERMISSIONS",
+            friendlyMessage: "Your API key doesn't have the required trading permissions. Please update the API permissions to allow trading and try again."
+          };
+        }
+      }
+
       return { success: true, message: "Bybit credentials validated successfully" };
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);

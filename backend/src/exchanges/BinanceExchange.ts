@@ -101,6 +101,15 @@ export class BinanceExchange implements IExchangeAdapter {
         return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
       }
 
+      if (data.canTrade === false) {
+        return {
+          success: false,
+          message: "SPOT_TRADING_NOT_ENABLED: API key lacks spot trade permission",
+          code: "SPOT_TRADING_NOT_ENABLED",
+          friendlyMessage: "Spot trading is not enabled on this API key. Go to your exchange API settings and check the 'Enable Spot Trading' permission."
+        };
+      }
+
       return { success: true, message: "Binance credentials validated successfully" };
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);

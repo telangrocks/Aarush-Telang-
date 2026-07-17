@@ -78,7 +78,12 @@ export async function handleValidateExchange(
 
     if (!exchangeName || !apiKey || !apiSecret) {
       c.status(400);
-      return c.json({ error: "exchangeName, apiKey, and apiSecret are required" });
+      return c.json({
+        success: false,
+        code: "MISSING_REQUIRED_CREDENTIALS" as ExchangeErrorCode,
+        message: FRIENDLY_MESSAGES.MISSING_REQUIRED_CREDENTIALS.friendlyMessage,
+        hint: FRIENDLY_MESSAGES.MISSING_REQUIRED_CREDENTIALS.hint,
+      });
     }
 
     const resolvedRegion = normalizeRegion(region);
@@ -116,7 +121,12 @@ export async function handleConnectExchange(
 
     if (!exchangeName || !apiKey || !apiSecret) {
       c.status(400);
-      return c.json({ error: "exchangeName, apiKey, and apiSecret are required" });
+      return c.json({
+        success: false,
+        code: "MISSING_REQUIRED_CREDENTIALS" as ExchangeErrorCode,
+        message: FRIENDLY_MESSAGES.MISSING_REQUIRED_CREDENTIALS.friendlyMessage,
+        hint: FRIENDLY_MESSAGES.MISSING_REQUIRED_CREDENTIALS.hint,
+      });
     }
 
     const resolvedEnvironment = normalizeEnvironment(environment);

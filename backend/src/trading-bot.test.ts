@@ -4,6 +4,7 @@ import { TradingBot, evaluateStrategy } from "./trading-bot";
 import { encrypt } from "./crypto";
 import { analyzeMarket } from "./market-analysis";
 import { Env } from "./index";
+import { classifyExchangeResponse, classifyException, classifyByBody } from "./exchanges/errors";
 
 describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () => {
   let mockFetch: any;
@@ -451,6 +452,119 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       expect(updateQuery).toBeDefined();
       expect(updateQuery.params[1]).toBe(63000); // close price
       expect(updateQuery.params[3]).toBe("take_profit"); // close reason
+    });
+  });
+
+  describe("13-16. Exchange Validation & 23 Error Types Classification", () => {
+    it("should reject read-only keys on Binance and return SPOT_TRADING_NOT_ENABLED", async () => {
+      const adapter = getExchangeAdapter("binance", "testnet");
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          canTrade: false, // Read-only!
+        }),
+      });
+
+      const result = await adapter.validateCredentials("test_key", "test_secret");
+      expect(result.success).toBe(false);
+      expect(result.code).toBe("SPOT_TRADING_NOT_ENABLED");
+      expect(result.friendlyMessage).toContain("Spot trading is not enabled");
+    });
+
+    it("should reject read-only keys on Bybit and return INSUFFICIENT_PERMISSIONS", async () => {
+      const adapter = getExchangeAdapter("bybit", "testnet");
+      
+      // First fetch to /v5/account/info succeeds
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ retCode: 0, result: {} }),
+      });
+
+      // Second fetch to /v5/user/query-api returns readOnly = 1
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ retCode: 0, result: { readOnly: 1 } }),
+      });
+
+      const result = await adapter.validateCredentials("test_key", "test_secret");
+      expect(result.success).toBe(false);
+      expect(result.code).toBe("INSUFFICIENT_PERMISSIONS");
+      expect(result.friendlyMessage).toContain("permissions");
+    });
+
+    it("should classify all 23 error types correctly", () => {
+
+      // 1. INVALID_API_KEY
+      expect(classifyByBody("api key not found", "binance").code).toBe("INVALID_API_KEY");
+
+      // 2. INVALID_API_SECRET
+      expect(classifyByBody("api secret invalid", "binance").code).toBe("INVALID_API_SECRET");
+
+      // 3. INVALID_PASSPHRASE
+      expect(classifyByBody("invalid passphrase", "bybit").code).toBe("INVALID_PASSPHRASE");
+
+      // 4. IP_NOT_WHITELISTED
+      expect(classifyExchangeResponse(403, "ip not whitelisted", "bybit").code).toBe("IP_NOT_WHITELISTED");
+
+      // 5. FUTURES_TRADING_NOT_ENABLED
+      expect(classifyByBody("futures trading not enabled", "binance").code).toBe("FUTURES_TRADING_NOT_ENABLED");
+
+      // 6. SPOT_TRADING_NOT_ENABLED
+      expect(classifyByBody("spot trading not enabled", "binance").code).toBe("SPOT_TRADING_NOT_ENABLED");
+
+      // 7. PERMISSION_DENIED
+      // Fallback or explicit check
+      expect(classifyByBody("permission denied", "binance").code).toBe("INSUFFICIENT_PERMISSIONS");
+
+      // 8. INVALID_SIGNATURE
+      expect(classifyByBody("invalid signature", "binance").code).toBe("INVALID_SIGNATURE");
+
+      // 9. TIMESTAMP_OUT_OF_SYNC
+      expect(classifyByBody("timestamp outside recvwindow", "binance").code).toBe("TIMESTAMP_OUT_OF_SYNC");
+
+      // 10. ACCOUNT_SUSPENDED
+      expect(classifyByBody("account suspended", "binance").code).toBe("ACCOUNT_SUSPENDED");
+
+      // 11. ACCOUNT_RESTRICTED
+      expect(classifyByBody("account restricted", "binance").code).toBe("ACCOUNT_RESTRICTED");
+
+      // 12. API_RATE_LIMIT_REACHED
+      expect(classifyExchangeResponse(429, "too many requests", "bybit").code).toBe("API_RATE_LIMIT_REACHED");
+
+      // 13. NETWORK_TIMEOUT
+      expect(classifyExchangeResponse(408, "", "binance").code).toBe("NETWORK_TIMEOUT");
+      expect(classifyException(new Error("TimeoutError"), "binance").code).toBe("NETWORK_TIMEOUT");
+
+      // 14. SSL_CONNECTION_FAILURE
+      expect(classifyException(new Error("SSL connect error"), "binance").code).toBe("SSL_CONNECTION_FAILURE");
+
+      // 15. EXCHANGE_UNDER_MAINTENANCE
+      expect(classifyExchangeResponse(503, "exchange maintenance", "bybit").code).toBe("EXCHANGE_UNDER_MAINTENANCE");
+
+      // 16. SERVICE_TEMPORARILY_UNAVAILABLE
+      expect(classifyExchangeResponse(502, "", "bybit").code).toBe("SERVICE_TEMPORARILY_UNAVAILABLE");
+
+      // 17. AUTHENTICATION_FAILED
+      expect(classifyExchangeResponse(401, "", "binance").code).toBe("AUTHENTICATION_FAILED");
+
+      // 18. REGION_NOT_SUPPORTED
+      expect(classifyByBody("not supported in this region", "binance").code).toBe("REGION_NOT_SUPPORTED");
+
+      // 19. EXCHANGE_NOT_REACHABLE
+      expect(classifyExchangeResponse(404, "", "binance").code).toBe("EXCHANGE_NOT_REACHABLE");
+      expect(classifyException(new Error("fetch failed"), "binance").code).toBe("EXCHANGE_NOT_REACHABLE");
+
+      // 20. INSUFFICIENT_PERMISSIONS
+      expect(classifyByBody("insufficient permission", "bybit").code).toBe("INSUFFICIENT_PERMISSIONS");
+
+      // 21. INVALID_API_VERSION
+      expect(classifyByBody("api version not supported", "binance").code).toBe("INVALID_API_VERSION");
+
+      // 22. MISSING_REQUIRED_CREDENTIALS
+      // Enforced by handler validate parameters logic.
+      
+      // 23. UNKNOWN_EXCHANGE_ERROR
+      expect(classifyByBody("some random technical error", "binance").code).toBe("UNKNOWN_EXCHANGE_ERROR");
     });
   });
 });
