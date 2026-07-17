@@ -456,6 +456,104 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       expect(updateQuery.params[1]).toBe(63000); // close price
       expect(updateQuery.params[3]).toBe("take_profit"); // close reason
     });
+
+    it("should prevent concurrent trade executions and return 409", async () => {
+      const encryptionKey = "test_encryption_key_32_bytes_long_12345";
+      const encryptedSecret = await encrypt("test_api_secret", encryptionKey);
+
+      const storageData = new Map<string, any>();
+      storageData.set("userId", "user-123");
+      storageData.set("coinId", "BTC");
+      storageData.set("alerts", [
+        {
+          id: "alert-123",
+          symbol: "BTC",
+          entryPrice: 60000,
+          stopLoss: 59000,
+          takeProfit: 62000,
+          estimatedPnl: 10,
+          positionSize: 100,
+          side: "BUY",
+          status: "pending"
+        }
+      ]);
+
+      const mockStorage = {
+        get: async (key: string) => storageData.get(key),
+        put: async (key: string, val: any) => { storageData.set(key, val); },
+      } as any;
+
+      const mockQueries: any[] = [];
+      const mockDb = {
+        prepare: (sql: string) => ({
+          bind: (...params: any[]) => {
+            mockQueries.push({ sql, params });
+            return {
+              first: async () => {
+                if (sql.includes("SELECT exchange_api_key")) {
+                  // Introduce a small delay to simulate asynchronous DB/network fetch
+                  await new Promise(resolve => setTimeout(resolve, 50));
+                  return {
+                    exchange_api_key: "test_api_key",
+                    exchange_api_secret_iv: encryptedSecret.iv,
+                    exchange_api_secret_encrypted: encryptedSecret.encrypted,
+                    exchange_name: "delta",
+                    exchange_environment: "testnet",
+                    exchange_region: "india",
+                  };
+                }
+                return null;
+              },
+              run: async () => ({ success: true }),
+            };
+          },
+          run: async () => {
+            mockQueries.push({ sql, params: [] });
+            return { success: true };
+          }
+        }),
+      } as any;
+
+      const mockEnv = {
+        DB: mockDb,
+        ENCRYPTION_KEY: encryptionKey,
+      } as unknown as Env;
+
+      const bot = new TradingBot({ storage: mockStorage } as any, mockEnv);
+
+      mockFetch.mockImplementation(async (url: string) => {
+        if (url.includes("/v2/orders")) {
+          return { ok: true, json: async () => ({ success: true, result: { id: "order-999" } }) };
+        }
+        if (url.includes("/v2/ticker/")) {
+          return { ok: true, json: async () => ({ success: true, result: { symbol: "BTCUSDT", last_price: "60000.0" } }) };
+        }
+        return { ok: true, json: async () => ({}) };
+      });
+
+      // Fire first request to execute trade (which will yield at DB select due to setTimeout)
+      const promise1 = bot.fetch(new Request("http://localhost/execute-trade", { method: "POST" }));
+
+      // Fire second request immediately while the first is yielded
+      const promise2 = bot.fetch(new Request("http://localhost/execute-trade", { method: "POST" }));
+
+      const [res1, res2] = await Promise.all([promise1, promise2]);
+
+      // The first should succeed (status 200)
+      expect(res1.status).toBe(200);
+
+      // The second must fail with 409 Conflict due to the in-memory trade lock
+      expect(res2.status).toBe(409);
+      const resJson2 = await res2.json() as any;
+      expect(resJson2.error).toContain("A trade execution is already in progress");
+
+      // Verify that after execution is fully finished, the lock is released
+      const res3 = await bot.fetch(new Request("http://localhost/execute-trade", { method: "POST" }));
+      // This subsequent request should not return 409 (since alerts list is updated and status of alerts is 'executed', it will return 400 'No pending alert to execute')
+      expect(res3.status).toBe(400);
+      const resJson3 = await res3.json() as any;
+      expect(resJson3.error).toContain("No pending alert to execute");
+    });
   });
 
   describe("13-16. Exchange Validation & 23 Error Types Classification", () => {

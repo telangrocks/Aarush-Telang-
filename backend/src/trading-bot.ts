@@ -411,6 +411,7 @@ function normalizeSymbol(symbol: string): string {
 export class TradingBot {
   state: DurableObjectState;
   env: Env;
+  private isExecutingTrade = false;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -512,87 +513,96 @@ export class TradingBot {
         return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
       case '/execute-trade': {
-        const userId: string | undefined = await this.state.storage.get('userId');
-        if (!userId) {
-          return new Response(JSON.stringify({ error: 'Bot not properly initialized with a user.' }), { status: 500 });
+        if (this.isExecutingTrade) {
+          return new Response(JSON.stringify({ error: 'A trade execution is already in progress.' }), { status: 409 });
         }
+        this.isExecutingTrade = true;
 
-        const userKeys = await this.env.DB.prepare(
-          'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
-        ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
-
-        if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
-          return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
-        }
-
-        const decryptedSecret = await decrypt(
-          { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted },
-          this.env.ENCRYPTION_KEY,
-        );
-
-        const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
-        const coinId = (await this.state.storage.get('coinId')) as string;
-
-        const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-        const pending = alerts.filter((a) => a.status === 'pending');
-        if (pending.length === 0) {
-          return new Response(JSON.stringify({ error: 'No pending alert to execute.' }), { status: 400 });
-        }
-        const target = pending[pending.length - 1];
-        const side: 'BUY' | 'SELL' = target.side || 'BUY';
-        const orderSymbol = target.symbol || coinId;
-
-        let orderResult: any = { success: true, message: 'Trade executed (simulated).' };
         try {
-          if (adapter.placeOrder) {
-            const ticker = await adapter.fetchTicker(orderSymbol);
-            const rawQty = target.positionSize > 0 && target.entryPrice > 0
-              ? target.positionSize / target.entryPrice
-              : undefined;
-            const qty = rawQty != null && ticker
-              ? normalizeQuantity(rawQty, ticker.lotSize, ticker.minOrderQty, ticker.maxOrderQty)
-              : rawQty;
-            orderResult = await adapter.placeOrder(orderSymbol, side, userKeys.exchange_api_key, decryptedSecret, qty);
+          const userId: string | undefined = await this.state.storage.get('userId');
+          if (!userId) {
+            return new Response(JSON.stringify({ error: 'Bot not properly initialized with a user.' }), { status: 500 });
           }
-        } catch (e: any) {
-          orderResult = { success: false, message: e.message || 'Trade execution failed' };
-        }
 
-        target.status = 'executed';
-        await this.state.storage.put('alerts', this.pruneAlerts(alerts));
-        await this.state.storage.put('tradeActive', true);
-        await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
+          const userKeys = await this.env.DB.prepare(
+            'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
+          ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
 
-        if (orderResult.success) {
-          const positionId = crypto.randomUUID();
-          const now = new Date().toISOString();
-          await this.env.DB.prepare(
-            `INSERT INTO trade_positions (
-              id, user_id, symbol, side, entry_price, quantity, stop_loss, take_profit,
-              status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
-          )
-            .bind(
-              positionId,
-              userId,
-              orderSymbol,
-              side,
-              target.entryPrice,
-              orderResult.quantity || 0,
-              target.stopLoss,
-              target.takeProfit,
-              userKeys.exchange_name,
-              userKeys.exchange_environment || 'mainnet',
-              target.strategy,
-              orderResult.orderId || null,
-              now,
-              now,
-              now,
+          if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
+            return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
+          }
+
+          const decryptedSecret = await decrypt(
+            { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted },
+            this.env.ENCRYPTION_KEY,
+          );
+
+          const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
+          const coinId = (await this.state.storage.get('coinId')) as string;
+
+          const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+          const pending = alerts.filter((a) => a.status === 'pending');
+          if (pending.length === 0) {
+            return new Response(JSON.stringify({ error: 'No pending alert to execute.' }), { status: 400 });
+          }
+          const target = pending[pending.length - 1];
+          const side: 'BUY' | 'SELL' = target.side || 'BUY';
+          const orderSymbol = target.symbol || coinId;
+
+          let orderResult: any = { success: true, message: 'Trade executed (simulated).' };
+          try {
+            if (adapter.placeOrder) {
+              const ticker = await adapter.fetchTicker(orderSymbol);
+              const rawQty = target.positionSize > 0 && target.entryPrice > 0
+                ? target.positionSize / target.entryPrice
+                : undefined;
+              const qty = rawQty != null && ticker
+                ? normalizeQuantity(rawQty, ticker.lotSize, ticker.minOrderQty, ticker.maxOrderQty)
+                : rawQty;
+              orderResult = await adapter.placeOrder(orderSymbol, side, userKeys.exchange_api_key, decryptedSecret, qty);
+            }
+          } catch (e: any) {
+            orderResult = { success: false, message: e.message || 'Trade execution failed' };
+          }
+
+          target.status = 'executed';
+          await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+          await this.state.storage.put('tradeActive', true);
+          await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
+
+          if (orderResult.success) {
+            const positionId = crypto.randomUUID();
+            const now = new Date().toISOString();
+            await this.env.DB.prepare(
+              `INSERT INTO trade_positions (
+                id, user_id, symbol, side, entry_price, quantity, stop_loss, take_profit,
+                status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
             )
-            .run();
-        }
+              .bind(
+                positionId,
+                userId,
+                orderSymbol,
+                side,
+                target.entryPrice,
+                orderResult.quantity || 0,
+                target.stopLoss,
+                target.takeProfit,
+                userKeys.exchange_name,
+                userKeys.exchange_environment || 'mainnet',
+                target.strategy,
+                orderResult.orderId || null,
+                now,
+                now,
+                now,
+              )
+              .run();
+          }
 
-        return new Response(JSON.stringify({ success: orderResult.success, message: orderResult.message, side, order: orderResult }), { status: 200 });
+          return new Response(JSON.stringify({ success: orderResult.success, message: orderResult.message, side, order: orderResult }), { status: 200 });
+        } finally {
+          this.isExecutingTrade = false;
+        }
       }
       case '/stop-trade': {
         await this.state.storage.put('tradeActive', false);
