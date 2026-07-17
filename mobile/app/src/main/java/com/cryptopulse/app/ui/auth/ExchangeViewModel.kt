@@ -110,6 +110,24 @@ class ExchangeViewModel @Inject constructor(
     private val _positions = MutableStateFlow<List<com.cryptopulse.app.data.api.PositionResponse>>(emptyList())
     val positions: StateFlow<List<com.cryptopulse.app.data.api.PositionResponse>> = _positions
 
+    // ── User-facing error state for previously silent-failure paths ──────────
+    private val _candidatesError = MutableStateFlow<String?>(null)
+    val candidatesError: StateFlow<String?> = _candidatesError
+
+    private val _analysisError = MutableStateFlow<String?>(null)
+    val analysisError: StateFlow<String?> = _analysisError
+
+    private val _tradeError = MutableStateFlow<String?>(null)
+    val tradeError: StateFlow<String?> = _tradeError
+
+    private val _botError = MutableStateFlow<String?>(null)
+    val botError: StateFlow<String?> = _botError
+
+    fun clearCandidatesError() { _candidatesError.value = null }
+    fun clearAnalysisError() { _analysisError.value = null }
+    fun clearTradeError() { _tradeError.value = null }
+    fun clearBotError() { _botError.value = null }
+
     fun fetchPositions() {
         viewModelScope.launch {
             try {
@@ -280,15 +298,18 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun fetchMarketCandidates() {
+        _candidatesError.value = null
         viewModelScope.launch {
             try {
                 val response = marketService.getCandidates()
                 if (response.isSuccessful && response.body() != null) {
                     _candidates.value = response.body()!!
                     _readyForCandidates.value = true
+                } else {
+                    _candidatesError.value = getUserFriendlyErrorMessage(response = response).first
                 }
             } catch (e: Exception) {
-                // Silently fail - user can retry
+                _candidatesError.value = getUserFriendlyErrorMessage(exception = e).first
             }
         }
     }
@@ -308,6 +329,10 @@ class ExchangeViewModel @Inject constructor(
         _pendingAlert.value = null
         _lastTrade.value = null
         _positions.value = emptyList()
+        _candidatesError.value = null
+        _analysisError.value = null
+        _tradeError.value = null
+        _botError.value = null
         viewModelScope.launch {
             exchangeConnectionManager.clearConnection()
         }
@@ -341,6 +366,7 @@ class ExchangeViewModel @Inject constructor(
     fun fetchTechnicalAnalysis() {
         val candidate = _selectedCandidate.value ?: return
         val strategy = _selectedStrategy.value ?: return
+        _analysisError.value = null
 
         viewModelScope.launch {
             try {
@@ -352,9 +378,11 @@ class ExchangeViewModel @Inject constructor(
                 )
                 if (response.isSuccessful && response.body() != null) {
                     _technicalAnalysis.value = response.body()
+                } else {
+                    _analysisError.value = getUserFriendlyErrorMessage(response = response).first
                 }
             } catch (e: Exception) {
-                // Silently fail
+                _analysisError.value = getUserFriendlyErrorMessage(exception = e).first
             }
         }
     }
@@ -424,8 +452,16 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun executeCurrentTrade() {
-        val alert = _pendingAlert.value ?: return
+        val alert = _pendingAlert.value
+        if (alert == null) {
+            _tradeError.value = "No active trade opportunity to execute. Please try again."
+            return
+        }
         val tradeSetup = _tradeSetup.value
+        _tradeError.value = null
+        // Clear any previous result so observers can unambiguously detect the
+        // outcome of THIS execution (fresh _lastTrade == success signal).
+        _lastTrade.value = null
 
         viewModelScope.launch {
             try {
@@ -453,30 +489,38 @@ class ExchangeViewModel @Inject constructor(
                             takeProfitPrice = takeProfit,
                             positionSize = positionSize,
                         )
+                    } else {
+                        _tradeError.value = getUserFriendlyErrorMessage(response = response).first
                     }
+                } else {
+                    _tradeError.value = "Your session has expired. Please sign in again."
                 }
             } catch (e: Exception) {
-                // Silently fail
+                _tradeError.value = getUserFriendlyErrorMessage(exception = e).first
             }
         }
     }
 
     fun activateBot(symbol: String, strategy: String, positionSize: Double? = null) {
         val size = positionSize ?: _tradeSetup.value?.positionSize
+        _botError.value = null
         viewModelScope.launch {
             try {
                 val token = tokenManager.getToken()
                 if (token != null) {
-                    tradingBotService.activate(
+                    val response = tradingBotService.activate(
                         ActivateBotRequest(
                             coinId = symbol,
                             strategy = strategy,
                             positionSize = size,
                         )
                     )
+                    if (!response.isSuccessful) {
+                        _botError.value = getUserFriendlyErrorMessage(response = response).first
+                    }
                 }
             } catch (e: Exception) {
-                // Silently fail
+                _botError.value = getUserFriendlyErrorMessage(exception = e).first
             }
         }
     }

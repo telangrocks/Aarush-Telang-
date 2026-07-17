@@ -48,11 +48,29 @@ fun TradeAlertScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var isProcessing by remember { mutableStateOf(false) }
+    val tradeError by viewModel.tradeError.collectAsState(initial = null)
+    val lastTrade by viewModel.lastTrade.collectAsState(initial = null)
 
     LaunchedEffect(Unit) {
         val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         val ringtone = RingtoneManager.getRingtone(context, notification)
         ringtone.play()
+    }
+
+    // Resolve the outcome of an in-flight trade execution: navigate forward on a
+    // confirmed fill, or surface the error and re-enable the buttons on failure.
+    LaunchedEffect(isProcessing, lastTrade, tradeError) {
+        if (isProcessing) {
+            when {
+                lastTrade != null -> {
+                    isProcessing = false
+                    onTradeExecuted()
+                }
+                tradeError != null -> {
+                    isProcessing = false
+                }
+            }
+        }
     }
 
     Box(
@@ -71,19 +89,49 @@ fun TradeAlertScreen(
                         .padding(horizontal = 20.dp, vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
+                    if (tradeError != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(LossRed.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                                .border(1.dp, LossRed.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                                .padding(10.dp)
+                                .testTag("trade_alert_error"),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Error, null, tint = LossRed, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                tradeError ?: "Failed to execute trade.",
+                                color = LossRed,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         GradientButton(
-                            text = "Cancel",
+                            text = if (tradeError != null) "Retry" else "Cancel",
                             onClick = {
-                                scope.launch {
-                                    viewModel.dismissCurrentAlert()
-                                    onBack()
+                                if (tradeError != null) {
+                                    viewModel.clearTradeError()
+                                    isProcessing = true
+                                    scope.launch {
+                                        viewModel.executeCurrentTrade()
+                                    }
+                                } else {
+                                    scope.launch {
+                                        viewModel.dismissCurrentAlert()
+                                        onBack()
+                                    }
                                 }
                             },
-                            leadingIcon = Icons.Default.Close,
+                            leadingIcon = if (tradeError != null) Icons.Default.Refresh else Icons.Default.Close,
                             modifier = Modifier.weight(1f),
                             enabled = !isProcessing,
                             testTag = "trade_alert_cancel_button",
@@ -91,11 +139,10 @@ fun TradeAlertScreen(
                         GradientButton(
                             text = "Trade",
                             onClick = {
+                                viewModel.clearTradeError()
                                 isProcessing = true
                                 scope.launch {
                                     viewModel.executeCurrentTrade()
-                                    onTradeExecuted()
-                                    isProcessing = false
                                 }
                             },
                             leadingIcon = Icons.Default.Check,

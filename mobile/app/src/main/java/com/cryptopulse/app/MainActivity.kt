@@ -12,7 +12,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -46,6 +49,7 @@ import com.cryptopulse.app.ui.screens.LiveAnalysisViewModel
 import com.cryptopulse.app.service.BackgroundMonitoringService
 import com.cryptopulse.app.service.AlertBus
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
+import com.cryptopulse.app.ui.components.LocalOnLogout
 import com.cryptopulse.app.ui.screens.MarketCandidate
 import com.cryptopulse.app.ui.auth.TradeSetupState
 import dagger.hilt.android.AndroidEntryPoint
@@ -75,7 +79,23 @@ class MainActivity : ComponentActivity() {
                     val navController = rememberNavController()
                     val token by tokenManager.tokenFlow.collectAsState(initial = null)
                     val startDestination = "splash"
+                    val exchangeViewModel = hiltViewModel<ExchangeViewModel>(this)
+                    val coroutineScope = rememberCoroutineScope()
 
+                    val performLogout: () -> Unit = {
+                        coroutineScope.launch {
+                            tokenManager.clearToken()
+                            exchangeConnectionManager.clearConnection()
+                        }
+                        exchangeViewModel.resetState()
+                        navController.navigate("welcome") {
+                            popUpTo("splash") { inclusive = true }
+                        }
+                    }
+
+                    CompositionLocalProvider(
+                        LocalOnLogout provides if (token != null) performLogout else null
+                    ) {
                     NavHost(navController = navController, startDestination = startDestination) {
                         composable("splash") {
                             SplashScreen(
@@ -334,6 +354,7 @@ class MainActivity : ComponentActivity() {
                                 onBack = { navController.popBackStack() }
                             )
                         }
+                    }
                     }
                 }
             }
