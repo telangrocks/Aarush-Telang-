@@ -43,9 +43,19 @@ async function request(method, path, { headers = {}, body } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
+    // Build final headers: start with Content-Type default, then apply overrides.
+    // Setting a header to null explicitly removes it (allows testing 415 responses).
+    const finalHeaders = { "Content-Type": "application/json" };
+    for (const [k, v] of Object.entries(headers)) {
+      if (v === null) {
+        delete finalHeaders[k];
+      } else {
+        finalHeaders[k] = v;
+      }
+    }
     const res = await fetch(`${WORKER_URL}${path}`, {
       method,
-      headers: { "Content-Type": "application/json", ...headers },
+      headers: finalHeaders,
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
@@ -165,7 +175,7 @@ async function run() {
   {
     const start = Date.now();
     try {
-      const res = await request("GET", "/profile", { headers: authHeaders });
+      const res = await request("GET", "/api/profile", { headers: authHeaders });
       const ok = res.status === 200 && !!res.json?.id;
       recordCheck({
         id: "profile",
@@ -184,7 +194,7 @@ async function run() {
   {
     const start = Date.now();
     try {
-      const res = await request("GET", "/strategies", { headers: authHeaders });
+      const res = await request("GET", "/api/strategies", { headers: authHeaders });
       const arr = Array.isArray(res.json) ? res.json : [];
       const ok = res.status === 200 && arr.length > 0;
       recordCheck({
@@ -302,11 +312,15 @@ async function run() {
     try {
       const badLogin = await request("POST", "/api/login", { body: { email: "invalid", password: "wrong" } });
       const badRegister = await request("POST", "/api/register", { body: { email: "bad", password: "x" } });
-      const noContentType = await request("POST", "/api/login", { body: { email: QA_EMAIL, password: QA_PASSWORD }, headers: {} });
+      const noContentType = await request("POST", "/api/login", { body: { email: QA_EMAIL, password: QA_PASSWORD }, headers: { "Content-Type": null } });
 
       const loginMsg = (badLogin.json?.error || badLogin.json?.message || "").toLowerCase();
       const registerMsg = (badRegister.json?.error || badRegister.json?.message || "").toLowerCase();
-      const contentTypeMsg = (noContentType.json?.error || noContentType.json?.message || "").toLowerCase();
+      // Server returns { error: "Unsupported Media Type", message: "Content-Type must be application/json" }
+      // Check both fields together for robustness
+      const contentTypeMsg = (
+        (noContentType.json?.error || "") + " " + (noContentType.json?.message || "")
+      ).toLowerCase();
 
       const ok = badLogin.status === 401 &&
                  badRegister.status === 400 &&

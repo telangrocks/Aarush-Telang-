@@ -256,11 +256,12 @@ api.post("/alerts", async (c) => {
     condition: "ABOVE" | "BELOW";
   }>();
 
+  const alertId = crypto.randomUUID();
   await c.env.DB.prepare(
     "INSERT INTO price_alerts (id, user_id, token_id, target_price, condition, created_at) VALUES (?, ?, ?, ?, ?, ?)",
   )
     .bind(
-      crypto.randomUUID(),
+      alertId,
       userId,
       token_id,
       target_price,
@@ -269,7 +270,7 @@ api.post("/alerts", async (c) => {
     )
     .run();
 
-  return c.json({ success: true, token_id });
+  return c.json({ success: true, id: alertId, token_id });
 });
 
 api.post("/exchange/validate", handleValidateExchange);

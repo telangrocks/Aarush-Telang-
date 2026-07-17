@@ -1,0 +1,149 @@
+{
+  "generatedAt": "2026-07-17T00:36:57.827Z",
+  "workerUrl": "http://127.0.0.1:8787",
+  "summary": {
+    "total": 17,
+    "passed": 13,
+    "failed": 0,
+    "skipped": 4,
+    "blockingFailures": 0
+  },
+  "checks": [
+    {
+      "id": "health",
+      "name": "Backend health check (/health)",
+      "severity": "critical",
+      "status": "PASS",
+      "details": "status=ok",
+      "durationMs": 86
+    },
+    {
+      "id": "db",
+      "name": "Cloudflare D1 database connectivity (/db-status)",
+      "severity": "critical",
+      "status": "PASS",
+      "details": "schema intact",
+      "durationMs": 38
+    },
+    {
+      "id": "register",
+      "name": "Authentication — user registration",
+      "severity": "critical",
+      "status": "PASS",
+      "details": "JWT issued",
+      "durationMs": 93
+    },
+    {
+      "id": "login",
+      "name": "Authentication — user login",
+      "severity": "critical",
+      "status": "PASS",
+      "details": "JWT issued",
+      "durationMs": 96
+    },
+    {
+      "id": "profile",
+      "name": "Protected route — /profile (JWT auth)",
+      "severity": "high",
+      "status": "PASS",
+      "details": "user=qa+1784248617255@cryptopulse.dev",
+      "durationMs": 12
+    },
+    {
+      "id": "strategies",
+      "name": "Public API — /strategies returns real data",
+      "severity": "high",
+      "status": "PASS",
+      "details": "5 strategies",
+      "durationMs": 22
+    },
+    {
+      "id": "endpoint-inventory",
+      "name": "Public endpoint inventory (response codes)",
+      "severity": "medium",
+      "status": "PASS",
+      "details": "verify-otp=410, invalid-register=400",
+      "durationMs": 39
+    },
+    {
+      "id": "exchange-validate",
+      "name": "Exchange connectivity (optional test credentials)",
+      "severity": "high",
+      "status": "SKIP",
+      "details": "QA_EXCHANGE_* secrets not provided",
+      "durationMs": 0
+    },
+    {
+      "id": "market-data",
+      "name": "Live market data — real prices",
+      "severity": "high",
+      "status": "SKIP",
+      "details": "requires exchange test credentials",
+      "durationMs": 0
+    },
+    {
+      "id": "no-mock-data",
+      "name": "No hardcoded / mock / dummy data in responses",
+      "severity": "critical",
+      "status": "PASS",
+      "details": "8 responses scanned",
+      "durationMs": 0
+    },
+    {
+      "id": "error-handling",
+      "name": "User-friendly error handling — meaningful messages, no raw stack traces",
+      "severity": "high",
+      "status": "PASS",
+      "details": "login=401, register=400, contentType=415",
+      "durationMs": 69
+    },
+    {
+      "id": "watchlist",
+      "name": "Watchlist CRUD — add and remove tokens",
+      "severity": "medium",
+      "status": "PASS",
+      "details": "CRUD operations successful",
+      "durationMs": 76
+    },
+    {
+      "id": "price-alerts",
+      "name": "Price alerts — create alert",
+      "severity": "medium",
+      "status": "PASS",
+      "details": "alert id=5c4e4b31-4b86-43e8-a21a-765dceaabe91",
+      "durationMs": 11
+    },
+    {
+      "id": "technical-analysis",
+      "name": "Technical analysis (requires connected exchange)",
+      "severity": "high",
+      "status": "SKIP",
+      "details": "requires exchange test credentials",
+      "durationMs": 0
+    },
+    {
+      "id": "market-data-detail",
+      "name": "Market ticker + klines (requires connected exchange)",
+      "severity": "high",
+      "status": "SKIP",
+      "details": "requires exchange test credentials",
+      "durationMs": 0
+    },
+    {
+      "id": "fcm-register",
+      "name": "FCM token registration",
+      "severity": "medium",
+      "status": "PASS",
+      "details": "token registered",
+      "durationMs": 11
+    },
+    {
+      "id": "exchange-status",
+      "name": "Exchange connection status",
+      "severity": "medium",
+      "status": "PASS",
+      "details": "connected=false",
+      "durationMs": 9
+    }
+  ]
+}
