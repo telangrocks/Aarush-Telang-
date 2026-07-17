@@ -26,6 +26,7 @@ import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.theme.*
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
+import com.cryptopulse.app.data.api.PositionResponse
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -105,7 +106,7 @@ fun PositionsScreen(
                     }
                 } else {
                     items(positions) { position ->
-                        val positionId = position["id"] as? String ?: return@items
+                        val positionId = position.id
                         PositionCard(
                             position = position,
                             onClose = {
@@ -128,20 +129,20 @@ fun PositionsScreen(
 }
 
 @Composable
-private fun PositionCard(position: Map<String, Any>, onClose: () -> Unit) {
-    val symbol = (position["symbol"] as? String) ?: "UNKNOWN"
-    val side = (position["side"] as? String) ?: "BUY"
-    val entryPrice = (position["entry_price"] as? Double) ?: 0.0
-    val currentPrice = (position["current_price"] as? Double?)
-    val livePnl = (position["live_pnl"] as? Double?)
-    val status = (position["status"] as? String) ?: "OPEN"
-    val stopLoss = (position["stop_loss"] as? Double) ?: 0.0
-    val takeProfit = (position["take_profit"] as? Double) ?: 0.0
-    val quantity = (position["quantity"] as? Double) ?: 0.0
-    val strategy = (position["strategy"] as? String) ?: ""
-    val exchange = (position["exchange"] as? String) ?: ""
-    val realizedPnl = (position["realized_pnl"] as? Double?)
-    val closeReason = (position["close_reason"] as? String?)
+private fun PositionCard(position: PositionResponse, onClose: () -> Unit) {
+    val symbol = position.symbol
+    val side = position.side
+    val entryPrice = position.entryPrice
+    val currentPrice = position.currentPrice
+    val livePnl = position.livePnl
+    val status = position.status
+    val stopLoss = position.stopLoss
+    val takeProfit = position.takeProfit
+    val quantity = position.quantity
+    val strategy = position.strategy ?: ""
+    val exchange = position.exchange
+    val realizedPnl = position.realizedPnl
+    val closeReason = position.closeReason
 
     val isOpen = status == "OPEN"
     val pnlDisplay = if (isOpen && livePnl != null) livePnl else realizedPnl ?: 0.0

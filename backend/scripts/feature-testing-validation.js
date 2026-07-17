@@ -142,7 +142,7 @@ async function run() {
   let candidates = [];
   {
     const start = Date.now();
-    const res = await request("GET", "/market/candidates", { headers: authHeaders });
+    const res = await request("GET", "/api/market/candidates", { headers: authHeaders });
     candidates = Array.isArray(res.json) ? res.json : [];
     const realPrices = candidates.filter((c) => typeof c.currentMarketPrice === "number" && c.currentMarketPrice > 0);
     const ranked = candidates.every((c, i) => c.rank === i + 1) && candidates.length <= 10;
@@ -171,7 +171,7 @@ async function run() {
   let strategies = [];
   {
     const start = Date.now();
-    const res = await request("GET", "/strategies", { headers: authHeaders });
+    const res = await request("GET", "/api/strategies", { headers: authHeaders });
     strategies = Array.isArray(res.json) ? res.json : [];
     const ids = strategies.map((s) => s.id);
     const ok = res.status === 200 && STRATEGIES_EXPECTED.every((s) => ids.includes(s));
@@ -194,7 +194,7 @@ async function run() {
   let botActive = false;
   {
     const start = Date.now();
-    const res = await request("POST", "/trading-bot/activate", { headers: authHeaders, body: { coinId: firstSymbol, strategy: "scalping", positionSize: 100 } });
+    const res = await request("POST", "/api/trading-bot/activate", { headers: authHeaders, body: { coinId: firstSymbol, strategy: "scalping", positionSize: 100 } });
     botActive = res.status === 200;
     record({ phase: "P8", name: "Strategy activation (bot started)", severity: "high", status: botActive ? "PASS" : "FAIL", details: botActive ? "activated" : `status=${res.status}`, durationMs: Date.now() - start });
   }
@@ -205,11 +205,11 @@ async function run() {
     const start = Date.now();
     let lastProgress = -1;
     for (let i = 0; i < 30; i++) {
-      const res = await request("GET", "/trading-bot/analysis-status", { headers: authHeaders });
+      const res = await request("GET", "/api/trading-bot/analysis-status", { headers: authHeaders });
       const st = res.json;
       if (st?.scanningProgress !== undefined) {
         if (st.scanningProgress > lastProgress) { lastProgress = st.scanningProgress; engineProgressed = true; }
-        const alerts = await request("GET", "/trading-bot/alerts", { headers: authHeaders });
+        const alerts = await request("GET", "/api/trading-bot/alerts", { headers: authHeaders });
         const arr = Array.isArray(alerts.json) ? alerts.json : [];
         if (arr.length > 0) { reachedSignal = true; break; }
       }
@@ -223,8 +223,8 @@ async function run() {
   let positionCreated = false;
   {
     const start = Date.now();
-    const res = await request("POST", "/trading-bot/execute-trade", { headers: authHeaders });
-    const pos = await request("GET", "/positions", { headers: authHeaders });
+    const res = await request("POST", "/api/trading-bot/execute-trade", { headers: authHeaders });
+    const pos = await request("GET", "/api/positions", { headers: authHeaders });
     const arr = Array.isArray(pos.json) ? pos.json : [];
     positionCreated = res.status === 200 && arr.length > 0;
     record({ phase: "P10", name: "Trade execution (position created)", severity: "high", status: positionCreated ? "PASS" : "SKIP", details: positionCreated ? `${arr.length} position(s)` : `execute=${res.status} positions=${arr.length}` });
@@ -233,7 +233,7 @@ async function run() {
   // ---- P11: Live P&L synced ------------------------------------------
   {
     const start = Date.now();
-    const res = await request("GET", "/positions", { headers: authHeaders });
+    const res = await request("GET", "/api/positions", { headers: authHeaders });
     const arr = Array.isArray(res.json) ? res.json : [];
     const synced = arr.some((p) => typeof p.current_price === "number" && p.current_price > 0 && (typeof p.live_pnl === "number" || p.live_pnl === null));
     const ok = arr.length > 0 && synced;

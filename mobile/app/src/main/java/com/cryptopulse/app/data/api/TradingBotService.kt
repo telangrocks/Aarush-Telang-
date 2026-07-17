@@ -1,5 +1,6 @@
 package com.cryptopulse.app.data.api
 
+import com.google.gson.annotations.SerializedName
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
@@ -103,27 +104,27 @@ data class BotAlert(
 
 data class PositionResponse(
     val id: String,
-    val userId: String,
+    @SerializedName("user_id") val userId: String,
     val symbol: String,
     val side: String,
-    val entryPrice: Double,
+    @SerializedName("entry_price") val entryPrice: Double,
     val quantity: Double,
-    val stopLoss: Double,
-    val takeProfit: Double,
+    @SerializedName("stop_loss") val stopLoss: Double,
+    @SerializedName("take_profit") val takeProfit: Double,
     val status: String,
     val exchange: String,
     val environment: String,
     val strategy: String?,
-    val orderId: String?,
-    val entryAt: String?,
-    val closedAt: String?,
-    val closePrice: Double?,
-    val realizedPnl: Double?,
-    val closeReason: String?,
-    val createdAt: String?,
-    val updatedAt: String?,
-    val currentPrice: Double?,
-    val livePnl: Double?,
+    @SerializedName("order_id") val orderId: String?,
+    @SerializedName("entry_at") val entryAt: String?,
+    @SerializedName("closed_at") val closedAt: String?,
+    @SerializedName("close_price") val closePrice: Double?,
+    @SerializedName("realized_pnl") val realizedPnl: Double?,
+    @SerializedName("close_reason") val closeReason: String?,
+    @SerializedName("created_at") val createdAt: String?,
+    @SerializedName("updated_at") val updatedAt: String?,
+    @SerializedName("current_price") val currentPrice: Double?,
+    @SerializedName("live_pnl") val livePnl: Double?,
 )
 
 interface TradingBotService {

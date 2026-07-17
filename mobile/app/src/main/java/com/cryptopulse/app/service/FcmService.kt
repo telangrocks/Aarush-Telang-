@@ -58,7 +58,7 @@ class FcmService : FirebaseMessagingService() {
             try {
                 val jwtToken = tokenManager.getToken() ?: return@launch
                 val request = mapOf("fcmToken" to token)
-                val response = fcmApi.registerToken("Bearer $jwtToken", request)
+                val response = fcmApi.registerToken(request)
                 if (response.isSuccessful) {
                     Log.d("FcmService", "FCM token registered with backend")
                 } else {

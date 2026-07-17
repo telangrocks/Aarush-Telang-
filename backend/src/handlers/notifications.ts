@@ -258,6 +258,7 @@ export async function sendPriceAlertNotification(
 export async function sendTradeNotification(
   env: Env,
   userId: string,
+  alertId: string,
   opportunity: {
     symbol: string;
     side: "BUY" | "SELL";
@@ -296,6 +297,7 @@ export async function sendTradeNotification(
           },
           data: {
             type: "trade_alert",
+            alertId: alertId,
             symbol: opportunity.symbol,
             side: opportunity.side,
             strategy: opportunity.strategy,
@@ -353,6 +355,7 @@ export async function sendTradeNotification(
           },
           data: {
             type: "trade_alert",
+            alertId: alertId,
             symbol: opportunity.symbol,
             side: opportunity.side,
             strategy: opportunity.strategy,

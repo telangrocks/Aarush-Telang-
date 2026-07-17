@@ -774,7 +774,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       fetchHeaders.length = 0;
       fetchBodies.length = 0;
 
-      await sendTradeNotification(mockEnv, "user-123", {
+      await sendTradeNotification(mockEnv, "user-123", "test-alert-id", {
         symbol: "SOL",
         side: "BUY",
         entryPrice: 150,
@@ -832,7 +832,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         return { ok: true, json: async () => ({}) };
       });
 
-      await sendTradeNotification(mockEnv, "user-123", {
+      await sendTradeNotification(mockEnv, "user-123", "test-alert-id", {
         symbol: "ETH",
         side: "SELL",
         entryPrice: 3500,

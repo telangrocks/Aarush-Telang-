@@ -33,7 +33,12 @@ import kotlinx.coroutines.delay
  *  – Full fade-in over 1.8 s, auto-navigates after 3.5 s
  */
 @Composable
-fun SplashScreen(navController: NavController, tokenManager: TokenManager, exchangeConnectionManager: ExchangeConnectionManager) {
+fun SplashScreen(
+    navController: NavController,
+    tokenManager: TokenManager,
+    exchangeConnectionManager: ExchangeConnectionManager,
+    exchangeService: com.cryptopulse.app.data.api.ExchangeService
+) {
 
     // ── Animation state ───────────────────────────────────────────────────
     var visible by remember { mutableStateOf(false) }
@@ -58,8 +63,26 @@ fun SplashScreen(navController: NavController, tokenManager: TokenManager, excha
 
     LaunchedEffect(Unit) {
         visible = true
-        delay(3500)
         val token = tokenManager.getToken()
+        if (!token.isNullOrEmpty()) {
+            try {
+                val response = exchangeService.getStatus()
+                if (response.isSuccessful && response.body() != null) {
+                    val status = response.body()!!
+                    if (status.isConnected) {
+                        exchangeConnectionManager.saveConnection(
+                            status.exchangeName ?: "binance",
+                            status.environment ?: "testnet"
+                        )
+                    } else {
+                        exchangeConnectionManager.clearConnection()
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore status sync errors to allow offline start with cached credentials
+            }
+        }
+        delay(3500)
         val (isExchangeConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
         val destination = when {
             token.isNullOrEmpty() -> "welcome"

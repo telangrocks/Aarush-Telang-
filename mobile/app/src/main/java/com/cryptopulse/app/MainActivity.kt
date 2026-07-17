@@ -61,6 +61,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var exchangeConnectionManager: ExchangeConnectionManager
 
+    @Inject
+    lateinit var exchangeService: com.cryptopulse.app.data.api.ExchangeService
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -75,7 +78,12 @@ class MainActivity : ComponentActivity() {
 
                     NavHost(navController = navController, startDestination = startDestination) {
                         composable("splash") {
-                            SplashScreen(navController = navController, tokenManager = tokenManager, exchangeConnectionManager = exchangeConnectionManager)
+                            SplashScreen(
+                                navController = navController,
+                                tokenManager = tokenManager,
+                                exchangeConnectionManager = exchangeConnectionManager,
+                                exchangeService = exchangeService
+                            )
                         }
                         composable("welcome") {
                             WelcomeScreen(navController = navController)
@@ -330,18 +338,21 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val exchangeViewModelForFcm = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
             LaunchedEffect(Unit) {
                 try {
                     val token = tokenManager.getToken()
                     if (!token.isNullOrEmpty()) {
-                        val fcmToken = try {
-                            com.google.firebase.messaging.FirebaseMessaging.getInstance().token.result
-                        } catch (e: Exception) {
-                            null
+                        val fcmToken = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            try {
+                                val task = com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                                com.google.android.gms.tasks.Tasks.await(task)
+                            } catch (e: Exception) {
+                                null
+                            }
                         }
                         if (!fcmToken.isNullOrEmpty()) {
-                            val viewModel: ExchangeViewModel by viewModels()
-                            viewModel.registerFcmToken(fcmToken)
+                            exchangeViewModelForFcm.registerFcmToken(fcmToken)
                         }
                     }
                 } catch (e: Exception) {

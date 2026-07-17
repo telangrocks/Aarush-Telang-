@@ -107,8 +107,8 @@ class ExchangeViewModel @Inject constructor(
     private val _lastTrade = MutableStateFlow<TradeSetupState?>(null)
     val lastTrade: StateFlow<TradeSetupState?> = _lastTrade
 
-    private val _positions = MutableStateFlow<List<Map<String, Any>>>(emptyList())
-    val positions: StateFlow<List<Map<String, Any>>> = _positions
+    private val _positions = MutableStateFlow<List<com.cryptopulse.app.data.api.PositionResponse>>(emptyList())
+    val positions: StateFlow<List<com.cryptopulse.app.data.api.PositionResponse>> = _positions
 
     fun fetchPositions() {
         viewModelScope.launch {
@@ -117,7 +117,7 @@ class ExchangeViewModel @Inject constructor(
                 if (token != null) {
                     val response = tradingBotService.getPositions()
                     if (response.isSuccessful && response.body() != null) {
-                        _positions.value = response.body()!!.map { it as Map<String, Any> }
+                        _positions.value = response.body()!!
                     }
                 }
             } catch (e: Exception) {
@@ -462,6 +462,7 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun activateBot(symbol: String, strategy: String, positionSize: Double? = null) {
+        val size = positionSize ?: _tradeSetup.value?.positionSize
         viewModelScope.launch {
             try {
                 val token = tokenManager.getToken()
@@ -470,7 +471,7 @@ class ExchangeViewModel @Inject constructor(
                         ActivateBotRequest(
                             coinId = symbol,
                             strategy = strategy,
-                            positionSize = positionSize,
+                            positionSize = size,
                         )
                     )
                 }
@@ -486,7 +487,7 @@ class ExchangeViewModel @Inject constructor(
                 val token = tokenManager.getToken()
                 if (token != null) {
                     val request = mapOf("fcmToken" to fcmToken)
-                    fcmApi.registerToken("Bearer $token", request)
+                    fcmApi.registerToken(request)
                 }
             } catch (e: Exception) {
                 // Silently fail

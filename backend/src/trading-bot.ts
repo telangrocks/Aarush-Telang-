@@ -868,8 +868,9 @@ export class TradingBot {
     // Avoid duplicate alarms while a previous opportunity is still unhandled.
     if (pending.length > 0) return;
 
+    const alertId = crypto.randomUUID();
     alerts.push({
-      id: crypto.randomUUID(),
+      id: alertId,
       symbol: opportunity.symbol,
       entryPrice: opportunity.entryPrice,
       stopLoss: opportunity.stopLoss,
@@ -883,7 +884,7 @@ export class TradingBot {
     });
     await this.state.storage.put('alerts', this.pruneAlerts(alerts));
 
-    await sendTradeNotification(this.env, userId, {
+    await sendTradeNotification(this.env, userId, alertId, {
       symbol: opportunity.symbol,
       entryPrice: opportunity.entryPrice,
       stopLoss: opportunity.stopLoss,

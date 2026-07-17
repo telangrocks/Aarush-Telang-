@@ -24,6 +24,7 @@ import okhttp3.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import javax.inject.Singleton
+import kotlinx.coroutines.launch
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -48,7 +49,13 @@ object AppModule {
             if (!token.isNullOrEmpty()) {
                 requestBuilder.addHeader("Authorization", "Bearer $token")
             }
-            return chain.proceed(requestBuilder.build())
+            val response = chain.proceed(requestBuilder.build())
+            if (response.code == 401) {
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    tokenManager.clearToken()
+                }
+            }
+            return response
         }
     }
 
@@ -56,6 +63,10 @@ object AppModule {
     @Singleton
     fun provideOkHttpClient(tokenManager: TokenManager): OkHttpClient {
         return OkHttpClient.Builder()
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .addInterceptor(AuthInterceptor(tokenManager))
             .build()
     }
