@@ -343,14 +343,12 @@ jobs:
           echo "## Maestro UI journey (11 phases)" >> summary.md
           echo "" >> summary.md
           mtests=0; mfail=0
-          for f in ai-artifacts-all/ai-feature-report.xml ai-artifacts-all/ai-feature-artifacts/ai-feature-report.xml; do
-            if [ -f "$f" ]; then
-              t=$(grep -o 'tests="[0-9]*"' "$f" | head -n1 | grep -o '[0-9]*')
-              fl=$(grep -o 'failures="[0-9]*"' "$f" | head -n1 | grep -o '[0-9]*')
-              er=$(grep -o 'errors="[0-9]*"' "$f" | head -n1 | grep -o '[0-9]*')
-              mtests=$((mtests + ${t:-0}))
-              mfail=$((mfail + ${fl:-0} + ${er:-0}))
-            fi
+          for f in ai-artifacts-all/ai-feature-report.xml* ai-artifacts-all/ai-feature-artifacts/ai-feature-report.xml*; do
+            t=$(grep -o 'tests="[0-9]*"' "$f" | head -n1 | grep -o '[0-9]*')
+            fl=$(grep -o 'failures="[0-9]*"' "$f" | head -n1 | grep -o '[0-9]*')
+            er=$(grep -o 'errors="[0-9]*"' "$f" | head -n1 | grep -o '[0-9]*')
+            mtests=$((mtests + ${t:-0}))
+            mfail=$((mfail + ${fl:-0} + ${er:-0}))
           done
           echo "- Steps executed: ${mtests}, Failures+Errors: ${mfail}" >> summary.md
           echo "" >> summary.md
