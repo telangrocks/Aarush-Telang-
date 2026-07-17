@@ -17,6 +17,34 @@ async function hmacSha256(message: string, secret: string): Promise<string> {
     .join("");
 }
 
+function normalizeInterval(interval: string): { resolution: string; seconds: number } {
+  const map: Record<string, { resolution: string; seconds: number }> = {
+    "1": { resolution: "1m", seconds: 60 },
+    "1m": { resolution: "1m", seconds: 60 },
+    "3": { resolution: "3m", seconds: 180 },
+    "3m": { resolution: "3m", seconds: 180 },
+    "5": { resolution: "5m", seconds: 300 },
+    "5m": { resolution: "5m", seconds: 300 },
+    "15": { resolution: "15m", seconds: 900 },
+    "15m": { resolution: "15m", seconds: 900 },
+    "30": { resolution: "30m", seconds: 1800 },
+    "30m": { resolution: "30m", seconds: 1800 },
+    "60": { resolution: "1h", seconds: 3600 },
+    "1h": { resolution: "1h", seconds: 3600 },
+    "120": { resolution: "2h", seconds: 7200 },
+    "2h": { resolution: "2h", seconds: 7200 },
+    "240": { resolution: "4h", seconds: 14400 },
+    "4h": { resolution: "4h", seconds: 14400 },
+    "360": { resolution: "6h", seconds: 21600 },
+    "6h": { resolution: "6h", seconds: 21600 },
+    "720": { resolution: "12h", seconds: 43200 },
+    "12h": { resolution: "12h", seconds: 43200 },
+    "D": { resolution: "1d", seconds: 86400 },
+    "1d": { resolution: "1d", seconds: 86400 },
+  };
+  return map[interval] ?? { resolution: "1h", seconds: 3600 };
+}
+
 export class DeltaExchange implements IExchangeAdapter {
   readonly config: ExchangeConfig = {
     name: "delta",
@@ -61,15 +89,16 @@ export class DeltaExchange implements IExchangeAdapter {
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
       const timestamp = Math.floor(Date.now() / 1000).toString();
-      const requestPath = "/v2/account/wallet/balance";
+      const requestPath = "/v2/wallet/balances";
       const query = `timestamp=${timestamp}`;
-      const prehash = timestamp + "GET" + requestPath + "?" + query;
+      const prehash = "GET" + timestamp + requestPath + "?" + query;
       const signature = await hmacSha256(prehash, apiSecret);
 
       const response = await fetch(`${this.getRestUrl()}${requestPath}?${query}`, {
         headers: {
-          "API-Key": apiKey,
-          "Signature": signature,
+          "api-key": apiKey,
+          "signature": signature,
+          "timestamp": timestamp,
         },
       });
 
@@ -190,19 +219,31 @@ export class DeltaExchange implements IExchangeAdapter {
 
   async fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]> {
     try {
-      const response = await fetch(`${this.getRestUrl()}/v2/tickers/${symbol.toUpperCase()}USDT/candles?interval=${interval}&limit=${limit}`);
+      const { resolution, seconds } = normalizeInterval(interval);
+      const end = Math.floor(Date.now() / 1000);
+      const start = end - (limit * seconds);
+      const params = new URLSearchParams({
+        symbol: `${symbol.toUpperCase()}USDT`,
+        resolution,
+        start: start.toString(),
+        end: end.toString(),
+      });
+      const response = await fetch(`${this.getRestUrl()}/v2/history/candles?${params}`);
       if (!response.ok) return [];
       const data = await response.json() as any;
       if (!data.success || !Array.isArray(data.result)) return [];
-      return data.result.map((k: any[]) => ({
-        openTime: parseInt(k[0]),
-        open: parseFloat(k[1]),
-        high: parseFloat(k[2]),
-        low: parseFloat(k[3]),
-        close: parseFloat(k[4]),
-        volume: parseFloat(k[5]),
-        closeTime: parseInt(k[0]) + 3600000,
-      }));
+      return data.result.map((k: any) => {
+        const timeMs = parseInt(k.time) * 1000;
+        return {
+          openTime: timeMs,
+          open: parseFloat(k.open),
+          high: parseFloat(k.high),
+          low: parseFloat(k.low),
+          close: parseFloat(k.close),
+          volume: parseFloat(k.volume),
+          closeTime: timeMs + (seconds * 1000),
+        };
+      });
     } catch {
       return [];
     }
@@ -219,13 +260,14 @@ export class DeltaExchange implements IExchangeAdapter {
         type: "market",
         quantity: qty,
       });
-      const prehash = timestamp + "POST" + requestPath + body;
+      const prehash = "POST" + timestamp + requestPath + body;
       const signature = await hmacSha256(prehash, apiSecret);
       const response = await fetch(`${this.getRestUrl()}${requestPath}`, {
         method: "POST",
         headers: {
-          "API-Key": apiKey,
-          "Signature": signature,
+          "api-key": apiKey,
+          "signature": signature,
+          "timestamp": timestamp,
           "Content-Type": "application/json",
         },
         body,

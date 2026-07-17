@@ -17,6 +17,25 @@ async function hmacSha256(message: string, secret: string): Promise<string> {
     .join("");
 }
 
+function normalizeKlineInterval(interval: string): string {
+  const map: Record<string, string> = {
+    "1": "1m",
+    "3": "3m",
+    "5": "5m",
+    "15": "15m",
+    "30": "30m",
+    "60": "1h",
+    "120": "2h",
+    "240": "4h",
+    "360": "6h",
+    "720": "12h",
+    "D": "1d",
+    "W": "1w",
+    "M": "1M",
+  };
+  return map[interval] ?? interval;
+}
+
 export class BinanceExchange implements IExchangeAdapter {
   readonly config: ExchangeConfig = {
     name: "binance",
@@ -180,7 +199,7 @@ export class BinanceExchange implements IExchangeAdapter {
     try {
       const params = new URLSearchParams({
         symbol: `${symbol.toUpperCase()}USDT`,
-        interval,
+        interval: normalizeKlineInterval(interval),
         limit: limit.toString(),
       });
       const response = await fetch(`${this.getRestUrl()}/api/v3/klines?${params}`);
