@@ -40,6 +40,9 @@ export interface Env {
   AUTH_ALLOW_DEV_OTP_FALLBACK?: string;
   ALLOWED_ORIGINS: string;
   FCM_SERVER_KEY?: string;
+  FCM_PROJECT_ID?: string;
+  FCM_CLIENT_EMAIL?: string;
+  FCM_PRIVATE_KEY?: string;
   TRADING_BOTS: DurableObjectNamespace;
 }
 

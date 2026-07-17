@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getExchangeAdapter } from "./exchanges";
 import { TradingBot, evaluateStrategy } from "./trading-bot";
+import { sendPriceAlertNotification, sendTradeNotification } from "./handlers/notifications";
 import { encrypt } from "./crypto";
 import { analyzeMarket } from "./market-analysis";
 import { Env } from "./index";
@@ -666,6 +667,189 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       
       // 23. UNKNOWN_EXCHANGE_ERROR
       expect(classifyByBody("some random technical error", "binance").code).toBe("UNKNOWN_EXCHANGE_ERROR");
+    });
+  });
+
+  describe("FCM HTTP v1 Notifications Migration", () => {
+    let privateKeyPem: string;
+
+    beforeEach(async () => {
+      const keyPair = await crypto.subtle.generateKey(
+        {
+          name: "RSASSA-PKCS1-v1_5",
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: "SHA-256",
+        },
+        true,
+        ["sign", "verify"]
+      );
+      const exported = await crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+      privateKeyPem = `-----BEGIN PRIVATE KEY-----\n${btoa(String.fromCharCode(...new Uint8Array(exported)))}\n-----END PRIVATE KEY-----`;
+    });
+
+    it("should successfully generate Google access token, sign JWT assertions, cache it, and send notifications over FCM v1 API", async () => {
+      const dbQueries: any[] = [];
+      const mockDb = {
+        prepare: (sql: string) => ({
+          bind: (...params: any[]) => {
+            dbQueries.push({ sql, params });
+            return {
+              first: async () => {
+                if (sql.includes("SELECT fcm_token")) {
+                  return { fcm_token: "test_device_token" };
+                }
+                return null;
+              }
+            };
+          }
+        })
+      } as any;
+
+      const mockEnv = {
+        DB: mockDb,
+        FCM_PROJECT_ID: "test-fcm-project-id",
+        FCM_CLIENT_EMAIL: "fcm-notifier@test-fcm-project-id.iam.gserviceaccount.com",
+        FCM_PRIVATE_KEY: privateKeyPem,
+      } as unknown as Env;
+
+      const mockTokenExchangeResponse = {
+        access_token: "mock-oauth2-access-token-ya29",
+        expires_in: 3600
+      };
+
+      const mockFcmResponse = {
+        name: "projects/test-fcm-project-id/messages/mock-message-id"
+      };
+
+      const fetchedUrls: string[] = [];
+      const fetchHeaders: any[] = [];
+      const fetchBodies: any[] = [];
+
+      mockFetch.mockImplementation(async (url: string, options: any = {}) => {
+        fetchedUrls.push(url);
+        if (options.headers) {
+          fetchHeaders.push(options.headers);
+        }
+        if (options.body) {
+          fetchBodies.push(options.body);
+        }
+
+        if (url.includes("oauth2.googleapis.com/token")) {
+          return { ok: true, json: async () => mockTokenExchangeResponse };
+        }
+        if (url.includes("fcm.googleapis.com/v1/projects/")) {
+          return { ok: true, json: async () => mockFcmResponse };
+        }
+        return { ok: true, json: async () => ({}) };
+      });
+
+      // Send a Price Alert notification
+      await sendPriceAlertNotification(mockEnv, "user-123", {
+        tokenId: "BTC",
+        targetPrice: 65000,
+        condition: "ABOVE",
+        currentPrice: 65050
+      });
+
+      // Verify Google token exchange was called
+      expect(fetchedUrls[0]).toContain("oauth2.googleapis.com/token");
+      expect(fetchBodies[0]).toContain("grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer");
+
+      // Verify FCM HTTP v1 was called with correct payload structure
+      expect(fetchedUrls[1]).toContain("fcm.googleapis.com/v1/projects/test-fcm-project-id/messages:send");
+      expect(fetchHeaders[1]["Authorization"]).toBe("Bearer mock-oauth2-access-token-ya29");
+      expect(fetchHeaders[1]["Content-Type"]).toBe("application/json");
+
+      const priceAlertBody = JSON.parse(fetchBodies[1]);
+      expect(priceAlertBody.message.token).toBe("test_device_token");
+      expect(priceAlertBody.message.notification.title).toBe("Price Alert Triggered");
+      expect(priceAlertBody.message.notification.body).toContain("BTC is now above $65000.00");
+      expect(priceAlertBody.message.data.type).toBe("price_alert");
+      expect(priceAlertBody.message.android.priority).toBe("high");
+
+      // Verify TOKEN CACHING: Send a Trade notification next.
+      // This should NOT trigger a new Google token exchange fetch request since the token is active in cache.
+      fetchedUrls.length = 0;
+      fetchHeaders.length = 0;
+      fetchBodies.length = 0;
+
+      await sendTradeNotification(mockEnv, "user-123", {
+        symbol: "SOL",
+        side: "BUY",
+        entryPrice: 150,
+        stopLoss: 145,
+        takeProfit: 160,
+        estimatedPnl: 10,
+        strategy: "momentum"
+      });
+
+      // Google token endpoint should NOT be in fetchedUrls list (reused from cache)
+      expect(fetchedUrls).not.toContain("https://oauth2.googleapis.com/token");
+      
+      // But FCM endpoint should be called immediately
+      expect(fetchedUrls[0]).toContain("fcm.googleapis.com/v1/projects/test-fcm-project-id/messages:send");
+      expect(fetchHeaders[0]["Authorization"]).toBe("Bearer mock-oauth2-access-token-ya29");
+
+      const tradeAlertBody = JSON.parse(fetchBodies[0]);
+      expect(tradeAlertBody.message.token).toBe("test_device_token");
+      expect(tradeAlertBody.message.notification.title).toBe("Trade Detected");
+      expect(tradeAlertBody.message.data.type).toBe("trade_alert");
+      expect(tradeAlertBody.message.data.symbol).toBe("SOL");
+    });
+
+    it("should fallback to legacy FCM if FCM v1 config is missing but FCM_SERVER_KEY is present", async () => {
+      const dbQueries: any[] = [];
+      const mockDb = {
+        prepare: (sql: string) => ({
+          bind: (...params: any[]) => {
+            dbQueries.push({ sql, params });
+            return {
+              first: async () => ({ fcm_token: "test_legacy_device_token" })
+            };
+          }
+        })
+      } as any;
+
+      // Only legacy key is configured
+      const mockEnv = {
+        DB: mockDb,
+        FCM_SERVER_KEY: "legacy-server-key-123",
+      } as unknown as Env;
+
+      const fetchedUrls: string[] = [];
+      const fetchHeaders: any[] = [];
+      const fetchBodies: any[] = [];
+
+      mockFetch.mockImplementation(async (url: string, options: any = {}) => {
+        fetchedUrls.push(url);
+        if (options.headers) {
+          fetchHeaders.push(options.headers);
+        }
+        if (options.body) {
+          fetchBodies.push(options.body);
+        }
+        return { ok: true, json: async () => ({}) };
+      });
+
+      await sendTradeNotification(mockEnv, "user-123", {
+        symbol: "ETH",
+        side: "SELL",
+        entryPrice: 3500,
+        stopLoss: 3600,
+        takeProfit: 3300,
+        estimatedPnl: 20,
+        strategy: "mean_reversion"
+      });
+
+      // Verify that it fetched the legacy endpoint instead of v1
+      expect(fetchedUrls[0]).toBe("https://fcm.googleapis.com/fcm/send");
+      expect(fetchHeaders[0]["Authorization"]).toBe("key=legacy-server-key-123");
+
+      const legacyBody = JSON.parse(fetchBodies[0]);
+      expect(legacyBody.to).toBe("test_legacy_device_token");
+      expect(legacyBody.notification.title).toBe("Trade Detected");
+      expect(legacyBody.data.symbol).toBe("ETH");
     });
   });
 });
