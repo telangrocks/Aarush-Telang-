@@ -29,7 +29,7 @@
  *   P11 Live P&L (position present and price synced)
  */
 
-const fs = await import("node:fs/promises");
+const fs = require("node:fs/promises");
 
 const WORKER_URL = (process.env.WORKER_URL || "https://crypto-pulse-backend.telangrocks.workers.dev").replace(/\/$/, "");
 const EXCHANGE_NAME = (process.env.EXCHANGE_NAME || "bybit").toLowerCase();

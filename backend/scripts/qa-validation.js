@@ -17,6 +17,7 @@
  */
 
 const fetch = globalThis.fetch;
+const fs = require("node:fs/promises");
 
 const WORKER_URL = (process.env.WORKER_URL || "https://crypto-pulse-backend.telangrocks.workers.dev").replace(/\/$/, "");
 const QA_EMAIL = process.env.QA_EMAIL || `qa+${Date.now()}@cryptopulse.dev`;
@@ -545,7 +546,6 @@ async function run() {
   ].join("\n");
 
   // Persist reports for artifact upload.
-  const fs = await import("node:fs/promises");
   await fs.writeFile("qa-report.json", JSON.stringify(report, null, 2));
   await fs.writeFile("qa-report.md", md);
 
