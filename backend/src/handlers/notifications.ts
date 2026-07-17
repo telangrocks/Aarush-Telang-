@@ -15,6 +15,7 @@ function pemToDer(pem: string): Uint8Array {
   const pemContents = pem
     .replace(pemHeader, "")
     .replace(pemFooter, "")
+    .replace(/\\n/g, "")
     .replace(/\s+/g, "");
   const binary = atob(pemContents);
   const len = binary.length;
