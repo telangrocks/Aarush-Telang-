@@ -11,3 +11,8 @@ coverage/
 
 # Node.js dependencies
 node_modules/
+
+# Ignore generated QA / Validation reports
+qa-report.json
+qa-report.md
+trading-flow-validation-report.md
