@@ -222,7 +222,7 @@ export function classifyExchangeResponse(
 export function classifyByBodyText(
   lower: string,
   technicalDetail: string,
-  exchangeName: string,
+  _exchangeName: string,
 ): ClassifiedError {
   // IP allow-list / restriction
   if (

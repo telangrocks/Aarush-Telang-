@@ -39,6 +39,8 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
 
       // Signature verification
       const timestamp = init.headers["timestamp"];
+      expect(timestamp).toBeDefined();
+      expect(isNaN(Number(timestamp))).toBe(false);
       const signature = init.headers["signature"];
       expect(signature.length).toBe(64); // SHA-256 hex is 64 chars
     });
@@ -262,6 +264,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
 
       // Check alerts storage
       const alerts = storageData.get("alerts") || [];
+      expect(Array.isArray(alerts)).toBe(true);
       // Alerts might not trigger unless indicators match the precise strategy,
       // but let's verify evaluateStrategy indicator calculations.
       const tickerObj = {
