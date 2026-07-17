@@ -15,7 +15,7 @@ on:
 
 concurrency:
   group: deploy-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -69,10 +69,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
         run: test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_WORKERS_API_TOKEN is required"; exit 1; }
 
-      - name: Install Wrangler
-        if: github.event_name == 'push'
-        run: npm install -g wrangler@4
-
       # The following steps deploy to production and only run on pushes to
       # main. Pull requests run the lint/build/test gate above without
       # touching the live Worker or database.
@@ -81,7 +77,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
-        run: wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote
+        run: npx wrangler d1 migrations apply crypto_pulse_db --config wrangler.toml --remote
 
       - name: Show D1 migration status
         if: github.event_name == 'push'
@@ -89,14 +85,14 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
-        run: wrangler d1 migrations list crypto_pulse_db --config wrangler.toml --remote
+        run: npx wrangler d1 migrations list crypto_pulse_db --config wrangler.toml --remote
 
       - name: Deploy Worker
         if: github.event_name == 'push'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: "0ea8292ec77cc8fabb1bdc1b73127a19"
-        run: wrangler deploy --config wrangler.toml
+        run: npx wrangler deploy --config wrangler.toml
 
       - name: Set JWT_SECRET
         if: github.event_name == 'push'
@@ -105,7 +101,7 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           if [ -n "$JWT_SECRET" ]; then
-            echo "$JWT_SECRET" | wrangler secret put JWT_SECRET --config wrangler.toml
+            echo "$JWT_SECRET" | npx wrangler secret put JWT_SECRET --config wrangler.toml
           fi
 
       - name: Set ENCRYPTION_KEY
@@ -115,7 +111,7 @@ jobs:
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
         run: |
           if [ -n "$ENCRYPTION_KEY" ]; then
-            echo "$ENCRYPTION_KEY" | wrangler secret put ENCRYPTION_KEY --config wrangler.toml
+            echo "$ENCRYPTION_KEY" | npx wrangler secret put ENCRYPTION_KEY --config wrangler.toml
           fi
 
       - name: Set RESEND_API_KEY
@@ -125,7 +121,7 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: |
           if [ -n "$RESEND_API_KEY" ]; then
-            echo "$RESEND_API_KEY" | wrangler secret put RESEND_API_KEY --config wrangler.toml
+            echo "$RESEND_API_KEY" | npx wrangler secret put RESEND_API_KEY --config wrangler.toml
           fi
 
       - name: Set ALLOWED_ORIGINS
@@ -135,7 +131,7 @@ jobs:
           ALLOWED_ORIGINS: ${{ secrets.ALLOWED_ORIGINS }}
         run: |
           if [ -n "$ALLOWED_ORIGINS" ]; then
-            echo "$ALLOWED_ORIGINS" | wrangler secret put ALLOWED_ORIGINS --config wrangler.toml
+            echo "$ALLOWED_ORIGINS" | npx wrangler secret put ALLOWED_ORIGINS --config wrangler.toml
           fi
 
       - name: Set FCM server key
@@ -145,7 +141,7 @@ jobs:
           FCM_SERVER_KEY: ${{ secrets.FCM_SERVER_KEY }}
         run: |
           if [ -n "$FCM_SERVER_KEY" ]; then
-            echo "$FCM_SERVER_KEY" | wrangler secret put FCM_SERVER_KEY --config wrangler.toml
+            echo "$FCM_SERVER_KEY" | npx wrangler secret put FCM_SERVER_KEY --config wrangler.toml
           fi
 
       - name: Post-deploy smoke test
