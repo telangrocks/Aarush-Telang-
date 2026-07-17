@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getExchangeAdapter } from "./exchanges";
+import { getExchangeAdapter, normalizeQuantity, BinanceExchange } from "./exchanges";
 import { TradingBot, evaluateStrategy } from "./trading-bot";
 import { sendPriceAlertNotification, sendTradeNotification } from "./handlers/notifications";
 import { encrypt } from "./crypto";
@@ -372,7 +372,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
             })
           };
         }
-        return { ok: true, json: async () => ({}) };
+        return { ok: true, json: async () => ({ success: true, result: [], symbols: [] }) };
       });
 
       // Call execute-trade
@@ -529,7 +529,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         if (url.includes("/v2/ticker/")) {
           return { ok: true, json: async () => ({ success: true, result: { symbol: "BTCUSDT", last_price: "60000.0" } }) };
         }
-        return { ok: true, json: async () => ({}) };
+        return { ok: true, json: async () => ({ success: true, result: [], symbols: [] }) };
       });
 
       // Fire first request to execute trade (which will yield at DB select due to setTimeout)
@@ -850,6 +850,188 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       expect(legacyBody.to).toBe("test_legacy_device_token");
       expect(legacyBody.notification.title).toBe("Trade Detected");
       expect(legacyBody.data.symbol).toBe("ETH");
+    });
+  });
+
+  describe("Exchange Adapter Layer & Metadata Cache", () => {
+    it("should normalize quantity with float precision correction and zero check", () => {
+      // Zero check
+      expect(normalizeQuantity(0, 0.001, 0.001, 1000)).toBe(0);
+      expect(normalizeQuantity(-1, 0.001, 0.001, 1000)).toBe(0);
+
+      // JavaScript float division correction check (0.003 / 0.001 should not round down to 0.002)
+      expect(normalizeQuantity(0.003, 0.001, 0.001, 1000)).toBe(0.003);
+
+      // Normalization rounding check
+      expect(normalizeQuantity(0.0016, 0.001, 0.001, 1000)).toBe(0.001);
+      
+      // Min limit check
+      expect(normalizeQuantity(0.0005, 0.001, 0.002, 1000)).toBe(0.002);
+
+      // Max limit check
+      expect(normalizeQuantity(10.5, 1, 0.1, 5)).toBe(5);
+    });
+
+    it("should handle cache hits, misses, metrics, and concurrent promise coalescing", async () => {
+      const exchange = getExchangeAdapter("binance") as BinanceExchange;
+
+      const mockExchangeInfo = {
+        symbols: [
+          {
+            symbol: "BTCUSDT",
+            status: "TRADING",
+            filters: [
+              { filterType: "LOT_SIZE", minQty: "0.0001", maxQty: "1000.0", stepSize: "0.0001" },
+              { filterType: "PRICE_FILTER", tickSize: "0.01" }
+            ]
+          }
+        ]
+      };
+
+      const mockTicker = {
+        symbol: "BTCUSDT",
+        lastPrice: "60000.00",
+        volume: "100",
+        priceChange: "100",
+        priceChangePercent: "1"
+      };
+
+      let infoCallCount = 0;
+      mockFetch.mockImplementation(async (url: string) => {
+        if (url.includes("/api/v3/exchangeInfo")) {
+          infoCallCount++;
+          return { ok: true, json: async () => mockExchangeInfo };
+        }
+        if (url.includes("/api/v3/ticker/24hr")) {
+          return { ok: true, json: async () => mockTicker };
+        }
+        return { ok: true, json: async () => ({}) };
+      });
+
+      // Reset metrics
+      exchange.cacheMetrics.hits = 0;
+      exchange.cacheMetrics.misses = 0;
+      exchange.cacheMetrics.refreshes = 0;
+
+      // 1. Initial fetch (cache miss)
+      const ticker1 = await exchange.fetchTicker("BTC");
+      expect(ticker1).not.toBeNull();
+      expect(ticker1?.lotSize).toBe(0.0001);
+      expect(infoCallCount).toBe(1);
+      expect(exchange.cacheMetrics.misses).toBe(1);
+      expect(exchange.cacheMetrics.hits).toBe(0);
+
+      // 2. Second fetch (cache hit)
+      const ticker2 = await exchange.fetchTicker("BTC");
+      expect(ticker2).not.toBeNull();
+      expect(ticker2?.lotSize).toBe(0.0001);
+      expect(infoCallCount).toBe(1); // Still 1!
+      expect(exchange.cacheMetrics.misses).toBe(1);
+      expect(exchange.cacheMetrics.hits).toBe(1);
+
+      // 3. Concurrent requests (coalescing)
+      // Force cache expiry by resetting lastCacheFetch
+      (exchange as any).lastCacheFetch = 0;
+      
+      const p1 = exchange.fetchTicker("BTC");
+      const p2 = exchange.fetchTicker("BTC");
+      await Promise.all([p1, p2]);
+
+      // Assert that exchangeInfo was only fetched once more (total 2)
+      expect(infoCallCount).toBe(2);
+    });
+
+    it("should revalidate expired cache in background (stale-while-revalidate)", async () => {
+      const exchange = getExchangeAdapter("binance") as BinanceExchange;
+
+      const mockExchangeInfo = {
+        symbols: [
+          {
+            symbol: "BTCUSDT",
+            status: "TRADING",
+            filters: [
+              { filterType: "LOT_SIZE", minQty: "0.0001", maxQty: "1000.0", stepSize: "0.0001" },
+              { filterType: "PRICE_FILTER", tickSize: "0.01" }
+            ]
+          }
+        ]
+      };
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => mockExchangeInfo,
+      });
+
+      // Populate initial cache
+      await (exchange as any).getSymbolMetadata("BTC");
+      expect(exchange.cacheMetrics.refreshes).toBe(1);
+
+      // Set cache as expired
+      (exchange as any).lastCacheFetch = Date.now() - 2000000;
+
+      // Fetch ticker - should trigger background revalidation but return stale cache immediately
+      const start = Date.now();
+      const lot = await (exchange as any).getSymbolMetadata("BTC");
+      const elapsed = Date.now() - start;
+
+      // Assert it returns instantly (< 10ms)
+      expect(elapsed).toBeLessThan(10);
+      expect(lot).not.toBeNull();
+      expect(lot.lotSize).toBe(0.0001);
+
+      // Let background promise resolve
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(exchange.cacheMetrics.staleUsage).toBe(1);
+    });
+
+    it("should retry on transient HTTP failures and fall back to old cache on permanent error", async () => {
+      const exchange = getExchangeAdapter("binance") as BinanceExchange;
+
+      const mockExchangeInfo = {
+        symbols: [
+          {
+            symbol: "BTCUSDT",
+            status: "TRADING",
+            filters: [
+              { filterType: "LOT_SIZE", minQty: "0.0001", maxQty: "1000.0", stepSize: "0.0001" },
+              { filterType: "PRICE_FILTER", tickSize: "0.01" }
+            ]
+          }
+        ]
+      };
+
+      // Populate initial cache successfully
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockExchangeInfo,
+      });
+      await (exchange as any).getSymbolMetadata("BTC");
+      expect((exchange as any).metadataCache).not.toBeNull();
+
+      // Trigger cache refresh but fail twice (retrying) and eventually keep old cache
+      let attempt = 0;
+      mockFetch.mockImplementation(async (url: string) => {
+        if (url.includes("/api/v3/exchangeInfo")) {
+          attempt++;
+          return { ok: false, status: 500, text: async () => "Internal Server Error" };
+        }
+        return { ok: true, json: async () => ({}) };
+      });
+
+      // Expiry
+      (exchange as any).lastCacheFetch = Date.now() - 2000000;
+
+      // Request - will trigger revalidation with retries
+      const lot = await (exchange as any).getSymbolMetadata("BTC");
+      expect(lot).not.toBeNull();
+      expect(lot.lotSize).toBe(0.0001); // Returns old cache successfully
+
+      // Let retries resolve in background
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Attempt count should be retries + 1 (3 calls to exchangeInfo)
+      expect(attempt).toBe(3);
+      expect(exchange.cacheMetrics.failures).toBe(1);
     });
   });
 });

@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
-import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion } from "./types";
+import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
@@ -61,6 +61,119 @@ export class BybitExchange implements IExchangeAdapter {
   private environment: ExchangeEnvironment = "mainnet";
   private region: ExchangeRegion = "global";
 
+  private metadataCache: Map<string, SymbolMetadata> | null = null;
+  private lastCacheFetch = 0;
+  private cacheFetchPromise: Promise<Map<string, SymbolMetadata>> | null = null;
+
+  public cacheMetrics = {
+    hits: 0,
+    misses: 0,
+    refreshes: 0,
+    failures: 0,
+    staleUsage: 0,
+  };
+
+  private async fetchWithRetry(url: string, retries = 2, delay = 500): Promise<Response> {
+    for (let attempt = 1; attempt <= retries + 1; attempt++) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) return res;
+        throw new Error(`HTTP status ${res.status}`);
+      } catch (err) {
+        if (attempt > retries) throw err;
+        await new Promise((resolve) => setTimeout(resolve, delay * Math.pow(2, attempt - 1)));
+      }
+    }
+    throw new Error("Fetch failed after retries");
+  }
+
+  private async fetchExchangeMetadata(): Promise<Map<string, SymbolMetadata>> {
+    this.cacheMetrics.refreshes++;
+    const response = await this.fetchWithRetry(`${this.getRestUrl()}/v5/market/instruments-info?category=spot`);
+    const data = await response.json() as any;
+    if (data.retCode !== 0 || !data.result || !Array.isArray(data.result.list)) {
+      throw new Error(`Bybit API Error ${data.retCode}: ${data.retMsg}`);
+    }
+    const map = new Map<string, SymbolMetadata>();
+    for (const instrument of data.result.list) {
+      const symbol = instrument.symbol;
+      const lotSize = instrument.lotSizeFilter ?? {};
+      const priceFilter = instrument.priceFilter ?? {};
+      if (symbol) {
+        map.set(symbol, {
+          minQty: parseFloat(lotSize.minOrderQty || "0.001"),
+          maxQty: parseFloat(lotSize.maxOrderQty || "999999999"),
+          tickSize: parseFloat(priceFilter.tickSize || "0.01"),
+          lotSize: parseFloat(lotSize.qtyStep || "1"),
+        });
+      }
+    }
+    console.log(`[Bybit] Metadata successfully loaded: ${map.size} symbols.`);
+    return map;
+  }
+
+  private async getSymbolMetadata(symbol: string): Promise<SymbolMetadata | null> {
+    const fullSymbol = `${symbol.toUpperCase()}USDT`;
+    const now = Date.now();
+    const expiryLimit = 1800000;
+    const hasCache = this.metadataCache !== null;
+    const isExpired = now - this.lastCacheFetch > expiryLimit;
+
+    if (hasCache && this.metadataCache!.has(fullSymbol)) {
+      this.cacheMetrics.hits++;
+    } else {
+      this.cacheMetrics.misses++;
+    }
+
+    if (isExpired && hasCache) {
+      this.cacheMetrics.staleUsage++;
+      if (!this.cacheFetchPromise) {
+        this.cacheFetchPromise = (async () => {
+          try {
+            const freshMap = await this.fetchExchangeMetadata();
+            this.metadataCache = freshMap;
+            this.lastCacheFetch = Date.now();
+            return freshMap;
+          } catch (err) {
+            this.cacheMetrics.failures++;
+            console.error("[Bybit] Background cache refresh failed, keeping existing cache:", err);
+            this.lastCacheFetch = Date.now() - 1500000;
+            return this.metadataCache!;
+          } finally {
+            this.cacheFetchPromise = null;
+          }
+        })();
+      }
+      return this.metadataCache!.get(fullSymbol) ?? null;
+    }
+
+    if (!hasCache) {
+      if (!this.cacheFetchPromise) {
+        this.cacheFetchPromise = (async () => {
+          try {
+            const freshMap = await this.fetchExchangeMetadata();
+            this.metadataCache = freshMap;
+            this.lastCacheFetch = Date.now();
+            return freshMap;
+          } catch (err) {
+            this.cacheMetrics.failures++;
+            this.cacheFetchPromise = null;
+            throw err;
+          } finally {
+            this.cacheFetchPromise = null;
+          }
+        })();
+      }
+      try {
+        await this.cacheFetchPromise;
+      } catch (err) {
+        console.error("[Bybit] Cold-start metadata download failed:", err);
+      }
+    }
+
+    return this.metadataCache?.get(fullSymbol) ?? null;
+  }
+
   getName() {
     return this.config.displayName;
   }
@@ -99,8 +212,8 @@ export class BybitExchange implements IExchangeAdapter {
       });
 
       if (!response.ok) {
-        const bodyText = await response.text();
-        const err: ClassifiedError = classifyExchangeResponse(response.status, bodyText, this.config.displayName);
+        const body = await response.text();
+        const err: ClassifiedError = classifyExchangeResponse(response.status, body, this.config.displayName);
         return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
       }
 
@@ -111,19 +224,20 @@ export class BybitExchange implements IExchangeAdapter {
         return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
       }
 
-      // Query key permissions metadata
-      const apiInfoResponse = await fetch(`${this.getRestUrl()}/v5/user/query-api?${query}`, {
+      const queryApi = `timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
+      const signatureQuery = await hmacSha256(timestamp + apiKey + recvWindow + queryApi, apiSecret);
+      const queryResponse = await fetch(`${this.getRestUrl()}/v5/user/query-api?${queryApi}`, {
         headers: {
           "X-BAPI-API-KEY": apiKey,
-          "X-BAPI-SIGN": signature,
+          "X-BAPI-SIGN": signatureQuery,
           "X-BAPI-TIMESTAMP": timestamp,
           "X-BAPI-RECV-WINDOW": recvWindow,
         },
       });
 
-      if (apiInfoResponse.ok) {
-        const apiInfo = await apiInfoResponse.json() as any;
-        if (apiInfo.retCode === 0 && apiInfo.result && apiInfo.result.readOnly === 1) {
+      if (queryResponse.ok) {
+        const queryData = await queryResponse.json() as any;
+        if (queryData.retCode === 0 && queryData.result?.readOnly === 1) {
           return {
             success: false,
             message: "INSUFFICIENT_PERMISSIONS: API key is read-only",
@@ -142,46 +256,25 @@ export class BybitExchange implements IExchangeAdapter {
 
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
-      const [tickersResponse, instrumentsResponse] = await Promise.all([
+      const [tickersResponse] = await Promise.all([
         fetch(`${this.getRestUrl()}/v5/market/tickers?category=spot`),
-        fetch(`${this.getRestUrl()}/v5/market/instruments-info?category=spot`),
+        this.getSymbolMetadata("BTC"),
       ]);
 
-      if (!tickersResponse.ok || !instrumentsResponse.ok) {
+      if (!tickersResponse.ok) {
         return [];
       }
 
       const tickersData = await tickersResponse.json() as any;
-      const instrumentsData = await instrumentsResponse.json() as any;
-
       if (tickersData.retCode !== 0 || !Array.isArray(tickersData.result?.list)) {
         return [];
-      }
-
-      const lotSizeMap = new Map<string, { minQty: number; maxQty: number; tickSize: number; lotSize: number }>();
-      for (const instrument of instrumentsData.result?.list ?? []) {
-        const symbol = instrument.symbol;
-        const lotSize = instrument.lotSizeFilter ?? {};
-        const priceFilter = instrument.priceFilter ?? {};
-        const minOrderQty = parseFloat(lotSize.minOrderQty ?? "0");
-        const maxOrderQty = parseFloat(lotSize.maxOrderQty ?? "0");
-        const qtyStep = parseFloat(lotSize.qtyStep ?? "1");
-        const tickSize = parseFloat(priceFilter.tickSize ?? "0.01");
-        if (symbol) {
-          lotSizeMap.set(symbol, {
-            minQty: minOrderQty,
-            maxQty: maxOrderQty || 999999999,
-            tickSize: tickSize || 0.01,
-            lotSize: qtyStep || 1,
-          });
-        }
       }
 
       return tickersData.result.list
         .filter((item: any) => item.symbol.endsWith("USDT"))
         .slice(0, 50)
         .map((item: any) => {
-          const lot = lotSizeMap.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+          const lot = this.metadataCache?.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
           return {
             symbol: item.symbol.replace("USDT", ""),
             price: parseFloat(item.lastPrice || 0),
@@ -208,16 +301,17 @@ export class BybitExchange implements IExchangeAdapter {
       if (!/^[A-Za-z0-9]+$/.test(symbol)) {
         return null;
       }
-      const response = await fetch(
-        `${this.getRestUrl()}/v5/market/tickers?category=spot&symbol=${encodeURIComponent(symbol.toUpperCase())}USDT`,
-      );
+      const [response, lot] = await Promise.all([
+        fetch(`${this.getRestUrl()}/v5/market/tickers?category=spot&symbol=${encodeURIComponent(symbol.toUpperCase())}USDT`),
+        this.getSymbolMetadata(symbol),
+      ]);
       if (!response.ok) return null;
       const data = await response.json() as any;
       if (data.retCode !== 0 || !Array.isArray(data.result?.list) || data.result.list.length === 0) {
         return null;
       }
       const item = data.result.list[0];
-      const defaults = { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+      const lotResolved = lot ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
       return {
         symbol: item.symbol.replace("USDT", ""),
         price: parseFloat(item.lastPrice || 0),
@@ -227,11 +321,11 @@ export class BybitExchange implements IExchangeAdapter {
         priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
         highPrice24h: parseFloat(item.highPrice24h || 0),
         lowPrice24h: parseFloat(item.lowPrice24h || 0),
-        minNotional: defaults.minQty * (parseFloat(item.lastPrice || 0) || 1),
-        minOrderQty: defaults.minQty,
-        maxOrderQty: defaults.maxQty,
-        tickSize: defaults.tickSize,
-        lotSize: defaults.lotSize,
+        minNotional: lotResolved.minQty * (parseFloat(item.lastPrice || 0) || 1),
+        minOrderQty: lotResolved.minQty,
+        maxOrderQty: lotResolved.maxQty,
+        tickSize: lotResolved.tickSize,
+        lotSize: lotResolved.lotSize,
       };
     } catch {
       return null;

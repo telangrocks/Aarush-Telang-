@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline } from "./BaseExchange";
-import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion } from "./types";
+import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
@@ -53,6 +53,122 @@ export class BinanceExchange implements IExchangeAdapter {
 
   private environment: ExchangeEnvironment = "mainnet";
   private region: ExchangeRegion = "global";
+
+  // Cache state properties
+  private metadataCache: Map<string, SymbolMetadata> | null = null;
+  private lastCacheFetch = 0;
+  private cacheFetchPromise: Promise<Map<string, SymbolMetadata>> | null = null;
+
+  // Cache observability metrics
+  public cacheMetrics = {
+    hits: 0,
+    misses: 0,
+    refreshes: 0,
+    failures: 0,
+    staleUsage: 0,
+  };
+
+  // Helper with exponential backoff retries
+  private async fetchWithRetry(url: string, retries = 2, delay = 500): Promise<Response> {
+    for (let attempt = 1; attempt <= retries + 1; attempt++) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) return res;
+        throw new Error(`HTTP status ${res.status}`);
+      } catch (err) {
+        if (attempt > retries) throw err;
+        await new Promise((resolve) => setTimeout(resolve, delay * Math.pow(2, attempt - 1)));
+      }
+    }
+    throw new Error("Fetch failed after retries");
+  }
+
+  private async fetchExchangeMetadata(): Promise<Map<string, SymbolMetadata>> {
+    this.cacheMetrics.refreshes++;
+    const response = await this.fetchWithRetry(`${this.getRestUrl()}/api/v3/exchangeInfo`);
+    const data = await response.json() as any;
+    const map = new Map<string, SymbolMetadata>();
+    for (const symbol of data.symbols ?? []) {
+      const filters = symbol.filters ?? [];
+      const lotFilter = filters.find((f: any) => f.filterType === "LOT_SIZE");
+      const priceFilter = filters.find((f: any) => f.filterType === "PRICE_FILTER");
+      if (lotFilter && symbol.status === "TRADING") {
+        map.set(symbol.symbol, {
+          minQty: parseFloat(lotFilter.minQty || "0.001"),
+          maxQty: parseFloat(lotFilter.maxQty || "999999999"),
+          tickSize: parseFloat(priceFilter?.tickSize || "0.01"),
+          lotSize: parseFloat(lotFilter.stepSize || "1"),
+        });
+      }
+    }
+    console.log(`[Binance] Metadata successfully loaded: ${map.size} symbols.`);
+    return map;
+  }
+
+  private async getSymbolMetadata(symbol: string): Promise<SymbolMetadata | null> {
+    const fullSymbol = `${symbol.toUpperCase()}USDT`;
+    const now = Date.now();
+    const expiryLimit = 1800000; // 30 minutes
+    const hasCache = this.metadataCache !== null;
+    const isExpired = now - this.lastCacheFetch > expiryLimit;
+
+    // Hit vs Miss metrics tracking
+    if (hasCache && this.metadataCache!.has(fullSymbol)) {
+      this.cacheMetrics.hits++;
+    } else {
+      this.cacheMetrics.misses++;
+    }
+
+    // 1. Stale-while-revalidate logic
+    if (isExpired && hasCache) {
+      this.cacheMetrics.staleUsage++;
+      if (!this.cacheFetchPromise) {
+        this.cacheFetchPromise = (async () => {
+          try {
+            const freshMap = await this.fetchExchangeMetadata();
+            this.metadataCache = freshMap;
+            this.lastCacheFetch = Date.now();
+            return freshMap;
+          } catch (err) {
+            this.cacheMetrics.failures++;
+            console.error("[Binance] Background cache refresh failed, keeping existing cache:", err);
+            this.lastCacheFetch = Date.now() - 1500000; // retry in 5 minutes
+            return this.metadataCache!;
+          } finally {
+            this.cacheFetchPromise = null;
+          }
+        })();
+      }
+      return this.metadataCache!.get(fullSymbol) ?? null;
+    }
+
+    // 2. Cold start / empty cache logic
+    if (!hasCache) {
+      if (!this.cacheFetchPromise) {
+        this.cacheFetchPromise = (async () => {
+          try {
+            const freshMap = await this.fetchExchangeMetadata();
+            this.metadataCache = freshMap;
+            this.lastCacheFetch = Date.now();
+            return freshMap;
+          } catch (err) {
+            this.cacheMetrics.failures++;
+            this.cacheFetchPromise = null;
+            throw err;
+          } finally {
+            this.cacheFetchPromise = null;
+          }
+        })();
+      }
+      try {
+        await this.cacheFetchPromise;
+      } catch (err) {
+        console.error("[Binance] Cold-start metadata download failed:", err);
+      }
+    }
+
+    return this.metadataCache?.get(fullSymbol) ?? null;
+  }
 
   getName() {
     return this.config.displayName;
@@ -119,38 +235,21 @@ export class BinanceExchange implements IExchangeAdapter {
 
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
-      const [tickersResponse, exchangeInfoResponse] = await Promise.all([
+      const [tickersResponse] = await Promise.all([
         fetch(`${this.getRestUrl()}/api/v3/ticker/24hr`),
-        fetch(`${this.getRestUrl()}/api/v3/exchangeInfo`),
+        this.getSymbolMetadata("BTC"), // Seed cache if cold
       ]);
 
-      if (!tickersResponse.ok || !exchangeInfoResponse.ok) {
+      if (!tickersResponse.ok) {
         return [];
       }
 
       const tickers = await tickersResponse.json() as any[];
-      const exchangeInfo = await exchangeInfoResponse.json() as any;
-
-      const lotSizeMap = new Map<string, { minQty: number; maxQty: number; tickSize: number; lotSize: number }>();
-      for (const symbol of exchangeInfo.symbols ?? []) {
-        const filters = symbol.filters ?? [];
-        const lotFilter = filters.find((f: any) => f.filterType === "LOT_SIZE");
-        const priceFilter = filters.find((f: any) => f.filterType === "PRICE_FILTER");
-        if (lotFilter && symbol.status === "TRADING") {
-          lotSizeMap.set(symbol.symbol, {
-            minQty: parseFloat(lotFilter.minQty || "0"),
-            maxQty: parseFloat(lotFilter.maxQty || "999999999"),
-            tickSize: parseFloat(priceFilter?.tickSize || "0.01"),
-            lotSize: parseFloat(lotFilter.stepSize || "1"),
-          });
-        }
-      }
-
       return tickers
         .filter((item: any) => item.symbol.endsWith("USDT") || item.symbol.endsWith("BUSD"))
         .slice(0, 50)
         .map((item: any) => {
-          const lot = lotSizeMap.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+          const lot = this.metadataCache?.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
           return {
             symbol: item.symbol.replace(/USDT|BUSD$/, ""),
             price: parseFloat(item.lastPrice),
@@ -177,13 +276,15 @@ export class BinanceExchange implements IExchangeAdapter {
       if (!/^[A-Za-z0-9]+$/.test(symbol)) {
         return null;
       }
-      const response = await fetch(
-        `${this.getRestUrl()}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol.toUpperCase())}USDT`,
-      );
+      const [response, lot] = await Promise.all([
+        fetch(`${this.getRestUrl()}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol.toUpperCase())}USDT`),
+        this.getSymbolMetadata(symbol),
+      ]);
       if (!response.ok) return null;
       const item = (await response.json()) as any;
       if (!item || !item.symbol) return null;
-      const defaults = { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+
+      const lotResolved = lot ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
       return {
         symbol: item.symbol.replace(/USDT|BUSD$/, ""),
         price: parseFloat(item.lastPrice || 0),
@@ -193,11 +294,11 @@ export class BinanceExchange implements IExchangeAdapter {
         priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
         highPrice24h: parseFloat(item.highPrice || 0),
         lowPrice24h: parseFloat(item.lowPrice || 0),
-        minNotional: defaults.minQty * (parseFloat(item.lastPrice || 0) || 1),
-        minOrderQty: defaults.minQty,
-        maxOrderQty: defaults.maxQty,
-        tickSize: defaults.tickSize,
-        lotSize: defaults.lotSize,
+        minNotional: lotResolved.minQty * (parseFloat(item.lastPrice || 0) || 1),
+        minOrderQty: lotResolved.minQty,
+        maxOrderQty: lotResolved.maxQty,
+        tickSize: lotResolved.tickSize,
+        lotSize: lotResolved.lotSize,
       };
     } catch {
       return null;

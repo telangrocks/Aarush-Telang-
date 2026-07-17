@@ -26,9 +26,17 @@ export interface IExchangeAdapter {
 }
 
 export function normalizeQuantity(quantity: number, lotSize: number, minQty: number, maxQty: number): number {
+  if (quantity <= 0) return 0;
   if (lotSize <= 0) lotSize = 1;
-  const rounded = Math.floor(quantity / lotSize) * lotSize;
-  const min = Math.max(rounded, minQty);
+  
+  // Calculate precision of the lot size step to avoid float rendering errors (e.g. 0.001 -> 3 decimals)
+  const precision = lotSize > 0 && lotSize < 1 ? Math.round(-Math.log10(lotSize)) : 0;
+  
+  // Add a tiny epsilon (1e-10) to division to fix JS float division issues (e.g. 0.003 / 0.001 returning 2.9999999999999996)
+  const rounded = Math.floor((quantity / lotSize) + 1e-10) * lotSize;
+  const fixedRounded = parseFloat(rounded.toFixed(precision));
+  
+  const min = Math.max(fixedRounded, minQty);
   const max = Math.min(min, maxQty);
   return Math.max(max, 0);
 }

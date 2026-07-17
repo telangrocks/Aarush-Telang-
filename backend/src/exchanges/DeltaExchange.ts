@@ -1,5 +1,5 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
-import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion } from "./types";
+import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
@@ -65,6 +65,126 @@ export class DeltaExchange implements IExchangeAdapter {
   private environment: ExchangeEnvironment = "mainnet";
   private region: ExchangeRegion = "india";
 
+  // Cache state properties
+  private metadataCache: Map<string, SymbolMetadata> | null = null;
+  private lastCacheFetch = 0;
+  private cacheFetchPromise: Promise<Map<string, SymbolMetadata>> | null = null;
+
+  // Cache observability metrics
+  public cacheMetrics = {
+    hits: 0,
+    misses: 0,
+    refreshes: 0,
+    failures: 0,
+    staleUsage: 0,
+  };
+
+  // Helper with exponential backoff retries
+  private async fetchWithRetry(url: string, retries = 2, delay = 500): Promise<Response> {
+    for (let attempt = 1; attempt <= retries + 1; attempt++) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) return res;
+        throw new Error(`HTTP status ${res.status}`);
+      } catch (err) {
+        if (attempt > retries) throw err;
+        await new Promise((resolve) => setTimeout(resolve, delay * Math.pow(2, attempt - 1)));
+      }
+    }
+    throw new Error("Fetch failed after retries");
+  }
+
+  private async fetchExchangeMetadata(): Promise<Map<string, SymbolMetadata>> {
+    this.cacheMetrics.refreshes++;
+    const response = await this.fetchWithRetry(`${this.getRestUrl()}/v2/products`);
+    const data = await response.json() as any;
+    if (!data.success || !Array.isArray(data.result)) {
+      throw new Error(`Delta API error`);
+    }
+    const map = new Map<string, SymbolMetadata>();
+    for (const product of data.result) {
+      const symbol = product.symbol;
+      const minQty = parseFloat(product.min_notional_value ?? product.min_notional ?? "0.001");
+      const maxQty = parseFloat(product.max_notional_value ?? product.max_notional ?? "999999999");
+      const lotSize = parseFloat(product.lot_size ?? product.step_size ?? "1");
+      const tickSize = parseFloat(product.tick_size ?? "0.01");
+      if (symbol) {
+        map.set(symbol, {
+          minQty: minQty > 0 ? minQty : 0.001,
+          maxQty: maxQty > 0 ? maxQty : 999999999,
+          tickSize: tickSize > 0 ? tickSize : 0.01,
+          lotSize: lotSize > 0 ? lotSize : 1,
+        });
+      }
+    }
+    console.log(`[Delta] Metadata successfully loaded: ${map.size} symbols.`);
+    return map;
+  }
+
+  private async getSymbolMetadata(symbol: string): Promise<SymbolMetadata | null> {
+    const fullSymbol = `${symbol.toUpperCase()}USDT`;
+    const now = Date.now();
+    const expiryLimit = 1800000;
+    const hasCache = this.metadataCache !== null;
+    const isExpired = now - this.lastCacheFetch > expiryLimit;
+
+    if (hasCache && this.metadataCache!.has(fullSymbol)) {
+      this.cacheMetrics.hits++;
+    } else {
+      this.cacheMetrics.misses++;
+    }
+
+    // 1. Stale-while-revalidate logic
+    if (isExpired && hasCache) {
+      this.cacheMetrics.staleUsage++;
+      if (!this.cacheFetchPromise) {
+        this.cacheFetchPromise = (async () => {
+          try {
+            const freshMap = await this.fetchExchangeMetadata();
+            this.metadataCache = freshMap;
+            this.lastCacheFetch = Date.now();
+            return freshMap;
+          } catch (err) {
+            this.cacheMetrics.failures++;
+            console.error("[Delta] Background cache refresh failed, keeping existing cache:", err);
+            this.lastCacheFetch = Date.now() - 1500000;
+            return this.metadataCache!;
+          } finally {
+            this.cacheFetchPromise = null;
+          }
+        })();
+      }
+      return this.metadataCache!.get(fullSymbol) ?? null;
+    }
+
+    // 2. Cold start / empty cache logic
+    if (!hasCache) {
+      if (!this.cacheFetchPromise) {
+        this.cacheFetchPromise = (async () => {
+          try {
+            const freshMap = await this.fetchExchangeMetadata();
+            this.metadataCache = freshMap;
+            this.lastCacheFetch = Date.now();
+            return freshMap;
+          } catch (err) {
+            this.cacheMetrics.failures++;
+            this.cacheFetchPromise = null;
+            throw err;
+          } finally {
+            this.cacheFetchPromise = null;
+          }
+        })();
+      }
+      try {
+        await this.cacheFetchPromise;
+      } catch (err) {
+        console.error("[Delta] Cold-start metadata download failed:", err);
+      }
+    }
+
+    return this.metadataCache?.get(fullSymbol) ?? null;
+  }
+
   getName() {
     return this.config.displayName;
   }
@@ -124,44 +244,25 @@ export class DeltaExchange implements IExchangeAdapter {
 
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
-      const [tickersResponse, productsResponse] = await Promise.all([
+      const [tickersResponse] = await Promise.all([
         fetch(`${this.getRestUrl()}/v2/tickers`),
-        fetch(`${this.getRestUrl()}/v2/products`),
+        this.getSymbolMetadata("BTC"), // Seed cache if cold
       ]);
 
-      if (!tickersResponse.ok || !productsResponse.ok) {
+      if (!tickersResponse.ok) {
         return [];
       }
 
       const tickersData = await tickersResponse.json() as any;
-      const productsData = await productsResponse.json() as any;
-
       if (!tickersData.success || !Array.isArray(tickersData.result)) {
         return [];
-      }
-
-      const lotSizeMap = new Map<string, { minQty: number; maxQty: number; tickSize: number; lotSize: number }>();
-      for (const product of productsData.result ?? []) {
-        const symbol = product.symbol;
-        const minQty = parseFloat(product.min_notional_value ?? product.min_notional ?? "0");
-        const maxQty = parseFloat(product.max_notional_value ?? product.max_notional ?? "999999999");
-        const lotSize = parseFloat(product.lot_size ?? product.step_size ?? "1");
-        const tickSize = parseFloat(product.tick_size ?? "0.01");
-        if (symbol) {
-          lotSizeMap.set(symbol, {
-            minQty: minQty > 0 ? minQty : 0.001,
-            maxQty: maxQty > 0 ? maxQty : 999999999,
-            tickSize: tickSize > 0 ? tickSize : 0.01,
-            lotSize: lotSize > 0 ? lotSize : 1,
-          });
-        }
       }
 
       return tickersData.result
         .filter((item: any) => item.symbol && (item.symbol.includes("USDT") || item.symbol.includes("USDC")))
         .slice(0, 50)
         .map((item: any) => {
-          const lot = lotSizeMap.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+          const lot = this.metadataCache?.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
           const price = parseFloat(item.close || item.last_price || 0);
           return {
             symbol: item.symbol.replace(/USDT$|USDC$/, ""),
@@ -189,14 +290,16 @@ export class DeltaExchange implements IExchangeAdapter {
       if (!/^[A-Za-z0-9]+$/.test(symbol)) {
         return null;
       }
-      const response = await fetch(
-        `${this.getRestUrl()}/v2/ticker/${encodeURIComponent(symbol.toUpperCase())}USDT`,
-      );
+      const [response, lot] = await Promise.all([
+        fetch(`${this.getRestUrl()}/v2/ticker/${encodeURIComponent(symbol.toUpperCase())}USDT`),
+        this.getSymbolMetadata(symbol),
+      ]);
       if (!response.ok) return null;
       const data = await response.json() as any;
       const item = data?.result;
       if (!item || !item.symbol) return null;
-      const defaults = { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+
+      const lotResolved = lot ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
       return {
         symbol: item.symbol.replace("USDT", ""),
         price: parseFloat(item.last_price || item.close || 0),
@@ -206,11 +309,11 @@ export class DeltaExchange implements IExchangeAdapter {
         priceChangePercent24h: parseFloat(item.change_percent || 0),
         highPrice24h: parseFloat(item.high || 0),
         lowPrice24h: parseFloat(item.low || 0),
-        minNotional: defaults.minQty * (parseFloat(item.last_price || item.close || 0) || 1),
-        minOrderQty: defaults.minQty,
-        maxOrderQty: defaults.maxQty,
-        tickSize: defaults.tickSize,
-        lotSize: defaults.lotSize,
+        minNotional: lotResolved.minQty * (parseFloat(item.last_price || item.close || 0) || 1),
+        minOrderQty: lotResolved.minQty,
+        maxOrderQty: lotResolved.maxQty,
+        tickSize: lotResolved.tickSize,
+        lotSize: lotResolved.lotSize,
       };
     } catch {
       return null;

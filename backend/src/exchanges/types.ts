@@ -2,6 +2,13 @@ export type ExchangeName = "binance" | "delta" | "bybit";
 
 export type ExchangeEnvironment = "mainnet" | "testnet";
 
+export interface SymbolMetadata {
+  minQty: number;
+  maxQty: number;
+  tickSize: number;
+  lotSize: number;
+}
+
 /**
  * Regional endpoint family. Delta Exchange operates separate, geo-fenced
  * deployments: the global `api.delta.exchange` (CloudFront-fronted) rejects
