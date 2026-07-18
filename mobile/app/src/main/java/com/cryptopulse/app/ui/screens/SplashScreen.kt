@@ -63,7 +63,11 @@ fun SplashScreen(
 
     LaunchedEffect(Unit) {
         visible = true
-        val token = tokenManager.getToken()
+        var token = tokenManager.getToken()
+        if (tokenManager.isTokenExpired(token)) {
+            tokenManager.clearTokens()
+            token = null
+        }
         if (!token.isNullOrEmpty()) {
             try {
                 val response = exchangeService.getStatus()

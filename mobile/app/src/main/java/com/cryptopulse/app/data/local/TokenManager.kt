@@ -1,11 +1,13 @@
 package com.cryptopulse.app.data.local
 
 import android.content.Context
+import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKeys
+import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
 
 class TokenManager(context: Context) {
     companion object {
@@ -14,12 +16,14 @@ class TokenManager(context: Context) {
         private const val REFRESH_TOKEN_KEY = "refresh_token"
     }
 
-    private val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
+    private val masterKey = MasterKey.Builder(context)
+        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+        .build()
 
     private val sharedPreferences = EncryptedSharedPreferences.create(
-        PREFS_FILE,
-        masterKeyAlias,
         context,
+        PREFS_FILE,
+        masterKey,
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
@@ -34,6 +38,10 @@ class TokenManager(context: Context) {
         return sharedPreferences.getString(JWT_TOKEN_KEY, null)
     }
 
+    suspend fun getRefreshToken(): String? {
+        return sharedPreferences.getString(REFRESH_TOKEN_KEY, null)
+    }
+
     suspend fun saveTokens(accessToken: String, refreshToken: String) {
         sharedPreferences.edit().putString(JWT_TOKEN_KEY, accessToken).apply()
         sharedPreferences.edit().putString(REFRESH_TOKEN_KEY, refreshToken).apply()
@@ -46,5 +54,33 @@ class TokenManager(context: Context) {
         sharedPreferences.edit().remove(REFRESH_TOKEN_KEY).apply()
         _tokenFlow.value = null
         _refreshTokenFlow.value = null
+    }
+
+    fun isTokenExpired(token: String?): Boolean {
+        if (token.isNullOrEmpty()) return true
+        try {
+            val parts = token.split(".")
+            if (parts.size != 3) return true
+            val payload = String(Base64.decode(parts[1], Base64.URL_SAFE or Base64.NO_PADDING))
+            val json = JSONObject(payload)
+            val exp = json.getLong("exp")
+            return System.currentTimeMillis() / 1000 >= exp
+        } catch (e: Exception) {
+            return true
+        }
+    }
+
+    fun getTokenExpiryMillis(token: String?): Long {
+        if (token.isNullOrEmpty()) return 0
+        try {
+            val parts = token.split(".")
+            if (parts.size != 3) return 0
+            val payload = String(Base64.decode(parts[1], Base64.URL_SAFE or Base64.NO_PADDING))
+            val json = JSONObject(payload)
+            val exp = json.getLong("exp")
+            return exp * 1000
+        } catch (e: Exception) {
+            return 0
+        }
     }
 }
