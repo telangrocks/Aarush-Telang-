@@ -8,6 +8,11 @@ account_id = "0ea8292ec77cc8fabb1bdc1b73127a19"
 # Skip Wrangler telemetry network calls in CI.
 send_metrics = false
 
+# Workers AI binding — used to call Moonshot AI "Kimi K3" (moonshotai/kimi-k3)
+# via env.AI.run(...). Workers AI is enabled on all Cloudflare plans by default.
+[ai]
+binding = "AI"
+
 # Bind D1 Database
 [[d1_databases]]
 binding = "DB"

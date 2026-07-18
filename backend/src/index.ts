@@ -45,6 +45,7 @@ import {
 import { handleRegisterFcmToken, sendPriceAlertNotification } from "./handlers/notifications";
 import { handleGetPositions, handleClosePosition } from "./handlers/positions";
 import { isTokenRevoked } from "./handlers/auth";
+import { chatWithKimiK3, KIMI_K3_MODEL } from "./services/kimi";
 import { getExchangeAdapter, type ExchangeName, type ExchangeEnvironment, type ExchangeRegion } from "./exchanges";
 
 export interface Env {
@@ -59,6 +60,8 @@ export interface Env {
   FCM_CLIENT_EMAIL?: string;
   FCM_PRIVATE_KEY?: string;
   TRADING_BOTS: DurableObjectNamespace;
+  /** Workers AI binding — used to call Moonshot AI Kimi K3 (moonshotai/kimi-k3). Optional so non-AI routes/tests don't require it. */
+  AI?: Ai;
 }
 
 function validateEnv(env: Env): void {
@@ -357,6 +360,57 @@ api.post("/positions/:id/close", handleClosePosition);
 
 api.post("/fcm/register", handleRegisterFcmToken);
 api.delete("/fcm/register", handleDeleteFcmToken);
+
+// ==========================================
+// AI — Kimi K3 (Cloudflare Workers AI)
+// ==========================================
+api.post("/ai/kimi", async (c) => {
+  const { messages, system, temperature, max_tokens } = await c.req.json<{
+    messages: { role: "system" | "user" | "assistant"; content: string }[];
+    system?: string;
+    temperature?: number;
+    max_tokens?: number;
+  }>();
+  if (!Array.isArray(messages) || messages.length === 0) {
+    c.status(400);
+    return c.json({ error: "Field 'messages' must be a non-empty array." });
+  }
+  if (!c.env.AI) {
+    c.status(503);
+    return c.json({ error: "AI binding is not configured on this Worker." });
+  }
+  try {
+    const result = await chatWithKimiK3(c.env.AI, { messages, system, temperature, max_tokens });
+    return c.json(result);
+  } catch (err) {
+    console.error("Kimi K3 invocation failed:", err);
+    c.status(502);
+    return c.json({ error: "Kimi K3 invocation failed", detail: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Simple test endpoint: body { "prompt": "..." } -> Kimi K3 response.
+api.post("/ai/kimi/test", async (c) => {
+  const { prompt } = await c.req.json<{ prompt?: string }>();
+  if (!prompt || typeof prompt !== "string") {
+    c.status(400);
+    return c.json({ error: "Field 'prompt' (string) is required." });
+  }
+  if (!c.env.AI) {
+    c.status(503);
+    return c.json({ error: "AI binding is not configured on this Worker." });
+  }
+  try {
+    const result = await chatWithKimiK3(c.env.AI, {
+      messages: [{ role: "user", content: prompt }],
+    });
+    return c.json(result);
+  } catch (err) {
+    console.error("Kimi K3 test invocation failed:", err);
+    c.status(502);
+    return c.json({ error: "Kimi K3 invocation failed", detail: err instanceof Error ? err.message : String(err) });
+  }
+});
 
 api.post("/logout", handleLogout);
 api.post("/refresh", handleRefresh);
