@@ -29,6 +29,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.activity.viewModels
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
+import com.cryptopulse.app.data.repository.AuthRepository
 import com.cryptopulse.app.ui.auth.AuthScreen
 import com.cryptopulse.app.ui.auth.AuthViewModel
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
@@ -68,6 +69,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var exchangeService: com.cryptopulse.app.data.api.ExchangeService
 
+    @Inject
+    lateinit var authRepository: AuthRepository
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -84,8 +88,9 @@ class MainActivity : ComponentActivity() {
 
                     val performLogout: () -> Unit = {
                         coroutineScope.launch {
-                            tokenManager.clearToken()
+                            authRepository.logout()
                             exchangeConnectionManager.clearConnection()
+                            BackgroundMonitoringService.stopService(this@MainActivity)
                         }
                         exchangeViewModel.resetState()
                         navController.navigate("welcome") {

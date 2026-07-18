@@ -20,4 +20,7 @@ interface AuthService {
 
     @POST("/api/login")
     suspend fun login(@Body request: LoginRequest): Response<LoginResponse>
+
+    @POST("/api/logout")
+    suspend fun logout(): Response<Map<String, Any>>
 }

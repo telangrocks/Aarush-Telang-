@@ -9,6 +9,8 @@ import {
   handleRegister,
   handleResendOtp,
   handleVerifyOtp,
+  handleLogout,
+  handleDeleteFcmToken,
 } from "./handlers/user";
 import {
   handleValidateExchange,
@@ -29,6 +31,7 @@ import {
 } from "./handlers/exchange";
 import { handleRegisterFcmToken, sendPriceAlertNotification } from "./handlers/notifications";
 import { handleGetPositions, handleClosePosition } from "./handlers/positions";
+import { isTokenRevoked } from "./handlers/auth";
 import { getExchangeAdapter, type ExchangeName, type ExchangeEnvironment, type ExchangeRegion } from "./exchanges";
 
 export interface Env {
@@ -133,6 +136,7 @@ app.get("/db-status", async (c) => {
       "watchlist",
       "portfolio_transactions",
       "price_alerts",
+      "jwt_blacklist",
     ];
 
     const missingTables: string[] = [];
@@ -207,6 +211,18 @@ api.use("*", (c, next) => {
     alg: "HS256",
   });
   return jwtMiddleware(c, next);
+});
+
+api.use("*", async (c, next) => {
+  if (PUBLIC_AUTH_PATHS.has(c.req.path)) {
+    return next();
+  }
+  const payload = c.get("jwtPayload") as { sub: string; jti?: string } | undefined;
+  if (payload?.jti && await isTokenRevoked(c, payload.jti)) {
+    c.status(401);
+    return c.json({ error: "Token has been revoked" });
+  }
+  await next();
 });
 
 api.get("/profile", handleGetProfile);
@@ -302,6 +318,9 @@ api.get("/positions", handleGetPositions);
 api.post("/positions/:id/close", handleClosePosition);
 
 api.post("/fcm/register", handleRegisterFcmToken);
+api.delete("/fcm/register", handleDeleteFcmToken);
+
+api.post("/logout", handleLogout);
 
 app.route("/api", api);
 

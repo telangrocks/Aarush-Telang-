@@ -192,6 +192,7 @@ describe("App Endpoints", () => {
       "watchlist",
       "portfolio_transactions",
       "price_alerts",
+      "jwt_blacklist",
     ]);
   });
 
@@ -372,6 +373,7 @@ describe("App Endpoints", () => {
     let mockEnv: Partial<Env>;
     let token: string;
     const userId = "user-123";
+    const testJti = "test-jti-123";
 
     beforeEach(async () => {
       const all = vi
@@ -383,7 +385,17 @@ describe("App Endpoints", () => {
 
       mockEnv = {
         DB: {
-          prepare: vi.fn(() => statement),
+          prepare: vi.fn((query: string) => {
+            if (query.includes("SELECT jti FROM jwt_blacklist WHERE jti = ?")) {
+              return {
+                bind: vi.fn(() => ({
+                  first: vi.fn().mockResolvedValue(null),
+                })),
+              };
+            }
+            const stmt = { bind };
+            return stmt;
+          }),
         } as unknown as D1Database,
         ENCRYPTION_KEY: "test-encryption-key",
         JWT_SECRET: "test-secret",
@@ -392,7 +404,7 @@ describe("App Endpoints", () => {
         ALLOWED_ORIGINS: "https://example.com",
       };
       token = await sign(
-        { sub: userId, email: "test@test.com" },
+        { sub: userId, email: "test@test.com", jti: testJti },
         mockEnv.JWT_SECRET!,
       );
     });
@@ -515,6 +527,113 @@ describe("App Endpoints", () => {
         expect.any(String),
         expect.any(String),
         userId,
+      );
+    });
+
+    it("POST /api/logout should blacklist the current JWT and clear FCM token", async () => {
+      const mockLogoutDb = {
+        prepare: vi.fn((query: string) => {
+          if (query.includes("SELECT jti FROM jwt_blacklist WHERE jti = ?")) {
+            return {
+              bind: vi.fn(() => ({
+                first: vi.fn().mockResolvedValue(null),
+              })),
+            };
+          }
+          if (query.includes("INSERT OR IGNORE INTO jwt_blacklist")) {
+            return {
+              bind: vi.fn(() => ({
+                run: vi.fn().mockResolvedValue({ success: true }),
+              })),
+            };
+          }
+          return {
+            bind: vi.fn(() => ({ run: vi.fn().mockResolvedValue({ success: true }) })),
+          };
+        }),
+      } as unknown as D1Database;
+
+      const logoutEnv = {
+        ...mockEnv,
+        DB: mockLogoutDb,
+      };
+
+      const req = new Request("http://localhost/api/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await worker.fetch(req, logoutEnv as Env);
+      expect(res.status).toBe(200);
+      const data = await res.json<{ success: boolean; message: string }>();
+      expect(data.success).toBe(true);
+      expect(mockLogoutDb.prepare).toHaveBeenCalledWith(
+        "UPDATE users SET fcm_token = NULL WHERE id = ?",
+      );
+    });
+
+    it("blacklisted JWT should be rejected by protected routes", async () => {
+      const mockBlacklistDb = {
+        prepare: vi.fn((query: string) => {
+          if (query.includes("SELECT jti FROM jwt_blacklist WHERE jti = ?")) {
+            return {
+              bind: vi.fn(() => ({
+                first: vi.fn().mockResolvedValue({ jti: "test-jti" }),
+              })),
+            };
+          }
+          return {
+            bind: vi.fn(() => ({ run: vi.fn().mockResolvedValue({ success: true }) })),
+          };
+        }),
+      } as unknown as D1Database;
+
+      const blacklistEnv = {
+        ...baseEnv(),
+        DB: mockBlacklistDb,
+      };
+
+      const req = new Request("http://localhost/api/watchlist", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await worker.fetch(req, blacklistEnv as Env);
+      expect(res.status).toBe(401);
+      const data = await res.json<{ error: string }>();
+      expect(data.error).toBe("Token has been revoked");
+    });
+
+    it("DELETE /api/fcm/register should clear FCM token", async () => {
+      const mockFcmDb = {
+        prepare: vi.fn((query: string) => {
+          if (query.includes("SELECT jti FROM jwt_blacklist WHERE jti = ?")) {
+            return {
+              bind: vi.fn(() => ({
+                first: vi.fn().mockResolvedValue(null),
+              })),
+            };
+          }
+          return {
+            bind: vi.fn(() => ({
+              run: vi.fn().mockResolvedValue({ success: true }),
+            })),
+          };
+        }),
+      } as unknown as D1Database;
+
+      const fcmEnv = {
+        ...mockEnv,
+        DB: mockFcmDb,
+      };
+
+      const req = new Request("http://localhost/api/fcm/register", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await worker.fetch(req, fcmEnv as Env);
+      expect(res.status).toBe(200);
+      const data = await res.json<{ success: boolean; message: string }>();
+      expect(data.success).toBe(true);
+      expect(mockFcmDb.prepare).toHaveBeenCalledWith(
+        "UPDATE users SET fcm_token = NULL WHERE id = ?",
       );
     });
   });

@@ -1,5 +1,7 @@
 // src/utils/auth.ts
 import { sign } from "hono/jwt";
+import { Context } from "hono";
+import { Env } from "../index";
 
 const ITERATIONS = 100000;
 const HASH_ALGORITHM = "SHA-256";
@@ -110,7 +112,24 @@ export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
+ * Checks if a JWT has been revoked.
+ */
+export async function isTokenRevoked(
+  c: Context<{ Bindings: Env }>,
+  jti: string,
+): Promise<boolean> {
+  const row = await c.env.DB.prepare(
+    "SELECT jti FROM jwt_blacklist WHERE jti = ?",
+  )
+    .bind(jti)
+    .first<{ jti: string }>();
+
+  return !!row;
+}
+
+/**
  * Generates a JSON Web Token (JWT) for a user.
+ * Includes a unique jti claim for revocation support.
  */
 export async function generateJwt(
   userId: string,
@@ -121,11 +140,14 @@ export async function generateJwt(
     throw new Error("JWT_SECRET is missing or invalid");
   }
 
+  const jti = crypto.randomUUID();
+
   return sign(
     {
       sub: userId,
       email,
       exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
+      jti,
     }, // 7-day expiration
     secret,
   );

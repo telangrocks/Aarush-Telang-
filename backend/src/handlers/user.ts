@@ -5,6 +5,7 @@ import {
   hashPassword,
   verifyPassword,
   generateJwt,
+  isTokenRevoked,
   MIN_PASSWORD_LENGTH,
   MAX_LOGIN_ATTEMPTS,
   LOGIN_LOCKOUT_MINUTES,
@@ -342,5 +343,86 @@ export async function handleGetProfile(
       error: "An internal server error occurred.",
       message: error.message,
     });
+  }
+}
+
+/**
+ * Revokes a JWT by adding its jti to the blacklist.
+ */
+async function revokeToken(
+  c: Context<{ Bindings: Env }>,
+  jti: string,
+  userId: string,
+  expiresAt: number,
+): Promise<void> {
+  await c.env.DB.prepare(
+    "INSERT OR IGNORE INTO jwt_blacklist (jti, user_id, expires_at) VALUES (?, ?, ?)",
+  )
+    .bind(jti, userId, expiresAt)
+    .run();
+}
+
+/**
+ * Handles user logout by revoking the current JWT and clearing FCM token.
+ */
+export async function handleLogout(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string; jti?: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({ error: "Unauthorized" });
+    }
+
+    const userId = payload.sub;
+    const jti = payload.jti || crypto.randomUUID();
+
+    await revokeToken(c, jti, userId, Date.now() / 1000 + 60 * 60 * 24 * 7);
+
+    await c.env.DB.prepare(
+      "UPDATE users SET fcm_token = NULL WHERE id = ?",
+    )
+      .bind(userId)
+      .run();
+
+    logAuthEvent("user_logout", { userId });
+
+    return c.json({ success: true, message: "Logged out successfully" });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Logout error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Handles deleting the FCM token for the current user.
+ */
+export async function handleDeleteFcmToken(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({ error: "Unauthorized" });
+    }
+
+    const userId = payload.sub;
+
+    await c.env.DB.prepare(
+      "UPDATE users SET fcm_token = NULL WHERE id = ?",
+    )
+      .bind(userId)
+      .run();
+
+    return c.json({ success: true, message: "FCM token removed" });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Delete FCM token error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
   }
 }

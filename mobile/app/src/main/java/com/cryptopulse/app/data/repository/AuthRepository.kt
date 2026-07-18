@@ -39,6 +39,18 @@ class AuthRepository(
     }
 
     suspend fun logout() {
-        tokenManager.clearToken()
+        try {
+            val token = tokenManager.getToken()
+            if (!token.isNullOrEmpty()) {
+                val response = api.logout()
+                if (!response.isSuccessful) {
+                    // Proceed with local cleanup even if server call fails
+                }
+            }
+        } catch (e: Exception) {
+            // Proceed with local cleanup even if server call fails
+        } finally {
+            tokenManager.clearToken()
+        }
     }
 }
