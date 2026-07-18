@@ -10,6 +10,7 @@ import {
   validateRefreshToken,
   decodeJwtPayload,
   countActiveRefreshTokens,
+  createAuditLog,
   runTransaction,
   MIN_PASSWORD_LENGTH,
   MAX_LOGIN_ATTEMPTS,
@@ -42,8 +43,15 @@ function isValidPassword(password: string): boolean {
   );
 }
 
-function logAuthEvent(event: string, details: Record<string, unknown>): void {
+function logAuthEvent(c: Context<{ Bindings: Env }>, event: string, details: Record<string, unknown>): void {
   console.log(JSON.stringify({ event, timestamp: new Date().toISOString(), ...details }));
+  createAuditLog(c, {
+    userId: (details.userId as string) || (details.user_id as string) || undefined,
+    action: event,
+    ip: (details.ip as string) || getClientIp(c),
+    userAgent: c.req.header("user-agent") || undefined,
+    metadata: details,
+  }).catch(() => {});
 }
 
 function getClientIp(c: Context<{ Bindings: Env }>): string {
@@ -133,7 +141,7 @@ export async function handleRegister(
     }>();
 
     if (!(await isRegistrationAllowed(c))) {
-      logAuthEvent("registration_rate_limited", {
+      logAuthEvent(c, "registration_rate_limited", {
         ip: getClientIp(c),
       });
       c.status(429);
@@ -209,7 +217,7 @@ export async function handleRegister(
       console.error("Failed to send verification email:", emailError);
     }
 
-    logAuthEvent("user_registered", { email: normalizedEmail });
+    logAuthEvent(c, "user_registered", { email: normalizedEmail });
 
     c.status(200);
     return c.json({
@@ -291,7 +299,7 @@ export async function handleResendVerification(
       return c.json({ error: "Failed to send verification email." });
     }
 
-    logAuthEvent("verification_email_resent", { userId: user.id, email: normalizedEmail });
+    logAuthEvent(c, "verification_email_resent", { userId: user.id, email: normalizedEmail });
 
     c.status(200);
     return c.json({ message: "Verification email sent." });
@@ -353,7 +361,7 @@ export async function handleVerifyEmail(
       },
     ]);
 
-    logAuthEvent("email_verified", { userId: user.id, email: user.email });
+    logAuthEvent(c, "email_verified", { userId: user.id, email: user.email });
 
     c.status(200);
     return c.json({ message: "Email verified successfully." });
@@ -377,7 +385,7 @@ export async function handleLogin(
 ): Promise<Response> {
   try {
     if (!(await isLoginAllowed(c))) {
-      logAuthEvent("login_rate_limited", {
+      logAuthEvent(c, "login_rate_limited", {
         ip: getClientIp(c),
       });
       c.status(429);
@@ -411,19 +419,19 @@ export async function handleLogin(
       }>();
 
     if (!user) {
-      logAuthEvent("login_failed", { email: normalizedEmail, reason: "user_not_found" });
+      logAuthEvent(c, "login_failed", { email: normalizedEmail, reason: "user_not_found" });
       c.status(401);
       return c.json({ error: "Invalid credentials." });
     }
 
     if (user.status !== "ACTIVE") {
-      logAuthEvent("login_failed", { userId: user.id, email: user.email, reason: "account_not_active" });
+      logAuthEvent(c, "login_failed", { userId: user.id, email: user.email, reason: "account_not_active" });
       c.status(403);
       return c.json({ error: "Account is not active. Please verify your email." });
     }
 
     if (user.locked_until && user.locked_until > Date.now()) {
-      logAuthEvent("login_failed", { userId: user.id, email: user.email, reason: "account_locked" });
+      logAuthEvent(c, "login_failed", { userId: user.id, email: user.email, reason: "account_locked" });
       c.status(429);
       return c.json({
         error: "Account temporarily locked due to too many failed attempts. Please try again later.",
@@ -444,7 +452,7 @@ export async function handleLogin(
         .bind(newAttempts, lockedUntil, user.id)
         .run();
 
-      logAuthEvent("login_failed", { userId: user.id, email: user.email, reason: "invalid_password", attempts: newAttempts });
+      logAuthEvent(c, "login_failed", { userId: user.id, email: user.email, reason: "invalid_password", attempts: newAttempts });
       c.status(401);
       return c.json({ error: "Invalid credentials." });
     }
@@ -491,7 +499,7 @@ export async function handleLogin(
       },
     ]);
 
-    logAuthEvent("login_success", { userId: user.id, email: user.email });
+    logAuthEvent(c, "login_success", { userId: user.id, email: user.email });
 
     c.status(200);
     return c.json({
@@ -593,7 +601,7 @@ export async function handleLogout(
       },
     ]);
 
-    logAuthEvent("user_logout", { userId });
+    logAuthEvent(c, "user_logout", { userId });
 
     return c.json({ success: true, message: "Logged out successfully" });
   } catch (err: unknown) {
@@ -669,7 +677,7 @@ export async function handleForgotPassword(
       .bind(resetToken, user.id, expiresAt)
       .run();
 
-    logAuthEvent("password_reset_requested", { userId: user.id, email: user.email });
+    logAuthEvent(c, "password_reset_requested", { userId: user.id, email: user.email });
 
     c.status(200);
     return c.json({
@@ -738,7 +746,7 @@ export async function handleResetPassword(
       .bind(token)
       .run();
 
-    logAuthEvent("password_reset_completed", { userId: resetRecord.user_id });
+    logAuthEvent(c, "password_reset_completed", { userId: resetRecord.user_id });
 
     c.status(200);
     return c.json({ message: "Password has been reset successfully." });
@@ -809,7 +817,7 @@ export async function handleRefresh(
       },
     ]);
 
-    logAuthEvent("token_refreshed", { userId: payload.sub });
+    logAuthEvent(c, "token_refreshed", { userId: payload.sub });
 
     c.status(200);
     return c.json({

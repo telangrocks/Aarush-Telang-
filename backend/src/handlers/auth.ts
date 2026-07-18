@@ -47,6 +47,31 @@ export async function runTransaction(
   }
 }
 
+export async function createAuditLog(
+  c: Context<{ Bindings: Env }>,
+  params: {
+    userId?: string;
+    action: string;
+    ip?: string;
+    userAgent?: string;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<void> {
+  try {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const metadata = params.metadata ? JSON.stringify(params.metadata) : null;
+
+    await c.env.DB.prepare(
+      "INSERT INTO audit_log (id, user_id, action, ip, user_agent, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+      .bind(id, params.userId || null, params.action, params.ip || null, params.userAgent || null, metadata, now)
+      .run();
+  } catch {
+    // Audit logging should not break the main flow
+  }
+}
+
 /**
  * Hashes a password using PBKDF2 with SHA-256.
  * Generates a random salt for each password and stores it with the hash.
