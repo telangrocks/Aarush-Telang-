@@ -14,7 +14,7 @@ vi.mock("./exchanges", () => ({
 }));
 
 function createStatementForQuery(query: string) {
-  if (query === "SELECT status FROM users WHERE email = ?") {
+  if (query === "SELECT id, status FROM users WHERE email = ?") {
     return {
       bind: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })),
     };
@@ -28,13 +28,10 @@ function createStatementForQuery(query: string) {
     };
   }
 
-  if (query === "SELECT id, email FROM users WHERE email = ?") {
+  if (query.includes("UPDATE users SET password_hash")) {
     return {
       bind: vi.fn(() => ({
-        first: vi.fn().mockResolvedValue({
-          id: "new-user-id",
-          email: "new@example.com",
-        }),
+        run: vi.fn().mockResolvedValue({ success: true }),
       })),
     };
   }
@@ -193,6 +190,9 @@ describe("App Endpoints", () => {
       "portfolio_transactions",
       "price_alerts",
       "jwt_blacklist",
+      "refresh_tokens",
+      "login_attempts",
+      "password_reset_tokens",
     ]);
   });
 
@@ -217,7 +217,7 @@ describe("App Endpoints", () => {
     expect(data.message).toBe("Database connection failed");
   });
 
-  it("POST /api/register creates an active account and returns a token", async () => {
+  it("POST /api/register creates a pending verification account", async () => {
     const mockEnv = {
       DB: {
         prepare: vi.fn((query: string) => {
@@ -250,9 +250,8 @@ describe("App Endpoints", () => {
     );
 
     expect(res.status).toBe(200);
-    const data = await res.json<{ message: string; token: string }>();
-    expect(data.message).toBe("Account created successfully.");
-    expect(data.token).toBeDefined();
+    const data = await res.json<{ message: string }>();
+    expect(data.message).toBe("Account created successfully. Please verify your email.");
   });
 
   it("POST /api/register rejects weak passwords", async () => {
@@ -381,7 +380,6 @@ describe("App Endpoints", () => {
         .mockResolvedValue({ results: [{ id: "btc", user_id: userId }] });
       const run = vi.fn().mockResolvedValue({ success: true });
       const bind = vi.fn(() => ({ all, run }));
-      const statement = { bind };
 
       mockEnv = {
         DB: {

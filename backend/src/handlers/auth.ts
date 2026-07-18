@@ -1,5 +1,5 @@
 // src/utils/auth.ts
-import { sign } from "hono/jwt";
+import { sign, verify } from "hono/jwt";
 import { Context } from "hono";
 import { Env } from "../index";
 
@@ -9,6 +9,9 @@ const HASH_ALGORITHM = "SHA-256";
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCKOUT_MINUTES = 15;
+const ACCESS_TOKEN_EXPIRY_SECONDS = 60 * 15; // 15 minutes
+const REFRESH_TOKEN_EXPIRY_SECONDS = 60 * 60 * 24 * 7; // 7 days
+const MAX_ACTIVE_REFRESH_TOKENS = 5;
 
 export {
   ITERATIONS,
@@ -16,6 +19,9 @@ export {
   MIN_PASSWORD_LENGTH,
   MAX_LOGIN_ATTEMPTS,
   LOGIN_LOCKOUT_MINUTES,
+  ACCESS_TOKEN_EXPIRY_SECONDS,
+  REFRESH_TOKEN_EXPIRY_SECONDS,
+  MAX_ACTIVE_REFRESH_TOKENS,
 };
 
 /**
@@ -112,6 +118,139 @@ export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
+ * Generates an access JWT for a user (short-lived, 15 minutes).
+ */
+export async function generateAccessToken(
+  userId: string,
+  email: string,
+  secret: string,
+): Promise<string> {
+  if (!secret || typeof secret !== "string") {
+    throw new Error("JWT_SECRET is missing or invalid");
+  }
+
+  const jti = crypto.randomUUID();
+
+  return sign(
+    {
+      sub: userId,
+      email,
+      exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_EXPIRY_SECONDS,
+      jti,
+      type: "access",
+    },
+    secret,
+  );
+}
+
+/**
+ * Generates a refresh token for a user (long-lived, 7 days).
+ */
+export async function generateRefreshToken(
+  userId: string,
+  email: string,
+  secret: string,
+): Promise<string> {
+  if (!secret || typeof secret !== "string") {
+    throw new Error("JWT_SECRET is missing or invalid");
+  }
+
+  const jti = crypto.randomUUID();
+
+  return sign(
+    {
+      sub: userId,
+      email,
+      exp: Math.floor(Date.now() / 1000) + REFRESH_TOKEN_EXPIRY_SECONDS,
+      jti,
+      type: "refresh",
+    },
+    secret,
+  );
+}
+
+/**
+ * Stores a refresh token in the database.
+ */
+export async function storeRefreshToken(
+  c: Context<{ Bindings: Env }>,
+  jti: string,
+  userId: string,
+  expiresAt: number,
+): Promise<void> {
+  await c.env.DB.prepare(
+    "INSERT INTO refresh_tokens (jti, user_id, expires_at) VALUES (?, ?, ?)",
+  )
+    .bind(jti, userId, expiresAt)
+    .run();
+}
+
+/**
+ * Revokes a refresh token.
+ */
+export async function revokeRefreshToken(
+  c: Context<{ Bindings: Env }>,
+  jti: string,
+): Promise<void> {
+  await c.env.DB.prepare(
+    "UPDATE refresh_tokens SET revoked = 1 WHERE jti = ?",
+  )
+    .bind(jti)
+    .run();
+}
+
+/**
+ * Validates a refresh token and returns the payload if valid.
+ */
+export async function validateRefreshToken(
+  c: Context<{ Bindings: Env }>,
+  token: string,
+  secret: string,
+): Promise<{ sub: string; email: string; jti: string } | null> {
+  try {
+    const payload = await verify(token, secret, { alg: "HS256" });
+    if (!payload || typeof payload !== "object") return null;
+    if ((payload as any).type !== "refresh") return null;
+
+    const jti = (payload as any).jti as string;
+    const row = await c.env.DB.prepare(
+      "SELECT jti, revoked, expires_at FROM refresh_tokens WHERE jti = ?",
+    )
+      .bind(jti)
+      .first<{ jti: string; revoked: number; expires_at: number }>();
+
+    if (!row || row.revoked === 1 || row.expires_at < Date.now() / 1000) {
+      return null;
+    }
+
+    return {
+      sub: (payload as any).sub as string,
+      email: (payload as any).email as string,
+      jti,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decodes the payload of a JWT without verifying the signature.
+ * Returns the parsed JSON payload or null on failure.
+ */
+export function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = parts[1];
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const json = atob(base64);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Checks if a JWT has been revoked.
  */
 export async function isTokenRevoked(
@@ -128,27 +267,32 @@ export async function isTokenRevoked(
 }
 
 /**
- * Generates a JSON Web Token (JWT) for a user.
- * Includes a unique jti claim for revocation support.
+ * Revokes all active refresh tokens for a user.
  */
-export async function generateJwt(
+export async function revokeAllUserRefreshTokens(
+  c: Context<{ Bindings: Env }>,
   userId: string,
-  email: string,
-  secret: string,
-): Promise<string> {
-  if (!secret || typeof secret !== "string") {
-    throw new Error("JWT_SECRET is missing or invalid");
-  }
+): Promise<void> {
+  await c.env.DB.prepare(
+    "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0",
+  )
+    .bind(userId)
+    .run();
+}
 
-  const jti = crypto.randomUUID();
+/**
+ * Counts active (non-revoked, non-expired) refresh tokens for a user.
+ */
+export async function countActiveRefreshTokens(
+  c: Context<{ Bindings: Env }>,
+  userId: string,
+): Promise<number> {
+  const row = await c.env.DB.prepare(
+    `SELECT COUNT(*) as count FROM refresh_tokens
+     WHERE user_id = ? AND revoked = 0 AND expires_at > ?`,
+  )
+    .bind(userId, Math.floor(Date.now() / 1000))
+    .first<{ count: number }>();
 
-  return sign(
-    {
-      sub: userId,
-      email,
-      exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
-      jti,
-    }, // 7-day expiration
-    secret,
-  );
+  return row?.count ?? 0;
 }

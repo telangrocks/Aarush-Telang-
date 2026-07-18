@@ -9,10 +9,13 @@ data class RegisterRequest(
     val password: String,
     val confirmPassword: String,
 )
-data class RegisterResponse(val message: String?, val token: String?, val error: String?)
+data class RegisterResponse(val message: String?, val accessToken: String?, val refreshToken: String?, val error: String?)
 
 data class LoginRequest(val email: String, val password: String)
-data class LoginResponse(val token: String?, val error: String?)
+data class LoginResponse(val accessToken: String?, val refreshToken: String?, val error: String?)
+
+data class RefreshRequest(val refreshToken: String)
+data class RefreshResponse(val accessToken: String?, val refreshToken: String?, val error: String?)
 
 interface AuthService {
     @POST("/api/register")
@@ -23,4 +26,7 @@ interface AuthService {
 
     @POST("/api/logout")
     suspend fun logout(): Response<Map<String, Any>>
+
+    @POST("/api/refresh")
+    suspend fun refresh(@Body request: RefreshRequest): Response<RefreshResponse>
 }

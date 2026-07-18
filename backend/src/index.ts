@@ -11,6 +11,9 @@ import {
   handleVerifyOtp,
   handleLogout,
   handleDeleteFcmToken,
+  handleForgotPassword,
+  handleResetPassword,
+  handleRefresh,
 } from "./handlers/user";
 import {
   handleValidateExchange,
@@ -104,7 +107,7 @@ app.use("*", async (c, next) => {
 // ==========================================
 // PUBLIC ENDPOINTS
 // ==========================================
-const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-otp", "/api/verify-otp"];
+const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-otp", "/api/verify-otp", "/api/forgot-password", "/api/reset-password", "/api/refresh"];
 
 app.get("/health", (c) => {
   return c.json({
@@ -137,6 +140,9 @@ app.get("/db-status", async (c) => {
       "portfolio_transactions",
       "price_alerts",
       "jwt_blacklist",
+      "refresh_tokens",
+      "login_attempts",
+      "password_reset_tokens",
     ];
 
     const missingTables: string[] = [];
@@ -198,6 +204,9 @@ const PUBLIC_AUTH_PATHS = new Set([
   "/api/resend-otp",
   "/api/verify-otp",
   "/api/exchange/validate",
+  "/api/refresh",
+  "/api/forgot-password",
+  "/api/reset-password",
 ]);
 
 api.use("*", (c, next) => {
@@ -321,6 +330,9 @@ api.post("/fcm/register", handleRegisterFcmToken);
 api.delete("/fcm/register", handleDeleteFcmToken);
 
 api.post("/logout", handleLogout);
+api.post("/refresh", handleRefresh);
+api.post("/forgot-password", handleForgotPassword);
+api.post("/reset-password", handleResetPassword);
 
 app.route("/api", api);
 

@@ -4,11 +4,18 @@ import { Env } from "../index";
 import {
   hashPassword,
   verifyPassword,
-  generateJwt,
-  isTokenRevoked,
+  generateAccessToken,
+  generateRefreshToken,
+  storeRefreshToken,
+  revokeRefreshToken,
+  validateRefreshToken,
+  decodeJwtPayload,
+  revokeAllUserRefreshTokens,
+  countActiveRefreshTokens,
   MIN_PASSWORD_LENGTH,
   MAX_LOGIN_ATTEMPTS,
   LOGIN_LOCKOUT_MINUTES,
+  MAX_ACTIVE_REFRESH_TOKENS,
 } from "./auth";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -16,6 +23,9 @@ const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@
 
 const MAX_REGISTRATIONS_PER_WINDOW = 10;
 const REGISTRATION_WINDOW_MS = 60 * 60 * 1000;
+
+const MAX_LOGIN_ATTEMPTS_PER_IP = 20;
+const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -45,15 +55,23 @@ function getClientIp(c: Context<{ Bindings: Env }>): string {
 }
 
 /**
- * Throttles account creation to at most MAX_REGISTRATIONS_PER_WINDOW
- * attempts per client IP per REGISTRATION_WINDOW_MS window.
- * Returns true if the registration is allowed to proceed.
+ * Throttles account creation atomically to prevent race conditions.
  */
 async function isRegistrationAllowed(
   c: Context<{ Bindings: Env }>,
 ): Promise<boolean> {
   const ip = getClientIp(c);
   const now = Date.now();
+
+  await c.env.DB.prepare(
+    `INSERT INTO registration_attempts (ip, count, window_start)
+     VALUES (?, 1, ?)
+     ON CONFLICT(ip) DO UPDATE SET
+       count = CASE WHEN excluded.window_start > window_start THEN 1 ELSE count + 1 END,
+       window_start = CASE WHEN excluded.window_start > window_start THEN excluded.window_start ELSE window_start END`,
+  )
+    .bind(ip, now)
+    .run();
 
   const row = await c.env.DB.prepare(
     "SELECT count, window_start FROM registration_attempts WHERE ip = ?",
@@ -62,33 +80,47 @@ async function isRegistrationAllowed(
     .first<{ count: number; window_start: number }>();
 
   if (!row || now - row.window_start >= REGISTRATION_WINDOW_MS) {
-    await c.env.DB.prepare(
-      `INSERT INTO registration_attempts (ip, count, window_start)
-       VALUES (?, 1, ?)
-       ON CONFLICT(ip) DO UPDATE SET
-         count = 1,
-         window_start = excluded.window_start`,
-    )
-      .bind(ip, now)
-      .run();
     return true;
   }
 
-  if (row.count >= MAX_REGISTRATIONS_PER_WINDOW) {
-    return false;
-  }
+  return row.count < MAX_REGISTRATIONS_PER_WINDOW;
+}
+
+/**
+ * Throttles login attempts per IP atomically.
+ */
+async function isLoginAllowed(
+  c: Context<{ Bindings: Env }>,
+): Promise<boolean> {
+  const ip = getClientIp(c);
+  const now = Date.now();
 
   await c.env.DB.prepare(
-    "UPDATE registration_attempts SET count = count + 1 WHERE ip = ?",
+    `INSERT INTO login_attempts (ip, count, window_start)
+     VALUES (?, 1, ?)
+     ON CONFLICT(ip) DO UPDATE SET
+       count = CASE WHEN excluded.window_start > window_start THEN 1 ELSE count + 1 END,
+       window_start = CASE WHEN excluded.window_start > window_start THEN excluded.window_start ELSE window_start END`,
+  )
+    .bind(ip, now)
+    .run();
+
+  const row = await c.env.DB.prepare(
+    "SELECT count, window_start FROM login_attempts WHERE ip = ?",
   )
     .bind(ip)
-    .run();
-  return true;
+    .first<{ count: number; window_start: number }>();
+
+  if (!row || now - row.window_start >= LOGIN_RATE_LIMIT_WINDOW_MS) {
+    return true;
+  }
+
+  return row.count < MAX_LOGIN_ATTEMPTS_PER_IP;
 }
 
 /**
  * Handles the user registration request.
- * Creates an ACTIVE user immediately using email + password only.
+ * Creates a PENDING_VERIFICATION user and sends OTP (simulated for now).
  */
 export async function handleRegister(
   c: Context<{ Bindings: Env }>,
@@ -127,10 +159,10 @@ export async function handleRegister(
     }
 
     const existingUser = await c.env.DB.prepare(
-      "SELECT status FROM users WHERE email = ?",
+      "SELECT id, status FROM users WHERE email = ?",
     )
       .bind(normalizedEmail)
-      .first<{ status: string | null }>();
+      .first<{ id: string; status: string }>();
 
     if (existingUser?.status === "ACTIVE") {
       c.status(409);
@@ -142,45 +174,26 @@ export async function handleRegister(
     const hashedPassword = await hashPassword(password);
     const now = new Date().toISOString();
 
-    await c.env.DB.prepare(
-      `INSERT INTO users (
-         id,
-         email,
-         password_hash,
-         created_at,
-         status,
-         updated_at,
-         failed_login_attempts,
-         locked_until
-       )
-       VALUES (?, ?, ?, ?, 'ACTIVE', ?, 0, NULL)
-       ON CONFLICT(email) DO UPDATE SET
-         password_hash = excluded.password_hash,
-         status = 'ACTIVE',
-         updated_at = excluded.updated_at,
-         failed_login_attempts = 0,
-         locked_until = NULL`,
-    )
-      .bind(crypto.randomUUID(), normalizedEmail, hashedPassword, now, now)
-      .run();
-
-    const user = await c.env.DB.prepare(
-      "SELECT id, email FROM users WHERE email = ?",
-    )
-      .bind(normalizedEmail)
-      .first<{ id: string; email: string }>();
-
-    if (!user) {
-      throw new Error("Failed to load registered user.");
+    if (existingUser) {
+      await c.env.DB.prepare(
+        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+      )
+        .bind(hashedPassword, now, existingUser.id)
+        .run();
+    } else {
+      await c.env.DB.prepare(
+        `INSERT INTO users (id, email, password_hash, created_at, status, updated_at, failed_login_attempts, locked_until)
+         VALUES (?, ?, ?, ?, 'PENDING_VERIFICATION', ?, 0, NULL)`,
+      )
+        .bind(crypto.randomUUID(), normalizedEmail, hashedPassword, now, now)
+        .run();
     }
 
-    logAuthEvent("user_registered", { userId: user.id, email: user.email });
+    logAuthEvent("user_registered", { email: normalizedEmail });
 
-    const token = await generateJwt(user.id, user.email, c.env.JWT_SECRET);
     c.status(200);
     return c.json({
-      message: "Account created successfully.",
-      token,
+      message: "Account created successfully. Please verify your email.",
     });
   } catch (err: unknown) {
     const error = err as Error;
@@ -207,12 +220,22 @@ export async function handleResendOtp(
 
 /**
  * Handles the user login request.
- * Verifies credentials and returns a JWT on success.
+ * Verifies credentials and returns an access token + refresh token.
  */
 export async function handleLogin(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   try {
+    if (!(await isLoginAllowed(c))) {
+      logAuthEvent("login_rate_limited", {
+        ip: getClientIp(c),
+      });
+      c.status(429);
+      return c.json({
+        error: "Too many login attempts. Please try again later.",
+      });
+    }
+
     const { email, password } = await c.req.json<{
       email?: string;
       password?: string;
@@ -241,6 +264,12 @@ export async function handleLogin(
       logAuthEvent("login_failed", { email: normalizedEmail, reason: "user_not_found" });
       c.status(401);
       return c.json({ error: "Invalid credentials." });
+    }
+
+    if (user.status !== "ACTIVE") {
+      logAuthEvent("login_failed", { userId: user.id, email: user.email, reason: "account_not_active" });
+      c.status(403);
+      return c.json({ error: "Account is not active. Please verify your email." });
     }
 
     if (user.locked_until && user.locked_until > Date.now()) {
@@ -272,16 +301,42 @@ export async function handleLogin(
 
     const now = new Date().toISOString();
     await c.env.DB.prepare(
-      "UPDATE users SET status = 'ACTIVE', failed_login_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?",
+      "UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?",
     )
       .bind(now, user.id)
       .run();
 
+    const accessToken = await generateAccessToken(user.id, user.email, c.env.JWT_SECRET);
+    const refreshToken = await generateRefreshToken(user.id, user.email, c.env.JWT_SECRET);
+    const refreshExpiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7;
+
+    const refreshPayload = decodeJwtPayload(refreshToken);
+    const refreshJti = (refreshPayload?.jti as string) || crypto.randomUUID();
+
+    const activeCount = await countActiveRefreshTokens(c, user.id);
+    if (activeCount >= MAX_ACTIVE_REFRESH_TOKENS) {
+      const toRevoke = await c.env.DB.prepare(
+        `SELECT jti FROM refresh_tokens
+         WHERE user_id = ? AND revoked = 0 AND expires_at > ?
+         ORDER BY created_at ASC LIMIT ?`,
+      )
+        .bind(user.id, Math.floor(Date.now() / 1000), activeCount - MAX_ACTIVE_REFRESH_TOKENS + 1)
+        .all<{ jti: string }>();
+
+      for (const row of toRevoke.results) {
+        await revokeRefreshToken(c, row.jti);
+      }
+    }
+
+    await storeRefreshToken(c, refreshJti, user.id, refreshExpiresAt);
+
     logAuthEvent("login_success", { userId: user.id, email: user.email });
 
-    const token = await generateJwt(user.id, user.email, c.env.JWT_SECRET);
     c.status(200);
-    return c.json({ token });
+    return c.json({
+      accessToken,
+      refreshToken,
+    });
   } catch (err: unknown) {
     const error = err as Error;
     console.error("Login error:", error);
@@ -379,6 +434,7 @@ export async function handleLogout(
     const jti = payload.jti || crypto.randomUUID();
 
     await revokeToken(c, jti, userId, Date.now() / 1000 + 60 * 60 * 24 * 7);
+    await revokeAllUserRefreshTokens(c, userId);
 
     await c.env.DB.prepare(
       "UPDATE users SET fcm_token = NULL WHERE id = ?",
@@ -424,5 +480,188 @@ export async function handleDeleteFcmToken(
     console.error("Delete FCM token error:", error);
     c.status(500);
     return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Generates a password reset token and stores it.
+ */
+export async function handleForgotPassword(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const { email } = await c.req.json<{ email?: string }>();
+    const normalizedEmail = email ? normalizeEmail(email) : "";
+
+    if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
+      c.status(400);
+      return c.json({ error: "A valid email is required." });
+    }
+
+    const user = await c.env.DB.prepare(
+      "SELECT id, email FROM users WHERE email = ?",
+    )
+      .bind(normalizedEmail)
+      .first<{ id: string; email: string }>();
+
+    if (!user) {
+      c.status(404);
+      return c.json({ error: "No account found with that email address." });
+    }
+
+    const resetToken = crypto.randomUUID();
+    const expiresAt = Math.floor(Date.now() / 1000) + 60 * 60;
+
+    await c.env.DB.prepare(
+      "INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
+    )
+      .bind(resetToken, user.id, expiresAt)
+      .run();
+
+    logAuthEvent("password_reset_requested", { userId: user.id, email: user.email });
+
+    c.status(200);
+    return c.json({
+      message: "Password reset instructions have been sent to your email.",
+      resetToken,
+    });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Forgot password error:", error);
+    c.status(500);
+    return c.json({
+      error: "An internal server error occurred.",
+      message: error.message,
+    });
+  }
+}
+
+/**
+ * Resets the user's password using a valid reset token.
+ */
+export async function handleResetPassword(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const { token, newPassword } = await c.req.json<{
+      token?: string;
+      newPassword?: string;
+    }>();
+
+    if (!token || !newPassword) {
+      c.status(400);
+      return c.json({ error: "Reset token and new password are required." });
+    }
+
+    if (!isValidPassword(newPassword)) {
+      c.status(400);
+      return c.json({
+        error:
+          "Password must be at least 8 characters with uppercase, lowercase, number, and special character.",
+      });
+    }
+
+    const resetRecord = await c.env.DB.prepare(
+      "SELECT user_id, expires_at FROM password_reset_tokens WHERE token = ?",
+    )
+      .bind(token)
+      .first<{ user_id: string; expires_at: number }>();
+
+    if (!resetRecord || resetRecord.expires_at < Date.now() / 1000) {
+      c.status(400);
+      return c.json({ error: "Invalid or expired reset token." });
+    }
+
+    const hashedPassword = await hashPassword(newPassword);
+    const now = new Date().toISOString();
+
+    await c.env.DB.prepare(
+      "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+    )
+      .bind(hashedPassword, now, resetRecord.user_id)
+      .run();
+
+    await c.env.DB.prepare(
+      "DELETE FROM password_reset_tokens WHERE token = ?",
+    )
+      .bind(token)
+      .run();
+
+    logAuthEvent("password_reset_completed", { userId: resetRecord.user_id });
+
+    c.status(200);
+    return c.json({ message: "Password has been reset successfully." });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Reset password error:", error);
+    c.status(500);
+    return c.json({
+      error: "An internal server error occurred.",
+      message: error.message,
+    });
+  }
+}
+
+/**
+ * Refreshes an access token using a valid refresh token.
+ */
+export async function handleRefresh(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const { refreshToken } = await c.req.json<{ refreshToken?: string }>();
+
+    if (!refreshToken) {
+      c.status(400);
+      return c.json({ error: "Refresh token is required." });
+    }
+
+    const payload = await validateRefreshToken(c, refreshToken, c.env.JWT_SECRET);
+    if (!payload) {
+      c.status(401);
+      return c.json({ error: "Invalid or expired refresh token." });
+    }
+
+    await revokeRefreshToken(c, payload.jti);
+
+    const newAccessToken = await generateAccessToken(payload.sub, payload.email, c.env.JWT_SECRET);
+    const newRefreshToken = await generateRefreshToken(payload.sub, payload.email, c.env.JWT_SECRET);
+    const newRefreshExpiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7;
+
+    const newRefreshPayload = decodeJwtPayload(newRefreshToken);
+    const newRefreshJti = (newRefreshPayload?.jti as string) || crypto.randomUUID();
+
+    const activeCount = await countActiveRefreshTokens(c, payload.sub);
+    if (activeCount >= MAX_ACTIVE_REFRESH_TOKENS) {
+      const toRevoke = await c.env.DB.prepare(
+        `SELECT jti FROM refresh_tokens
+         WHERE user_id = ? AND revoked = 0 AND expires_at > ?
+         ORDER BY created_at ASC LIMIT ?`,
+      )
+        .bind(payload.sub, Math.floor(Date.now() / 1000), activeCount - MAX_ACTIVE_REFRESH_TOKENS + 1)
+        .all<{ jti: string }>();
+
+      for (const row of toRevoke.results) {
+        await revokeRefreshToken(c, row.jti);
+      }
+    }
+
+    await storeRefreshToken(c, newRefreshJti, payload.sub, newRefreshExpiresAt);
+
+    logAuthEvent("token_refreshed", { userId: payload.sub });
+
+    c.status(200);
+    return c.json({
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+    });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Refresh error:", error);
+    c.status(500);
+    return c.json({
+      error: "An internal server error occurred.",
+      message: error.message,
+    });
   }
 }
