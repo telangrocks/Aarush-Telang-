@@ -45,7 +45,7 @@ import {
 import { handleRegisterFcmToken, sendPriceAlertNotification } from "./handlers/notifications";
 import { handleGetPositions, handleClosePosition } from "./handlers/positions";
 import { isTokenRevoked } from "./handlers/auth";
-import { chatWithKimiK3, KIMI_K3_MODEL } from "./services/kimi";
+import { chatWithKimiK3 } from "./services/kimi";
 import { getExchangeAdapter, type ExchangeName, type ExchangeEnvironment, type ExchangeRegion } from "./exchanges";
 
 export interface Env {
