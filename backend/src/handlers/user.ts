@@ -236,18 +236,6 @@ export async function handleRegister(
 }
 
 /**
- * OTP resend is disabled while the app uses direct email + password auth.
- */
-export async function handleResendOtp(
-  c: Context<{ Bindings: Env }>,
-): Promise<Response> {
-  c.status(410);
-  return c.json({
-    error: "OTP email verification is currently disabled.",
-  });
-}
-
-/**
  * Resends an email verification link for a pending account.
  */
 export async function handleResendVerification(
@@ -516,18 +504,6 @@ export async function handleLogin(
       message: error.message,
     });
   }
-}
-
-/**
- * OTP verification is disabled while the app uses direct email + password auth.
- */
-export async function handleVerifyOtp(
-  c: Context<{ Bindings: Env }>,
-): Promise<Response> {
-  c.status(410);
-  return c.json({
-    error: "OTP email verification is currently disabled.",
-  });
 }
 
 /**
@@ -1060,6 +1036,235 @@ export async function handleDisableMfa(
   } catch (err: unknown) {
     const error = err as Error;
     console.error("Disable MFA error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+const MAX_PIN_ATTEMPTS = 5;
+const PIN_LOCKOUT_MINUTES = 15;
+
+/**
+ * Sets a new PIN for the authenticated user.
+ */
+export async function handleSetPin(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({ error: "Unauthorized" });
+    }
+
+    const { pin } = await c.req.json<{ pin?: string }>();
+    if (!pin || pin.length < 4 || pin.length > 8) {
+      c.status(400);
+      return c.json({ error: "PIN must be between 4 and 8 digits." });
+    }
+
+    const pinHash = await hashPassword(pin);
+
+    await runTransaction(c, [
+      {
+        sql: "UPDATE users SET pin_hash = ?, pin_attempts = 0, pin_locked_until = NULL WHERE id = ?",
+        bindings: [pinHash, payload.sub],
+      },
+    ]);
+
+    logAuthEvent(c, "pin_set", { userId: payload.sub });
+
+    c.status(200);
+    return c.json({ message: "PIN set successfully." });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Set PIN error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Verifies a user's PIN for quick authentication.
+ */
+export async function handleVerifyPin(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const { email, pin } = await c.req.json<{ email?: string; pin?: string }>();
+    const normalizedEmail = email ? normalizeEmail(email) : "";
+
+    if (!normalizedEmail || !isValidEmail(normalizedEmail) || !pin) {
+      c.status(400);
+      return c.json({ error: "Email and PIN are required." });
+    }
+
+    const user = await c.env.DB.prepare(
+      "SELECT id, pin_hash, pin_attempts, pin_locked_until FROM users WHERE email = ? AND is_deleted = 0",
+    )
+      .bind(normalizedEmail)
+      .first<{ id: string; pin_hash: string; pin_attempts: number; pin_locked_until: string | null }>();
+
+    if (!user || !user.pin_hash) {
+      c.status(401);
+      return c.json({ error: "Invalid email or PIN." });
+    }
+
+    if (user.pin_locked_until && new Date(user.pin_locked_until) > new Date()) {
+      c.status(423);
+      return c.json({ error: "Too many PIN attempts. Try again later." });
+    }
+
+    const pinValid = await verifyPassword(pin, user.pin_hash);
+    if (!pinValid) {
+      const newAttempts = user.pin_attempts + 1;
+      const lockedUntil = newAttempts >= MAX_PIN_ATTEMPTS
+        ? new Date(Date.now() + PIN_LOCKOUT_MINUTES * 60 * 1000).toISOString()
+        : null;
+
+      await c.env.DB.prepare(
+        "UPDATE users SET pin_attempts = ?, pin_locked_until = ? WHERE id = ?",
+      )
+        .bind(newAttempts, lockedUntil, user.id)
+        .run();
+
+      logAuthEvent(c, "pin_verification_failed", { userId: user.id, attempts: newAttempts });
+      c.status(401);
+      return c.json({ error: "Invalid email or PIN." });
+    }
+
+    await c.env.DB.prepare(
+      "UPDATE users SET pin_attempts = 0, pin_locked_until = NULL WHERE id = ?",
+    )
+      .bind(user.id)
+      .run();
+
+    logAuthEvent(c, "pin_verified", { userId: user.id });
+
+    c.status(200);
+    return c.json({ success: true, user_id: user.id });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Verify PIN error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Requests a PIN reset via email.
+ */
+export async function handleRequestPinReset(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const { email } = await c.req.json<{ email?: string }>();
+    const normalizedEmail = email ? normalizeEmail(email) : "";
+
+    if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
+      c.status(400);
+      return c.json({ error: "A valid email is required." });
+    }
+
+    const user = await c.env.DB.prepare(
+      "SELECT id FROM users WHERE email = ? AND is_deleted = 0",
+    )
+      .bind(normalizedEmail)
+      .first<{ id: string }>();
+
+    if (!user) {
+      c.status(404);
+      return c.json({ error: "No account found with that email address." });
+    }
+
+    const token = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 60 * 60 * 24 * 1000).toISOString();
+
+    await c.env.DB.prepare(
+      "INSERT INTO pin_reset_tokens (id, user_id, token, expires_at) VALUES (?, ?, ?, ?)",
+    )
+      .bind(crypto.randomUUID(), user.id, token, expiresAt)
+      .run();
+
+    const baseUrl = c.req.url.replace(/\/api\/.*$/, "");
+    const resetLink = `${baseUrl}/api/reset-pin?token=${token}`;
+
+    try {
+      const { subject, html } = buildVerificationEmail(resetLink);
+      await sendEmail(c.env, { to: normalizedEmail, subject, html });
+    } catch (emailError) {
+      console.error("Failed to send PIN reset email:", emailError);
+      c.status(500);
+      return c.json({ error: "Failed to send PIN reset email." });
+    }
+
+    logAuthEvent(c, "pin_reset_requested", { userId: user.id, email: normalizedEmail });
+
+    c.status(200);
+    return c.json({ message: "PIN reset email sent." });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Request PIN reset error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Confirms a PIN reset with the token from email.
+ */
+export async function handleConfirmPinReset(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const token = c.req.query("token");
+    if (!token) {
+      c.status(400);
+      return c.json({ error: "Reset token is required." });
+    }
+
+    const resetRecord = await c.env.DB.prepare(
+      "SELECT id, user_id, expires_at, used FROM pin_reset_tokens WHERE token = ?",
+    )
+      .bind(token)
+      .first<{ id: string; user_id: string; expires_at: string; used: number }>();
+
+    if (!resetRecord || resetRecord.used === 1) {
+      c.status(400);
+      return c.json({ error: "Invalid or expired reset token." });
+    }
+
+    if (new Date(resetRecord.expires_at) < new Date()) {
+      c.status(400);
+      return c.json({ error: "Reset token has expired." });
+    }
+
+    const { pin } = await c.req.json<{ pin?: string }>();
+    if (!pin || pin.length < 4 || pin.length > 8) {
+      c.status(400);
+      return c.json({ error: "PIN must be between 4 and 8 digits." });
+    }
+
+    const pinHash = await hashPassword(pin);
+
+    await runTransaction(c, [
+      {
+        sql: "UPDATE users SET pin_hash = ?, pin_attempts = 0, pin_locked_until = NULL WHERE id = ?",
+        bindings: [pinHash, resetRecord.user_id],
+      },
+      {
+        sql: "UPDATE pin_reset_tokens SET used = 1 WHERE id = ?",
+        bindings: [resetRecord.id],
+      },
+    ]);
+
+    logAuthEvent(c, "pin_reset_completed", { userId: resetRecord.user_id });
+
+    c.status(200);
+    return c.json({ message: "PIN reset successfully." });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Confirm PIN reset error:", error);
     c.status(500);
     return c.json({ error: "An internal server error occurred.", message: error.message });
   }

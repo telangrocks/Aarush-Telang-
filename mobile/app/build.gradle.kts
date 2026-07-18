@@ -99,6 +99,7 @@ dependencies {
     // DataStore & Security
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.security:security-crypto:1.0.0")
+    implementation("androidx.biometric:biometric:1.4.0-alpha03")
 
     // Firebase
     implementation(platform("com.google.firebase:firebase-bom:33.1.0"))

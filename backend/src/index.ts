@@ -7,8 +7,6 @@ import {
   handleGetProfile,
   handleLogin,
   handleRegister,
-  handleResendOtp,
-  handleVerifyOtp,
   handleResendVerification,
   handleVerifyEmail,
   handleLogout,
@@ -22,6 +20,10 @@ import {
   handleRemoveDevice,
   handleEnableMfa,
   handleDisableMfa,
+  handleSetPin,
+  handleVerifyPin,
+  handleRequestPinReset,
+  handleConfirmPinReset,
 } from "./handlers/user";
 import {
   handleValidateExchange,
@@ -130,7 +132,7 @@ app.use("*", async (c, next) => {
 // ==========================================
 // PUBLIC ENDPOINTS
 // ==========================================
-const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-otp", "/api/verify-otp", "/api/resend-verification", "/api/verify-email", "/api/forgot-password", "/api/reset-password", "/api/refresh"];
+const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-verification", "/api/verify-email", "/api/forgot-password", "/api/reset-password", "/api/refresh", "/api/verify-pin", "/api/reset-pin", "/api/confirm-pin-reset"];
 
 app.get("/health", (c) => {
   return c.json({
@@ -207,8 +209,6 @@ app.get("/db-status", async (c) => {
 // PUBLIC API ROUTES
 // ==========================================
 app.post("/api/register", handleRegister);
-app.post("/api/resend-otp", handleResendOtp);
-app.post("/api/verify-otp", handleVerifyOtp);
 app.post("/api/resend-verification", handleResendVerification);
 app.get("/api/verify-email", handleVerifyEmail);
 app.post("/api/login", handleLogin);
@@ -221,20 +221,21 @@ const api = new Hono<{ Bindings: Env }>();
 // JWT Middleware with proper error handling.
 // NOTE: Hono applies sub-app (`api`) middleware to the parent app as well, so
 // this guard would otherwise run on every /api/* route. Explicitly skip the
-// public auth routes (login, register, otp, and exchange credential
+// public auth routes (login, register, email verification, and exchange credential
 // validation, which runs before a user is authenticated) so they remain
 // publicly accessible while everything else requires a valid JWT.
 const PUBLIC_AUTH_PATHS = new Set([
   "/api/register",
   "/api/login",
-  "/api/resend-otp",
-  "/api/verify-otp",
   "/api/resend-verification",
   "/api/verify-email",
   "/api/exchange/validate",
   "/api/refresh",
   "/api/forgot-password",
   "/api/reset-password",
+  "/api/verify-pin",
+  "/api/reset-pin",
+  "/api/confirm-pin-reset",
 ]);
 
 api.use("*", (c, next) => {
@@ -368,6 +369,11 @@ api.get("/devices", handleListDevices);
 api.delete("/devices/:id", handleRemoveDevice);
 api.post("/mfa/enable", handleEnableMfa);
 api.post("/mfa/disable", handleDisableMfa);
+api.post("/set-pin", handleSetPin);
+
+app.post("/api/verify-pin", handleVerifyPin);
+app.post("/api/reset-pin", handleRequestPinReset);
+app.post("/api/confirm-pin-reset", handleConfirmPinReset);
 
 app.route("/api", api);
 

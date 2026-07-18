@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import worker from "./index";
 import { Env } from "./index";
 import { sign } from "hono/jwt";
+import { hashPassword } from "./handlers/auth";
 
 declare const global: typeof globalThis;
 
@@ -126,6 +127,7 @@ function baseEnv(extra: Partial<Env> = {}): Env {
     ENCRYPTION_KEY: "test-encryption-key-12345678901234567890123456789012-12345678901234567890123456789012",
     JWT_SECRET: "test-jwt-secret-12345678901234567890123456789012",
     RESEND_API_KEY: "test-resend-key",
+    RESEND_FROM_EMAIL: "test@example.com",
     ALLOWED_ORIGINS: "https://example.com",
     ...extra,
   } as unknown as Env;
@@ -357,21 +359,6 @@ describe("App Endpoints", () => {
       mockEnv as Env,
     );
     expect(res.status).toBe(429);
-  });
-
-  it("POST /api/verify-otp returns disabled when OTP auth is not enabled", async () => {
-    const res = await worker.fetch(
-      new Request("http://localhost/api/verify-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "user@example.com", otp: "123456" }),
-      }),
-      { ALLOWED_ORIGINS: "https://example.com" } as Env,
-    );
-
-    expect(res.status).toBe(410);
-    const data = await res.json<{ error: string }>();
-    expect(data.error).toBe("OTP email verification is currently disabled.");
   });
 
   describe("Protected API Endpoints", () => {
@@ -759,5 +746,87 @@ describe("App Endpoints", () => {
     expect(res.status).toBe(200);
     const data = await res.json<{ message: string }>();
     expect(data.message).toBe("Email verified successfully.");
+  });
+
+  describe("PIN Recovery Endpoints", () => {
+    it("POST /api/verify-pin returns 200 for valid PIN", async () => {
+      const pinHash = await hashPassword("1234");
+      const mockEnv = {
+        ...baseEnv(),
+        DB: {
+          prepare: vi.fn((query: string) => {
+            if (query.includes("SELECT id, pin_hash, pin_attempts, pin_locked_until FROM users WHERE email = ?")) {
+              return {
+                bind: vi.fn(() => ({
+                  first: vi.fn().mockResolvedValue({
+                    id: "user-1",
+                    pin_hash: pinHash,
+                    pin_attempts: 0,
+                    pin_locked_until: null,
+                  }),
+                })),
+              } as any;
+            }
+            if (query.includes("UPDATE users SET pin_attempts = 0")) {
+              return { bind: vi.fn(() => ({ run: vi.fn().mockResolvedValue({ success: true }) })) } as any;
+            }
+            return { bind: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null), run: vi.fn().mockResolvedValue({ success: true }) })) } as any;
+          }),
+        },
+      } as unknown as Env;
+
+      const res = await worker.fetch(
+        new Request("http://localhost/api/verify-pin", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "user@example.com", pin: "1234" }),
+        }),
+        mockEnv,
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json<{ success: boolean; user_id: string }>();
+      expect(data.success).toBe(true);
+      expect(data.user_id).toBe("user-1");
+    });
+
+    it("POST /api/reset-pin sends reset email", async () => {
+      const mockEnv = {
+        ...baseEnv(),
+        DB: {
+          prepare: vi.fn((query: string) => {
+            if (query.includes("SELECT id FROM users WHERE email = ?")) {
+              return { bind: vi.fn(() => ({ first: vi.fn().mockResolvedValue({ id: "user-1" }) })) } as any;
+            }
+            if (query.includes("INSERT INTO pin_reset_tokens")) {
+              return { bind: vi.fn(() => ({ run: vi.fn().mockResolvedValue({ success: true }) })) } as any;
+            }
+            return { bind: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null), run: vi.fn().mockResolvedValue({ success: true }) })) } as any;
+          }),
+        },
+      } as unknown as Env;
+
+      const originalFetch = (global as any).fetch;
+      (global as any).fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ id: "email-123" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+
+      try {
+        const res = await worker.fetch(
+          new Request("http://localhost/api/reset-pin", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: "user@example.com" }),
+          }),
+          mockEnv,
+        );
+
+        expect(res.status).toBe(200);
+        const data = await res.json<{ message: string }>();
+        expect(data.message).toBe("PIN reset email sent.");
+      } finally {
+        (global as any).fetch = originalFetch;
+      }
+    });
   });
 });
