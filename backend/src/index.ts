@@ -45,7 +45,6 @@ export interface Env {
   JWT_SECRET: string;
   RESEND_API_KEY: string;
   RESEND_FROM_EMAIL?: string;
-  AUTH_ALLOW_DEV_OTP_FALLBACK?: string;
   ALLOWED_ORIGINS: string;
   FCM_SERVER_KEY?: string;
   FCM_PROJECT_ID?: string;
@@ -58,12 +57,16 @@ function validateEnv(env: Env): void {
   const missing: string[] = [];
   if (!env.JWT_SECRET || typeof env.JWT_SECRET !== "string") {
     missing.push("JWT_SECRET");
+  } else if (env.JWT_SECRET.length < 32) {
+    throw new Error("JWT_SECRET must be at least 32 characters long");
   }
   if (!env.DB) {
     missing.push("DB");
   }
   if (!env.ENCRYPTION_KEY || typeof env.ENCRYPTION_KEY !== "string") {
     missing.push("ENCRYPTION_KEY");
+  } else if (env.ENCRYPTION_KEY.length < 32) {
+    throw new Error("ENCRYPTION_KEY must be at least 32 characters long");
   }
   if (!env.RESEND_API_KEY || typeof env.RESEND_API_KEY !== "string") {
     missing.push("RESEND_API_KEY");
@@ -75,6 +78,17 @@ function validateEnv(env: Env): void {
     throw new Error(
       `Missing required environment variables: ${missing.join(", ")}`,
     );
+  }
+}
+
+function validateCorsOrigins(origins: string[]): void {
+  for (const origin of origins) {
+    if (origin === "*") {
+      throw new Error("Wildcard origin (*) is not allowed in ALLOWED_ORIGINS");
+    }
+    if (origin.startsWith("http://") && !origin.startsWith("http://localhost") && !origin.startsWith("http://127.0.0.1")) {
+      throw new Error(`Non-localhost HTTP origin is not allowed: ${origin}. Use HTTPS in production.`);
+    }
   }
 }
 
@@ -102,6 +116,7 @@ app.use("*", async (c, next) => {
       message: "ALLOWED_ORIGINS must be configured",
     });
   }
+  validateCorsOrigins(allowedOrigins);
   const middleware = cors({ origin: allowedOrigins });
   return middleware(c, next);
 });
@@ -145,6 +160,7 @@ app.get("/db-status", async (c) => {
       "refresh_tokens",
       "login_attempts",
       "password_reset_tokens",
+      "audit_log",
     ];
 
     const missingTables: string[] = [];

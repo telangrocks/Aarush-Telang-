@@ -123,8 +123,8 @@ function makeSimpleDb(): D1Database {
 function baseEnv(extra: Partial<Env> = {}): Env {
   return {
     DB: { prepare: vi.fn(), batch: vi.fn(() => Promise.resolve([])) } as unknown as D1Database,
-    ENCRYPTION_KEY: "test-encryption-key",
-    JWT_SECRET: "test-secret",
+    ENCRYPTION_KEY: "test-encryption-key-12345678901234567890123456789012-12345678901234567890123456789012",
+    JWT_SECRET: "test-jwt-secret-12345678901234567890123456789012",
     RESEND_API_KEY: "test-resend-key",
     ALLOWED_ORIGINS: "https://example.com",
     ...extra,
@@ -198,6 +198,7 @@ describe("App Endpoints", () => {
       "refresh_tokens",
       "login_attempts",
       "password_reset_tokens",
+      "audit_log",
     ]);
   });
 
@@ -233,8 +234,8 @@ describe("App Endpoints", () => {
           return statement;
         }),
       } as unknown as D1Database,
-      ENCRYPTION_KEY: "test-encryption-key",
-      JWT_SECRET: "test-secret",
+      ENCRYPTION_KEY: "test-encryption-key-12345678901234567890123456789012",
+      JWT_SECRET: "test-jwt-secret-12345678901234567890123456789012",
       RESEND_API_KEY: "test-resend-key",
       PRICE_CACHE: {} as KVNamespace,
       TRADING_BOTS: {} as DurableObjectNamespace,
@@ -272,8 +273,8 @@ describe("App Endpoints", () => {
       }),
       {
         DB: makeSimpleDb(),
-        ENCRYPTION_KEY: "test-encryption-key",
-        JWT_SECRET: "test-secret",
+        ENCRYPTION_KEY: "test-encryption-key-12345678901234567890123456789012",
+        JWT_SECRET: "test-jwt-secret-12345678901234567890123456789012",
         RESEND_API_KEY: "test-resend-key",
         TRADING_BOTS: {} as DurableObjectNamespace,
         ALLOWED_ORIGINS: "https://example.com",
@@ -295,8 +296,8 @@ describe("App Endpoints", () => {
       }),
       {
         DB: makeSimpleDb(),
-        ENCRYPTION_KEY: "test-encryption-key",
-        JWT_SECRET: "test-secret",
+        ENCRYPTION_KEY: "test-encryption-key-12345678901234567890123456789012",
+        JWT_SECRET: "test-jwt-secret-12345678901234567890123456789012",
         RESEND_API_KEY: "test-resend-key",
         TRADING_BOTS: {} as DurableObjectNamespace,
         ALLOWED_ORIGINS: "https://example.com",
@@ -336,8 +337,8 @@ describe("App Endpoints", () => {
           };
         }),
       } as unknown as D1Database,
-      ENCRYPTION_KEY: "test-encryption-key",
-      JWT_SECRET: "test-secret",
+      ENCRYPTION_KEY: "test-encryption-key-12345678901234567890123456789012",
+      JWT_SECRET: "test-jwt-secret-12345678901234567890123456789012",
       RESEND_API_KEY: "test-resend-key",
       TRADING_BOTS: {} as DurableObjectNamespace,
       ALLOWED_ORIGINS: "https://example.com",
@@ -400,8 +401,8 @@ describe("App Endpoints", () => {
             return stmt;
           }),
         } as unknown as D1Database,
-        ENCRYPTION_KEY: "test-encryption-key",
-        JWT_SECRET: "test-secret",
+        ENCRYPTION_KEY: "test-encryption-key-12345678901234567890123456789012",
+        JWT_SECRET: "test-jwt-secret-12345678901234567890123456789012",
         RESEND_API_KEY: "test-resend-key",
         TRADING_BOTS: {} as DurableObjectNamespace,
         ALLOWED_ORIGINS: "https://example.com",
