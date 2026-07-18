@@ -3,6 +3,8 @@ import worker from "./index";
 import { Env } from "./index";
 import { sign } from "hono/jwt";
 
+declare const global: typeof globalThis;
+
 vi.mock("./exchanges", () => ({
   getExchangeAdapter: () => ({
     validateCredentials: vi.fn().mockResolvedValue({ success: true, message: "OK" }),
@@ -112,12 +114,15 @@ function makeSimpleDb(): D1Database {
       run: vi.fn().mockResolvedValue({ success: true }),
     })),
   };
-  return { prepare: vi.fn(() => statement) } as unknown as D1Database;
+  return {
+    prepare: vi.fn(() => statement),
+    batch: vi.fn(() => Promise.resolve([])),
+  } as unknown as D1Database;
 }
 
 function baseEnv(extra: Partial<Env> = {}): Env {
   return {
-    DB: { prepare: vi.fn() } as unknown as D1Database,
+    DB: { prepare: vi.fn(), batch: vi.fn(() => Promise.resolve([])) } as unknown as D1Database,
     ENCRYPTION_KEY: "test-encryption-key",
     JWT_SECRET: "test-secret",
     RESEND_API_KEY: "test-resend-key",
@@ -649,5 +654,109 @@ describe("App Endpoints", () => {
     const ctx = { waitUntil: vi.fn() } as unknown as ExecutionContext;
     await worker.scheduled!({} as ScheduledEvent, mockEnv as Env, ctx);
     expect(ctx.waitUntil).toHaveBeenCalled();
+  });
+
+  it("POST /api/resend-verification sends a new verification email", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({}),
+    });
+
+    const originalFetch = global.fetch;
+    (global as any).fetch = mockFetch;
+
+    try {
+      const mockDb = {
+        prepare: vi.fn((query: string) => {
+          if (query.includes("SELECT id, status FROM users WHERE email = ?")) {
+            return {
+              bind: vi.fn(() => ({
+                first: vi.fn().mockResolvedValue({ id: "user-1", status: "PENDING_VERIFICATION" }),
+              })),
+            };
+          }
+          if (query.includes("UPDATE users SET verification_token")) {
+            return {
+              bind: vi.fn(() => ({
+                run: vi.fn().mockResolvedValue({ success: true }),
+              })),
+            };
+          }
+          return {
+            bind: vi.fn(() => ({ run: vi.fn().mockResolvedValue({ success: true }) })),
+          };
+        }),
+      } as unknown as D1Database;
+
+      const env = {
+        ...baseEnv(),
+        DB: mockDb,
+        RESEND_API_KEY: "test-resend-key",
+        RESEND_FROM_EMAIL: "test@example.com",
+      };
+
+      const res = await worker.fetch(
+        new Request("http://localhost/api/resend-verification", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "pending@example.com" }),
+        }),
+        env as Env,
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json<{ message: string }>();
+      expect(data.message).toBe("Verification email sent.");
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://api.resend.com/emails",
+        expect.any(Object),
+      );
+    } finally {
+      (global as any).fetch = originalFetch;
+    }
+  });
+
+  it("GET /api/verify-email activates a pending account", async () => {
+    const token = "test-verification-token";
+    const mockDb = {
+      prepare: vi.fn((query: string) => {
+        if (query.includes("SELECT id, email, status, verification_token_expires_at FROM users WHERE verification_token = ?")) {
+          return {
+            bind: vi.fn(() => ({
+              first: vi.fn().mockResolvedValue({
+                id: "user-1",
+                email: "verify@example.com",
+                status: "PENDING_VERIFICATION",
+                verification_token_expires_at: Math.floor(Date.now() / 1000) + 3600,
+              }),
+            })),
+          };
+        }
+        if (query.includes("UPDATE users SET status = 'ACTIVE'")) {
+          return {
+            bind: vi.fn(() => ({
+              run: vi.fn().mockResolvedValue({ success: true }),
+            })),
+          };
+        }
+        return {
+          bind: vi.fn(() => ({ run: vi.fn().mockResolvedValue({ success: true }) })),
+        };
+      }),
+    } as unknown as D1Database;
+
+    const env = {
+      ...baseEnv(),
+      DB: mockDb,
+    };
+
+    const res = await worker.fetch(
+      new Request(`http://localhost/api/verify-email?token=${token}`),
+      env as Env,
+    );
+
+    expect(res.status).toBe(200);
+    const data = await res.json<{ message: string }>();
+    expect(data.message).toBe("Email verified successfully.");
   });
 });

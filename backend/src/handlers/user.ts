@@ -6,17 +6,17 @@ import {
   verifyPassword,
   generateAccessToken,
   generateRefreshToken,
-  storeRefreshToken,
   revokeRefreshToken,
   validateRefreshToken,
   decodeJwtPayload,
-  revokeAllUserRefreshTokens,
   countActiveRefreshTokens,
+  runTransaction,
   MIN_PASSWORD_LENGTH,
   MAX_LOGIN_ATTEMPTS,
   LOGIN_LOCKOUT_MINUTES,
   MAX_ACTIVE_REFRESH_TOKENS,
 } from "./auth";
+import { sendEmail, buildVerificationEmail } from "../services/email";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/;
@@ -120,7 +120,7 @@ async function isLoginAllowed(
 
 /**
  * Handles the user registration request.
- * Creates a PENDING_VERIFICATION user and sends OTP (simulated for now).
+ * Creates a PENDING_VERIFICATION user and sends a verification email.
  */
 export async function handleRegister(
   c: Context<{ Bindings: Env }>,
@@ -173,20 +173,40 @@ export async function handleRegister(
 
     const hashedPassword = await hashPassword(password);
     const now = new Date().toISOString();
+    const verificationToken = crypto.randomUUID();
+    const verificationExpiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24;
 
     if (existingUser) {
-      await c.env.DB.prepare(
-        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-      )
-        .bind(hashedPassword, now, existingUser.id)
-        .run();
+      await runTransaction(c, [
+        {
+          sql: `UPDATE users
+                SET password_hash = ?,
+                    updated_at = ?,
+                    verification_token = ?,
+                    verification_token_expires_at = ?,
+                    status = 'PENDING_VERIFICATION'
+                WHERE id = ?`,
+          bindings: [hashedPassword, now, verificationToken, verificationExpiresAt, existingUser.id],
+        },
+      ]);
     } else {
-      await c.env.DB.prepare(
-        `INSERT INTO users (id, email, password_hash, created_at, status, updated_at, failed_login_attempts, locked_until)
-         VALUES (?, ?, ?, ?, 'PENDING_VERIFICATION', ?, 0, NULL)`,
-      )
-        .bind(crypto.randomUUID(), normalizedEmail, hashedPassword, now, now)
-        .run();
+      await runTransaction(c, [
+        {
+          sql: `INSERT INTO users (id, email, password_hash, created_at, status, updated_at, failed_login_attempts, locked_until, verification_token, verification_token_expires_at)
+                VALUES (?, ?, ?, ?, 'PENDING_VERIFICATION', ?, 0, NULL, ?, ?)`,
+          bindings: [crypto.randomUUID(), normalizedEmail, hashedPassword, now, now, verificationToken, verificationExpiresAt],
+        },
+      ]);
+    }
+
+    const baseUrl = c.req.url.replace(/\/api\/.*$/, "");
+    const verificationLink = `${baseUrl}/api/verify-email?token=${verificationToken}`;
+
+    try {
+      const { subject, html } = buildVerificationEmail(verificationLink);
+      await sendEmail(c.env, { to: normalizedEmail, subject, html });
+    } catch (emailError) {
+      console.error("Failed to send verification email:", emailError);
     }
 
     logAuthEvent("user_registered", { email: normalizedEmail });
@@ -216,6 +236,136 @@ export async function handleResendOtp(
   return c.json({
     error: "OTP email verification is currently disabled.",
   });
+}
+
+/**
+ * Resends an email verification link for a pending account.
+ */
+export async function handleResendVerification(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const { email } = await c.req.json<{ email?: string }>();
+    const normalizedEmail = email ? normalizeEmail(email) : "";
+
+    if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
+      c.status(400);
+      return c.json({ error: "A valid email is required." });
+    }
+
+    const user = await c.env.DB.prepare(
+      "SELECT id, status FROM users WHERE email = ?",
+    )
+      .bind(normalizedEmail)
+      .first<{ id: string; status: string }>();
+
+    if (!user) {
+      c.status(404);
+      return c.json({ error: "No account found with that email address." });
+    }
+
+    if (user.status === "ACTIVE") {
+      c.status(200);
+      return c.json({ message: "Email is already verified." });
+    }
+
+    const verificationToken = crypto.randomUUID();
+    const verificationExpiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24;
+
+    await runTransaction(c, [
+      {
+        sql: "UPDATE users SET verification_token = ?, verification_token_expires_at = ? WHERE id = ?",
+        bindings: [verificationToken, verificationExpiresAt, user.id],
+      },
+    ]);
+
+    const baseUrl = c.req.url.replace(/\/api\/.*$/, "");
+    const verificationLink = `${baseUrl}/api/verify-email?token=${verificationToken}`;
+
+    try {
+      const { subject, html } = buildVerificationEmail(verificationLink);
+      await sendEmail(c.env, { to: normalizedEmail, subject, html });
+    } catch (emailError) {
+      console.error("Failed to send verification email:", emailError);
+      c.status(500);
+      return c.json({ error: "Failed to send verification email." });
+    }
+
+    logAuthEvent("verification_email_resent", { userId: user.id, email: normalizedEmail });
+
+    c.status(200);
+    return c.json({ message: "Verification email sent." });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Resend verification error:", error);
+    c.status(500);
+    return c.json({
+      error: "An internal server error occurred.",
+      message: error.message,
+    });
+  }
+}
+
+/**
+ * Verifies a user's email using the verification token.
+ */
+export async function handleVerifyEmail(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const token = c.req.query("token");
+    if (!token) {
+      c.status(400);
+      return c.json({ error: "Verification token is required." });
+    }
+
+    const user = await c.env.DB.prepare(
+      "SELECT id, email, status, verification_token_expires_at FROM users WHERE verification_token = ?",
+    )
+      .bind(token)
+      .first<{
+        id: string;
+        email: string;
+        status: string;
+        verification_token_expires_at: number | null;
+      }>();
+
+    if (!user) {
+      c.status(400);
+      return c.json({ error: "Invalid verification token." });
+    }
+
+    if (user.status === "ACTIVE") {
+      c.status(200);
+      return c.json({ message: "Email is already verified." });
+    }
+
+    if (!user.verification_token_expires_at || user.verification_token_expires_at < Date.now() / 1000) {
+      c.status(400);
+      return c.json({ error: "Verification token has expired." });
+    }
+
+    const now = new Date().toISOString();
+    await runTransaction(c, [
+      {
+        sql: "UPDATE users SET status = 'ACTIVE', email_verified_at = ?, verification_token = NULL, verification_token_expires_at = NULL WHERE id = ?",
+        bindings: [now, user.id],
+      },
+    ]);
+
+    logAuthEvent("email_verified", { userId: user.id, email: user.email });
+
+    c.status(200);
+    return c.json({ message: "Email verified successfully." });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Verify email error:", error);
+    c.status(500);
+    return c.json({
+      error: "An internal server error occurred.",
+      message: error.message,
+    });
+  }
 }
 
 /**
@@ -300,11 +450,12 @@ export async function handleLogin(
     }
 
     const now = new Date().toISOString();
-    await c.env.DB.prepare(
-      "UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?",
-    )
-      .bind(now, user.id)
-      .run();
+    await runTransaction(c, [
+      {
+        sql: "UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?",
+        bindings: [now, user.id],
+      },
+    ]);
 
     const accessToken = await generateAccessToken(user.id, user.email, c.env.JWT_SECRET);
     const refreshToken = await generateRefreshToken(user.id, user.email, c.env.JWT_SECRET);
@@ -323,12 +474,22 @@ export async function handleLogin(
         .bind(user.id, Math.floor(Date.now() / 1000), activeCount - MAX_ACTIVE_REFRESH_TOKENS + 1)
         .all<{ jti: string }>();
 
-      for (const row of toRevoke.results) {
-        await revokeRefreshToken(c, row.jti);
+      const revokeStatements = toRevoke.results.map((row) => ({
+        sql: "UPDATE refresh_tokens SET revoked = 1 WHERE jti = ?",
+        bindings: [row.jti],
+      }));
+
+      if (revokeStatements.length > 0) {
+        await runTransaction(c, revokeStatements);
       }
     }
 
-    await storeRefreshToken(c, refreshJti, user.id, refreshExpiresAt);
+    await runTransaction(c, [
+      {
+        sql: "INSERT INTO refresh_tokens (jti, user_id, expires_at) VALUES (?, ?, ?)",
+        bindings: [refreshJti, user.id, refreshExpiresAt],
+      },
+    ]);
 
     logAuthEvent("login_success", { userId: user.id, email: user.email });
 
@@ -402,22 +563,6 @@ export async function handleGetProfile(
 }
 
 /**
- * Revokes a JWT by adding its jti to the blacklist.
- */
-async function revokeToken(
-  c: Context<{ Bindings: Env }>,
-  jti: string,
-  userId: string,
-  expiresAt: number,
-): Promise<void> {
-  await c.env.DB.prepare(
-    "INSERT OR IGNORE INTO jwt_blacklist (jti, user_id, expires_at) VALUES (?, ?, ?)",
-  )
-    .bind(jti, userId, expiresAt)
-    .run();
-}
-
-/**
  * Handles user logout by revoking the current JWT and clearing FCM token.
  */
 export async function handleLogout(
@@ -433,14 +578,20 @@ export async function handleLogout(
     const userId = payload.sub;
     const jti = payload.jti || crypto.randomUUID();
 
-    await revokeToken(c, jti, userId, Date.now() / 1000 + 60 * 60 * 24 * 7);
-    await revokeAllUserRefreshTokens(c, userId);
-
-    await c.env.DB.prepare(
-      "UPDATE users SET fcm_token = NULL WHERE id = ?",
-    )
-      .bind(userId)
-      .run();
+    await runTransaction(c, [
+      {
+        sql: "INSERT OR IGNORE INTO jwt_blacklist (jti, user_id, expires_at) VALUES (?, ?, ?)",
+        bindings: [jti, userId, Date.now() / 1000 + 60 * 60 * 24 * 7],
+      },
+      {
+        sql: "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0",
+        bindings: [userId],
+      },
+      {
+        sql: "UPDATE users SET fcm_token = NULL WHERE id = ?",
+        bindings: [userId],
+      },
+    ]);
 
     logAuthEvent("user_logout", { userId });
 
@@ -641,12 +792,22 @@ export async function handleRefresh(
         .bind(payload.sub, Math.floor(Date.now() / 1000), activeCount - MAX_ACTIVE_REFRESH_TOKENS + 1)
         .all<{ jti: string }>();
 
-      for (const row of toRevoke.results) {
-        await revokeRefreshToken(c, row.jti);
+      const revokeStatements = toRevoke.results.map((row) => ({
+        sql: "UPDATE refresh_tokens SET revoked = 1 WHERE jti = ?",
+        bindings: [row.jti],
+      }));
+
+      if (revokeStatements.length > 0) {
+        await runTransaction(c, revokeStatements);
       }
     }
 
-    await storeRefreshToken(c, newRefreshJti, payload.sub, newRefreshExpiresAt);
+    await runTransaction(c, [
+      {
+        sql: "INSERT INTO refresh_tokens (jti, user_id, expires_at) VALUES (?, ?, ?)",
+        bindings: [newRefreshJti, payload.sub, newRefreshExpiresAt],
+      },
+    ]);
 
     logAuthEvent("token_refreshed", { userId: payload.sub });
 

@@ -9,6 +9,8 @@ import {
   handleRegister,
   handleResendOtp,
   handleVerifyOtp,
+  handleResendVerification,
+  handleVerifyEmail,
   handleLogout,
   handleDeleteFcmToken,
   handleForgotPassword,
@@ -107,7 +109,7 @@ app.use("*", async (c, next) => {
 // ==========================================
 // PUBLIC ENDPOINTS
 // ==========================================
-const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-otp", "/api/verify-otp", "/api/forgot-password", "/api/reset-password", "/api/refresh"];
+const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-otp", "/api/verify-otp", "/api/resend-verification", "/api/verify-email", "/api/forgot-password", "/api/reset-password", "/api/refresh"];
 
 app.get("/health", (c) => {
   return c.json({
@@ -185,6 +187,8 @@ app.get("/db-status", async (c) => {
 app.post("/api/register", handleRegister);
 app.post("/api/resend-otp", handleResendOtp);
 app.post("/api/verify-otp", handleVerifyOtp);
+app.post("/api/resend-verification", handleResendVerification);
+app.get("/api/verify-email", handleVerifyEmail);
 app.post("/api/login", handleLogin);
 
 // ==========================================
@@ -203,6 +207,8 @@ const PUBLIC_AUTH_PATHS = new Set([
   "/api/login",
   "/api/resend-otp",
   "/api/verify-otp",
+  "/api/resend-verification",
+  "/api/verify-email",
   "/api/exchange/validate",
   "/api/refresh",
   "/api/forgot-password",

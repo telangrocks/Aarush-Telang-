@@ -24,6 +24,29 @@ export {
   MAX_ACTIVE_REFRESH_TOKENS,
 };
 
+export type D1Statement = {
+  sql: string;
+  bindings: unknown[];
+};
+
+export async function runTransaction(
+  c: Context<{ Bindings: Env }>,
+  statements: D1Statement[],
+): Promise<void> {
+  if (statements.length === 0) return;
+  const prepared = statements.map((stmt) =>
+    c.env.DB.prepare(stmt.sql).bind(...stmt.bindings),
+  );
+
+  if (typeof (c.env.DB as any).batch === "function") {
+    await (c.env.DB as any).batch(prepared);
+  } else {
+    for (const stmt of prepared) {
+      await stmt.run();
+    }
+  }
+}
+
 /**
  * Hashes a password using PBKDF2 with SHA-256.
  * Generates a random salt for each password and stores it with the hash.
