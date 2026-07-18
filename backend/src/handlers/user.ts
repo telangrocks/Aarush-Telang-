@@ -10,6 +10,7 @@ import {
   validateRefreshToken,
   decodeJwtPayload,
   countActiveRefreshTokens,
+  revokeAllUserRefreshTokens,
   createAuditLog,
   runTransaction,
   MIN_PASSWORD_LENGTH,
@@ -832,5 +833,234 @@ export async function handleRefresh(
       error: "An internal server error occurred.",
       message: error.message,
     });
+  }
+}
+
+/**
+ * Soft deletes the authenticated user's account.
+ */
+export async function handleDeleteAccount(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({ error: "Unauthorized" });
+    }
+
+    const now = new Date().toISOString();
+    await runTransaction(c, [
+      {
+        sql: "UPDATE users SET is_deleted = 1, deleted_at = ?, status = 'DELETED' WHERE id = ? AND is_deleted = 0",
+        bindings: [now, payload.sub],
+      },
+    ]);
+
+    await revokeAllUserRefreshTokens(c, payload.sub);
+
+    logAuthEvent(c, "account_deleted", { userId: payload.sub });
+
+    c.status(200);
+    return c.json({ message: "Account deleted successfully." });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Delete account error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Registers a device for the authenticated user.
+ */
+export async function handleRegisterDevice(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({ error: "Unauthorized" });
+    }
+
+    const { deviceName, deviceType } = await c.req.json<{
+      deviceName?: string;
+      deviceType?: string;
+    }>();
+
+    if (!deviceName || !deviceType) {
+      c.status(400);
+      return c.json({ error: "Device name and type are required." });
+    }
+
+    const deviceId = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    await runTransaction(c, [
+      {
+        sql: "INSERT INTO user_devices (id, user_id, device_name, device_type, last_used_at) VALUES (?, ?, ?, ?, ?)",
+        bindings: [deviceId, payload.sub, deviceName, deviceType, now],
+      },
+    ]);
+
+    logAuthEvent(c, "device_registered", { userId: payload.sub, deviceId, deviceType });
+
+    c.status(201);
+    return c.json({ id: deviceId, deviceName, deviceType, createdAt: now });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Register device error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Lists all devices for the authenticated user.
+ */
+export async function handleListDevices(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({ error: "Unauthorized" });
+    }
+
+    const devices = await c.env.DB.prepare(
+      "SELECT id, device_name, device_type, last_used_at, created_at FROM user_devices WHERE user_id = ?",
+    )
+      .bind(payload.sub)
+      .all<{
+        id: string;
+        device_name: string;
+        device_type: string;
+        last_used_at: string;
+        created_at: string;
+      }>();
+
+    c.status(200);
+    return c.json({ devices: devices.results });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("List devices error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Removes a device for the authenticated user.
+ */
+export async function handleRemoveDevice(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({ error: "Unauthorized" });
+    }
+
+    const deviceId = c.req.param("id");
+    if (!deviceId) {
+      c.status(400);
+      return c.json({ error: "Device ID is required." });
+    }
+
+    await runTransaction(c, [
+      {
+        sql: "DELETE FROM user_devices WHERE id = ? AND user_id = ?",
+        bindings: [deviceId, payload.sub],
+      },
+    ]);
+
+    logAuthEvent(c, "device_removed", { userId: payload.sub, deviceId });
+
+    c.status(200);
+    return c.json({ message: "Device removed successfully." });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Remove device error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Enables MFA for the authenticated user.
+ */
+export async function handleEnableMfa(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({ error: "Unauthorized" });
+    }
+
+    const secret = crypto.randomUUID().replace(/-/g, "").substring(0, 32);
+    const now = new Date().toISOString();
+
+    await runTransaction(c, [
+      {
+        sql: `INSERT INTO user_security_settings (user_id, mfa_enabled, mfa_secret, created_at, updated_at)
+              VALUES (?, 1, ?, ?, ?)
+              ON CONFLICT(user_id) DO UPDATE SET
+                mfa_enabled = 1,
+                mfa_secret = excluded.mfa_secret,
+                updated_at = excluded.updated_at`,
+        bindings: [payload.sub, secret, now, now],
+      },
+    ]);
+
+    logAuthEvent(c, "mfa_enabled", { userId: payload.sub });
+
+    c.status(200);
+    return c.json({ message: "MFA enabled successfully.", secret });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Enable MFA error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
+  }
+}
+
+/**
+ * Disables MFA for the authenticated user.
+ */
+export async function handleDisableMfa(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({ error: "Unauthorized" });
+    }
+
+    const now = new Date().toISOString();
+
+    await runTransaction(c, [
+      {
+        sql: `UPDATE user_security_settings
+              SET mfa_enabled = 0, mfa_secret = NULL, updated_at = ?
+              WHERE user_id = ?`,
+        bindings: [now, payload.sub],
+      },
+    ]);
+
+    logAuthEvent(c, "mfa_disabled", { userId: payload.sub });
+
+    c.status(200);
+    return c.json({ message: "MFA disabled successfully." });
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Disable MFA error:", error);
+    c.status(500);
+    return c.json({ error: "An internal server error occurred.", message: error.message });
   }
 }

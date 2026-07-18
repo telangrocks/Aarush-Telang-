@@ -16,6 +16,12 @@ import {
   handleForgotPassword,
   handleResetPassword,
   handleRefresh,
+  handleDeleteAccount,
+  handleRegisterDevice,
+  handleListDevices,
+  handleRemoveDevice,
+  handleEnableMfa,
+  handleDisableMfa,
 } from "./handlers/user";
 import {
   handleValidateExchange,
@@ -355,6 +361,13 @@ api.post("/logout", handleLogout);
 api.post("/refresh", handleRefresh);
 api.post("/forgot-password", handleForgotPassword);
 api.post("/reset-password", handleResetPassword);
+
+api.delete("/account", handleDeleteAccount);
+api.post("/devices", handleRegisterDevice);
+api.get("/devices", handleListDevices);
+api.delete("/devices/:id", handleRemoveDevice);
+api.post("/mfa/enable", handleEnableMfa);
+api.post("/mfa/disable", handleDisableMfa);
 
 app.route("/api", api);
 
