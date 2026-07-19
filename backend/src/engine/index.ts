@@ -7,3 +7,4 @@ export * from './state-machine/EngineStateMachine';
 export * from './market-data';
 export * from './indicator';
 export * from './condition';
+export * from './confidence';
