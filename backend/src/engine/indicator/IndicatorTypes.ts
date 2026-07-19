@@ -12,6 +12,7 @@ export interface VolumeResult {
 }
 
 export interface TimeframeIndicators {
+  close: number[]; // added for condition engine price-based checks
   rsi: Record<number, number[]>; // key: period -> array of values aligned with candles
   sma: Record<number, number[]>;
   ema: Record<number, number[]>;

@@ -18,6 +18,7 @@ export class IndicatorEngine {
 
     for (const [tf, candles] of Object.entries(snapshot.candles)) {
       const indicators: TimeframeIndicators = {
+        close: candles.map(c => c.close),
         rsi: {},
         sma: {},
         ema: {},
