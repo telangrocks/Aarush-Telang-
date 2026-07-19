@@ -19,13 +19,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.cryptopulse.app.data.api.TradingBotService
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import com.cryptopulse.app.data.local.BiometricAuthManager
+import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.components.CryptoPulseLogoIcon
 import com.cryptopulse.app.ui.theme.*
 import kotlinx.coroutines.delay
 import androidx.fragment.app.FragmentActivity
+import androidx.hilt.navigation.compose.hiltViewModel
 
 /**
  * Splash screen matching the reference design:
@@ -40,8 +43,10 @@ fun SplashScreen(
     navController: NavController,
     tokenManager: TokenManager,
     exchangeConnectionManager: ExchangeConnectionManager,
-    exchangeService: com.cryptopulse.app.data.api.ExchangeService
+    exchangeService: com.cryptopulse.app.data.api.ExchangeService,
+    tradingBotService: TradingBotService,
 ) {
+    val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as androidx.fragment.app.FragmentActivity)
 
     // ── Animation state ───────────────────────────────────────────────────
     var visible by remember { mutableStateOf(false) }
@@ -75,6 +80,10 @@ fun SplashScreen(
             tokenManager.clearTokens()
             token = null
         }
+        // Hoisted here so routing logic below can always reference them,
+        // regardless of whether the token or exchange-status checks succeed.
+        var activeBotCoinId: String? = null
+        var activeBotStrategy: String? = null
         if (!token.isNullOrEmpty()) {
             val biometricAuthManager = BiometricAuthManager(context)
             // Only attempt biometric auth if the host is a FragmentActivity,
@@ -112,13 +121,32 @@ fun SplashScreen(
             } catch (e: Exception) {
                 // Ignore status sync errors to allow offline start with cached credentials
             }
+
+            // Check whether a Focus Mode session is already active on the backend.
+            // If so, restore it so the user returns to live_analysis instead of
+            // going through a new market scan. No activation or scan is triggered.
+            try {
+                val botStatusResponse = tradingBotService.getStatus()
+                if (botStatusResponse.isSuccessful && botStatusResponse.body()?.isActive == true) {
+                    activeBotCoinId = botStatusResponse.body()?.coinId
+                    activeBotStrategy = botStatusResponse.body()?.strategy
+                }
+            } catch (e: Exception) {
+                // Ignore bot status errors — fall back to normal routing
+            }
         }
         delay(3500)
         val (isExchangeConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
         val destination = when {
-            token.isNullOrEmpty() -> "welcome"
-            isExchangeConnected -> "market_candidates"
-            else -> "connect_exchange"
+            token.isNullOrEmpty()               -> "welcome"
+            !isExchangeConnected                -> "connect_exchange"
+            activeBotCoinId != null             -> "live_analysis"   // resume Focus Mode
+            else                                -> "market_candidates"
+        }
+        // Pre-populate the ViewModel before navigating so live_analysis has the
+        // correct locked instrument available immediately — without a new scan.
+        if (activeBotCoinId != null) {
+            exchangeViewModel.restoreSession(activeBotCoinId, activeBotStrategy)
         }
         navController.navigate(destination) {
             popUpTo("splash") { inclusive = true }

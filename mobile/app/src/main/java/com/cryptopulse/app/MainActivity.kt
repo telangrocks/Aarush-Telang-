@@ -73,6 +73,9 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var authRepository: AuthRepository
 
+    @Inject
+    lateinit var tradingBotService: com.cryptopulse.app.data.api.TradingBotService
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -108,7 +111,8 @@ class MainActivity : FragmentActivity() {
                                 navController = navController,
                                 tokenManager = tokenManager,
                                 exchangeConnectionManager = exchangeConnectionManager,
-                                exchangeService = exchangeService
+                                exchangeService = exchangeService,
+                                tradingBotService = tradingBotService,
                             )
                         }
                         composable("welcome") {

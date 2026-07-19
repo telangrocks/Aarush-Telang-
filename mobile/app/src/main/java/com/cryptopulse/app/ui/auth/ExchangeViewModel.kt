@@ -346,6 +346,34 @@ class ExchangeViewModel @Inject constructor(
         _selectedCandidate.value = candidate
     }
 
+    /**
+     * Restores an existing Focus Mode session from the backend without triggering
+     * a new market scan or bot activation. Called when the app is reopened while
+     * the backend Durable Object already has an active locked instrument.
+     *
+     * Builds a minimal [MarketCandidate] from the [coinId] so the live_analysis
+     * screen has a valid selection to display. Price and metadata are intentionally
+     * left at zero — the live_analysis screen fetches its own live data from the
+     * backend analysis-status endpoint.
+     */
+    fun restoreSession(coinId: String, strategy: String?) {
+        val symbol = coinId.replace("/USDT", "").replace("USDT", "").uppercase()
+        _selectedCandidate.value = MarketCandidate(
+            rank = 0,
+            symbol = symbol,
+            pairName = "$symbol/USDT",
+            coinName = symbol,
+            notations = 0,
+            currentMarketPrice = 0.0,
+            minNotional = 0.0,
+            coinColor = androidx.compose.ui.graphics.Color(0xFF00B4FF),
+        )
+        if (!strategy.isNullOrBlank()) {
+            _selectedStrategy.value = strategy
+        }
+    }
+
+
     fun fetchStrategies() {
         viewModelScope.launch {
             try {
