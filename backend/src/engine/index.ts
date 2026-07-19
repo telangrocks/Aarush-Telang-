@@ -10,3 +10,4 @@ export * from './condition';
 export * from './confidence';
 export * from './risk';
 export * from './signal';
+export * from './strategies';
