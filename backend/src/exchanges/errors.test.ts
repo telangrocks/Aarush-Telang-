@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   classifyBinanceCode,
+  classifyBybitCode,
   classifyByBodyText,
   classifyExchangeResponse,
 } from "./errors";
 
-const detail = (body: string) => `exchange=binance status=401 body=${body}`;
+const detail = (body: string, exchange = "binance") =>
+  `exchange=${exchange} status=401 body=${body}`;
 
 describe("Binance structured error code classification", () => {
   it("maps API-key format invalid (-2014) to INVALID_API_KEY", () => {
@@ -75,6 +77,85 @@ describe("Binance structured error code classification", () => {
       401,
       '{"code":-2014,"msg":"API-key format invalid."}',
       "binance",
+    );
+    expect(err.code).toBe("INVALID_API_KEY");
+  });
+});
+
+describe("Bybit structured error retCode classification", () => {
+  it("maps retCode 10003 (API key invalid) to INVALID_API_KEY", () => {
+    const err = classifyBybitCode(
+      '{"retCode":10003,"retMsg":"API key is invalid.","result":{},"retExtInfo":{},"time":1}',
+      detail('{"retCode":10003,"retMsg":"API key is invalid."}', "bybit"),
+    );
+    expect(err?.code).toBe("INVALID_API_KEY");
+  });
+
+  it("maps retCode 10005/10006 (permission) to INSUFFICIENT_PERMISSIONS", () => {
+    expect(
+      classifyBybitCode('{"retCode":10005,"retMsg":"api key not authorized"}', "x")?.code,
+    ).toBe("INSUFFICIENT_PERMISSIONS");
+    expect(
+      classifyBybitCode('{"retCode":10006,"retMsg":"insufficient permission"}', "x")?.code,
+    ).toBe("INSUFFICIENT_PERMISSIONS");
+  });
+
+  it("maps retCode 10009 (timestamp expired) to TIMESTAMP_OUT_OF_SYNC", () => {
+    const err = classifyBybitCode('{"retCode":10009,"retMsg":"api timestamp expired"}', "x");
+    expect(err?.code).toBe("TIMESTAMP_OUT_OF_SYNC");
+  });
+
+  it("maps retCode 10010/10012 (invalid sign) to INVALID_SIGNATURE", () => {
+    expect(classifyBybitCode('{"retCode":10010,"retMsg":"invalid sign"}', "x")?.code).toBe(
+      "INVALID_SIGNATURE",
+    );
+    expect(classifyBybitCode('{"retCode":10012,"retMsg":"invalid parameter"}', "x")?.code).toBe(
+      "INVALID_SIGNATURE",
+    );
+  });
+
+  it("maps retCode 10013 (ip not allowed) to IP_NOT_WHITELISTED", () => {
+    const err = classifyBybitCode('{"retCode":10013,"retMsg":"ip not allowed"}', "x");
+    expect(err?.code).toBe("IP_NOT_WHITELISTED");
+  });
+
+  it("maps retCode 10018/10029 (rate limit) to API_RATE_LIMIT_REACHED", () => {
+    expect(classifyBybitCode('{"retCode":10018,"retMsg":"too many visits"}', "x")?.code).toBe(
+      "API_RATE_LIMIT_REACHED",
+    );
+    expect(classifyBybitCode('{"retCode":10029,"retMsg":"frequency limit"}', "x")?.code).toBe(
+      "API_RATE_LIMIT_REACHED",
+    );
+  });
+
+  it("maps spot/futures not-enabled retCodes to the right codes", () => {
+    expect(classifyBybitCode('{"retCode":110007,"retMsg":"spot not enabled"}', "x")?.code).toBe(
+      "SPOT_TRADING_NOT_ENABLED",
+    );
+    expect(classifyBybitCode('{"retCode":160003,"retMsg":"contract not enabled"}', "x")?.code).toBe(
+      "FUTURES_TRADING_NOT_ENABLED",
+    );
+  });
+
+  it("returns null for unrecognised retCodes", () => {
+    expect(classifyBybitCode('{"retCode":99999,"retMsg":"weird"}', "x")).toBeNull();
+  });
+
+  it("classifyExchangeResponse resolves Bybit retCode on a 401", () => {
+    const err = classifyExchangeResponse(
+      401,
+      '{"retCode":10003,"retMsg":"API key is invalid."}',
+      "bybit",
+    );
+    expect(err.code).toBe("INVALID_API_KEY");
+  });
+
+  it("classifyByBodyText resolves Bybit retCode", () => {
+    const lower = '{"retcode":10003,"retmsg":"api key is invalid."}'.toLowerCase();
+    const err = classifyByBodyText(
+      lower,
+      detail('{"retCode":10003,"retMsg":"API key is invalid."}', "bybit"),
+      "bybit",
     );
     expect(err.code).toBe("INVALID_API_KEY");
   });

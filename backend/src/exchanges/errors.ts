@@ -189,9 +189,12 @@ export function classifyExchangeResponse(
   if (status === 403 && (lower.includes("ip") || lower.includes("request blocked"))) {
     return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
   }
-  // For credential/permission errors Binance returns a structured {code,...}
-  // body. Resolve it precisely before falling back to generic auth failure.
-  const structured = classifyBinanceCode(bodyText, technicalDetail);
+  // For credential/permission errors Binance/Bybit return a structured
+  // {code,...} / {retCode,...} body. Resolve it precisely before falling back
+  // to generic auth failure.
+  const structured =
+    classifyBinanceCode(bodyText, technicalDetail) ??
+    classifyBybitCode(bodyText, technicalDetail);
   if (structured) return structured;
   if (status === 401 || status === 403) {
     return mk("AUTHENTICATION_FAILED", technicalDetail, lower);
@@ -264,6 +267,52 @@ export function classifyBinanceCode(
 }
 
 /**
+ * Map Bybit's well-known structured `retCode` values to accurate, user-facing
+ * error codes. Bybit (v5) returns errors as `{"retCode": <int>, "retMsg": ...}`,
+ * which is distinct from Binance's `code`/`msg` shape. Mapping the numeric code
+ * gives precise, actionable messages instead of the generic fallback.
+ *
+ * Returns null when the retCode is unrecognised or absent so the caller can
+ * fall back to text-based classification.
+ */
+export function classifyBybitCode(
+  bodyText: string,
+  technicalDetail: string,
+): ClassifiedError | null {
+  let retCode: number | undefined;
+  try {
+    const parsed = JSON.parse(bodyText) as { retCode?: number };
+    if (typeof parsed.retCode === "number") retCode = parsed.retCode;
+  } catch {
+    return null;
+  }
+  if (retCode === undefined) return null;
+
+  // Reference: https://bybit-exchange.github.io/docs/v5/errors
+  const byCode: Record<number, ExchangeErrorCode> = {
+    10001: "UNKNOWN_EXCHANGE_ERROR", // parameter error (generic) - keep generic
+    10003: "INVALID_API_KEY", // API key is invalid
+    10004: "INVALID_API_KEY", // invalid api key (variants)
+    10005: "INSUFFICIENT_PERMISSIONS", // permission denied / api key not authorized
+    10006: "INSUFFICIENT_PERMISSIONS", // insufficient permission
+    10009: "TIMESTAMP_OUT_OF_SYNC", // api timestamp expired
+    10010: "INVALID_SIGNATURE", // invalid sign / signature
+    10012: "INVALID_SIGNATURE", // invalid parameter (incl. sign-related)
+    10013: "IP_NOT_WHITELISTED", // ip not allowed
+    10018: "API_RATE_LIMIT_REACHED", // too many visits / request frequency
+    10029: "API_RATE_LIMIT_REACHED", // frequency limit reached
+    160003: "FUTURES_TRADING_NOT_ENABLED", // contract trading not enabled variants
+    130021: "FUTURES_TRADING_NOT_ENABLED",
+    110007: "SPOT_TRADING_NOT_ENABLED", // spot trading not enabled variants
+    110009: "SPOT_TRADING_NOT_ENABLED",
+  };
+
+  const mapped = byCode[retCode];
+  if (mapped) return mk(mapped, technicalDetail, `bybit retCode ${retCode}`);
+  return null;
+}
+
+/**
  * Classify based on the human-readable error text returned by the exchange.
  * Covers Binance, Delta Exchange and Bybit message conventions.
  */
@@ -272,9 +321,13 @@ export function classifyByBodyText(
   technicalDetail: string,
   _exchangeName: string,
 ): ClassifiedError {
-  // Prefer Binance's structured numeric error code when present — it is the
-  // most accurate signal and avoids ambiguous text matching.
-  const structured = classifyBinanceCode(technicalDetail.split("body=")[1] ?? "", technicalDetail);
+  // Prefer the exchange's structured numeric error code when present — it is
+  // the most accurate signal and avoids ambiguous text matching. Binance uses
+  // {code}, Bybit uses {retCode}.
+  const bodyRaw = technicalDetail.split("body=")[1] ?? "";
+  const structured =
+    classifyBinanceCode(bodyRaw, technicalDetail) ??
+    classifyBybitCode(bodyRaw, technicalDetail);
   if (structured) return structured;
   // IP allow-list / restriction
   if (
@@ -292,6 +345,10 @@ export function classifyByBodyText(
   // Passphrase
   if (lower.includes("passphrase") || lower.includes("password") || lower.includes("invalid passphrase")) {
     return mk("INVALID_PASSPHRASE", technicalDetail, lower);
+  }
+  // Explicit API-key invalid (Bybit: "API key is invalid", Delta: similar)
+  if (lower.includes("api key") && (lower.includes("invalid") || lower.includes("not valid") || lower.includes("not found") || lower.includes("incorrect"))) {
+    return mk("INVALID_API_KEY", technicalDetail, lower);
   }
   // Permission / scope errors (read/trade/withdraw)
   if (
