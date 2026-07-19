@@ -73,6 +73,14 @@ function createStatementForQuery(query: string) {
     };
   }
 
+  if (query.includes("INSERT INTO refresh_tokens")) {
+    return {
+      bind: vi.fn(() => ({
+        run: vi.fn().mockResolvedValue({ success: true }),
+      })),
+    };
+  }
+
   if (query.includes("UPDATE registration_attempts SET count")) {
     return {
       bind: vi.fn(() => ({
@@ -225,7 +233,7 @@ describe("App Endpoints", () => {
     expect(data.message).toBe("Database connection failed");
   });
 
-  it("POST /api/register creates a pending verification account", async () => {
+  it("POST /api/register creates an active account and returns tokens", async () => {
     const mockEnv = {
       DB: {
         prepare: vi.fn((query: string) => {
@@ -239,6 +247,7 @@ describe("App Endpoints", () => {
       ENCRYPTION_KEY: "test-encryption-key-12345678901234567890123456789012",
       JWT_SECRET: "test-jwt-secret-12345678901234567890123456789012",
       RESEND_API_KEY: "test-resend-key",
+      RESEND_FROM_EMAIL: "test@example.com",
       PRICE_CACHE: {} as KVNamespace,
       TRADING_BOTS: {} as DurableObjectNamespace,
       ALLOWED_ORIGINS: "https://example.com",
@@ -257,9 +266,15 @@ describe("App Endpoints", () => {
       mockEnv as Env,
     );
 
-    expect(res.status).toBe(200);
-    const data = await res.json<{ message: string }>();
-    expect(data.message).toBe("Account created successfully. Please verify your email.");
+    expect(res.status).toBe(201);
+    const data = await res.json<{
+      message: string;
+      accessToken?: string;
+      refreshToken?: string;
+    }>();
+    expect(data.message).toBe("Account created successfully.");
+    expect(data.accessToken).toBeTruthy();
+    expect(data.refreshToken).toBeTruthy();
   });
 
   it("POST /api/register rejects weak passwords", async () => {

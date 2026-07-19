@@ -129,7 +129,12 @@ async function isLoginAllowed(
 
 /**
  * Handles the user registration request.
- * Creates a PENDING_VERIFICATION user and sends a verification email.
+ *
+ * Product decision: registration is instant. The account is created ACTIVE and
+ * access + refresh tokens are returned immediately so the user can enter the app
+ * right away (matching the mobile onboarding UX). Email verification is optional
+ * and is offered via a best-effort verification email; it never blocks sign-up
+ * or subsequent login.
  */
 export async function handleRegister(
   c: Context<{ Bindings: Env }>,
@@ -185,32 +190,54 @@ export async function handleRegister(
     const verificationToken = crypto.randomUUID();
     const verificationExpiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24;
 
+    const userId = existingUser?.id ?? crypto.randomUUID();
+
     if (existingUser) {
+      // Re-registering over a previously PENDING_VERIFICATION account: reset
+      // credentials and activate it immediately.
       await runTransaction(c, [
         {
           sql: `UPDATE users
                 SET password_hash = ?,
                     updated_at = ?,
+                    status = 'ACTIVE',
+                    email_verified_at = NULL,
                     verification_token = ?,
                     verification_token_expires_at = ?,
-                    status = 'PENDING_VERIFICATION'
+                    failed_login_attempts = 0,
+                    locked_until = NULL
                 WHERE id = ?`,
-          bindings: [hashedPassword, now, verificationToken, verificationExpiresAt, existingUser.id],
+          bindings: [hashedPassword, now, verificationToken, verificationExpiresAt, userId],
         },
       ]);
     } else {
       await runTransaction(c, [
         {
           sql: `INSERT INTO users (id, email, password_hash, created_at, status, updated_at, failed_login_attempts, locked_until, verification_token, verification_token_expires_at)
-                VALUES (?, ?, ?, ?, 'PENDING_VERIFICATION', ?, 0, NULL, ?, ?)`,
-          bindings: [crypto.randomUUID(), normalizedEmail, hashedPassword, now, now, verificationToken, verificationExpiresAt],
+                VALUES (?, ?, ?, ?, 'ACTIVE', ?, 0, NULL, ?, ?)`,
+          bindings: [userId, normalizedEmail, hashedPassword, now, now, verificationToken, verificationExpiresAt],
         },
       ]);
     }
 
+    // Issue tokens immediately so the client is authenticated right after signup.
+    const accessToken = await generateAccessToken(userId, normalizedEmail, c.env.JWT_SECRET);
+    const refreshToken = await generateRefreshToken(userId, normalizedEmail, c.env.JWT_SECRET);
+    const refreshExpiresAt = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7;
+
+    const refreshPayload = decodeJwtPayload(refreshToken);
+    const refreshJti = (refreshPayload?.jti as string) || crypto.randomUUID();
+
+    await runTransaction(c, [
+      {
+        sql: "INSERT INTO refresh_tokens (jti, user_id, expires_at) VALUES (?, ?, ?)",
+        bindings: [refreshJti, userId, refreshExpiresAt],
+      },
+    ]);
+
+    // Best-effort optional verification email. Never blocks registration.
     const baseUrl = c.req.url.replace(/\/api\/.*$/, "");
     const verificationLink = `${baseUrl}/api/verify-email?token=${verificationToken}`;
-
     try {
       const { subject, html } = buildVerificationEmail(verificationLink);
       await sendEmail(c.env, { to: normalizedEmail, subject, html });
@@ -218,11 +245,13 @@ export async function handleRegister(
       console.error("Failed to send verification email:", emailError);
     }
 
-    logAuthEvent(c, "user_registered", { email: normalizedEmail });
+    logAuthEvent(c, "user_registered", { userId, email: normalizedEmail });
 
-    c.status(200);
+    c.status(201);
     return c.json({
-      message: "Account created successfully. Please verify your email.",
+      message: "Account created successfully.",
+      accessToken,
+      refreshToken,
     });
   } catch (err: unknown) {
     const error = err as Error;

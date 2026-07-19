@@ -72,8 +72,8 @@ fun AuthScreen(
     viewModel: AuthViewModel,
     onAuthSuccess: () -> Unit,
 ) {
-    var isLoginMode by remember { mutableStateOf(true) }
-
+    // This screen is Sign In only. New-account creation lives on the dedicated
+    // UserOnboardingScreen, so we avoid a second, redundant registration surface.
     LaunchedEffect(viewModel.isAuthenticated) {
         if (viewModel.isAuthenticated) onAuthSuccess()
     }
@@ -118,14 +118,14 @@ fun AuthScreen(
                     horizontalArrangement = Arrangement.Center,
                 ) {
                     Icon(
-                        imageVector = if (isLoginMode) Icons.Default.Login else Icons.Default.PersonAdd,
+                        imageVector = Icons.Default.Login,
                         contentDescription = null,
                         tint = CyanPrimary,
                         modifier = Modifier.size(26.dp)
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = if (isLoginMode) "SIGN IN" else "CREATE ACCOUNT",
+                        text = "SIGN IN",
                         color = CyanPrimary,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 22.sp,
@@ -136,44 +136,12 @@ fun AuthScreen(
                 Spacer(Modifier.height(6.dp))
 
                 Text(
-                    text = if (isLoginMode) {
-                        "Sign in with your email and password to access your trading dashboard."
-                    } else {
-                        "Create your account with email and password to start your trading journey."
-                    },
+                    text = "Sign in with your email and password to access your trading dashboard.",
                     color = TextSecondary,
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
                     lineHeight = 20.sp,
                 )
-
-                Spacer(Modifier.height(20.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0x1400B4FF), RoundedCornerShape(12.dp))
-                        .padding(4.dp),
-                ) {
-                    AuthModeButton(
-                        text = "Create Account",
-                        selected = !isLoginMode,
-                        onClick = {
-                            isLoginMode = false
-                            viewModel.clearError()
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                    AuthModeButton(
-                        text = "Sign In",
-                        selected = isLoginMode,
-                        onClick = {
-                            isLoginMode = true
-                            viewModel.clearError()
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
 
                 Spacer(Modifier.height(20.dp))
 
@@ -218,7 +186,7 @@ fun AuthScreen(
                         DarkTextField(
                             value = viewModel.password,
                             onValueChange = { viewModel.password = it },
-                            placeholder = if (isLoginMode) "Enter your password" else "Min. 8 chars, A-Z, a-z, 0-9, symbol",
+                            placeholder = "Enter your password",
                             keyboardType = KeyboardType.Password,
                             visualTransformation = PasswordVisualTransformation(),
                             testTag = "auth_password_input",
@@ -242,11 +210,7 @@ fun AuthScreen(
                     Icon(Icons.Default.Info, null, tint = CyanPrimary, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = if (isLoginMode) {
-                            "Use the same email and password you created during signup."
-                        } else {
-                            "We are using simple email and password authentication for now so you can get into the app quickly."
-                        },
+                        text = "Use the same email and password you created during signup.",
                         color = TextSecondary,
                         fontSize = 11.sp,
                         lineHeight = 17.sp,
@@ -256,23 +220,12 @@ fun AuthScreen(
                 Spacer(Modifier.height(20.dp))
 
                 GradientButton(
-                    text = when {
-                        viewModel.isLoading && isLoginMode -> "Signing in…"
-                        viewModel.isLoading -> "Creating account…"
-                        isLoginMode -> "Sign In"
-                        else -> "Create Account"
-                    },
-                    onClick = {
-                        if (isLoginMode) {
-                            viewModel.login()
-                        } else {
-                            viewModel.register()
-                        }
-                    },
+                    text = if (viewModel.isLoading) "Signing in…" else "Sign In",
+                    onClick = { viewModel.login() },
                     enabled = !viewModel.isLoading,
-                    leadingIcon = if (isLoginMode) Icons.Default.Login else Icons.Default.Shield,
+                    leadingIcon = Icons.Default.Login,
                     trailingIcon = Icons.Default.ArrowForward,
-                    testTag = if (isLoginMode) "auth_sign_in_button" else "auth_create_account_button",
+                    testTag = "auth_sign_in_button",
                 )
 
                 Spacer(Modifier.height(14.dp))
