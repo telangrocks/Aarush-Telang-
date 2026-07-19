@@ -367,6 +367,28 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         if (url.includes("/v2/orders")) {
           return { ok: true, json: async () => mockOrderRes };
         }
+        if (url.includes("/v2/products")) {
+          return {
+            ok: true,
+            json: async () => ({
+              success: true,
+              result: [
+                {
+                  id: 123,
+                  symbol: 'BTCUSD',
+                  min_notional_value: '0.0001',
+                  max_notional_value: '1000',
+                  lot_size: '0.0001',
+                  tick_size: '0.01',
+                  contract_type: 'perpetual_futures',
+                }
+              ]
+            })
+          };
+        }
+        if (url.includes("/orders/leverage")) {
+          return { ok: true, json: async () => ({ success: true }) };
+        }
         if (url.includes("ticker")) {
           return {
             ok: true,
@@ -529,6 +551,28 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       mockFetch.mockImplementation(async (url: string) => {
         if (url.includes("/v2/orders")) {
           return { ok: true, json: async () => ({ success: true, result: { id: "order-999" } }) };
+        }
+        if (url.includes("/v2/products")) {
+          return {
+            ok: true,
+            json: async () => ({
+              success: true,
+              result: [
+                {
+                  id: 123,
+                  symbol: 'BTCUSD',
+                  min_notional_value: '0.0001',
+                  max_notional_value: '1000',
+                  lot_size: '0.0001',
+                  tick_size: '0.01',
+                  contract_type: 'perpetual_futures',
+                }
+              ]
+            })
+          };
+        }
+        if (url.includes("/orders/leverage")) {
+          return { ok: true, json: async () => ({ success: true }) };
         }
         if (url.includes("ticker")) {
           return { ok: true, json: async () => ({ success: true, result: { symbol: "BTCUSDT", last_price: "60000.0" } }) };

@@ -356,27 +356,45 @@ export class DeltaExchange implements IExchangeAdapter {
   async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult> {
     try {
       const lot = await this.getSymbolMetadata(symbol);
-      if (lot && lot.id) {
-        try {
-          const levTimestamp = Math.floor(Date.now() / 1000).toString();
-          const levPath = `/v2/products/${lot.id}/orders/leverage`;
-          const levBody = JSON.stringify({ leverage: "1" });
-          const levPrehash = "POST" + levTimestamp + levPath + levBody;
-          const levSignature = await hmacSha256(levPrehash, apiSecret);
-          
-          await fetch(`${this.getRestUrl()}${levPath}`, {
-            method: "POST",
-            headers: {
-              "api-key": apiKey,
-              "signature": levSignature,
-              "timestamp": levTimestamp,
-              "Content-Type": "application/json",
-            },
-            body: levBody,
-          });
-        } catch (err) {
-          console.warn(`[DeltaExchange] Failed to explicitly enforce 1x leverage:`, err);
+      if (!lot || !lot.id) {
+        return {
+          success: false,
+          message: `Leverage enforcement failed: Product metadata or ID not found for symbol ${symbol}`,
+          code: "LEVERAGE_ENFORCEMENT_FAILED",
+          friendlyMessage: "Failed to verify safety limits for this asset. Trade aborted for your protection.",
+        };
+      }
+
+      try {
+        const levTimestamp = Math.floor(Date.now() / 1000).toString();
+        const levPath = `/v2/products/${lot.id}/orders/leverage`;
+        const levBody = JSON.stringify({ leverage: "1" });
+        const levPrehash = "POST" + levTimestamp + levPath + levBody;
+        const levSignature = await hmacSha256(levPrehash, apiSecret);
+        
+        const levRes = await fetch(`${this.getRestUrl()}${levPath}`, {
+          method: "POST",
+          headers: {
+            "api-key": apiKey,
+            "signature": levSignature,
+            "timestamp": levTimestamp,
+            "Content-Type": "application/json",
+          },
+          body: levBody,
+        });
+
+        if (!levRes.ok) {
+          const data = await levRes.json() as any;
+          throw new Error(data?.error?.message || `HTTP status ${levRes.status}`);
         }
+      } catch (err: any) {
+        console.error(`[DeltaExchange] Failed to explicitly enforce 1x leverage:`, err);
+        return {
+          success: false,
+          message: `Leverage enforcement failed: ${err.message || err}`,
+          code: "LEVERAGE_ENFORCEMENT_FAILED",
+          friendlyMessage: "Failed to safely set leverage to 1x on the exchange. Trade aborted for your protection.",
+        };
       }
 
       const timestamp = Math.floor(Date.now() / 1000).toString();
