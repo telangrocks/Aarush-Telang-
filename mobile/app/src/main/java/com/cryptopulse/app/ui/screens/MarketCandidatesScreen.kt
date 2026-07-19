@@ -46,6 +46,8 @@ data class MarketCandidate(
     val quoteVolume24h: Double = 0.0,
     val priceChangePercent24h: Double = 0.0,
     val score: Double = 0.0,
+    val recommendedTimeframe: String = "",
+    val tradeSide: String = "",
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -277,12 +279,47 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
         Spacer(Modifier.width(10.dp))
 
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = candidate.pairName,
-                color = TextPrimary,
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = candidate.pairName,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                )
+                if (candidate.tradeSide.isNotBlank()) {
+                    Spacer(Modifier.width(8.dp))
+                    val sideColor = if (candidate.tradeSide.equals("BUY", ignoreCase = true)) ProfitGreen else LossRed
+                    Box(
+                        modifier = Modifier
+                            .background(sideColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                            .border(0.5.dp, sideColor.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = candidate.tradeSide.uppercase(),
+                            color = sideColor,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+                if (candidate.recommendedTimeframe.isNotBlank()) {
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .background(NavyBorder.copy(alpha = 0.3f), RoundedCornerShape(4.dp))
+                            .border(0.5.dp, NavyBorder.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = candidate.recommendedTimeframe,
+                            color = TextSecondary,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
             Text(
                 text = "Price: $${String.format("%.2f", candidate.currentMarketPrice)}",
                 color = TextSecondary,
@@ -402,6 +439,8 @@ fun List<MarketCandidateDto>.toScreenCandidates(): List<MarketCandidate> {
             quoteVolume24h = dto.quoteVolume24h,
             priceChangePercent24h = dto.priceChangePercent24h,
             score = dto.score,
+            recommendedTimeframe = dto.recommendedTimeframe,
+            tradeSide = dto.tradeSide,
         )
     }
 }

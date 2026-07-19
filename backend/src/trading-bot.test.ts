@@ -148,7 +148,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
   });
 
   describe("5. Top coin selection", () => {
-    it("should filter and score tickers correctly to return top candidates", () => {
+    it("should filter and score tickers correctly to return top candidates", async () => {
       const tickers = [
         {
           symbol: "BTC", price: 60000, volume24h: 1000, quoteVolume24h: 60000000,
@@ -168,7 +168,11 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         }
       ];
 
-      const candidates = analyzeMarket(tickers);
+      const mockAdapter = {
+        fetchKlines: vi.fn().mockResolvedValue([]),
+      } as any;
+
+      const candidates = await analyzeMarket(tickers, mockAdapter);
       expect(candidates.length).toBe(2);
       expect(candidates[0].symbol).toBe("BTC");
       expect(candidates[0].rank).toBe(1);
@@ -363,7 +367,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         if (url.includes("/v2/orders")) {
           return { ok: true, json: async () => mockOrderRes };
         }
-        if (url.includes("/v2/ticker/")) {
+        if (url.includes("ticker")) {
           return {
             ok: true,
             json: async () => ({
@@ -437,7 +441,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
 
       // Mock Ticker to return Take Profit Price hit (63000 >= 62000)
       mockFetch.mockImplementation(async (url: string) => {
-        if (url.includes("/v2/ticker/")) {
+        if (url.includes("ticker")) {
           return {
             ok: true,
             json: async () => ({
@@ -526,7 +530,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         if (url.includes("/v2/orders")) {
           return { ok: true, json: async () => ({ success: true, result: { id: "order-999" } }) };
         }
-        if (url.includes("/v2/ticker/")) {
+        if (url.includes("ticker")) {
           return { ok: true, json: async () => ({ success: true, result: { symbol: "BTCUSDT", last_price: "60000.0" } }) };
         }
         return { ok: true, json: async () => ({ success: true, result: [], symbols: [] }) };

@@ -92,12 +92,15 @@ export class BinanceExchange implements IExchangeAdapter {
       const filters = symbol.filters ?? [];
       const lotFilter = filters.find((f: any) => f.filterType === "LOT_SIZE");
       const priceFilter = filters.find((f: any) => f.filterType === "PRICE_FILTER");
+      const notionalFilter = filters.find((f: any) => f.filterType === "NOTIONAL" || f.filterType === "MIN_NOTIONAL");
       if (lotFilter && symbol.status === "TRADING") {
+        const parsedMinNotional = notionalFilter ? parseFloat(notionalFilter.minNotional || notionalFilter.minVal || "5.0") : 5.0;
         map.set(symbol.symbol, {
           minQty: parseFloat(lotFilter.minQty || "0.001"),
           maxQty: parseFloat(lotFilter.maxQty || "999999999"),
           tickSize: parseFloat(priceFilter?.tickSize || "0.01"),
           lotSize: parseFloat(lotFilter.stepSize || "1"),
+          minNotional: parsedMinNotional > 0 ? parsedMinNotional : 5.0,
         });
       }
     }
@@ -259,7 +262,7 @@ export class BinanceExchange implements IExchangeAdapter {
             priceChangePercent24h: parseFloat(item.priceChangePercent),
             highPrice24h: parseFloat(item.highPrice),
             lowPrice24h: parseFloat(item.lowPrice),
-            minNotional: lot.minQty * (parseFloat(item.lastPrice) || 1),
+            minNotional: lot.minNotional ?? (lot.minQty * (parseFloat(item.lastPrice) || 1)),
             minOrderQty: lot.minQty,
             maxOrderQty: lot.maxQty,
             tickSize: lot.tickSize,
@@ -294,7 +297,7 @@ export class BinanceExchange implements IExchangeAdapter {
         priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
         highPrice24h: parseFloat(item.highPrice || 0),
         lowPrice24h: parseFloat(item.lowPrice || 0),
-        minNotional: lotResolved.minQty * (parseFloat(item.lastPrice || 0) || 1),
+        minNotional: lotResolved.minNotional ?? (lotResolved.minQty * (parseFloat(item.lastPrice || 0) || 1)),
         minOrderQty: lotResolved.minQty,
         maxOrderQty: lotResolved.maxQty,
         tickSize: lotResolved.tickSize,

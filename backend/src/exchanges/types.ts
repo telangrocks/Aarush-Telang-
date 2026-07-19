@@ -7,6 +7,7 @@ export interface SymbolMetadata {
   maxQty: number;
   tickSize: number;
   lotSize: number;
+  minNotional?: number;
 }
 
 /**

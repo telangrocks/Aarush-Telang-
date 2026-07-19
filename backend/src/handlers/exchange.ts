@@ -226,7 +226,7 @@ export async function handleGetPersonalizedMarketCandidates(
       return c.json({ error: "Failed to fetch market data from exchange" });
     }
 
-    const candidates = analyzeMarket(tickers);
+    const candidates = await analyzeMarket(tickers, adapter);
 
     return c.json(candidates);
   } catch (e: unknown) {

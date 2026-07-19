@@ -122,7 +122,7 @@ export class DeltaExchange implements IExchangeAdapter {
   }
 
   private async getSymbolMetadata(symbol: string): Promise<SymbolMetadata | null> {
-    const fullSymbol = `${symbol.toUpperCase()}USDT`;
+    const fullSymbol = `${symbol.toUpperCase()}USD`;
     const now = Date.now();
     const expiryLimit = 1800000;
     const hasCache = this.metadataCache !== null;
@@ -259,13 +259,13 @@ export class DeltaExchange implements IExchangeAdapter {
       }
 
       return tickersData.result
-        .filter((item: any) => item.symbol && (item.symbol.includes("USDT") || item.symbol.includes("USDC")))
+        .filter((item: any) => item.symbol && (item.symbol.includes("USDT") || item.symbol.includes("USDC") || item.symbol.includes("USD")))
         .slice(0, 50)
         .map((item: any) => {
           const lot = this.metadataCache?.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
           const price = parseFloat(item.close || item.last_price || 0);
           return {
-            symbol: item.symbol.replace(/USDT$|USDC$/, ""),
+            symbol: item.symbol.replace(/USDT$|USDC$|USD$/, ""),
             price: price,
             volume24h: parseFloat(item.volume || 0),
             quoteVolume24h: parseFloat(item.volume || 0) * price,
@@ -291,7 +291,7 @@ export class DeltaExchange implements IExchangeAdapter {
         return null;
       }
       const [response, lot] = await Promise.all([
-        fetch(`${this.getRestUrl()}/v2/ticker/${encodeURIComponent(symbol.toUpperCase())}USDT`),
+        fetch(`${this.getRestUrl()}/v2/tickers/${encodeURIComponent(symbol.toUpperCase())}USD`),
         this.getSymbolMetadata(symbol),
       ]);
       if (!response.ok) return null;
@@ -301,7 +301,7 @@ export class DeltaExchange implements IExchangeAdapter {
 
       const lotResolved = lot ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
       return {
-        symbol: item.symbol.replace("USDT", ""),
+        symbol: item.symbol.replace(/USDT$|USDC$|USD$/, ""),
         price: parseFloat(item.last_price || item.close || 0),
         volume24h: parseFloat(item.volume || 0),
         quoteVolume24h: parseFloat(item.volume || 0) * parseFloat(item.last_price || item.close || 0),
@@ -326,7 +326,7 @@ export class DeltaExchange implements IExchangeAdapter {
       const end = Math.floor(Date.now() / 1000);
       const start = end - (limit * seconds);
       const params = new URLSearchParams({
-        symbol: `${symbol.toUpperCase()}USDT`,
+        symbol: `${symbol.toUpperCase()}USD`,
         resolution,
         start: start.toString(),
         end: end.toString(),
@@ -358,7 +358,7 @@ export class DeltaExchange implements IExchangeAdapter {
       const requestPath = "/v2/orders";
       const qty = quantity ?? 0.001;
       const body = JSON.stringify({
-        symbol: `${symbol.toUpperCase()}USDT`,
+        symbol: `${symbol.toUpperCase()}USD`,
         side: side === "BUY" ? "buy" : "sell",
         type: "market",
         quantity: qty,
