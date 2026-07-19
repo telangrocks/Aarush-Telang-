@@ -8,6 +8,7 @@ export interface SymbolMetadata {
   tickSize: number;
   lotSize: number;
   minNotional?: number;
+  id?: string | number;
 }
 
 /**

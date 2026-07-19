@@ -114,6 +114,7 @@ export class DeltaExchange implements IExchangeAdapter {
           maxQty: maxQty > 0 ? maxQty : 999999999,
           tickSize: tickSize > 0 ? tickSize : 0.01,
           lotSize: lotSize > 0 ? lotSize : 1,
+          id: product.id,
         });
       }
     }
@@ -354,6 +355,30 @@ export class DeltaExchange implements IExchangeAdapter {
 
   async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult> {
     try {
+      const lot = await this.getSymbolMetadata(symbol);
+      if (lot && lot.id) {
+        try {
+          const levTimestamp = Math.floor(Date.now() / 1000).toString();
+          const levPath = `/v2/products/${lot.id}/orders/leverage`;
+          const levBody = JSON.stringify({ leverage: "1" });
+          const levPrehash = "POST" + levTimestamp + levPath + levBody;
+          const levSignature = await hmacSha256(levPrehash, apiSecret);
+          
+          await fetch(`${this.getRestUrl()}${levPath}`, {
+            method: "POST",
+            headers: {
+              "api-key": apiKey,
+              "signature": levSignature,
+              "timestamp": levTimestamp,
+              "Content-Type": "application/json",
+            },
+            body: levBody,
+          });
+        } catch (err) {
+          console.warn(`[DeltaExchange] Failed to explicitly enforce 1x leverage:`, err);
+        }
+      }
+
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const requestPath = "/v2/orders";
       const qty = quantity ?? 0.001;
