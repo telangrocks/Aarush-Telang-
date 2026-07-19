@@ -146,6 +146,17 @@ export async function handleConnectExchange(
       .bind(exchangeName, resolvedEnvironment, resolvedRegion, apiKey, encryptedSecret.iv, encryptedSecret.encrypted, userId)
       .run();
 
+    // Reset bot state and clear instrument locking upon exchange connection/reconnection
+    try {
+      if (c.env.TRADING_BOTS && typeof c.env.TRADING_BOTS.idFromName === "function") {
+        const botId = c.env.TRADING_BOTS.idFromName(userId);
+        const bot = c.env.TRADING_BOTS.get(botId);
+        await bot.fetch(new Request("http://bot/deactivate", { method: "POST" }));
+      }
+    } catch (err) {
+      console.warn(`[exchange-auth] Failed to reset bot state on reconnection:`, err);
+    }
+
     return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: resolvedEnvironment, region: resolvedRegion });
   } catch (e: unknown) {
     const error = e as Error;

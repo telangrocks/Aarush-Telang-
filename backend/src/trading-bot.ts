@@ -449,6 +449,7 @@ export class TradingBot {
       }
       case '/deactivate': {
         await this.state.storage.put('isActive', false);
+        await this.state.storage.put('coinId', null);
         const existingLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
         await this.state.storage.put('logs', (existingLogs ?? []).concat([
           { timestamp: new Date().toISOString(), level: 'info' as const, message: 'Bot deactivated by user.' },
@@ -547,7 +548,7 @@ export class TradingBot {
           }
           const target = pending[pending.length - 1];
           const side: 'BUY' | 'SELL' = target.side || 'BUY';
-          const orderSymbol = target.symbol || coinId;
+          const orderSymbol = coinId; // Strict lock to the active trading instrument
 
           let orderResult: any = { success: true, message: 'Trade executed (simulated).' };
           try {
@@ -836,6 +837,11 @@ export class TradingBot {
         progress: q.progress,
         status: q.status,
       });
+    }
+
+    const isActive = (await this.state.storage.get('isActive')) || false;
+    if (isActive) {
+      return candidates;
     }
 
     const comparison = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA'].filter((s) => s !== baseSymbol);

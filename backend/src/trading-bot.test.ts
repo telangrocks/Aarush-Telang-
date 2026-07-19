@@ -1082,4 +1082,54 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       expect(exchange.cacheMetrics.failures).toBe(1);
     });
   });
+
+  describe("Focus Mode and Instrument Locking", () => {
+    it("should clear coinId on deactivate", async () => {
+      const storageData = new Map<string, any>();
+      storageData.set("isActive", true);
+      storageData.set("coinId", "BTC");
+      const mockStorage = {
+        get: async (key: string) => storageData.get(key),
+        put: async (key: string, val: any) => { storageData.set(key, val); },
+        deleteAlarm: async () => {},
+      } as any;
+      const bot = new TradingBot({ storage: mockStorage } as any, {} as any);
+      
+      const response = await bot.fetch(new Request("http://bot/deactivate", { method: "POST" }));
+      expect(response.status).toBe(200);
+      expect(storageData.get("isActive")).toBe(false);
+      expect(storageData.get("coinId")).toBeNull();
+    });
+
+    it("should skip comparison fetches in buildScanCandidates when bot is active in Focus Mode", async () => {
+      const storageData = new Map<string, any>();
+      storageData.set("isActive", true);
+      storageData.set("coinId", "BTC");
+      const mockStorage = {
+        get: async (key: string) => storageData.get(key),
+        put: async (key: string, val: any) => { storageData.set(key, val); },
+      } as any;
+      const bot = new TradingBot({ storage: mockStorage } as any, {} as any);
+
+      // Create a mock adapter where fetchTicker is tracked
+      const fetchTickerSpy = vi.fn().mockResolvedValue({
+        symbol: "BTC", price: 60000, lotSize: 0.001, minOrderQty: 0.001, maxOrderQty: 1000, tickSize: 0.01
+      });
+      const mockAdapter = {
+        fetchTicker: fetchTickerSpy,
+      } as any;
+
+      const candidates = await (bot as any).buildScanCandidates(mockAdapter, "BTC", {
+        volumeThreshold: 0,
+        rangeThreshold: 0,
+        momentumThreshold: 0,
+      });
+
+      // Assert candidates only contains BTC/USDT and fetchTicker was only called once (for BTC, not for ETH/SOL/etc.)
+      expect(candidates.length).toBe(1);
+      expect(candidates[0].symbol).toBe("BTC/USDT");
+      expect(fetchTickerSpy).toHaveBeenCalledTimes(1);
+      expect(fetchTickerSpy).toHaveBeenCalledWith("BTC");
+    });
+  });
 });
