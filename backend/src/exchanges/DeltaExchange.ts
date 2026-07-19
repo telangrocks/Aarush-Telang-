@@ -1,6 +1,7 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult, PositionsResponse, PositionResult } from "./BaseExchange";
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
+import { CircuitBreaker } from "./CircuitBreaker";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -69,6 +70,7 @@ export class DeltaExchange implements IExchangeAdapter {
   private metadataCache: Map<string, SymbolMetadata> | null = null;
   private lastCacheFetch = 0;
   private cacheFetchPromise: Promise<Map<string, SymbolMetadata>> | null = null;
+  public breaker = new CircuitBreaker(5, 60000);
 
   // Cache observability metrics
   public cacheMetrics = {
@@ -77,13 +79,14 @@ export class DeltaExchange implements IExchangeAdapter {
     refreshes: 0,
     failures: 0,
     staleUsage: 0,
+    circuitBreakerStatus: () => this.breaker.check().allowed ? "CLOSED" : "OPEN",
   };
 
   // Helper with exponential backoff retries
-  private async fetchWithRetry(url: string, retries = 2, delay = 500): Promise<Response> {
+  private async fetchWithRetry(url: string, options?: RequestInit, retries = 2, delay = 500): Promise<Response> {
     for (let attempt = 1; attempt <= retries + 1; attempt++) {
       try {
-        const res = await fetch(url);
+        const res = await fetch(url, options);
         if (res.ok) return res;
         throw new Error(`HTTP status ${res.status}`);
       } catch (err) {
@@ -243,6 +246,8 @@ export class DeltaExchange implements IExchangeAdapter {
     }
   }
 
+
+
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
       const [tickersResponse] = await Promise.all([
@@ -353,7 +358,12 @@ export class DeltaExchange implements IExchangeAdapter {
     }
   }
 
-  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult> {
+  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number, clientOrderId?: string): Promise<OrderResult> {
+    const breakerState = this.breaker.check();
+    if (!breakerState.allowed) {
+      return { success: false, message: `Circuit breaker is OPEN. Fast-failing request.`, code: "CIRCUIT_BREAKER_OPEN" };
+    }
+
     try {
       const lot = await this.getSymbolMetadata(symbol);
       if (!lot || !lot.id) {
@@ -372,7 +382,7 @@ export class DeltaExchange implements IExchangeAdapter {
         const levPrehash = "POST" + levTimestamp + levPath + levBody;
         const levSignature = await hmacSha256(levPrehash, apiSecret);
         
-        const levRes = await fetch(`${this.getRestUrl()}${levPath}`, {
+        const levRes = await this.fetchWithRetry(`${this.getRestUrl()}${levPath}`, {
           method: "POST",
           headers: {
             "api-key": apiKey,
@@ -400,15 +410,19 @@ export class DeltaExchange implements IExchangeAdapter {
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const requestPath = "/v2/orders";
       const qty = quantity ?? 0.001;
-      const body = JSON.stringify({
+      const orderPayload: any = {
         symbol: `${symbol.toUpperCase()}USD`,
         side: side === "BUY" ? "buy" : "sell",
         type: "market",
         quantity: qty,
-      });
+      };
+      if (clientOrderId) {
+        orderPayload.client_order_id = clientOrderId;
+      }
+      const body = JSON.stringify(orderPayload);
       const prehash = "POST" + timestamp + requestPath + body;
       const signature = await hmacSha256(prehash, apiSecret);
-      const response = await fetch(`${this.getRestUrl()}${requestPath}`, {
+      const response = await this.fetchWithRetry(`${this.getRestUrl()}${requestPath}`, {
         method: "POST",
         headers: {
           "api-key": apiKey,
@@ -420,16 +434,129 @@ export class DeltaExchange implements IExchangeAdapter {
       });
       const data = await response.json() as any;
       if (!data.success) {
+        this.breaker.recordFailure();
         const detail = data.error?.message || "Order failed";
         const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
         return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
       }
+      this.breaker.recordSuccess();
       return {
         success: true,
         message: "Order placed successfully",
         orderId: data.result?.id,
         price: parseFloat(data.result?.avg_price || 0),
         quantity: parseFloat(data.result?.quantity || qty.toString()),
+      };
+    } catch (e: any) {
+      this.breaker.recordFailure();
+      const err = classifyException(e, this.config.displayName);
+      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+    }
+  }
+
+  async fetchPositions(apiKey: string, apiSecret: string): Promise<PositionsResponse> {
+    const breakerState = this.breaker.check();
+    if (!breakerState.allowed) {
+      return { success: false, message: `Circuit breaker is OPEN. Fast-failing request.`, result: [], code: "CIRCUIT_BREAKER_OPEN" };
+    }
+
+    try {
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const requestPath = "/v2/positions/margined";
+      const prehash = "GET" + timestamp + requestPath;
+      const signature = await hmacSha256(prehash, apiSecret);
+
+      const response = await this.fetchWithRetry(`${this.getRestUrl()}${requestPath}`, {
+        headers: {
+          "api-key": apiKey,
+          "signature": signature,
+          "timestamp": timestamp,
+        },
+      });
+
+      if (!response.ok) {
+        this.breaker.recordFailure();
+        const body = await response.text();
+        const err: ClassifiedError = classifyExchangeResponse(response.status, body, this.config.displayName);
+        return { success: false, message: err.technicalDetail, result: [], code: err.code, friendlyMessage: err.friendlyMessage };
+      }
+
+      const data = await response.json() as any;
+      if (data.success === false) {
+        this.breaker.recordFailure();
+        const detail = data.error?.message || "Failed to fetch positions";
+        const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
+        return { success: false, message: `${err.code}: ${detail}`, result: [], code: err.code, friendlyMessage: err.friendlyMessage };
+      }
+
+      const result: PositionResult[] = data.result?.map((p: any) => ({
+        symbol: p.product?.symbol || "",
+        size: parseFloat(p.size || "0"),
+        entry_price: parseFloat(p.entry_price || "0"),
+        unrealized_pnl: parseFloat(p.unrealized_pnl || "0"),
+        margin: parseFloat(p.margin || "0"),
+      })) || [];
+
+      this.breaker.recordSuccess();
+      return { success: true, message: "Positions fetched", result };
+    } catch (e: any) {
+      this.breaker.recordFailure();
+      const err = classifyException(e, this.config.displayName);
+      return { success: false, message: err.technicalDetail, result: [], code: err.code, friendlyMessage: err.friendlyMessage };
+    }
+  }
+
+  async fetchOrder(orderId: string, apiKey: string, apiSecret: string): Promise<OrderResult> {
+    try {
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const requestPath = `/v2/orders/${orderId}`;
+      const prehash = "GET" + timestamp + requestPath;
+      const signature = await hmacSha256(prehash, apiSecret);
+
+      const response = await this.fetchWithRetry(`${this.getRestUrl()}${requestPath}`, {
+        headers: {
+          "api-key": apiKey,
+          "signature": signature,
+          "timestamp": timestamp,
+        },
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        const err: ClassifiedError = classifyExchangeResponse(response.status, body, this.config.displayName);
+        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+      }
+
+      const data = await response.json() as any;
+      if (data.success === false) {
+        const detail = data.error?.message || "Failed to fetch order";
+        const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
+        return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
+      }
+
+      const o = data.result;
+      const statusMap: Record<string, any> = {
+        'open': 'open',
+        'pending': 'pending',
+        'closed': 'filled',
+        'cancelled': 'cancelled',
+        'rejected': 'rejected',
+      };
+
+      let status = statusMap[o.state] || o.state;
+      if (status === 'open' && parseFloat(o.filled_quantity || "0") > 0 && parseFloat(o.filled_quantity || "0") < parseFloat(o.size || "0")) {
+         status = 'partially_filled';
+      }
+
+      return {
+        success: true,
+        message: "Order fetched",
+        orderId: o.id,
+        price: parseFloat(o.avg_fill_price || o.limit_price || 0),
+        quantity: parseFloat(o.size || 0),
+        filledQuantity: parseFloat(o.filled_quantity || 0),
+        averageFillPrice: parseFloat(o.avg_fill_price || 0),
+        status,
       };
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);

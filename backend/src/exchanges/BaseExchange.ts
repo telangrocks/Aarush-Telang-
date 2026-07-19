@@ -10,6 +10,28 @@ export interface OrderResult {
   code?: string;
   /** Plain-language, actionable message safe to show the user (optional). */
   friendlyMessage?: string;
+  /** Actual filled quantity */
+  filledQuantity?: number;
+  /** Average fill price */
+  averageFillPrice?: number;
+  /** Order Status on Exchange */
+  status?: 'pending' | 'open' | 'partially_filled' | 'filled' | 'cancelled' | 'rejected' | 'expired';
+}
+
+export interface PositionResult {
+  symbol: string;
+  size: number;
+  entry_price: number;
+  unrealized_pnl: number;
+  margin?: number;
+}
+
+export interface PositionsResponse {
+  success: boolean;
+  message: string;
+  result: PositionResult[];
+  code?: string;
+  friendlyMessage?: string;
 }
 
 export interface IExchangeAdapter {
@@ -19,7 +41,9 @@ export interface IExchangeAdapter {
   fetchMarketData(): Promise<MarketTicker[]>;
   fetchTicker(symbol: string): Promise<MarketTicker | null>;
   fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]>;
-  placeOrder?(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult>;
+  placeOrder?(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number, clientOrderId?: string): Promise<OrderResult>;
+  fetchOrder?(orderId: string, apiKey: string, apiSecret: string): Promise<OrderResult>;
+  fetchPositions?(apiKey: string, apiSecret: string): Promise<PositionsResponse>;
   setEnvironment?(environment: ExchangeEnvironment): void;
   setRegion?(region: ExchangeRegion): void;
   getRestUrl(): string;

@@ -495,25 +495,33 @@ class ExchangeViewModel @Inject constructor(
                 val token = tokenManager.getToken()
                 if (token != null) {
                     val response = tradingBotService.executeTrade()
-                    if (response.isSuccessful) {
-                        val alertId = alert["id"] as? String
-                        if (alertId != null) {
-                            tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
+                    if (response.isSuccessful && response.body() != null) {
+                        val body = response.body()!!
+                        val success = body["success"] as? Boolean ?: false
+                        
+                        if (success) {
+                            val alertId = alert["id"] as? String
+                            if (alertId != null) {
+                                tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
+                            }
+                            _pendingAlert.value = null
+                            val entryPrice = (alert["entryPrice"] as? Double)
+                                ?: tradeSetup?.entryPrice ?: 0.0
+                            val stopLoss = (alert["stopLoss"] as? Double)
+                                ?: tradeSetup?.stopLossPrice ?: entryPrice * 0.99
+                            val takeProfit = (alert["takeProfit"] as? Double)
+                                ?: tradeSetup?.takeProfitPrice ?: entryPrice * 1.02
+                            _lastTrade.value = TradeSetupState(
+                                entryPrice = entryPrice,
+                                stopLossPrice = stopLoss,
+                                takeProfitPrice = takeProfit,
+                            )
+                        } else {
+                            val order = body["order"] as? Map<String, Any>
+                            val friendlyMsg = order?.get("friendlyMessage") as? String
+                            val message = body["message"] as? String
+                            _tradeError.value = friendlyMsg ?: message ?: "Trade execution failed."
                         }
-                        _pendingAlert.value = null
-                        // Prefer the real detected opportunity; fall back to the
-                        // manual trade setup if present.
-                        val entryPrice = (alert["entryPrice"] as? Double)
-                            ?: tradeSetup?.entryPrice ?: 0.0
-                        val stopLoss = (alert["stopLoss"] as? Double)
-                            ?: tradeSetup?.stopLossPrice ?: entryPrice * 0.99
-                        val takeProfit = (alert["takeProfit"] as? Double)
-                            ?: tradeSetup?.takeProfitPrice ?: entryPrice * 1.02
-                        _lastTrade.value = TradeSetupState(
-                            entryPrice = entryPrice,
-                            stopLossPrice = stopLoss,
-                            takeProfitPrice = takeProfit,
-                        )
                     } else {
                         _tradeError.value = getUserFriendlyErrorMessage(response = response).first
                     }

@@ -1,6 +1,7 @@
 import { Env } from './index';
 import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion, MarketTicker, normalizeQuantity } from './exchanges';
 import { type Kline } from './exchanges/types';
+import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
 import { sendTradeNotification } from './handlers/notifications';
 
@@ -45,7 +46,7 @@ interface TradeAlert {
   strategy: string;
   side: 'BUY' | 'SELL';
   timestamp: string;
-  status: 'pending' | 'acknowledged' | 'executed';
+  status: 'pending' | 'acknowledged' | 'submitted' | 'partially_filled' | 'filled' | 'executed' | 'expired' | 'failed';
 }
 
 interface AnalysisLog {
@@ -423,6 +424,12 @@ export class TradingBot {
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+    
+    // Feature 5: DO Recovery
+    // Reconstruct memory state from durable storage safely
+    this.state.blockConcurrencyWhile(async () => {
+      this.isExecutingTrade = (await this.state.storage.get('isExecutingTrade')) || false;
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -431,6 +438,8 @@ export class TradingBot {
     switch (url.pathname) {
       case '/activate': {
         const { userId, coinId, strategy, positionSize } = await request.json<{ userId: string; coinId: string; strategy: string; positionSize?: number }>();
+        
+        await this.logAuditEvent(userId, 'BOT_ACTIVATED', { strategy, coinId, positionSize });
         await this.state.storage.put('isActive', true);
         await this.state.storage.put('coinId', coinId);
         await this.state.storage.put('strategy', strategy);
@@ -455,6 +464,10 @@ export class TradingBot {
         return new Response(JSON.stringify({ success: true, message: 'Bot activated.' }), { status: 200 });
       }
       case '/deactivate': {
+        const userId = (await this.state.storage.get('userId')) as string | undefined;
+        if (userId) {
+          await this.logAuditEvent(userId, 'BOT_DEACTIVATED', { reason: 'user_requested' });
+        }
         await this.state.storage.put('isActive', false);
         await this.state.storage.put('coinId', null);
         const existingLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
@@ -521,125 +534,314 @@ export class TradingBot {
         return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
       case '/execute-trade': {
+        if (this.env.GLOBAL_TRADING_HALT === 'true') {
+          return new Response(JSON.stringify({ error: 'GLOBAL_TRADING_HALT is active. All trading is safely suspended.' }), { status: 503 });
+        }
+
+        const safeMode = await this.state.storage.get('safeMode');
+        if (safeMode) {
+          return new Response(JSON.stringify({ error: 'Safe Mode is active. New trade execution is temporarily disabled pending manual review.' }), { status: 403 });
+        }
+
         if (this.isExecutingTrade) {
           return new Response(JSON.stringify({ error: 'A trade execution is already in progress.' }), { status: 409 });
         }
-        this.isExecutingTrade = true;
+        
+        // Feature 9: Race Condition Protection (Concurrency)
+        return await this.state.blockConcurrencyWhile(async () => {
+          this.isExecutingTrade = true;
+          await this.state.storage.put('isExecutingTrade', true);
 
-        try {
-          const userId: string | undefined = await this.state.storage.get('userId');
-          if (!userId) {
-            return new Response(JSON.stringify({ error: 'Bot not properly initialized with a user.' }), { status: 500 });
-          }
-
-          const userKeys = await this.env.DB.prepare(
-            'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
-          ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
-
-          if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
-            return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
-          }
-
-          const decryptedSecret = await decrypt(
-            { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted },
-            this.env.ENCRYPTION_KEY,
-          );
-
-          const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
-          const coinId = (await this.state.storage.get('coinId')) as string;
-
-          const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-          const pending = alerts.filter((a) => a.status === 'pending');
-          if (pending.length === 0) {
-            return new Response(JSON.stringify({ error: 'No pending alert to execute.' }), { status: 400 });
-          }
-          const target = pending[pending.length - 1];
-          const side: 'BUY' | 'SELL' = target.side || 'BUY';
-          const orderSymbol = coinId; // Strict lock to the active trading instrument
-
-          let orderResult: any = { success: true, message: 'Trade executed (simulated).' };
           try {
-            if (adapter.placeOrder) {
-              const ticker = await adapter.fetchTicker(orderSymbol);
-              const rawQty = target.positionSize > 0 && target.entryPrice > 0
-                ? target.positionSize / target.entryPrice
-                : undefined;
-                
-              if (target.positionSize < (ticker?.minNotional || 0)) {
-                throw new Error(`Order size ${target.positionSize} is below exchange minimum notional of ${ticker?.minNotional}`);
-              }
-              
-              const qty = rawQty != null && ticker
-                ? normalizeQuantity(rawQty, ticker.lotSize, ticker.minOrderQty, ticker.maxOrderQty)
-                : rawQty;
-              orderResult = await adapter.placeOrder(orderSymbol, side, userKeys.exchange_api_key, decryptedSecret, qty);
+            const userId: string | undefined = await this.state.storage.get('userId');
+            if (!userId) {
+              return new Response(JSON.stringify({ error: 'Bot not properly initialized with a user.' }), { status: 500 });
             }
-          } catch (e: any) {
-            orderResult = { success: false, message: e.message || 'Trade execution failed' };
+
+            const userKeys = await this.env.DB.prepare(
+              'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
+            ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
+
+            if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
+              return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
+            }
+
+            const decryptedSecret = await decrypt(
+              { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted },
+              this.env.ENCRYPTION_KEY,
+            );
+
+            const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
+            const coinId = (await this.state.storage.get('coinId')) as string;
+
+            const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+            const pending = alerts.filter((a) => a.status === 'pending' || a.status === 'acknowledged');
+            if (pending.length === 0) {
+              return new Response(JSON.stringify({ error: 'No pending alert to execute.' }), { status: 400 });
+            }
+            const target = pending[pending.length - 1];
+            const side: 'BUY' | 'SELL' = target.side || 'BUY';
+            const orderSymbol = coinId; // Strict lock to the active trading instrument
+            const clientOrderId = target.id; // Feature 2: Idempotent Execution
+
+            target.status = 'submitted';
+            await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+            await this.logAuditEvent(userId, 'TRADE_SUBMITTED', { symbol: orderSymbol, side, clientOrderId, strategy: target.strategy, entryPrice: target.entryPrice });
+
+            let orderResult: any = { success: true, message: 'Trade executed (simulated).', orderId: clientOrderId };
+            try {
+              if (adapter.placeOrder) {
+                const ticker = await adapter.fetchTicker(orderSymbol);
+                const rawQty = target.positionSize > 0 && target.entryPrice > 0
+                  ? target.positionSize / target.entryPrice
+                  : undefined;
+                  
+                if (target.positionSize < (ticker?.minNotional || 0)) {
+                  throw new Error(`Order size ${target.positionSize} is below exchange minimum notional of ${ticker?.minNotional}`);
+                }
+                
+                // Feature 10: Exchange Compatibility Validation (Rounding)
+                // Enforce strict lotSize and tickSize rounding pre-execution
+                const qty = rawQty != null && ticker
+                  ? normalizeQuantity(rawQty, ticker.lotSize, ticker.minOrderQty, ticker.maxOrderQty)
+                  : rawQty;
+                  
+                // Feature 2: Pass clientOrderId for Idempotency
+                orderResult = await adapter.placeOrder(orderSymbol, side, userKeys.exchange_api_key, decryptedSecret, qty, clientOrderId);
+              }
+            } catch (e: any) {
+              orderResult = { success: false, message: e.message || 'Trade execution failed' };
+            }
+
+            target.status = orderResult.success ? 'executed' : 'failed';
+            await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+            
+            if (orderResult.success) {
+              await this.logAuditEvent(userId, 'TRADE_FILLED', { symbol: orderSymbol, side, orderId: orderResult.orderId, price: orderResult.price, quantity: orderResult.quantity, strategy: target.strategy });
+              await this.state.storage.put('tradeActive', true);
+              await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
+              await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
+
+              const positionId = crypto.randomUUID();
+              const now = new Date().toISOString();
+              
+              const positionData = {
+                  id: positionId,
+                  userId,
+                  orderSymbol,
+                  side,
+                  entryPrice: orderResult.price > 0 ? orderResult.price : target.entryPrice,
+                  quantity: orderResult.quantity || 0,
+                  stopLoss: target.stopLoss,
+                  takeProfit: target.takeProfit,
+                  exchangeName: userKeys.exchange_name,
+                  environment: userKeys.exchange_environment || 'mainnet',
+                  strategy: target.strategy,
+                  orderId: orderResult.orderId || null,
+                  now
+              };
+
+              // Phase 3.3.1: Write-Ahead Logging (WAL) to DO Storage before writing to D1
+              await this.state.storage.put('pendingPositionSync', positionData);
+
+              try {
+                await this.env.DB.prepare(
+                  `INSERT OR IGNORE INTO trade_positions (
+                    id, user_id, symbol, side, entry_price, quantity, stop_loss, take_profit,
+                    status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
+                )
+                  .bind(
+                    positionData.id,
+                    positionData.userId,
+                    positionData.orderSymbol,
+                    positionData.side,
+                    positionData.entryPrice,
+                    positionData.quantity,
+                    positionData.stopLoss,
+                    positionData.takeProfit,
+                    positionData.exchangeName,
+                    positionData.environment,
+                    positionData.strategy,
+                    positionData.orderId,
+                    positionData.now,
+                    positionData.now,
+                    positionData.now,
+                  )
+                  .run();
+
+                // If DB write succeeds, remove from WAL
+                await this.state.storage.delete('pendingPositionSync');
+              } catch (dbError) {
+                console.error("D1 write failed, position is safely in DO WAL:", dbError);
+                // System will recover it on the next sweep or restart
+              }
+            } else {
+              await this.logAuditEvent(userId, 'TRADE_FAILED', { symbol: orderSymbol, side, message: orderResult.message, clientOrderId });
+            }
+
+            return new Response(JSON.stringify({ success: orderResult.success, message: orderResult.message, side, order: orderResult }), { status: 200 });
+          } finally {
+            this.isExecutingTrade = false;
+            await this.state.storage.put('isExecutingTrade', false);
           }
-
-          target.status = 'executed';
-          await this.state.storage.put('alerts', this.pruneAlerts(alerts));
-          await this.state.storage.put('tradeActive', true);
-          await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
-
-          if (orderResult.success) {
-            const positionId = crypto.randomUUID();
-            const now = new Date().toISOString();
-            await this.env.DB.prepare(
-              `INSERT INTO trade_positions (
-                id, user_id, symbol, side, entry_price, quantity, stop_loss, take_profit,
-                status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
-            )
-              .bind(
-                positionId,
-                userId,
-                orderSymbol,
-                side,
-                target.entryPrice,
-                orderResult.quantity || 0,
-                target.stopLoss,
-                target.takeProfit,
-                userKeys.exchange_name,
-                userKeys.exchange_environment || 'mainnet',
-                target.strategy,
-                orderResult.orderId || null,
-                now,
-                now,
-                now,
-              )
-              .run();
-          }
-
-          return new Response(JSON.stringify({ success: orderResult.success, message: orderResult.message, side, order: orderResult }), { status: 200 });
-        } finally {
-          this.isExecutingTrade = false;
-        }
+        });
       }
       case '/stop-trade': {
         await this.state.storage.put('tradeActive', false);
         return new Response(JSON.stringify({ success: true, message: 'Trade stopped.' }), { status: 200 });
+      }
+      case '/health': {
+        const isActive = (await this.state.storage.get('isActive')) || false;
+        const activatedAt = (await this.state.storage.get('activatedAt')) as number || 0;
+        const uptimeSeconds = isActive && activatedAt > 0 ? Math.floor((Date.now() - activatedAt) / 1000) : 0;
+        
+        const lastSuccessfulAnalysisAt = (await this.state.storage.get('lastSuccessfulAnalysisAt')) || null;
+        const lastSuccessfulTradeAt = (await this.state.storage.get('lastSuccessfulTradeAt')) || null;
+        const lastReconciliationAt = (await this.state.storage.get('lastReconciliationAt')) || null;
+        
+        let adapterMetrics: any = null;
+        let circuitBreakerStatus = 'UNKNOWN';
+        let activePositionsCount = 0;
+        try {
+          const userId = await this.state.storage.get('userId') as string;
+          if (userId) {
+            const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
+            if (user?.exchange_name) {
+              const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
+              if ((adapter as any).cacheMetrics) {
+                adapterMetrics = { ... (adapter as any).cacheMetrics };
+                if (typeof adapterMetrics.circuitBreakerStatus === 'function') {
+                   circuitBreakerStatus = adapterMetrics.circuitBreakerStatus();
+                   delete adapterMetrics.circuitBreakerStatus;
+                }
+              }
+            }
+            
+            const positionsRes = await this.env.DB.prepare("SELECT COUNT(*) as count FROM trade_positions WHERE user_id = ? AND status = 'OPEN'").bind(userId).first<{count: number}>();
+            activePositionsCount = positionsRes?.count || 0;
+          }
+        } catch (e) {
+           // Ignore errors fetching metrics
+        }
+        
+        const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+        const activeAlertsCount = alerts.filter(a => a.status === 'pending').length;
+
+        const safeMode = (await this.state.storage.get('safeMode')) || false;
+        const storageKeys = Array.from((await this.state.storage.list()).keys());
+
+        return new Response(JSON.stringify({
+          status: 'healthy',
+          version: '1.0.0-phase3.3.1',
+          doId: this.state.id.toString(),
+          uptimeSeconds,
+          isActive,
+          globalTradingHalt: this.env.GLOBAL_TRADING_HALT === 'true',
+          safeMode,
+          storageKeysCount: storageKeys.length,
+          lastSuccessfulAnalysisAt,
+          lastSuccessfulTradeAt,
+          lastReconciliationAt,
+          circuitBreakerStatus,
+          activePositionsCount,
+          activeAlertsCount,
+          pendingBackgroundOperations: this.isExecutingTrade ? 1 : 0,
+          cacheMetrics: adapterMetrics,
+        }), { status: 200 });
       }
       default:
         return new Response('Not found', { status: 404 });
     }
   }
 
-  async alarm() {
-    const isActive = await this.state.storage.get('isActive');
-    if (!isActive) return;
-
-    // Every analysis cycle produces the real data the UI visualizes.
-    await this.runAnalysisCycle();
-
-    const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;
-    if (!lastPositionCheckAt || Date.now() - lastPositionCheckAt > POSITION_CHECK_INTERVAL_MS) {
-      await this.monitorOpenPositions();
-      await this.state.storage.put('lastPositionCheckAt', Date.now());
+  private async logAuditEvent(userId: string, action: string, metadata: any) {
+    try {
+      const id = crypto.randomUUID();
+      const ip = 'internal-do';
+      const userAgent = 'trading-bot-do';
+      await this.env.DB.prepare(
+        'INSERT INTO audit_log (id, user_id, action, ip, user_agent, metadata) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+        .bind(id, userId, action, ip, userAgent, JSON.stringify(metadata))
+        .run();
+    } catch (e) {
+      console.error('Failed to write audit log:', e);
     }
+  }
 
-    await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS);
+  async alarm() {
+    // Feature 11: Background Monitoring Fail-Safe (Immortal Alarm)
+    try {
+      const isActive = await this.state.storage.get('isActive');
+      if (!isActive) return;
+
+      if (this.env.GLOBAL_TRADING_HALT === 'true') {
+        console.warn('GLOBAL_TRADING_HALT is active. Skipping background operations.');
+        return;
+      }
+
+      // Phase 3.3.1: Write-Ahead Logging (WAL) Recovery
+      const pendingPositionSync = await this.state.storage.get<any>('pendingPositionSync');
+      if (pendingPositionSync) {
+        try {
+          await this.env.DB.prepare(
+            `INSERT OR IGNORE INTO trade_positions (
+              id, user_id, symbol, side, entry_price, quantity, stop_loss, take_profit,
+              status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(
+            pendingPositionSync.id, pendingPositionSync.userId, pendingPositionSync.orderSymbol, pendingPositionSync.side,
+            pendingPositionSync.entryPrice, pendingPositionSync.quantity, pendingPositionSync.stopLoss, pendingPositionSync.takeProfit,
+            pendingPositionSync.exchangeName, pendingPositionSync.environment, pendingPositionSync.strategy, pendingPositionSync.orderId,
+            pendingPositionSync.now, pendingPositionSync.now, pendingPositionSync.now
+          ).run();
+          await this.state.storage.delete('pendingPositionSync');
+        } catch (e) {
+          console.error('Failed to sync pending WAL position to D1 in alarm:', e);
+        }
+      }
+
+      // Phase 3.3.2: Reconciliation Sweep (Run roughly every hour or based on config)
+      const lastReconciliationAt = (await this.state.storage.get('lastReconciliationAt')) as number | undefined;
+      const RECONCILIATION_INTERVAL_MS = 60 * 60 * 1000;
+      if (!lastReconciliationAt || Date.now() - lastReconciliationAt > RECONCILIATION_INTERVAL_MS) {
+         try {
+           const userId = await this.state.storage.get('userId') as string;
+           if (userId) {
+             const userKeys = await this.env.DB.prepare('SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
+             if (userKeys?.exchange_name && userKeys.exchange_api_secret_encrypted) {
+               const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted }, this.env.ENCRYPTION_KEY);
+               const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
+               
+               // Override secret for engine calls
+               userKeys.exchange_api_secret_encrypted = decryptedSecret;
+               
+               const reconciliationEngine = new ReconciliationEngine(this.state.storage, this.env, userId, adapter, userKeys);
+               await reconciliationEngine.runReconciliationSweep();
+             }
+           }
+         } catch (e) {
+           console.error("Reconciliation sweep failed:", e);
+         }
+      }
+
+      // Every analysis cycle produces the real data the UI visualizes.
+      await this.runAnalysisCycle();
+
+      const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;
+      if (!lastPositionCheckAt || Date.now() - lastPositionCheckAt > POSITION_CHECK_INTERVAL_MS) {
+        await this.monitorOpenPositions();
+        await this.state.storage.put('lastPositionCheckAt', Date.now());
+      }
+    } catch (e) {
+      console.error('Fatal DO alarm error:', e);
+    } finally {
+      const isActive = await this.state.storage.get('isActive');
+      if (isActive) {
+        await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS);
+      }
+    }
   }
 
   /**
@@ -771,6 +973,26 @@ export class TradingBot {
 
       await this.state.storage.put('logs', logs.slice(-50));
 
+      // Feature 1: Trade Lifecycle State Management (60s TTL)
+      // Expire stale alerts before generating new ones
+      const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+      const now = Date.now();
+      let stateChanged = false;
+      alerts.forEach(a => {
+        if (a.status === 'pending' && now - new Date(a.timestamp).getTime() > 60_000) {
+          a.status = 'expired';
+          stateChanged = true;
+          logs = this.appendLog(logs, `Alert for ${a.symbol} expired after 60s. Resuming scanning.`, 'info');
+        }
+      });
+      if (stateChanged) {
+        await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+        await this.state.storage.put('logs', logs.slice(-50));
+      }
+
+      const pending = alerts.filter((a) => a.status === 'pending');
+      const opportunityDetected = evaluation.opportunity !== null && confluence.score >= 75 && pending.length === 0;
+
       const snapshot: AnalysisSnapshot = {
         isActive: true,
         strategy,
@@ -790,15 +1012,16 @@ export class TradingBot {
         checkpoints: evaluation.checkpoints,
         logs: logs.slice(-50),
         lastAnalysisAt: Date.now(),
-        opportunityDetected: evaluation.opportunity !== null && confluence.score >= 75,
+        opportunityDetected: opportunityDetected,
       };
 
       // Only raise the alarm when BOTH single-TF strategy passes AND
-      // multi-timeframe confluence is strong enough.
-      if (evaluation.opportunity && confluence.score >= 75) {
-        await this.raiseOpportunityAlert(userId, strategy, evaluation.opportunity);
+      // multi-timeframe confluence is strong enough. Avoid duplicate alarms.
+      if (opportunityDetected) {
+        await this.raiseOpportunityAlert(userId, strategy, evaluation.opportunity!);
       }
 
+      await this.state.storage.put('lastSuccessfulAnalysisAt', Date.now());
       await this.persistAnalysis(snapshot);
     } catch (e) {
       console.error('Analysis cycle error:', e);
@@ -1115,13 +1338,27 @@ export class TradingBot {
 
       if (!results || results.length === 0) return;
 
-      const user = await this.env.DB.prepare(
-        'SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
-      ).bind(userId).first<{ exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
+      const userKeys = await this.env.DB.prepare(
+        'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
+      ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
 
-      if (!user?.exchange_name) return;
+      if (!userKeys?.exchange_name || !userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) return;
 
-      const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
+      const decryptedSecret = await decrypt(
+        { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted },
+        this.env.ENCRYPTION_KEY,
+      );
+
+      const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
+      
+      // Feature 7: Automatic Synchronization of Open Positions
+      let exchangePositions: any[] = [];
+      if (adapter.fetchPositions) {
+        const posRes = await adapter.fetchPositions(userKeys.exchange_api_key, decryptedSecret);
+        if (posRes.success) {
+          exchangePositions = posRes.result;
+        }
+      }
 
       for (const position of results as any[]) {
         try {
@@ -1131,17 +1368,29 @@ export class TradingBot {
           const currentPrice = ticker.price;
           let closeReason: string | null = null;
 
-          if (position.side === 'BUY') {
-            if (currentPrice <= position.stop_loss) {
-              closeReason = 'stop_loss';
-            } else if (currentPrice >= position.take_profit) {
-              closeReason = 'take_profit';
-            }
-          } else {
-            if (currentPrice >= position.stop_loss) {
-              closeReason = 'stop_loss';
-            } else if (currentPrice <= position.take_profit) {
-              closeReason = 'take_profit';
+          // Check if position was closed externally on the exchange
+          let isExternallyClosed = false;
+          if (exchangePositions.length > 0) {
+             const activeOnExchange = exchangePositions.find(p => p.symbol.includes(position.symbol) && p.size > 0);
+             if (!activeOnExchange) {
+               isExternallyClosed = true;
+               closeReason = 'closed_externally';
+             }
+          }
+
+          if (!isExternallyClosed) {
+            if (position.side === 'BUY') {
+              if (currentPrice <= position.stop_loss) {
+                closeReason = 'stop_loss';
+              } else if (currentPrice >= position.take_profit) {
+                closeReason = 'take_profit';
+              }
+            } else {
+              if (currentPrice >= position.stop_loss) {
+                closeReason = 'stop_loss';
+              } else if (currentPrice <= position.take_profit) {
+                closeReason = 'take_profit';
+              }
             }
           }
 
@@ -1157,6 +1406,14 @@ export class TradingBot {
             )
               .bind(now, currentPrice, realizedPnl, closeReason, now, position.id)
               .run();
+
+            // Reset DO trade state so the UI gracefully exits LivePnLMonitoringScreen
+            const currentTradeActive = await this.state.storage.get('tradeActive');
+            if (currentTradeActive) {
+               await this.state.storage.put('tradeActive', false);
+            }
+            
+            await this.logAuditEvent(userId, 'POSITION_CLOSED', { symbol: position.symbol, reason: closeReason, realizedPnl, closePrice: currentPrice });
           }
         } catch (e) {
           console.error('Position monitoring error:', e);

@@ -215,7 +215,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         FCM_SERVER_KEY: "test_fcm_key",
       } as unknown as Env;
 
-      const bot = new TradingBot({ storage: mockStorage } as any, mockEnv);
+      const bot = new TradingBot({ storage: mockStorage, blockConcurrencyWhile: async (cb: any) => cb() } as any, mockEnv);
 
       // Mock Exchange Ticker (high volatility, low RSI, triggers BUY entry)
       const mockTicker = {
@@ -351,7 +351,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         ENCRYPTION_KEY: encryptionKey,
       } as unknown as Env;
 
-      const bot = new TradingBot({ storage: mockStorage } as any, mockEnv);
+      const bot = new TradingBot({ storage: mockStorage, blockConcurrencyWhile: async (cb: any) => cb() } as any, mockEnv);
 
       // Mock placeOrder
       const mockOrderRes = {
@@ -459,7 +459,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         }),
       } as any;
 
-      const botForMonitor = new TradingBot({ storage: mockStorage } as any, { DB: monitorDb } as any);
+      const botForMonitor = new TradingBot({ storage: mockStorage, blockConcurrencyWhile: async (cb: any) => cb() } as any, { DB: monitorDb } as any);
 
       // Mock Ticker to return Take Profit Price hit (63000 >= 62000)
       mockFetch.mockImplementation(async (url: string) => {
@@ -546,7 +546,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         ENCRYPTION_KEY: encryptionKey,
       } as unknown as Env;
 
-      const bot = new TradingBot({ storage: mockStorage } as any, mockEnv);
+      const bot = new TradingBot({ storage: mockStorage, blockConcurrencyWhile: async (cb: any) => cb() } as any, mockEnv);
 
       mockFetch.mockImplementation(async (url: string) => {
         if (url.includes("/v2/orders")) {
@@ -1093,7 +1093,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         put: async (key: string, val: any) => { storageData.set(key, val); },
         deleteAlarm: async () => {},
       } as any;
-      const bot = new TradingBot({ storage: mockStorage } as any, {} as any);
+      const bot = new TradingBot({ storage: mockStorage, blockConcurrencyWhile: async (cb: any) => cb() } as any, {} as any);
       
       const response = await bot.fetch(new Request("http://bot/deactivate", { method: "POST" }));
       expect(response.status).toBe(200);
@@ -1109,7 +1109,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         get: async (key: string) => storageData.get(key),
         put: async (key: string, val: any) => { storageData.set(key, val); },
       } as any;
-      const bot = new TradingBot({ storage: mockStorage } as any, {} as any);
+      const bot = new TradingBot({ storage: mockStorage, blockConcurrencyWhile: async (cb: any) => cb() } as any, {} as any);
 
       // Create a mock adapter where fetchTicker is tracked
       const fetchTickerSpy = vi.fn().mockResolvedValue({

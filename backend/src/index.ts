@@ -58,6 +58,7 @@ export interface Env {
   FCM_SERVER_KEY?: string;
   FCM_PROJECT_ID?: string;
   FCM_CLIENT_EMAIL?: string;
+  GLOBAL_TRADING_HALT?: string;
   FCM_PRIVATE_KEY?: string;
   TRADING_BOTS: DurableObjectNamespace;
   /** Workers AI binding — used to call Moonshot AI Kimi K3 (moonshotai/kimi-k3). Optional so non-AI routes/tests don't require it. */

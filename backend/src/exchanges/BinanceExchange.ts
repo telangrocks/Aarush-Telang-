@@ -1,6 +1,7 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline, PositionsResponse } from "./BaseExchange";
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
+import { CircuitBreaker } from "./CircuitBreaker";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -58,6 +59,7 @@ export class BinanceExchange implements IExchangeAdapter {
   private metadataCache: Map<string, SymbolMetadata> | null = null;
   private lastCacheFetch = 0;
   private cacheFetchPromise: Promise<Map<string, SymbolMetadata>> | null = null;
+  public breaker = new CircuitBreaker(5, 60000);
 
   // Cache observability metrics
   public cacheMetrics = {
@@ -66,6 +68,7 @@ export class BinanceExchange implements IExchangeAdapter {
     refreshes: 0,
     failures: 0,
     staleUsage: 0,
+    circuitBreakerStatus: () => this.breaker.check().allowed ? "CLOSED" : "OPEN",
   };
 
   // Helper with exponential backoff retries
@@ -332,7 +335,19 @@ export class BinanceExchange implements IExchangeAdapter {
     }
   }
 
-  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult> {
+  async placeOrder(
+    symbol: string,
+    side: "BUY" | "SELL",
+    apiKey: string,
+    apiSecret: string,
+    quantity: number,
+    clientOrderId?: string,
+  ): Promise<OrderResult> {
+    const breakerState = this.breaker.check();
+    if (!breakerState.allowed) {
+      return { success: false, message: `Circuit breaker is OPEN. Fast-failing request.` };
+    }
+
     try {
       const timestamp = Date.now();
       const recvWindow = 5000;
@@ -363,11 +378,13 @@ export class BinanceExchange implements IExchangeAdapter {
       const data = await response.json() as any;
       
       if (!response.ok || data.code) {
+        this.breaker.recordFailure();
         const detail = data.msg || `HTTP ${response.status}: Order failed`;
         const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
         return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
       }
 
+      this.breaker.recordSuccess();
       return {
         success: true,
         message: `Order placed successfully`,
@@ -376,8 +393,115 @@ export class BinanceExchange implements IExchangeAdapter {
         quantity: parseFloat(data.fills?.[0]?.qty || qty.toString()),
       };
     } catch (e: any) {
+      this.breaker.recordFailure();
       const err = classifyException(e, this.config.displayName);
       return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+    }
+  }
+
+  async fetchOrder(orderId: string, apiKey: string, apiSecret: string, symbol?: string): Promise<OrderResult> {
+    try {
+      const timestamp = Date.now();
+      const params = new URLSearchParams({
+        timestamp: timestamp.toString(),
+      });
+      if (symbol) {
+        params.append("symbol", `${symbol.toUpperCase()}USDT`);
+      }
+      params.append("orderId", orderId);
+      
+      const signature = await hmacSha256(params.toString(), apiSecret);
+      const url = `${this.getRestUrl()}/api/v3/order?${params.toString()}&signature=${signature}`;
+
+      const response = await fetch(url, {
+        headers: {
+          'X-MBX-APIKEY': apiKey,
+        },
+      });
+
+      const data = await response.json() as any;
+      if (!response.ok) {
+        return { success: false, message: data.msg || "Failed to fetch order", code: "UNKNOWN_EXCHANGE_ERROR" };
+      }
+
+      // Calculate weighted average price for partial fills
+      let avgFillPrice = 0;
+      let filledQty = 0;
+      if (data.status === 'FILLED' || data.status === 'PARTIALLY_FILLED') {
+         // In Spot, average price can be approximated by cummulativeQuoteQty / executedQty
+         const cumQuote = parseFloat(data.cummulativeQuoteQty || "0");
+         const execQty = parseFloat(data.executedQty || "0");
+         if (execQty > 0 && cumQuote > 0) {
+            avgFillPrice = cumQuote / execQty;
+         } else {
+            avgFillPrice = parseFloat(data.price || "0");
+         }
+         filledQty = execQty;
+      }
+
+      return {
+        success: true,
+        message: "Order fetched successfully",
+        orderId: data.orderId?.toString(),
+        status: data.status?.toLowerCase(),
+        averageFillPrice: avgFillPrice,
+        filledQuantity: filledQty,
+      };
+    } catch (e: any) {
+      return { success: false, message: e.message, code: "UNKNOWN_EXCHANGE_ERROR" };
+    }
+  }
+
+  async fetchPositions(apiKey: string, apiSecret: string): Promise<{ success: boolean; result: any[]; message: string; code?: string }> {
+    const breakerState = this.breaker.check();
+    if (!breakerState.allowed) {
+      return { success: false, result: [], message: `Circuit breaker is OPEN. Fast-failing request.` };
+    }
+
+    try {
+      const timestamp = Date.now();
+      const params = new URLSearchParams({
+        timestamp: timestamp.toString(),
+      });
+      
+      const signature = await hmacSha256(params.toString(), apiSecret);
+      const url = `${this.getRestUrl()}/api/v3/account?${params.toString()}&signature=${signature}`;
+
+      const response = await fetch(url, {
+        headers: {
+          'X-MBX-APIKEY': apiKey,
+        },
+      });
+
+      const data = await response.json() as any;
+      if (!response.ok) {
+        this.breaker.recordFailure();
+        return { success: false, message: data.msg || "Failed to fetch account", code: "UNKNOWN_EXCHANGE_ERROR", result: [] };
+      }
+
+      // Binance Spot doesn't have "positions" in the derivative sense, just balances.
+      // We will map balances > 0 to simulate positions for the UI.
+      const positions: any[] = [];
+      const balances = data.balances || [];
+      for (const b of balances) {
+        const free = parseFloat(b.free);
+        const locked = parseFloat(b.locked);
+        const total = free + locked;
+        if (total > 0 && b.asset !== "USDT") {
+          positions.push({
+            symbol: `${b.asset}USDT`,
+            size: total,
+            entry_price: 0, // Spot doesn't track entry price intrinsically like Futures
+            side: "BUY"
+          });
+        }
+      }
+
+      this.breaker.recordSuccess();
+      return { success: true, result: positions, message: 'Success' };
+    } catch (e: any) {
+      this.breaker.recordFailure();
+      return { success: false, result: [], message: e.message || 'Unknown error' };
     }
   }
 }
