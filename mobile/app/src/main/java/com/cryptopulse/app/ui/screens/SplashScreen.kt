@@ -8,6 +8,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
@@ -20,9 +21,11 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
+import com.cryptopulse.app.data.local.BiometricAuthManager
 import com.cryptopulse.app.ui.components.CryptoPulseLogoIcon
 import com.cryptopulse.app.ui.theme.*
 import kotlinx.coroutines.delay
+import androidx.fragment.app.FragmentActivity
 
 /**
  * Splash screen matching the reference design:
@@ -61,10 +64,38 @@ fun SplashScreen(
         label = "glow_radius"
     )
 
+    // Read the Compose context OUTSIDE the coroutine — composition locals
+    // (LocalContext) cannot be safely read from inside a LaunchedEffect block.
+    val context = LocalContext.current
+
     LaunchedEffect(Unit) {
         visible = true
-        val token = tokenManager.getToken()
+        var token = tokenManager.getToken()
+        if (tokenManager.isTokenExpired(token)) {
+            tokenManager.clearTokens()
+            token = null
+        }
         if (!token.isNullOrEmpty()) {
+            val biometricAuthManager = BiometricAuthManager(context)
+            // Only attempt biometric auth if the host is a FragmentActivity,
+            // otherwise BiometricPrompt would throw a ClassCastException.
+            val fragmentActivity = context as? FragmentActivity
+            if (fragmentActivity != null && biometricAuthManager.isBiometricEnrolled()) {
+                try {
+                    val authenticated = biometricAuthManager.authenticate(
+                        activity = fragmentActivity,
+                        title = "Biometric Authentication",
+                        subtitle = "Verify your identity to continue"
+                    )
+                    if (!authenticated) {
+                        tokenManager.clearTokens()
+                        token = null
+                    }
+                } catch (e: Exception) {
+                    tokenManager.clearTokens()
+                    token = null
+                }
+            }
             try {
                 val response = exchangeService.getStatus()
                 if (response.isSuccessful && response.body() != null) {

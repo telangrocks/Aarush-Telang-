@@ -7,8 +7,23 @@ import {
   handleGetProfile,
   handleLogin,
   handleRegister,
-  handleResendOtp,
-  handleVerifyOtp,
+  handleResendVerification,
+  handleVerifyEmail,
+  handleLogout,
+  handleDeleteFcmToken,
+  handleForgotPassword,
+  handleResetPassword,
+  handleRefresh,
+  handleDeleteAccount,
+  handleRegisterDevice,
+  handleListDevices,
+  handleRemoveDevice,
+  handleEnableMfa,
+  handleDisableMfa,
+  handleSetPin,
+  handleVerifyPin,
+  handleRequestPinReset,
+  handleConfirmPinReset,
 } from "./handlers/user";
 import {
   handleValidateExchange,
@@ -29,6 +44,8 @@ import {
 } from "./handlers/exchange";
 import { handleRegisterFcmToken, sendPriceAlertNotification } from "./handlers/notifications";
 import { handleGetPositions, handleClosePosition } from "./handlers/positions";
+import { isTokenRevoked } from "./handlers/auth";
+import { chatWithKimiK3 } from "./services/kimi";
 import { getExchangeAdapter, type ExchangeName, type ExchangeEnvironment, type ExchangeRegion } from "./exchanges";
 
 export interface Env {
@@ -37,25 +54,30 @@ export interface Env {
   JWT_SECRET: string;
   RESEND_API_KEY: string;
   RESEND_FROM_EMAIL?: string;
-  AUTH_ALLOW_DEV_OTP_FALLBACK?: string;
   ALLOWED_ORIGINS: string;
   FCM_SERVER_KEY?: string;
   FCM_PROJECT_ID?: string;
   FCM_CLIENT_EMAIL?: string;
   FCM_PRIVATE_KEY?: string;
   TRADING_BOTS: DurableObjectNamespace;
+  /** Workers AI binding — used to call Moonshot AI Kimi K3 (moonshotai/kimi-k3). Optional so non-AI routes/tests don't require it. */
+  AI?: Ai;
 }
 
 function validateEnv(env: Env): void {
   const missing: string[] = [];
   if (!env.JWT_SECRET || typeof env.JWT_SECRET !== "string") {
     missing.push("JWT_SECRET");
+  } else if (env.JWT_SECRET.length < 32) {
+    throw new Error("JWT_SECRET must be at least 32 characters long");
   }
   if (!env.DB) {
     missing.push("DB");
   }
   if (!env.ENCRYPTION_KEY || typeof env.ENCRYPTION_KEY !== "string") {
     missing.push("ENCRYPTION_KEY");
+  } else if (env.ENCRYPTION_KEY.length < 32) {
+    throw new Error("ENCRYPTION_KEY must be at least 32 characters long");
   }
   if (!env.RESEND_API_KEY || typeof env.RESEND_API_KEY !== "string") {
     missing.push("RESEND_API_KEY");
@@ -67,6 +89,17 @@ function validateEnv(env: Env): void {
     throw new Error(
       `Missing required environment variables: ${missing.join(", ")}`,
     );
+  }
+}
+
+function validateCorsOrigins(origins: string[]): void {
+  for (const origin of origins) {
+    if (origin === "*") {
+      throw new Error("Wildcard origin (*) is not allowed in ALLOWED_ORIGINS");
+    }
+    if (origin.startsWith("http://") && !origin.startsWith("http://localhost") && !origin.startsWith("http://127.0.0.1")) {
+      throw new Error(`Non-localhost HTTP origin is not allowed: ${origin}. Use HTTPS in production.`);
+    }
   }
 }
 
@@ -94,6 +127,7 @@ app.use("*", async (c, next) => {
       message: "ALLOWED_ORIGINS must be configured",
     });
   }
+  validateCorsOrigins(allowedOrigins);
   const middleware = cors({ origin: allowedOrigins });
   return middleware(c, next);
 });
@@ -101,7 +135,7 @@ app.use("*", async (c, next) => {
 // ==========================================
 // PUBLIC ENDPOINTS
 // ==========================================
-const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-otp", "/api/verify-otp"];
+const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-verification", "/api/verify-email", "/api/forgot-password", "/api/reset-password", "/api/refresh", "/api/verify-pin", "/api/reset-pin", "/api/confirm-pin-reset"];
 
 app.get("/health", (c) => {
   return c.json({
@@ -133,6 +167,11 @@ app.get("/db-status", async (c) => {
       "watchlist",
       "portfolio_transactions",
       "price_alerts",
+      "jwt_blacklist",
+      "refresh_tokens",
+      "login_attempts",
+      "password_reset_tokens",
+      "audit_log",
     ];
 
     const missingTables: string[] = [];
@@ -173,8 +212,8 @@ app.get("/db-status", async (c) => {
 // PUBLIC API ROUTES
 // ==========================================
 app.post("/api/register", handleRegister);
-app.post("/api/resend-otp", handleResendOtp);
-app.post("/api/verify-otp", handleVerifyOtp);
+app.post("/api/resend-verification", handleResendVerification);
+app.get("/api/verify-email", handleVerifyEmail);
 app.post("/api/login", handleLogin);
 
 // ==========================================
@@ -185,15 +224,21 @@ const api = new Hono<{ Bindings: Env }>();
 // JWT Middleware with proper error handling.
 // NOTE: Hono applies sub-app (`api`) middleware to the parent app as well, so
 // this guard would otherwise run on every /api/* route. Explicitly skip the
-// public auth routes (login, register, otp, and exchange credential
+// public auth routes (login, register, email verification, and exchange credential
 // validation, which runs before a user is authenticated) so they remain
 // publicly accessible while everything else requires a valid JWT.
 const PUBLIC_AUTH_PATHS = new Set([
   "/api/register",
   "/api/login",
-  "/api/resend-otp",
-  "/api/verify-otp",
+  "/api/resend-verification",
+  "/api/verify-email",
   "/api/exchange/validate",
+  "/api/refresh",
+  "/api/forgot-password",
+  "/api/reset-password",
+  "/api/verify-pin",
+  "/api/reset-pin",
+  "/api/confirm-pin-reset",
 ]);
 
 api.use("*", (c, next) => {
@@ -207,6 +252,18 @@ api.use("*", (c, next) => {
     alg: "HS256",
   });
   return jwtMiddleware(c, next);
+});
+
+api.use("*", async (c, next) => {
+  if (PUBLIC_AUTH_PATHS.has(c.req.path)) {
+    return next();
+  }
+  const payload = c.get("jwtPayload") as { sub: string; jti?: string } | undefined;
+  if (payload?.jti && await isTokenRevoked(c, payload.jti)) {
+    c.status(401);
+    return c.json({ error: "Token has been revoked" });
+  }
+  await next();
 });
 
 api.get("/profile", handleGetProfile);
@@ -302,6 +359,75 @@ api.get("/positions", handleGetPositions);
 api.post("/positions/:id/close", handleClosePosition);
 
 api.post("/fcm/register", handleRegisterFcmToken);
+api.delete("/fcm/register", handleDeleteFcmToken);
+
+// ==========================================
+// AI — Kimi K3 (Cloudflare Workers AI)
+// ==========================================
+api.post("/ai/kimi", async (c) => {
+  const { messages, system, temperature, max_tokens } = await c.req.json<{
+    messages: { role: "system" | "user" | "assistant"; content: string }[];
+    system?: string;
+    temperature?: number;
+    max_tokens?: number;
+  }>();
+  if (!Array.isArray(messages) || messages.length === 0) {
+    c.status(400);
+    return c.json({ error: "Field 'messages' must be a non-empty array." });
+  }
+  if (!c.env.AI) {
+    c.status(503);
+    return c.json({ error: "AI binding is not configured on this Worker." });
+  }
+  try {
+    const result = await chatWithKimiK3(c.env.AI, { messages, system, temperature, max_tokens });
+    return c.json(result);
+  } catch (err) {
+    console.error("Kimi K3 invocation failed:", err);
+    c.status(502);
+    return c.json({ error: "Kimi K3 invocation failed", detail: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// Simple test endpoint: body { "prompt": "..." } -> Kimi K3 response.
+api.post("/ai/kimi/test", async (c) => {
+  const { prompt } = await c.req.json<{ prompt?: string }>();
+  if (!prompt || typeof prompt !== "string") {
+    c.status(400);
+    return c.json({ error: "Field 'prompt' (string) is required." });
+  }
+  if (!c.env.AI) {
+    c.status(503);
+    return c.json({ error: "AI binding is not configured on this Worker." });
+  }
+  try {
+    const result = await chatWithKimiK3(c.env.AI, {
+      messages: [{ role: "user", content: prompt }],
+    });
+    return c.json(result);
+  } catch (err) {
+    console.error("Kimi K3 test invocation failed:", err);
+    c.status(502);
+    return c.json({ error: "Kimi K3 invocation failed", detail: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+api.post("/logout", handleLogout);
+api.post("/refresh", handleRefresh);
+api.post("/forgot-password", handleForgotPassword);
+api.post("/reset-password", handleResetPassword);
+
+api.delete("/account", handleDeleteAccount);
+api.post("/devices", handleRegisterDevice);
+api.get("/devices", handleListDevices);
+api.delete("/devices/:id", handleRemoveDevice);
+api.post("/mfa/enable", handleEnableMfa);
+api.post("/mfa/disable", handleDisableMfa);
+api.post("/set-pin", handleSetPin);
+
+app.post("/api/verify-pin", handleVerifyPin);
+app.post("/api/reset-pin", handleRequestPinReset);
+app.post("/api/confirm-pin-reset", handleConfirmPinReset);
 
 app.route("/api", api);
 

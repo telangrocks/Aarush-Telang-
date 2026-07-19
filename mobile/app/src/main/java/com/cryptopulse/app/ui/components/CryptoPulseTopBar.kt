@@ -3,8 +3,10 @@ package com.cryptopulse.app.ui.components
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -18,6 +20,13 @@ import com.cryptopulse.app.ui.theme.TextPrimary
 import com.cryptopulse.app.ui.theme.TextSecondary
 
 /**
+ * Logout handler provided by the host activity so the branded top bar can expose
+ * a sign-out action without every screen threading the callback explicitly.
+ * Null when the user is not authenticated (button is hidden).
+ */
+val LocalOnLogout = compositionLocalOf<(() -> Unit)?> { null }
+
+/**
  * The branded top bar used on every screen of the app.
  *
  * Shows the CryptoPulse wordmark centred, with an optional back-arrow on the
@@ -28,7 +37,10 @@ import com.cryptopulse.app.ui.theme.TextSecondary
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CryptoPulseTopBar(onBack: (() -> Unit)? = null) {
+fun CryptoPulseTopBar(
+    onBack: (() -> Unit)? = null,
+    onLogout: (() -> Unit)? = LocalOnLogout.current,
+) {
     TopAppBar(
         modifier = Modifier.fillMaxWidth(),
         colors = TopAppBarDefaults.topAppBarColors(
@@ -94,8 +106,18 @@ fun CryptoPulseTopBar(onBack: (() -> Unit)? = null) {
             }
         },
         actions = {
-            // Reserve the same space as navigation icon so title stays centred
-            Spacer(Modifier.width(48.dp))
+            if (onLogout != null) {
+                IconButton(onClick = onLogout) {
+                    Icon(
+                        imageVector = Icons.Default.Logout,
+                        contentDescription = "Log out",
+                        tint = TextPrimary
+                    )
+                }
+            } else {
+                // Reserve the same space as navigation icon so title stays centred
+                Spacer(Modifier.width(48.dp))
+            }
         }
     )
 }

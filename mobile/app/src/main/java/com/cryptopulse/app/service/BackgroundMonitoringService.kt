@@ -136,11 +136,18 @@ class BackgroundMonitoringService : Service() {
     }
 
     private suspend fun pollForAlerts() {
-        val token = tokenManager.getToken() ?: return
+        val token = tokenManager.getToken() ?: run {
+            stopSelf()
+            return
+        }
 
         withContext(Dispatchers.IO) {
             try {
                 val response = tradingBotService.getAlerts()
+                if (response.code() == 401) {
+                    stopSelf()
+                    return@withContext
+                }
                 if (response.isSuccessful && response.body() != null) {
                     val alerts = response.body()!!
                     if (alerts.isNotEmpty()) {

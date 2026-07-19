@@ -419,7 +419,7 @@ private fun InfoChip(label: String, value: String) {
 private fun buildExchangeLabel(exchange: String?, environment: String?): String {
     val name = when (exchange?.lowercase()) {
         "binance" -> "Binance"
-        "delta" -> "Delta"
+        "delta" -> "Delta Exchange India"
         "bybit" -> "Bybit"
         else -> exchange ?: "N/A"
     }

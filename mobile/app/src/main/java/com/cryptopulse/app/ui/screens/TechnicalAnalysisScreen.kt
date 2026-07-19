@@ -14,6 +14,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -49,6 +50,8 @@ fun TechnicalAnalysisScreen(
     var lastUpdated by remember { mutableStateOf(System.currentTimeMillis()) }
 
     val analysisResult by viewModel.technicalAnalysis.collectAsState(initial = null)
+    val analysisError by viewModel.analysisError.collectAsState(initial = null)
+    val botError by viewModel.botError.collectAsState(initial = null)
     val scope = rememberCoroutineScope()
     val appContext = LocalContext.current.applicationContext
 
@@ -145,7 +148,31 @@ fun TechnicalAnalysisScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                if (isLoading) {
+                if (analysisError != null && analysisResult == null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(200.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.WifiOff, null, tint = LossRed, modifier = Modifier.size(40.dp))
+                            Spacer(Modifier.height(12.dp))
+                            Text(analysisError ?: "Failed to run technical analysis.", color = TextSecondary, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
+                            Spacer(Modifier.height(16.dp))
+                            GradientButton(
+                                text = "Retry",
+                                onClick = {
+                                    viewModel.clearAnalysisError()
+                                    viewModel.fetchTechnicalAnalysis()
+                                },
+                                leadingIcon = Icons.Default.Refresh,
+                                modifier = Modifier.fillMaxWidth(0.6f),
+                                testTag = "technical_analysis_retry"
+                            )
+                        }
+                    }
+                } else if (isLoading) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -323,6 +350,40 @@ fun TechnicalAnalysisScreen(
                                 color = TextSecondary,
                                 fontSize = 11.sp,
                                 lineHeight = 16.sp,
+                            )
+                        }
+                    }
+                }
+
+                if (botError != null) {
+                    Spacer(Modifier.height(12.dp))
+                    GlowCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("technical_analysis_bot_error"),
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Default.Error, null, tint = LossRed, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Could not start the bot", color = LossRed, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(botError ?: "Failed to activate the trading bot.", color = TextSecondary, fontSize = 11.sp, lineHeight = 16.sp)
+                                }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            GradientButton(
+                                text = "Retry",
+                                onClick = {
+                                    viewModel.clearBotError()
+                                    viewModel.activateBot(candidate.symbol, strategy, positionSize)
+                                },
+                                leadingIcon = Icons.Default.Refresh,
+                                testTag = "technical_analysis_bot_retry"
                             )
                         }
                     }

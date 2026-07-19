@@ -3,6 +3,7 @@ package com.cryptopulse.app
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -12,7 +13,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -26,6 +30,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.activity.viewModels
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
+import com.cryptopulse.app.data.repository.AuthRepository
 import com.cryptopulse.app.ui.auth.AuthScreen
 import com.cryptopulse.app.ui.auth.AuthViewModel
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
@@ -46,6 +51,7 @@ import com.cryptopulse.app.ui.screens.LiveAnalysisViewModel
 import com.cryptopulse.app.service.BackgroundMonitoringService
 import com.cryptopulse.app.service.AlertBus
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
+import com.cryptopulse.app.ui.components.LocalOnLogout
 import com.cryptopulse.app.ui.screens.MarketCandidate
 import com.cryptopulse.app.ui.auth.TradeSetupState
 import dagger.hilt.android.AndroidEntryPoint
@@ -53,7 +59,7 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     @Inject
     lateinit var tokenManager: TokenManager
@@ -63,6 +69,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var exchangeService: com.cryptopulse.app.data.api.ExchangeService
+
+    @Inject
+    lateinit var authRepository: AuthRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,7 +84,24 @@ class MainActivity : ComponentActivity() {
                     val navController = rememberNavController()
                     val token by tokenManager.tokenFlow.collectAsState(initial = null)
                     val startDestination = "splash"
+                    val exchangeViewModel = hiltViewModel<ExchangeViewModel>(this)
+                    val coroutineScope = rememberCoroutineScope()
 
+                    val performLogout: () -> Unit = {
+                        coroutineScope.launch {
+                            authRepository.logout()
+                            exchangeConnectionManager.clearConnection()
+                            BackgroundMonitoringService.stopService(this@MainActivity)
+                        }
+                        exchangeViewModel.resetState()
+                        navController.navigate("welcome") {
+                            popUpTo("splash") { inclusive = true }
+                        }
+                    }
+
+                    CompositionLocalProvider(
+                        LocalOnLogout provides if (token != null) performLogout else null
+                    ) {
                     NavHost(navController = navController, startDestination = startDestination) {
                         composable("splash") {
                             SplashScreen(
@@ -334,6 +360,7 @@ class MainActivity : ComponentActivity() {
                                 onBack = { navController.popBackStack() }
                             )
                         }
+                    }
                     }
                 }
             }

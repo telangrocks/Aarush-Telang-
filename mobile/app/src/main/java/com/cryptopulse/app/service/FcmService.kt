@@ -24,7 +24,6 @@ class FcmService : FirebaseMessagingService() {
     lateinit var fcmApi: com.cryptopulse.app.data.api.FcmApi
 
     override fun onNewToken(token: String) {
-        Log.d("FcmService", "New FCM token: $token")
         registerTokenWithBackend(token)
     }
 

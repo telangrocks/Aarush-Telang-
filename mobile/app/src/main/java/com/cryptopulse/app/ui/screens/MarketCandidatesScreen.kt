@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cryptopulse.app.data.api.MarketCandidateDto
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
+import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -57,6 +58,7 @@ fun MarketCandidatesScreen(
     viewModel: com.cryptopulse.app.ui.auth.ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val candidates by viewModel.candidates.collectAsState(initial = emptyList())
+    val candidatesError by viewModel.candidatesError.collectAsState(initial = null)
     val mappedCandidates = remember(candidates) { candidates.toScreenCandidates() }
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
@@ -78,22 +80,58 @@ fun MarketCandidatesScreen(
             containerColor = Color.Transparent,
         ) { padding ->
 
-            if (mappedCandidates.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                        .testTag("market_candidates_loading"),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = CyanPrimary)
-                        Spacer(Modifier.height(16.dp))
-                        Text("Analyzing market data...", color = TextSecondary, fontSize = 14.sp)
+                if (candidatesError != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding)
+                            .testTag("market_candidates_error"),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Default.WifiOff,
+                                contentDescription = null,
+                                tint = LossRed,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                candidatesError ?: "Failed to load market candidates.",
+                                color = TextSecondary,
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 32.dp)
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            GradientButton(
+                                text = "Retry",
+                                onClick = { viewModel.clearCandidatesError(); viewModel.fetchMarketCandidates() },
+                                leadingIcon = Icons.Default.Refresh,
+                                modifier = Modifier.fillMaxWidth(0.6f),
+                                testTag = "market_candidates_retry"
+                            )
+                        }
                     }
+                    return@Scaffold
                 }
-                return@Scaffold
-            }
+
+                if (mappedCandidates.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding)
+                            .testTag("market_candidates_loading"),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = CyanPrimary)
+                            Spacer(Modifier.height(16.dp))
+                            Text("Analyzing market data...", color = TextSecondary, fontSize = 14.sp)
+                        }
+                    }
+                    return@Scaffold
+                }
 
             LazyColumn(
                 modifier = Modifier
