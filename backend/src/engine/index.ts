@@ -5,3 +5,4 @@ export * from './interfaces/IStrategy';
 export * from './orchestrator/StrategyOrchestrator';
 export * from './state-machine/EngineStateMachine';
 export * from './market-data';
+export * from './indicator';
