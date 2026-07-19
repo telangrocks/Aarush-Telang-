@@ -9,3 +9,4 @@ export * from './indicator';
 export * from './condition';
 export * from './confidence';
 export * from './risk';
+export * from './signal';
