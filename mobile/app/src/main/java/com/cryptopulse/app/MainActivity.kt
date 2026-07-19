@@ -37,6 +37,7 @@ import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.screens.SplashScreen
 import com.cryptopulse.app.ui.screens.ConnectExchangeScreen
 import com.cryptopulse.app.ui.screens.MarketCandidatesScreen
+
 import com.cryptopulse.app.ui.screens.TradeSetupScreen
 import com.cryptopulse.app.ui.screens.UserOnboardingScreen
 import com.cryptopulse.app.ui.screens.WelcomeScreen
@@ -169,8 +170,8 @@ class MainActivity : FragmentActivity() {
                             TradeSetupScreen(
                                 candidate = candidate,
                                 onBack = { navController.popBackStack() },
-                                onProceedToConfirm = { entryPrice, stopLoss, takeProfit, positionSize ->
-                                    viewModel.setTradeSetup(entryPrice, stopLoss, takeProfit, positionSize)
+                                onProceedToConfirm = { entryPrice, stopLoss, takeProfit ->
+                                    viewModel.setTradeSetup(entryPrice, stopLoss, takeProfit)
                                     navController.navigate("strategy_selection")
                                 },
                                 viewModel = viewModel,
@@ -314,14 +315,12 @@ class MainActivity : FragmentActivity() {
                                 entryPrice = candidate.currentMarketPrice,
                                 stopLossPrice = candidate.currentMarketPrice * 0.99,
                                 takeProfitPrice = candidate.currentMarketPrice * 1.02,
-                                positionSize = 100.0,
                             )
                             LivePnLMonitoringScreen(
                                 candidate = candidate,
                                 entryPrice = setup.entryPrice,
                                 stopLossPrice = setup.stopLossPrice,
                                 takeProfitPrice = setup.takeProfitPrice,
-                                positionSize = setup.positionSize,
                                 onBack = { navController.popBackStack() },
                                 onNavigateToPositions = { navController.navigate("positions") },
                             )

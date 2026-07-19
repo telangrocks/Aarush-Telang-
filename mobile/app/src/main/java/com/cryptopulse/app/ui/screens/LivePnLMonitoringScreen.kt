@@ -44,7 +44,7 @@ fun LivePnLMonitoringScreen(
     entryPrice: Double,
     stopLossPrice: Double,
     takeProfitPrice: Double,
-    positionSize: Double,
+
     onBack: () -> Unit,
     onNavigateToPositions: () -> Unit = {},
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
@@ -52,7 +52,7 @@ fun LivePnLMonitoringScreen(
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
     var livePrice by remember { mutableDoubleStateOf(candidate.currentMarketPrice) }
-    var pnl by remember { mutableDoubleStateOf(0.0) }
+
     var pnlPercent by remember { mutableDoubleStateOf(0.0) }
     var lastUpdated by remember { mutableStateOf(System.currentTimeMillis()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -70,7 +70,6 @@ fun LivePnLMonitoringScreen(
                 val ticker = viewModel.ticker.value
                 if (ticker != null) {
                     livePrice = ticker.price
-                    pnl = (livePrice - entryPrice) / entryPrice * positionSize
                     pnlPercent = (livePrice - entryPrice) / entryPrice * 100
                     lastUpdated = System.currentTimeMillis()
                     isLoading = false
@@ -245,7 +244,7 @@ fun LivePnLMonitoringScreen(
                         SummaryRow("Entry Price", "${"%.2f".format(entryPrice)} USDT", CyanPrimary)
                         SummaryRow("Stop Loss", "${"%.2f".format(stopLossPrice)} USDT", LossRed)
                         SummaryRow("Take Profit", "${"%.2f".format(takeProfitPrice)} USDT", ProfitGreen)
-                        SummaryRow("Position Size", "${"%.2f".format(positionSize)} USDT", TextPrimary)
+                        SummaryRow("Position Size", "AUTO", TextPrimary)
 
                         Spacer(Modifier.height(10.dp))
                         Divider(color = NavyBorder, thickness = 0.5.dp)
@@ -260,7 +259,7 @@ fun LivePnLMonitoringScreen(
                                 Text("LIVE PRICE", color = TextMuted, fontSize = 10.sp, letterSpacing = 0.5.sp)
                                 Text(
                                     text = "$${"%.2f".format(livePrice)}",
-                                    color = if (pnl >= 0) ProfitGreen else LossRed,
+                                    color = if (pnlPercent >= 0) ProfitGreen else LossRed,
                                     fontSize = 18.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     modifier = Modifier.testTag("live_pnl_price"),
@@ -269,16 +268,10 @@ fun LivePnLMonitoringScreen(
                             Column(horizontalAlignment = Alignment.End) {
                                 Text("LIVE P&L", color = TextMuted, fontSize = 10.sp, letterSpacing = 0.5.sp)
                                 Text(
-                                    text = "${if (pnl >= 0) "+" else ""}${"%.2f".format(pnl)} USDT",
-                                    color = if (pnl >= 0) ProfitGreen else LossRed,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.testTag("live_pnl_value"),
-                                )
-                                Text(
                                     text = "${if (pnlPercent >= 0) "+" else ""}${"%.2f".format(pnlPercent)}%",
                                     color = if (pnlPercent >= 0) ProfitGreen else LossRed,
-                                    fontSize = 12.sp,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
                                     modifier = Modifier.testTag("live_pnl_percent"),
                                 )
                             }

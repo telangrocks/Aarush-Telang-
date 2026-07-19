@@ -336,7 +336,8 @@ export function evaluateStrategy(
   ind: IndicatorSet,
   strategyKey: string | null,
   atr: number,
-  positionSize: number,
+  riskAmount: number,
+  minNotional: number,
 ): StrategyEvaluation {
   const config = getStrategyConfig(strategyKey);
   const m = toMetrics(ticker);
@@ -381,6 +382,12 @@ export function evaluateStrategy(
     const atrMultiplier = atr > 0 ? atr : entry * 0.01;
     const stopLoss = ez.side === 'BUY' ? entry - (atrMultiplier * 1.0) : entry + (atrMultiplier * 1.0);
     const takeProfit = ez.side === 'BUY' ? entry + (atrMultiplier * 2.0) : entry - (atrMultiplier * 2.0);
+    
+    // Risk-based position sizing
+    const slDistancePct = (atrMultiplier * 1.0) / entry;
+    const calculatedPositionSize = slDistancePct > 0 ? riskAmount / slDistancePct : riskAmount * 10;
+    const positionSize = Math.max(calculatedPositionSize, minNotional);
+    
     const estimatedPnl = Math.abs((takeProfit - entry) / entry) * positionSize;
     opportunity = { symbol: ticker.symbol, entryPrice: entry, stopLoss, takeProfit, estimatedPnl, positionSize, side: ez.side };
   }
@@ -428,7 +435,7 @@ export class TradingBot {
         await this.state.storage.put('coinId', coinId);
         await this.state.storage.put('strategy', strategy);
         await this.state.storage.put('userId', userId);
-        await this.state.storage.put('positionSize', positionSize ?? 100);
+
         await this.state.storage.put('alerts', [] as TradeAlert[]);
         await this.state.storage.put('tradeActive', false);
         await this.state.storage.put(
@@ -557,6 +564,11 @@ export class TradingBot {
               const rawQty = target.positionSize > 0 && target.entryPrice > 0
                 ? target.positionSize / target.entryPrice
                 : undefined;
+                
+              if (target.positionSize < (ticker?.minNotional || 0)) {
+                throw new Error(`Order size ${target.positionSize} is below exchange minimum notional of ${ticker?.minNotional}`);
+              }
+              
               const qty = rawQty != null && ticker
                 ? normalizeQuantity(rawQty, ticker.lotSize, ticker.minOrderQty, ticker.maxOrderQty)
                 : rawQty;
@@ -712,9 +724,10 @@ export class TradingBot {
       const lows = klines.map((k: Kline) => k.low);
       const indicators = computeIndicators(closes);
       const atr = calculateAtr(highs, lows, closes, 14);
-      const positionSize = (await this.state.storage.get('positionSize')) as number || 100;
-
-      const evaluation = evaluateStrategy(ticker, indicators, strategy, atr, positionSize);
+      const minNotional = ticker.minNotional || 10;
+      const defaultRiskPerTrade = 10.0; // Default risk amount if not specified in user preferences
+      
+      const evaluation = evaluateStrategy(ticker, indicators, strategy, atr, defaultRiskPerTrade, minNotional);
       const m = toMetrics(ticker);
 
       // Build the real "scanning coins" row from a live market snapshot.

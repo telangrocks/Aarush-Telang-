@@ -51,7 +51,6 @@ data class TradeSetupState(
     val entryPrice: Double = 0.0,
     val stopLossPrice: Double = 0.0,
     val takeProfitPrice: Double = 0.0,
-    val positionSize: Double = 0.0,
 )
 
 @HiltViewModel
@@ -338,8 +337,8 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
-    fun setTradeSetup(entryPrice: Double, stopLoss: Double, takeProfit: Double, positionSize: Double) {
-        _tradeSetup.value = TradeSetupState(entryPrice, stopLoss, takeProfit, positionSize)
+    fun setTradeSetup(entryPrice: Double, stopLoss: Double, takeProfit: Double) {
+        _tradeSetup.value = TradeSetupState(entryPrice, stopLoss, takeProfit)
     }
 
     fun selectCandidate(candidate: MarketCandidate) {
@@ -510,12 +509,10 @@ class ExchangeViewModel @Inject constructor(
                             ?: tradeSetup?.stopLossPrice ?: entryPrice * 0.99
                         val takeProfit = (alert["takeProfit"] as? Double)
                             ?: tradeSetup?.takeProfitPrice ?: entryPrice * 1.02
-                        val positionSize = tradeSetup?.positionSize ?: 100.0
                         _lastTrade.value = TradeSetupState(
                             entryPrice = entryPrice,
                             stopLossPrice = stopLoss,
                             takeProfitPrice = takeProfit,
-                            positionSize = positionSize,
                         )
                     } else {
                         _tradeError.value = getUserFriendlyErrorMessage(response = response).first
@@ -529,8 +526,7 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
-    fun activateBot(symbol: String, strategy: String, positionSize: Double? = null) {
-        val size = positionSize ?: _tradeSetup.value?.positionSize
+    fun activateBot(symbol: String, strategy: String) {
         _botError.value = null
         viewModelScope.launch {
             try {
@@ -540,7 +536,6 @@ class ExchangeViewModel @Inject constructor(
                         ActivateBotRequest(
                             coinId = symbol,
                             strategy = strategy,
-                            positionSize = size,
                         )
                     )
                     if (!response.isSuccessful) {

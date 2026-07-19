@@ -13,13 +13,9 @@ describe('DeltaExchange Adapter Order & Leverage Enforcement', () => {
   });
 
   it('should explicitly set leverage to 1x before placing a market order', async () => {
-    const adapter = new DeltaExchange({
-      name: 'delta',
-      displayName: 'Delta Exchange India',
-      environment: 'testnet',
-      region: 'india',
-      baseUrl: 'https://cdn-ind.testnet.deltaex.org',
-    });
+    const adapter = new DeltaExchange();
+    adapter.setEnvironment('testnet');
+    adapter.setRegion('india');
 
     // 1. Mock fetch responses:
     // First, for getSymbolMetadata (it needs to load the metadata cache from products)

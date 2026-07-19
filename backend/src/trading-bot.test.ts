@@ -278,7 +278,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
         minNotional: 10, minOrderQty: 0.001, maxOrderQty: 1000, tickSize: 0.01, lotSize: 0.001
       };
       const indicators = { rsi: 25, macd: -5, macdSignal: -4, macdHistogram: -1 }; // Oversold
-      const evalResult = evaluateStrategy(tickerObj, indicators, "scalping", 1000, 100);
+      const evalResult = evaluateStrategy(tickerObj, indicators, "scalping", 1000, 10.0, tickerObj.minNotional);
 
       // Verify ATR-based SL/TP calculations
       expect(evalResult.opportunity).toBeDefined();

@@ -416,7 +416,7 @@ export async function handleGetTechnicalAnalysis(
     const indicators: IndicatorSet = computeIndicators(closes);
     const atr = calculateAtr(highs, lows, closes, 14);
     const metrics: Metrics = toMetrics(ticker);
-    const evaluation: StrategyEvaluation = evaluateStrategy(ticker, indicators, strategy, atr, 100);
+    const evaluation: StrategyEvaluation = evaluateStrategy(ticker, indicators, strategy, atr, 10.0, ticker.minNotional || 10);
 
     const signals = {
       trend: metrics.change24h > 0 ? "BULLISH" : metrics.change24h < 0 ? "BEARISH" : "NEUTRAL",
