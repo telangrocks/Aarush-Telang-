@@ -64,6 +64,10 @@ fun SplashScreen(
         label = "glow_radius"
     )
 
+    // Read the Compose context OUTSIDE the coroutine — composition locals
+    // (LocalContext) cannot be safely read from inside a LaunchedEffect block.
+    val context = LocalContext.current
+
     LaunchedEffect(Unit) {
         visible = true
         var token = tokenManager.getToken()
@@ -72,12 +76,14 @@ fun SplashScreen(
             token = null
         }
         if (!token.isNullOrEmpty()) {
-            val biometricAuthManager = BiometricAuthManager(LocalContext.current)
-            if (biometricAuthManager.isBiometricEnrolled()) {
+            val biometricAuthManager = BiometricAuthManager(context)
+            // Only attempt biometric auth if the host is a FragmentActivity,
+            // otherwise BiometricPrompt would throw a ClassCastException.
+            val fragmentActivity = context as? FragmentActivity
+            if (fragmentActivity != null && biometricAuthManager.isBiometricEnrolled()) {
                 try {
-                    val activity = LocalContext.current as FragmentActivity
                     val authenticated = biometricAuthManager.authenticate(
-                        activity = activity,
+                        activity = fragmentActivity,
                         title = "Biometric Authentication",
                         subtitle = "Verify your identity to continue"
                     )

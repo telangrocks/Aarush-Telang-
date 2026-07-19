@@ -45,8 +45,9 @@ fun WelcomeScreen(navController: NavController) {
     LaunchedEffect(Unit) {
         visible = true
         delay(2500)
-        navController.popBackStack()
-        navController.navigate("onboarding")
+        navController.navigate("onboarding") {
+            popUpTo("welcome") { inclusive = true }
+        }
     }
 
     Box(

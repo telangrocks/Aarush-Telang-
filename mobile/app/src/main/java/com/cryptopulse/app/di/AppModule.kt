@@ -13,16 +13,14 @@ import com.cryptopulse.app.data.api.TradingBotService
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import com.cryptopulse.app.data.repository.AuthRepository
+import com.cryptopulse.app.domain.model.AuthResult
+import dagger.Lazy
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Response
@@ -49,9 +47,8 @@ object AppModule {
 
     private class AuthInterceptor(
         private val tokenManager: TokenManager,
-        private val authRepository: AuthRepository
+        private val authRepositoryLazy: Lazy<AuthRepository>
     ) : Interceptor {
-        private val refreshScope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
         private var isRefreshing = false
         private val MAX_REFRESH_ATTEMPTS = 1
 
@@ -75,22 +72,24 @@ object AppModule {
                             var refreshSuccess = false
                             while (attempts < MAX_REFRESH_ATTEMPTS && !refreshSuccess) {
                                 attempts++
-                                val refreshed = refreshScope.launch {
-                                    val result = authRepository.refreshToken()
-                                    if (result.isSuccess) {
-                                        val newToken = tokenManager.tokenFlow.first()
-                                        if (!newToken.isNullOrEmpty()) {
-                                            val newRequest = chain.request().newBuilder()
-                                                .addHeader("Authorization", "Bearer $newToken")
-                                                .build()
-                                            response = chain.proceed(newRequest)
-                                            refreshSuccess = true
-                                        }
+                                // Interceptors run on OkHttp's blocking dispatcher, so we
+                                // synchronously wait for the suspend refresh to complete.
+                                // Resolve AuthRepository lazily to avoid a Hilt dependency
+                                // cycle (OkHttpClient -> AuthRepository -> Retrofit -> OkHttpClient).
+                                val result = runBlocking { authRepositoryLazy.get().refreshToken() }
+                                if (result is AuthResult.Success) {
+                                    val newToken = tokenManager.tokenFlow.value
+                                    if (!newToken.isNullOrEmpty()) {
+                                        val newRequest = chain.request().newBuilder()
+                                            .removeHeader("Authorization")
+                                            .addHeader("Authorization", "Bearer $newToken")
+                                            .build()
+                                        response = chain.proceed(newRequest)
+                                        refreshSuccess = true
                                     }
                                 }
-                                refreshed.join()
                                 if (!refreshSuccess && attempts < MAX_REFRESH_ATTEMPTS) {
-                                    delay(500)
+                                    Thread.sleep(500)
                                 }
                             }
                         } finally {
@@ -126,10 +125,10 @@ object AppModule {
                 retryCount++
                 if (retryCount < MAX_RETRIES) {
                     try {
-                        delay(INITIAL_DELAY_MS * retryCount)
+                        Thread.sleep(INITIAL_DELAY_MS * retryCount)
                     } catch (e: InterruptedException) {
                         Thread.currentThread().interrupt()
-                        throw e
+                        throw IOException("Retry interrupted", e)
                     }
                 }
             }
@@ -142,7 +141,7 @@ object AppModule {
     @Singleton
     fun provideOkHttpClient(
         tokenManager: TokenManager,
-        authRepository: AuthRepository
+        authRepository: Lazy<AuthRepository>
     ): OkHttpClient {
         return OkHttpClient.Builder()
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
