@@ -24,6 +24,7 @@ export interface PositionResult {
   entry_price: number;
   unrealized_pnl: number;
   margin?: number;
+  side: 'BUY' | 'SELL';
 }
 
 export interface PositionsResponse {

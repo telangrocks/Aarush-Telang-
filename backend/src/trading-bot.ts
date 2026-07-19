@@ -1,10 +1,10 @@
 import { Env } from './index';
-import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion, MarketTicker, normalizeQuantity } from './exchanges';
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion, MarketTicker, normalizeQuantity, IExchangeAdapter } from './exchanges';
 import { type Kline } from './exchanges/types';
 import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
 import { sendTradeNotification } from './handlers/notifications';
-import { StrategyOrchestrator, EngineState } from './engine';
+import { StrategyOrchestrator, EngineState, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe } from './engine';
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment,
@@ -417,6 +417,33 @@ function normalizeSymbol(symbol: string): string {
   return symbol.replace('/USDT', '').replace('USDT', '').toUpperCase();
 }
 
+/**
+ * AdapterCandleProvider acts as a bridge between the isolated MarketDataEngine
+ * and the legacy ExchangeAdapters.
+ */
+class AdapterCandleProvider implements ICandleProvider {
+  constructor(private adapter: IExchangeAdapter) {}
+
+  async fetchCandles(symbol: string, timeframe: Timeframe, limit: number = 100): Promise<NormalizedCandle[]> {
+    // We map internal timeframes (1m, 3m, 5m, 15m, 30m, 1h, 4h) directly 
+    // to the adapter's expected intervals. 
+    // The legacy `fetchKlines` expects interval as string.
+    const klines = await this.adapter.fetchKlines(symbol, timeframe, limit);
+    return klines.map((k: Kline) => ({
+      timestamp: k.openTime,
+      open: k.open,
+      high: k.high,
+      low: k.low,
+      close: k.close,
+      volume: k.volume
+    }));
+  }
+
+  async fetchTicker(symbol: string): Promise<MarketTicker | null> {
+    return this.adapter.fetchTicker(symbol);
+  }
+}
+
 export class TradingBot {
   state: DurableObjectState;
   env: Env;
@@ -462,6 +489,15 @@ export class TradingBot {
 
         // Feature: Sprint 1 Orchestrator Activation
         this.orchestrator = new StrategyOrchestrator(); // Reset on explicit activation
+        
+        const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
+        if (user?.exchange_name) {
+          const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
+          const provider = new AdapterCandleProvider(adapter);
+          const dataEngine = new MarketDataEngine(provider);
+          this.orchestrator.setMarketDataEngine(dataEngine);
+        }
+
         await this.state.storage.put('engineState', this.orchestrator.getCurrentState());
 
         // We no longer run the legacy runAnalysisCycle immediately on activate.
@@ -836,10 +872,25 @@ export class TradingBot {
 
       // Feature: Sprint 1 Strategy Orchestrator Evaluation Cycle
       try {
-        const results = await this.orchestrator.executeCycle();
-        await this.state.storage.put('engineState', this.orchestrator.getCurrentState());
-        // Note: For Sprint 1, we just execute the FSM and save the state. 
-        // We will bridge the results to the UI in Sprint 9.
+        const coinId = await this.state.storage.get('coinId') as string;
+        const userId = await this.state.storage.get('userId') as string;
+        
+        if (coinId && userId) {
+            // Re-instantiate MarketDataEngine on each alarm to grab latest adapter
+            // (since DO memory might wipe the adapter, or we just want fresh stateless bindings)
+            const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
+            if (user?.exchange_name) {
+              const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
+              const provider = new AdapterCandleProvider(adapter);
+              const dataEngine = new MarketDataEngine(provider);
+              this.orchestrator.setMarketDataEngine(dataEngine);
+            }
+
+            const results = await this.orchestrator.executeCycle(coinId);
+            await this.state.storage.put('engineState', this.orchestrator.getCurrentState());
+            // Note: For Sprint 1, we just execute the FSM and save the state. 
+            // We will bridge the results to the UI in Sprint 9.
+        }
       } catch (err) {
         console.error('Orchestrator cycle failed:', err);
       }

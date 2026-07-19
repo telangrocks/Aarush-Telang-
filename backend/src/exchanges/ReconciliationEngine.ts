@@ -1,5 +1,5 @@
 import { Env } from '../index';
-import { BaseExchange, PositionResult, OrderResult } from './BaseExchange';
+import { IExchangeAdapter, PositionResult, OrderResult } from './BaseExchange';
 
 export interface RecoveryTransaction {
   id: string; // usually clientOrderId or position id
@@ -16,14 +16,14 @@ export class ReconciliationEngine {
   private stateStorage: DurableObjectStorage;
   private env: Env;
   private userId: string;
-  private adapter: BaseExchange;
+  private adapter: IExchangeAdapter;
   private userKeys: any;
 
   // Limits
   private readonly MAX_ATTEMPTS = 5;
   private readonly RECOVERY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour timeout for stuck recoveries
 
-  constructor(stateStorage: DurableObjectStorage, env: Env, userId: string, adapter: BaseExchange, userKeys: any) {
+  constructor(stateStorage: DurableObjectStorage, env: Env, userId: string, adapter: IExchangeAdapter, userKeys: any) {
     this.stateStorage = stateStorage;
     this.env = env;
     this.userId = userId;
@@ -105,7 +105,7 @@ export class ReconciliationEngine {
               firstDetectedAt: Date.now(),
               data: exPos
             });
-            await this.logDecision('ORPHANED_POSITION_DETECTED', { symbol: exPos.symbol, size: exPos.size, entryPrice: exPos.entryPrice });
+            await this.logDecision('ORPHANED_POSITION_DETECTED', { symbol: exPos.symbol, size: exPos.size, entry_price: exPos.entry_price });
           }
         }
       }
