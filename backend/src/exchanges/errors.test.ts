@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   classifyBinanceCode,
   classifyBybitCode,
+  classifyDeltaCode,
   classifyByBodyText,
   classifyExchangeResponse,
 } from "./errors";
@@ -160,3 +161,39 @@ describe("Bybit structured error retCode classification", () => {
     expect(err.code).toBe("INVALID_API_KEY");
   });
 });
+
+describe("Delta Exchange structured error code classification", () => {
+  it("maps invalid_api_key to INVALID_API_KEY", () => {
+    const err = classifyDeltaCode(
+      '{"success":false,"error":{"code":"invalid_api_key","message":"Invalid API Key"}}',
+      'exchange=delta status=401 body={"success":false,"error":{"code":"invalid_api_key"}}',
+    );
+    expect(err?.code).toBe("INVALID_API_KEY");
+  });
+
+  it("maps signature_invalid to INVALID_SIGNATURE", () => {
+    const err = classifyDeltaCode(
+      '{"success":false,"error":{"code":"signature_invalid","message":"Invalid signature"}}',
+      'exchange=delta status=401 body={"success":false,"error":{"code":"signature_invalid"}}',
+    );
+    expect(err?.code).toBe("INVALID_SIGNATURE");
+  });
+
+  it("maps rate_limit_exceeded to API_RATE_LIMIT_REACHED", () => {
+    const err = classifyDeltaCode(
+      '{"success":false,"error":{"code":"rate_limit_exceeded","message":"Too many requests"}}',
+      'exchange=delta status=429 body={"success":false,"error":{"code":"rate_limit_exceeded"}}',
+    );
+    expect(err?.code).toBe("API_RATE_LIMIT_REACHED");
+  });
+
+  it("classifyExchangeResponse resolves Delta code on a 400/401", () => {
+    const err = classifyExchangeResponse(
+      400,
+      '{"success":false,"error":{"code":"invalid_api_key","message":"Invalid API Key"}}',
+      "delta",
+    );
+    expect(err.code).toBe("INVALID_API_KEY");
+  });
+});
+

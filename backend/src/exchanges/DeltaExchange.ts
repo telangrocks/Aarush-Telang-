@@ -58,7 +58,7 @@ export class DeltaExchange implements IExchangeAdapter {
     },
     regionTestnetUrls: {
       global: "https://api-testnet.delta.exchange",
-      india: "https://api-staging.india.delta.exchange",
+      india: "https://cdn-ind.testnet.deltaex.org",
     },
   };
 

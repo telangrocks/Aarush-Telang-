@@ -194,7 +194,8 @@ export function classifyExchangeResponse(
   // to generic auth failure.
   const structured =
     classifyBinanceCode(bodyText, technicalDetail) ??
-    classifyBybitCode(bodyText, technicalDetail);
+    classifyBybitCode(bodyText, technicalDetail) ??
+    classifyDeltaCode(bodyText, technicalDetail);
   if (structured) return structured;
   if (status === 401 || status === 403) {
     return mk("AUTHENTICATION_FAILED", technicalDetail, lower);
@@ -313,6 +314,44 @@ export function classifyBybitCode(
 }
 
 /**
+ * Map Delta Exchange's structured error `code` inside the `error` object.
+ * Delta returns errors as `{"success": false, "error": {"code": "...", "message": "..."}}`.
+ */
+export function classifyDeltaCode(
+  bodyText: string,
+  technicalDetail: string,
+): ClassifiedError | null {
+  let errCode: string | undefined;
+  try {
+    const parsed = JSON.parse(bodyText) as { error?: { code?: string } };
+    if (parsed?.error?.code) {
+      errCode = parsed.error.code.toLowerCase();
+    }
+  } catch {
+    return null;
+  }
+  if (!errCode) return null;
+
+  const byCode: Record<string, ExchangeErrorCode> = {
+    "invalid_api_key": "INVALID_API_KEY",
+    "api_key_invalid": "INVALID_API_KEY",
+    "signature_invalid": "INVALID_SIGNATURE",
+    "signatureexpired": "INVALID_SIGNATURE",
+    "timestamp_invalid": "TIMESTAMP_OUT_OF_SYNC",
+    "timestamp_expired": "TIMESTAMP_OUT_OF_SYNC",
+    "unauthorized": "INSUFFICIENT_PERMISSIONS",
+    "insufficient_permissions": "INSUFFICIENT_PERMISSIONS",
+    "rate_limit_exceeded": "API_RATE_LIMIT_REACHED",
+    "maintenance": "EXCHANGE_UNDER_MAINTENANCE",
+    "ip_restricted": "IP_NOT_WHITELISTED",
+  };
+
+  const mapped = byCode[errCode];
+  if (mapped) return mk(mapped, technicalDetail, `delta code ${errCode}`);
+  return null;
+}
+
+/**
  * Classify based on the human-readable error text returned by the exchange.
  * Covers Binance, Delta Exchange and Bybit message conventions.
  */
@@ -327,7 +366,8 @@ export function classifyByBodyText(
   const bodyRaw = technicalDetail.split("body=")[1] ?? "";
   const structured =
     classifyBinanceCode(bodyRaw, technicalDetail) ??
-    classifyBybitCode(bodyRaw, technicalDetail);
+    classifyBybitCode(bodyRaw, technicalDetail) ??
+    classifyDeltaCode(bodyRaw, technicalDetail);
   if (structured) return structured;
   // IP allow-list / restriction
   if (

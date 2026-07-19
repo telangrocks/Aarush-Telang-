@@ -16,6 +16,26 @@ vi.mock("./exchanges", () => ({
   SUPPORTED_EXCHANGES: [],
 }));
 
+beforeEach(() => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+    const urlStr = typeof url === "string" ? url : (url as any).url || "";
+    if (urlStr.includes("resend.com")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: "mock-email-id" }),
+        text: async () => JSON.stringify({ id: "mock-email-id" }),
+      } as Response;
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      text: async () => "",
+    } as Response;
+  });
+});
+
 function createStatementForQuery(query: string) {
   if (query === "SELECT id, status FROM users WHERE email = ?") {
     return {

@@ -87,7 +87,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       expect(globalTestnet.getRestUrl()).toBe("https://api-testnet.delta.exchange");
 
       const indiaTestnet = getExchangeAdapter("delta", "testnet", "india");
-      expect(indiaTestnet.getRestUrl()).toBe("https://api-staging.india.delta.exchange");
+      expect(indiaTestnet.getRestUrl()).toBe("https://cdn-ind.testnet.deltaex.org");
     });
   });
 
