@@ -4,6 +4,7 @@ import { type Kline } from './exchanges/types';
 import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
 import { sendTradeNotification } from './handlers/notifications';
+import { StrategyOrchestrator, EngineState } from './engine';
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment,
@@ -420,10 +421,12 @@ export class TradingBot {
   state: DurableObjectState;
   env: Env;
   private isExecutingTrade = false;
+  private orchestrator: StrategyOrchestrator;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+    this.orchestrator = new StrategyOrchestrator();
     
     // Feature 5: DO Recovery
     // Reconstruct memory state from durable storage safely
@@ -457,10 +460,15 @@ export class TradingBot {
         await this.state.storage.put('activatedAt', Date.now());
         await this.state.storage.delete('lastPositionCheckAt');
 
-        // Run the first real analysis immediately so the UI is never empty.
-        await this.runAnalysisCycle();
+        // Feature: Sprint 1 Orchestrator Activation
+        this.orchestrator = new StrategyOrchestrator(); // Reset on explicit activation
+        await this.state.storage.put('engineState', this.orchestrator.getCurrentState());
 
-        await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS);
+        // We no longer run the legacy runAnalysisCycle immediately on activate.
+        // We just start the alarm which drives the FSM.
+
+        await this.state.storage.setAlarm(Date.now() + 1000); // Trigger FSM almost immediately
+
         return new Response(JSON.stringify({ success: true, message: 'Bot activated.' }), { status: 200 });
       }
       case '/deactivate': {
@@ -826,7 +834,17 @@ export class TradingBot {
          }
       }
 
-      // Every analysis cycle produces the real data the UI visualizes.
+      // Feature: Sprint 1 Strategy Orchestrator Evaluation Cycle
+      try {
+        const results = await this.orchestrator.executeCycle();
+        await this.state.storage.put('engineState', this.orchestrator.getCurrentState());
+        // Note: For Sprint 1, we just execute the FSM and save the state. 
+        // We will bridge the results to the UI in Sprint 9.
+      } catch (err) {
+        console.error('Orchestrator cycle failed:', err);
+      }
+      
+      // Fallback: Run legacy analysis cycle so UI doesn't break during migration
       await this.runAnalysisCycle();
 
       const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;
