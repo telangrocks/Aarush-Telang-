@@ -493,10 +493,7 @@ export class TradingBot {
         // Feature: Sprint 1 Orchestrator Activation
         this.orchestrator = new StrategyOrchestrator(); // Reset on explicit activation
         
-        // Phase 1 Integration: Register selected strategy
-        if (strategy === 'ScalperV2') {
-          this.orchestrator.registerStrategy('ScalperV2', new ScalperV2Strategy());
-        }
+        // Phase 1 Integration: Strategy is selected from registry implicitly via strategyId
         
         const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
         if (user?.exchange_name) {

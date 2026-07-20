@@ -5,10 +5,10 @@ import { IStrategy } from '../interfaces/IStrategy';
 import { EvaluationResult } from '../dto/EvaluationResult';
 import { MarketDataEngine } from '../market-data/MarketDataEngine';
 import { Timeframe } from '../market-data/Timeframe';
+import { StrategyRegistry } from '../strategies/StrategyRegistry';
 
 export class StrategyOrchestrator {
   private stateMachine: EngineStateMachine;
-  private registeredStrategies: Map<string, IStrategy> = new Map();
   private marketDataEngine: MarketDataEngine | null = null;
   private requiredTimeframes: Timeframe[] = ['5m', '15m', '1h']; // Configurable based on strategies later
 
@@ -18,10 +18,6 @@ export class StrategyOrchestrator {
 
   public setMarketDataEngine(engine: MarketDataEngine): void {
     this.marketDataEngine = engine;
-  }
-
-  public registerStrategy(id: string, strategy: IStrategy): void {
-    this.registeredStrategies.set(id, strategy);
   }
 
   public async executeCycle(symbol: string, strategyId?: string): Promise<EvaluationResult[]> {
@@ -43,14 +39,28 @@ export class StrategyOrchestrator {
       const frozenContext = context.freeze();
 
       const results: EvaluationResult[] = [];
-      for (const [id, strategy] of this.registeredStrategies) {
-        if (strategyId && id !== strategyId) continue;
-        console.log(`[Orchestrator] Evaluating strategy: ${id}`);
-        try {
-            const result = strategy.evaluate(frozenContext);
-            results.push(result);
-        } catch (e) {
-            console.error(`[Orchestrator] Strategy ${id} evaluation failed`, e);
+      const registry = StrategyRegistry.getInstance();
+      
+      if (strategyId) {
+        const strategy = registry.getStrategy(strategyId);
+        if (strategy) {
+          console.log(`[Orchestrator] Evaluating strategy: ${strategyId}`);
+          try {
+              const result = strategy.evaluate(frozenContext);
+              results.push(result);
+          } catch (e) {
+              console.error(`[Orchestrator] Strategy ${strategyId} evaluation failed`, e);
+          }
+        }
+      } else {
+        for (const [id, strategy] of registry.getAllStrategies()) {
+          console.log(`[Orchestrator] Evaluating strategy: ${id}`);
+          try {
+              const result = strategy.evaluate(frozenContext);
+              results.push(result);
+          } catch (e) {
+              console.error(`[Orchestrator] Strategy ${id} evaluation failed`, e);
+          }
         }
       }
 
