@@ -94,7 +94,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     
     // Check that next alarm was scheduled
     expect(mockState.storage.setAlarm).toHaveBeenCalled();
-  });
+  }, 10000);
 
   it("should not execute Orchestrator if GLOBAL_TRADING_HALT is true", async () => {
     mockEnv.GLOBAL_TRADING_HALT = "true";

@@ -7,7 +7,9 @@ export default defineConfig({
     include: [
       "src/**/*.test.ts", 
       "tests/api/**/*.test.ts", 
-      "tests/durable-object/trading-bot.test.ts"
+      "tests/durable-object/trading-bot.test.ts",
+      "tests/stress/**/*.test.ts",
+      "tests/reliability/**/*.test.ts"
     ],
     exclude: ["dist/**", "node_modules/**"],
     coverage: {
