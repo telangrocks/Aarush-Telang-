@@ -41,6 +41,9 @@ const POSITION_CHECK_INTERVAL_MS = 60_000;
 interface TradeAlert {
   id: string;
   symbol: string;
+  signalPrice: number;
+  targetEntryPrice?: number;
+  /** @deprecated Retained for v1.0 backward compatibility */
   entryPrice: number;
   stopLoss: number;
   takeProfit: number;
@@ -471,13 +474,18 @@ export class TradingBot {
 
     switch (url.pathname) {
       case '/activate': {
-        const { userId, coinId, strategy, positionSize } = await request.json<{ userId: string; coinId: string; strategy: string; positionSize?: number }>();
+        const { userId, coinId, strategy, positionSize, targetEntryPrice } = await request.json<{ userId: string; coinId: string; strategy: string; positionSize?: number; targetEntryPrice?: number }>();
         
-        await this.logAuditEvent(userId, 'BOT_ACTIVATED', { strategy, coinId, positionSize });
+        await this.logAuditEvent(userId, 'BOT_ACTIVATED', { strategy, coinId, positionSize, targetEntryPrice });
         await this.state.storage.put('isActive', true);
         await this.state.storage.put('coinId', coinId);
         await this.state.storage.put('strategy', strategy);
         await this.state.storage.put('userId', userId);
+        if (targetEntryPrice != null) {
+          await this.state.storage.put('targetEntryPrice', targetEntryPrice);
+        } else {
+          await this.state.storage.delete('targetEntryPrice');
+        }
 
         await this.state.storage.put('alerts', [] as TradeAlert[]);
         await this.state.storage.put('tradeActive', false);
@@ -921,12 +929,18 @@ export class TradingBot {
                   // For now, use min size just to test execution flow
                   const size = 100; // Mocked size, real sizing will use risk engine output
                   
+                  const targetEntryPrice = (await this.state.storage.get('targetEntryPrice')) as number | undefined;
+                  const alertSignalPrice = sig.signalPrice || sig.entryPrice || price;
+                  const alertTargetPrice = targetEntryPrice || sig.targetEntryPrice || alertSignalPrice;
+
                   const alert: TradeAlert = {
                     id: crypto.randomUUID(),
                     symbol: coinId,
-                    entryPrice: price,
-                    stopLoss: sig.stopLoss || price * 0.99,
-                    takeProfit: sig.takeProfit || price * 1.01,
+                    signalPrice: alertSignalPrice,
+                    targetEntryPrice: alertTargetPrice,
+                    entryPrice: alertSignalPrice,
+                    stopLoss: sig.stopLoss || alertSignalPrice * 0.99,
+                    takeProfit: sig.takeProfit || alertSignalPrice * 1.01,
                     estimatedPnl: 0,
                     positionSize: size,
                     strategy: `${strategy}_NEW`,

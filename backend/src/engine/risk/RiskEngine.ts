@@ -9,6 +9,7 @@ export interface RiskContext {
   currentPrice: number;
   currentAtr: number;
   accountBalance: number;
+  targetEntryPrice?: number | null;
 }
 
 export class RiskEngine {
@@ -16,6 +17,11 @@ export class RiskEngine {
 
   public evaluate(context: RiskContext): RiskAssessment {
     const explanation: string[] = [];
+
+    if (context.targetEntryPrice != null && context.targetEntryPrice > 0) {
+      const slippagePercent = Math.abs(context.currentPrice - context.targetEntryPrice) / context.targetEntryPrice * 100;
+      explanation.push(`Target entry price: ${context.targetEntryPrice.toFixed(2)} (Slippage: ${slippagePercent.toFixed(2)}%).`);
+    }
 
     // Calculate Stop Loss
     const stopLossDistance = StopLossCalculator.calculateDistance(context.currentAtr, this.config);

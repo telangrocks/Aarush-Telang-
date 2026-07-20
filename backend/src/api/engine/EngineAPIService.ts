@@ -55,11 +55,15 @@ export class EngineAPIService {
       confidenceExplanation: result && result.metadata ? result.metadata.reasoning : []
     };
 
+    const sig = result && result.metadata && result.metadata.signal ? result.metadata.signal : null;
+
     const tradingSignal: SignalDTO = {
-      type: result && result.metadata && result.metadata.signal ? result.metadata.signal.type : 'HOLD',
-      entryContext: result && result.metadata && result.metadata.signal ? JSON.stringify(result.metadata.signal.entryContext) : '',
-      stopLoss: result && result.metadata && result.metadata.signal ? result.metadata.signal.stopLoss : null,
-      takeProfit: result && result.metadata && result.metadata.signal ? result.metadata.signal.takeProfit : null,
+      type: sig ? sig.type : 'HOLD',
+      entryContext: sig ? JSON.stringify(sig.entryContext || '') : '',
+      signalPrice: sig ? (sig.signalPrice ?? sig.entryPrice ?? null) : null,
+      targetEntryPrice: sig ? (sig.targetEntryPrice ?? null) : null,
+      stopLoss: sig ? sig.stopLoss : null,
+      takeProfit: sig ? sig.takeProfit : null,
       riskClassification: result && result.metadata && result.metadata.riskAssessment ? result.metadata.riskAssessment.classification : 'UNKNOWN',
       reasoning: result && result.metadata ? result.metadata.reasoning : []
     };

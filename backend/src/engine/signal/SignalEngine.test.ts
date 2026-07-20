@@ -62,6 +62,7 @@ describe('SignalEngine', () => {
     const signal = engine.evaluate(context, conditionResultBase, confidenceScore, riskAssessment);
 
     expect(signal.type).toBe(SignalType.BUY);
+    expect(signal.signalPrice).toBe(50000);
     expect(signal.entryPrice).toBe(50000);
     expect(signal.stopLoss).toBe(49500); // 50000 - 500
     expect(signal.takeProfit).toBe(51000); // 50000 + 1000

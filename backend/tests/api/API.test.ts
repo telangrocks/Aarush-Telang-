@@ -125,4 +125,17 @@ describe('Android API Contracts', () => {
     expect(parsed.engineStatus.state).toBe('EVALUATING');
     expect(parsed.tradingSignal.type).toBe('HOLD');
   });
+
+  it('should support targetEntryPrice in bot activation payload', () => {
+    const payload = {
+      coinId: 'BTC/USDT',
+      strategy: 'ScalperV2',
+      positionSize: 1000,
+      targetEntryPrice: 50000.0
+    };
+    const json = JSON.stringify(payload);
+    const parsed = JSON.parse(json);
+
+    expect(parsed.targetEntryPrice).toBe(50000.0);
+  });
 });

@@ -247,17 +247,18 @@ export async function handleGetPersonalizedMarketCandidates(
   }
 }
 
+import { StrategyRegistry } from "../engine/strategies/StrategyRegistry";
+
 export async function handleGetStrategies(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
-  const strategies = [
-    { id: "scalping", name: "Scalping", description: "Quick in-and-out trades capturing small price movements" },
-    { id: "momentum", name: "Momentum Trading", description: "Ride strong price trends with volume confirmation" },
-    { id: "breakout", name: "Breakout Strategy", description: "Enter on price breaks above resistance or below support" },
-    { id: "mean_reversion", name: "Mean Reversion", description: "Trade price extremes expecting return to average" },
-    { id: "vwap", name: "VWAP Strategy", description: "Trade around the Volume Weighted Average Price" },
-  ];
-  return c.json(strategies);
+  const manifests = StrategyRegistry.getInstance().getAllManifests();
+  const response: import('../api/engine/StrategyManifestDTO').StrategyDiscoveryResponseDTO = {
+    version: '2.0',
+    count: manifests.length,
+    strategies: manifests
+  };
+  return c.json(response);
 }
 
 export async function handleGetTicker(
@@ -462,7 +463,7 @@ export async function handleActivateTradingBot(
   try {
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
-    const { coinId, strategy, positionSize } = await c.req.json<{ coinId: string; strategy: string; positionSize?: number }>();
+    const { coinId, strategy, positionSize, targetEntryPrice } = await c.req.json<{ coinId: string; strategy: string; positionSize?: number; targetEntryPrice?: number }>();
 
     const botId = c.env.TRADING_BOTS.idFromName(userId);
     const bot = c.env.TRADING_BOTS.get(botId);
@@ -471,7 +472,7 @@ export async function handleActivateTradingBot(
       new Request("http://bot/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, coinId, strategy, positionSize }),
+        body: JSON.stringify({ userId, coinId, strategy, positionSize, targetEntryPrice }),
       }),
     );
 
