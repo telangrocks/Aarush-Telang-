@@ -5,7 +5,7 @@ import {
   classifyDeltaCode,
   classifyByBodyText,
   classifyExchangeResponse,
-} from "./errors";
+} from "../../src/exchanges/errors";
 
 const detail = (body: string, exchange = "binance") =>
   `exchange=${exchange} status=401 body=${body}`;

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getExchangeAdapter, normalizeQuantity } from "./exchanges";
-import { TradingBot } from "./trading-bot";
+import { getExchangeAdapter, normalizeQuantity } from "../../src/exchanges";
+import { TradingBot } from "../../src/trading-bot";
 import { DeltaExchange } from "./exchanges/DeltaExchange";
-import { Env } from "./index";
+import { Env } from "../../src/index";
 
 describe("Phase 1 Production Readiness Validation", () => {
   let mockStorage: any;

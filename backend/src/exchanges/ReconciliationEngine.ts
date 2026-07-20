@@ -87,9 +87,9 @@ export class ReconciliationEngine {
     for (const exPos of exchangePositions) {
       if (exPos.size > 0) {
         const isKnown = knownPositions.find(p => exPos.symbol.includes(p.symbol) && (
-            (exPos.side === 'long' && p.side === 'BUY') || 
-            (exPos.side === 'short' && p.side === 'SELL') ||
-            (exPos.side === 'both') // spot or one-way mode
+            (exPos.side as any === 'long' && p.side === 'BUY') || 
+            (exPos.side as any === 'short' && p.side === 'SELL') ||
+            (exPos.side as any === 'both') // spot or one-way mode
         ));
 
         if (!isKnown) {
@@ -113,8 +113,8 @@ export class ReconciliationEngine {
 
     // 3.5 Identify Orphaned Orders
     let exchangeOrders: any[] = [];
-    if (this.adapter.fetchOpenOrders) {
-       const ordRes = await this.adapter.fetchOpenOrders(this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
+    if ((this.adapter as any).fetchOpenOrders) {
+       const ordRes = await (this.adapter as any).fetchOpenOrders(this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
        if (ordRes.success) exchangeOrders = ordRes.result;
     }
     
@@ -234,8 +234,8 @@ export class ReconciliationEngine {
         }
       } else if (tx.type === 'ORDER') {
         try {
-          if (this.adapter.cancelOrder) {
-             const res = await this.adapter.cancelOrder(tx.symbol, tx.data.id, this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
+          if ((this.adapter as any).cancelOrder) {
+             const res = await (this.adapter as any).cancelOrder(tx.symbol, tx.id.replace('ord_', ''), this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
              if (res.success) {
                tx.status = 'RECOVERY_COMPLETED';
                await this.logDecision('RECOVERY_COMPLETED', { txId: tx.id, symbol: tx.symbol, action: 'CANCELLED' });
@@ -253,7 +253,7 @@ export class ReconciliationEngine {
   private async validatePositionConfidence(exPos: PositionResult): Promise<boolean> {
     // strict validation rules
     if (!exPos || exPos.size <= 0) return false;
-    if (exPos.entryPrice <= 0) return false;
+    if ((exPos as any).entryPrice <= 0) return false;
     // In a real production system, we would validate max leverage, max loss, etc.
     // Here we ensure it has a valid symbol and size, and leverage is not insane.
     if ((exPos as any).leverage && (exPos as any).leverage > 20) return false; 

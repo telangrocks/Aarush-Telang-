@@ -1,4 +1,4 @@
-import { CircuitBreaker } from "../exchanges/CircuitBreaker";
+import { CircuitBreaker } from "../../src/exchanges/CircuitBreaker";
 
 async function runTest() {
   console.log("Starting Circuit Breaker Test...");

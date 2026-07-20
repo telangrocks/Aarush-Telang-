@@ -1,4 +1,4 @@
-import { getExchangeAdapter } from "../exchanges";
+import { getExchangeAdapter } from "../../src/exchanges";
 import { DeltaExchange } from "../exchanges/DeltaExchange";
 import { randomUUID } from "crypto";
 import * as dotenv from "dotenv";
@@ -33,10 +33,10 @@ async function runTestnetValidation() {
     console.log(`\n2. Fetching Live Ticker and Metadata for ${symbol}...`);
     const ticker = await adapter.fetchTicker(symbol);
     if (!ticker) throw new Error("Ticker fetch failed");
-    console.log(`✅ Live Ticker: Price=${ticker.lastPrice}`);
+    console.log(`✅ Live Ticker: Price=${ticker.price}`);
     
     // We expect the bot to trade a small amount
-    const qty = ticker.minNotional ? (ticker.minNotional / ticker.lastPrice) * 1.5 : 0.005;
+    const qty = ticker.minNotional ? (ticker.minNotional / ticker.price) * 1.5 : 0.005;
     console.log(`✅ Precision Rounding/Lot Size Calculation: Raw Qty=${qty}`);
 
     console.log(`\n3. Order Submission & clientOrderId Verification...`);

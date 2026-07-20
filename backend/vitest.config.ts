@@ -4,7 +4,11 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: [
+      "src/**/*.test.ts", 
+      "tests/api/**/*.test.ts", 
+      "tests/durable-object/trading-bot.test.ts"
+    ],
     exclude: ["dist/**", "node_modules/**"],
     coverage: {
       provider: "v8",

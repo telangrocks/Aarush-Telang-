@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import worker from "./index";
-import { Env } from "./index";
+import worker from "../../src/index";
+import { Env } from "../../src/index";
 import { sign } from "hono/jwt";
-import { hashPassword } from "./handlers/auth";
+import { hashPassword } from "../../src/handlers/auth";
 
 declare const global: typeof globalThis;
 
-vi.mock("./exchanges", () => ({
+vi.mock("../../src/exchanges", () => ({
   getExchangeAdapter: () => ({
     validateCredentials: vi.fn().mockResolvedValue({ success: true, message: "OK" }),
     fetchMarketData: vi.fn().mockResolvedValue([]),

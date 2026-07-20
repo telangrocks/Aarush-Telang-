@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getExchangeAdapter } from "../exchanges";
+import { getExchangeAdapter } from "../../src/exchanges";
 import { DeltaExchange } from "../exchanges/DeltaExchange";
 
 
