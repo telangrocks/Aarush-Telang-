@@ -10,7 +10,28 @@ import { ConfidenceEngine } from '../../confidence/ConfidenceEngine';
 import { RiskEngine, RiskContext } from '../../risk';
 import { SignalEngine, SignalContext, SignalType } from '../../signal';
 
+import { StrategyManifest } from '../StrategyManifest';
+
 export class MomentumStrategy implements IStrategy {
+  public readonly manifest: StrategyManifest = {
+    id: MOMENTUM_STRATEGY_MANIFEST.id,
+    displayName: MOMENTUM_STRATEGY_MANIFEST.name,
+    description: MOMENTUM_STRATEGY_MANIFEST.description,
+    version: MOMENTUM_STRATEGY_MANIFEST.version,
+    category: MOMENTUM_STRATEGY_MANIFEST.classification,
+    riskProfile: MOMENTUM_STRATEGY_MANIFEST.riskProfile,
+    supportedMarkets: ['CRYPTO'],
+    supportedTimeframes: MOMENTUM_STRATEGY_MANIFEST.supportedTimeframes as any,
+    minimumCandles: 200,
+    defaultConfiguration: DEFAULT_MOMENTUM_CONFIG,
+    supportsLong: true,
+    supportsShort: false,
+    supportsPaperTrading: true,
+    supportsLiveTrading: true,
+    status: 'ACTIVE',
+    author: MOMENTUM_STRATEGY_MANIFEST.author
+  };
+
   private indicatorEngine: IndicatorEngine;
   private conditionEngine: ConditionEngine;
   private confidenceEngine: ConfidenceEngine;

@@ -1,7 +1,42 @@
 import { describe, it, expect } from 'vitest';
-import { EngineStatusDTO, MarketAnalysisDTO, SignalDTO, AndroidIntegrationContract } from './index';
+import { EngineStatusDTO, MarketAnalysisDTO, SignalDTO, AndroidIntegrationContract, StrategyDiscoveryResponseDTO } from './index';
 
 describe('Android API Contracts', () => {
+  it('should successfully serialize StrategyDiscoveryResponseDTO', () => {
+    const dto: StrategyDiscoveryResponseDTO = {
+      version: '2.0',
+      count: 1,
+      strategies: [
+        {
+          id: 'TestStrategy',
+          displayName: 'Test',
+          description: 'A test strategy',
+          version: '1.0.0',
+          category: 'Test',
+          riskProfile: 'Low',
+          supportedMarkets: ['CRYPTO'],
+          supportedTimeframes: ['5m'],
+          minimumCandles: 10,
+          defaultConfiguration: {},
+          supportsLong: true,
+          supportsShort: false,
+          supportsPaperTrading: true,
+          supportsLiveTrading: false,
+          status: 'EXPERIMENTAL',
+          author: 'Test'
+        }
+      ]
+    };
+
+    const json = JSON.stringify(dto);
+    const parsed = JSON.parse(json) as StrategyDiscoveryResponseDTO;
+
+    expect(parsed.version).toBe('2.0');
+    expect(parsed.count).toBe(1);
+    expect(parsed.strategies[0].id).toBe('TestStrategy');
+    expect(parsed.strategies[0].status).toBe('EXPERIMENTAL');
+  });
+
   it('should successfully serialize EngineStatusDTO', () => {
     const dto: EngineStatusDTO = {
       state: 'EVALUATING',

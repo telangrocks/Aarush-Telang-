@@ -7,6 +7,7 @@ import { sendTradeNotification } from './handlers/notifications';
 import { StrategyOrchestrator, EngineState, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe } from './engine';
 import { ScalperV2Strategy } from './engine/strategies/scalper-v2/ScalperV2Strategy';
 import { EngineAPIService } from './api/engine';
+import { StrategyRegistry } from './engine/strategies/StrategyRegistry';
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment,
  * defaulting to "mainnet" unless "testnet" is explicitly stored.
@@ -563,6 +564,15 @@ export class TradingBot {
              return new Response(JSON.stringify(newAnalysis), { status: 200 });
           }
           return new Response(JSON.stringify({ error: "No new engine analysis available yet." }), { status: 404 });
+      }
+      case '/strategies': {
+        const manifests = StrategyRegistry.getInstance().getAllManifests();
+        const response: import('./api/engine/StrategyManifestDTO').StrategyDiscoveryResponseDTO = {
+          version: '2.0',
+          count: manifests.length,
+          strategies: manifests
+        };
+        return new Response(JSON.stringify(response), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       case '/alerts': {
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];

@@ -1,6 +1,7 @@
 import { IStrategy } from '../interfaces/IStrategy';
 import { ScalperV2Strategy } from './scalper-v2/ScalperV2Strategy';
 import { MomentumStrategy } from './momentum/MomentumStrategy';
+import { StrategyManifest } from './StrategyManifest';
 
 export class StrategyRegistry {
   private static instance: StrategyRegistry;
@@ -18,17 +19,31 @@ export class StrategyRegistry {
   }
 
   private registerDefaults(): void {
-    this.strategies.set('ScalperV2', new ScalperV2Strategy());
-    this.strategies.set('Momentum', new MomentumStrategy());
+    this.registerStrategy('ScalperV2', new ScalperV2Strategy());
+    this.registerStrategy('Momentum', new MomentumStrategy());
   }
 
-
   public registerStrategy(id: string, strategy: IStrategy): void {
+    if (this.strategies.has(id)) {
+      throw new Error(`Strategy with ID '${id}' is already registered.`);
+    }
     this.strategies.set(id, strategy);
   }
 
   public getStrategy(id: string): IStrategy | undefined {
     return this.strategies.get(id);
+  }
+
+  public getManifest(id: string): StrategyManifest | undefined {
+    return this.strategies.get(id)?.manifest;
+  }
+
+  public getAllManifests(): StrategyManifest[] {
+    const manifests: StrategyManifest[] = [];
+    for (const strategy of this.strategies.values()) {
+      manifests.push(strategy.manifest);
+    }
+    return manifests;
   }
 
   public getAvailableStrategies(): string[] {
@@ -39,3 +54,4 @@ export class StrategyRegistry {
     return this.strategies;
   }
 }
+

@@ -5,6 +5,7 @@ import { SignalDTO } from './SignalDTO';
 export * from './EngineStatusDTO';
 export * from './MarketAnalysisDTO';
 export * from './SignalDTO';
+export * from './StrategyManifestDTO';
 export * from './EngineAPIService';
 
 export interface AndroidIntegrationContract {

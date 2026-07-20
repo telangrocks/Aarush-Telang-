@@ -9,7 +9,28 @@ import { ConfidenceEngine } from '../../confidence/ConfidenceEngine';
 import { RiskEngine, RiskContext } from '../../risk';
 import { SignalEngine, SignalContext, SignalType } from '../../signal';
 
+import { StrategyManifest } from '../StrategyManifest';
+
 export class ScalperV2Strategy implements IStrategy {
+  public readonly manifest: StrategyManifest = {
+    id: 'ScalperV2',
+    displayName: 'Scalper V2',
+    description: 'A high-frequency trend-following scalper leveraging fast EMAs and ATR-based risk management.',
+    version: '2.0.0',
+    category: 'Scalping',
+    riskProfile: 'High',
+    supportedMarkets: ['CRYPTO', 'FOREX'],
+    supportedTimeframes: ['5m', '15m'],
+    minimumCandles: 50,
+    defaultConfiguration: DEFAULT_SCALPER_CONFIG,
+    supportsLong: true,
+    supportsShort: false, // We haven't implemented shorting logic explicitly yet
+    supportsPaperTrading: true,
+    supportsLiveTrading: true,
+    status: 'ACTIVE',
+    author: 'System'
+  };
+
   private indicatorEngine: IndicatorEngine;
   private conditionEngine: ConditionEngine;
   private confidenceEngine: ConfidenceEngine;
