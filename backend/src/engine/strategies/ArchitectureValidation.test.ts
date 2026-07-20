@@ -10,11 +10,13 @@ describe('Architecture v2.1 Plugin Validation', () => {
     const momentum = registry.getStrategy('Momentum');
     const breakout = registry.getStrategy('Breakout');
     const meanReversion = registry.getStrategy('MeanReversion');
+    const vwap = registry.getStrategy('VWAP');
 
     expect(scalper).toBeDefined();
     expect(momentum).toBeDefined();
     expect(breakout).toBeDefined();
     expect(meanReversion).toBeDefined();
+    expect(vwap).toBeDefined();
 
     // Create a market snapshot
     const snapshot: MarketSnapshot = {
@@ -65,16 +67,21 @@ describe('Architecture v2.1 Plugin Validation', () => {
     expect(meanReversionResult.strategyId).toBe('MeanReversion');
     expect(meanReversionResult.hasSignal).toBeDefined();
 
+    // Evaluate VWAP
+    const vwapResult = vwap!.evaluate(context);
+    expect(vwapResult.strategyId).toBe('VWAP');
+    expect(vwapResult.hasSignal).toBeDefined();
+
     // They must produce independent evaluations without affecting the frozen engine state
     expect(scalperResult.metadata.signal).toBeDefined();
     expect(momentumResult.metadata.signal).toBeDefined();
     expect(breakoutResult.metadata.signal).toBeDefined();
     
-    // MeanReversion will return HOLD and early abort due to logic (not 2 candles), or it may run.
-    // Ensure independence
+    // Ensure independence across all 5 logic branches
     expect(scalperResult).not.toEqual(momentumResult);
     expect(momentumResult).not.toEqual(breakoutResult);
     expect(breakoutResult).not.toEqual(meanReversionResult);
+    expect(meanReversionResult).not.toEqual(vwapResult);
   });
 });
 

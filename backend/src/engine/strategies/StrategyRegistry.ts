@@ -3,6 +3,7 @@ import { ScalperV2Strategy } from './scalper-v2/ScalperV2Strategy';
 import { MomentumStrategy } from './momentum/MomentumStrategy';
 import { BreakoutStrategy } from './breakout/BreakoutStrategy';
 import { MeanReversionStrategy } from './mean-reversion/MeanReversionStrategy';
+import { VWAPStrategy } from './vwap/VWAPStrategy';
 import { StrategyManifest } from './StrategyManifest';
 
 export class StrategyRegistry {
@@ -25,6 +26,7 @@ export class StrategyRegistry {
     this.registerStrategy('Momentum', new MomentumStrategy());
     this.registerStrategy('Breakout', new BreakoutStrategy());
     this.registerStrategy('MeanReversion', new MeanReversionStrategy());
+    this.registerStrategy('VWAP', new VWAPStrategy());
   }
 
 
