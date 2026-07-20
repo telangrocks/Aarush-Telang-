@@ -5,6 +5,8 @@ import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
 import { sendTradeNotification } from './handlers/notifications';
 import { StrategyOrchestrator, EngineState, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe } from './engine';
+import { ScalperV2Strategy } from './engine/strategies/scalper-v2/ScalperV2Strategy';
+import { EngineAPIService, AndroidIntegrationContract } from './api/engine';
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment,
@@ -489,6 +491,9 @@ export class TradingBot {
 
         // Feature: Sprint 1 Orchestrator Activation
         this.orchestrator = new StrategyOrchestrator(); // Reset on explicit activation
+        if (strategy === 'scalper-v2') {
+          this.orchestrator.registerStrategy('scalper-v2', new ScalperV2Strategy());
+        }
         
         const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
         if (user?.exchange_name) {
@@ -552,15 +557,31 @@ export class TradingBot {
           } as AnalysisSnapshot), { status: 200 });
         }
 
-        // The UI is a pure visualization of the most recent real analysis
-        // cycle. If for some reason no snapshot exists yet, produce one now.
-        let snapshot = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
-        if (!snapshot) {
-          await this.runAnalysisCycle();
-          snapshot = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
-        }
+        if (this.env.USE_NEW_ENGINE === 'true') {
+          // The UI is a pure visualization of the most recent real analysis
+          // cycle. If for some reason no snapshot exists yet, produce one now.
+          let snapshot = await this.state.storage.get('newAnalysis');
+          if (!snapshot) {
+            // If no new analysis exists, FSM hasn't finished its first tick.
+            // Trigger alarm immediately.
+            await this.state.storage.setAlarm(Date.now() + 100);
+            
+            // Return a fallback blank DTO while waiting
+            const apiService = new EngineAPIService();
+            const strat = await this.state.storage.get('strategy') as string | null;
+            const coin = await this.state.storage.get('coinId') as string | null;
+            snapshot = apiService.transform('INITIALIZING', strat, coin);
+          }
 
-        return new Response(JSON.stringify(snapshot), { status: 200 });
+          return new Response(JSON.stringify(snapshot), { status: 200 });
+        } else {
+          let snapshot = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
+          if (!snapshot) {
+            await this.runAnalysisCycle();
+            snapshot = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
+          }
+          return new Response(JSON.stringify(snapshot), { status: 200 });
+        }
       }
       case '/alerts': {
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
@@ -874,6 +895,7 @@ export class TradingBot {
       try {
         const coinId = await this.state.storage.get('coinId') as string;
         const userId = await this.state.storage.get('userId') as string;
+        const strategyId = await this.state.storage.get('strategy') as string;
         
         if (coinId && userId) {
             // Re-instantiate MarketDataEngine on each alarm to grab latest adapter
@@ -886,17 +908,56 @@ export class TradingBot {
               this.orchestrator.setMarketDataEngine(dataEngine);
             }
 
-            const results = await this.orchestrator.executeCycle(coinId);
-            await this.state.storage.put('engineState', this.orchestrator.getCurrentState());
-            // Note: For Sprint 1, we just execute the FSM and save the state. 
-            // We will bridge the results to the UI in Sprint 9.
+            // Execute the cycle for the active strategy
+            const results = await this.orchestrator.executeCycle(coinId, strategyId);
+            const engineState = this.orchestrator.getCurrentState();
+            await this.state.storage.put('engineState', engineState);
+            
+            // Transform results to Android DTO
+            const apiService = new EngineAPIService();
+            const result = results.length > 0 ? results[0] : undefined;
+            const newAnalysis = apiService.transform(engineState, strategyId, coinId, result);
+            await this.state.storage.put('newAnalysis', newAnalysis);
+
+            // Trading Signal Integration
+            if (result && result.hasSignal && result.metadata && result.metadata.signal) {
+              const sig = result.metadata.signal;
+              if (sig.type === 'BUY' || sig.type === 'SELL') {
+                const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+                // Simple deduplication logic: don't alert if we already alerted this signal type recently
+                const recentAlert = alerts.find(a => a.symbol === coinId && a.side === sig.type && a.strategy === strategyId && ['pending', 'acknowledged', 'submitted'].includes(a.status));
+                
+                if (!recentAlert) {
+                  const entryPrice = sig.entryContext?.currentPrice || 0; 
+                  const positionSize = sig.riskAssessment?.positionSizeRecommendation || 0;
+                  const newAlert: TradeAlert = {
+                    id: crypto.randomUUID(),
+                    symbol: coinId,
+                    entryPrice: entryPrice,
+                    stopLoss: sig.stopLoss || 0,
+                    takeProfit: sig.takeProfit || 0,
+                    estimatedPnl: 0, // DTO doesn't give estimatedPnl natively without math
+                    positionSize: positionSize,
+                    strategy: strategyId,
+                    side: sig.type,
+                    timestamp: new Date().toISOString(),
+                    status: 'pending'
+                  };
+                  alerts.push(newAlert);
+                  await this.state.storage.put('alerts', alerts);
+                }
+              }
+            }
         }
       } catch (err) {
         console.error('Orchestrator cycle failed:', err);
       }
       
-      // Fallback: Run legacy analysis cycle so UI doesn't break during migration
-      await this.runAnalysisCycle();
+      // Feature: Sprint 10 Phase 3A Shadow Mode / Feature Flag
+      if (this.env.USE_NEW_ENGINE !== 'true') {
+        // Fallback: Run legacy analysis cycle so UI doesn't break during migration
+        await this.runAnalysisCycle();
+      }
 
       const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;
       if (!lastPositionCheckAt || Date.now() - lastPositionCheckAt > POSITION_CHECK_INTERVAL_MS) {

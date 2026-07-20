@@ -192,7 +192,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
 
       const mockStorage = {
         get: async (key: string) => storageData.get(key),
-        put: async (key: string, val: any) => { storageData.set(key, val); },
+        put: async (key: string, val: any) => { storageData.set(key, val); }, delete: async (key: string) => { storageData.delete(key); },
         setAlarm: vi.fn(),
       } as any;
 
@@ -314,7 +314,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
 
       const mockStorage = {
         get: async (key: string) => storageData.get(key),
-        put: async (key: string, val: any) => { storageData.set(key, val); },
+        put: async (key: string, val: any) => { storageData.set(key, val); }, delete: async (key: string) => { storageData.delete(key); },
       } as any;
 
       const mockQueries: any[] = [];
@@ -507,7 +507,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
 
       const mockStorage = {
         get: async (key: string) => storageData.get(key),
-        put: async (key: string, val: any) => { storageData.set(key, val); },
+        put: async (key: string, val: any) => { storageData.set(key, val); }, delete: async (key: string) => { storageData.delete(key); },
       } as any;
 
       const mockQueries: any[] = [];
@@ -1090,7 +1090,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       storageData.set("coinId", "BTC");
       const mockStorage = {
         get: async (key: string) => storageData.get(key),
-        put: async (key: string, val: any) => { storageData.set(key, val); },
+        put: async (key: string, val: any) => { storageData.set(key, val); }, delete: async (key: string) => { storageData.delete(key); },
         deleteAlarm: async () => {},
       } as any;
       const bot = new TradingBot({ storage: mockStorage, blockConcurrencyWhile: async (cb: any) => cb() } as any, {} as any);
@@ -1107,7 +1107,7 @@ describe("Trading Bot Integration & Exchange Adapters (Phase 5 Validation)", () 
       storageData.set("coinId", "BTC");
       const mockStorage = {
         get: async (key: string) => storageData.get(key),
-        put: async (key: string, val: any) => { storageData.set(key, val); },
+        put: async (key: string, val: any) => { storageData.set(key, val); }, delete: async (key: string) => { storageData.delete(key); },
       } as any;
       const bot = new TradingBot({ storage: mockStorage, blockConcurrencyWhile: async (cb: any) => cb() } as any, {} as any);
 

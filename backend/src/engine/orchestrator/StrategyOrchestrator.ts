@@ -24,7 +24,7 @@ export class StrategyOrchestrator {
     this.registeredStrategies.set(id, strategy);
   }
 
-  public async executeCycle(symbol: string): Promise<EvaluationResult[]> {
+  public async executeCycle(symbol: string, strategyId?: string): Promise<EvaluationResult[]> {
     try {
       if (this.stateMachine.getState() === EngineState.INITIALIZING || this.stateMachine.getState() === EngineState.WAITING) {
         this.stateMachine.transition(EngineState.COLLECTING_DATA);
@@ -44,6 +44,9 @@ export class StrategyOrchestrator {
 
       const results: EvaluationResult[] = [];
       for (const [id, strategy] of this.registeredStrategies) {
+        if (strategyId && id !== strategyId) {
+          continue;
+        }
         console.log(`[Orchestrator] Evaluating strategy: ${id}`);
         try {
             const result = strategy.evaluate(frozenContext);

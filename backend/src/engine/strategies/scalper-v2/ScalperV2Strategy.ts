@@ -93,7 +93,9 @@ export class ScalperV2Strategy implements IStrategy {
       hasSignal: tradingSignal.type !== SignalType.HOLD,
       metadata: {
         reasoning: tradingSignal.reasoning,
-        signal: tradingSignal
+        signal: tradingSignal,
+        indicatorSnapshot,
+        conditionResult
       }
     };
   }
