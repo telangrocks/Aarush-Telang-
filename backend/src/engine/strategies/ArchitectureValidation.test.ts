@@ -3,16 +3,18 @@ import { StrategyRegistry } from './StrategyRegistry';
 import { StrategyContext } from '../context/StrategyContext';
 import { MarketSnapshot } from '../market-data/MarketSnapshot';
 
-describe('Architecture v2.0 Plugin Validation', () => {
+describe('Architecture v2.1 Plugin Validation', () => {
   it('should evaluate multiple independent strategies against the same MarketSnapshot', () => {
     const registry = StrategyRegistry.getInstance();
     const scalper = registry.getStrategy('ScalperV2');
     const momentum = registry.getStrategy('Momentum');
+    const breakout = registry.getStrategy('Breakout');
 
     expect(scalper).toBeDefined();
     expect(momentum).toBeDefined();
+    expect(breakout).toBeDefined();
 
-    // Create a market snapshot that strongly triggers Scalper but might be weak/neutral for Momentum
+    // Create a market snapshot
     const snapshot: MarketSnapshot = {
       symbol: 'SOL/USDT',
       timestamp: Date.now(),
@@ -24,12 +26,17 @@ describe('Architecture v2.0 Plugin Validation', () => {
         '5m': [
           { timestamp: 1, open: 140, high: 145, low: 135, close: 140, volume: 1000 },
           { timestamp: 2, open: 140, high: 145, low: 135, close: 145, volume: 1100 },
-          { timestamp: 3, open: 145, high: 155, low: 145, close: 150, volume: 2000 } // Strong 5m breakout
+          { timestamp: 3, open: 145, high: 155, low: 145, close: 150, volume: 2000 }
+        ],
+        '15m': [
+          { timestamp: 1, open: 140, high: 145, low: 135, close: 140, volume: 1000 },
+          { timestamp: 2, open: 140, high: 145, low: 135, close: 145, volume: 1100 },
+          { timestamp: 3, open: 145, high: 155, low: 145, close: 150, volume: 2000 }
         ],
         '1h': [
           { timestamp: 1, open: 149, high: 151, low: 148, close: 149, volume: 100 },
           { timestamp: 2, open: 149, high: 151, low: 148, close: 149, volume: 100 },
-          { timestamp: 3, open: 149, high: 151, low: 148, close: 150, volume: 100 } // Flat 1h
+          { timestamp: 3, open: 149, high: 151, low: 148, close: 150, volume: 100 }
         ]
       } as any
     };
@@ -38,7 +45,7 @@ describe('Architecture v2.0 Plugin Validation', () => {
 
     // Evaluate Scalper
     const scalperResult = scalper!.evaluate(context);
-    expect(scalperResult.strategyId).toBe('scalper-v2');
+    expect(scalperResult.strategyId).toBe('ScalperV2');
     expect(scalperResult.hasSignal).toBeDefined();
 
     // Evaluate Momentum
@@ -46,11 +53,19 @@ describe('Architecture v2.0 Plugin Validation', () => {
     expect(momentumResult.strategyId).toBe('Momentum');
     expect(momentumResult.hasSignal).toBeDefined();
 
+    // Evaluate Breakout
+    const breakoutResult = breakout!.evaluate(context);
+    expect(breakoutResult.strategyId).toBe('Breakout');
+    expect(breakoutResult.hasSignal).toBeDefined();
+
     // They must produce independent evaluations without affecting the frozen engine state
     expect(scalperResult.metadata.signal).toBeDefined();
     expect(momentumResult.metadata.signal).toBeDefined();
+    expect(breakoutResult.metadata.signal).toBeDefined();
     
-    // The two results should be isolated instances
+    // The three results should be isolated instances
     expect(scalperResult).not.toEqual(momentumResult);
+    expect(momentumResult).not.toEqual(breakoutResult);
+    expect(breakoutResult).not.toEqual(scalperResult);
   });
 });

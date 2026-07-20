@@ -1,34 +1,35 @@
 import { IStrategy } from '../../interfaces/IStrategy';
 import { StrategyContext } from '../../context/StrategyContext';
 import { EvaluationResult } from '../../dto/EvaluationResult';
-import { ScalperV2Config, DEFAULT_SCALPER_CONFIG } from './ScalperV2Config';
-
-import { IndicatorEngine } from '../../indicator/IndicatorEngine';
-import { ConditionEngine } from '../../condition/ConditionEngine';
-import { ConfidenceEngine } from '../../confidence/ConfidenceEngine';
+import { StrategyManifest } from '../StrategyManifest';
+import { IndicatorEngine } from '../../indicator';
+import { ConditionEngine } from '../../condition';
+import { ConfidenceEngine } from '../../confidence';
 import { RiskEngine, RiskContext } from '../../risk';
 import { SignalEngine, SignalContext, SignalType } from '../../signal';
 
-import { StrategyManifest } from '../StrategyManifest';
+import { BREAKOUT_STRATEGY_MANIFEST } from './BreakoutRules';
+import { BreakoutConfig, DEFAULT_BREAKOUT_CONFIG } from './BreakoutConfig';
+import { Timeframe } from '../../market-data/Timeframe';
 
-export class ScalperV2Strategy implements IStrategy {
+export class BreakoutStrategy implements IStrategy {
   public readonly manifest: StrategyManifest = {
-    id: 'ScalperV2',
-    displayName: 'Scalper V2',
-    description: 'A high-frequency trend-following scalper leveraging fast EMAs and ATR-based risk management.',
-    version: '2.0.0',
-    category: 'Scalping',
-    riskProfile: 'High',
-    supportedMarkets: ['CRYPTO', 'FOREX'],
-    supportedTimeframes: ['5m', '15m'],
-    minimumCandles: 50,
-    defaultConfiguration: DEFAULT_SCALPER_CONFIG,
+    id: BREAKOUT_STRATEGY_MANIFEST.id,
+    displayName: BREAKOUT_STRATEGY_MANIFEST.name,
+    description: BREAKOUT_STRATEGY_MANIFEST.description,
+    version: BREAKOUT_STRATEGY_MANIFEST.version,
+    category: BREAKOUT_STRATEGY_MANIFEST.classification,
+    riskProfile: BREAKOUT_STRATEGY_MANIFEST.riskProfile,
+    supportedMarkets: ['CRYPTO'],
+    supportedTimeframes: BREAKOUT_STRATEGY_MANIFEST.supportedTimeframes as Timeframe[],
+    minimumCandles: 100,
+    defaultConfiguration: DEFAULT_BREAKOUT_CONFIG,
     supportsLong: true,
-    supportsShort: false, // We haven't implemented shorting logic explicitly yet
+    supportsShort: false,
     supportsPaperTrading: true,
     supportsLiveTrading: true,
     status: 'ACTIVE',
-    author: 'System'
+    author: BREAKOUT_STRATEGY_MANIFEST.author
   };
 
   private indicatorEngine: IndicatorEngine;
@@ -37,7 +38,7 @@ export class ScalperV2Strategy implements IStrategy {
   private riskEngine: RiskEngine;
   private signalEngine: SignalEngine;
 
-  constructor(private config: ScalperV2Config = DEFAULT_SCALPER_CONFIG) {
+  constructor(private config: BreakoutConfig = DEFAULT_BREAKOUT_CONFIG) {
     this.indicatorEngine = new IndicatorEngine(config.indicatorConfig);
     this.conditionEngine = new ConditionEngine(config.conditionConfig);
     this.confidenceEngine = new ConfidenceEngine(config.confidenceWeights);
@@ -55,17 +56,15 @@ export class ScalperV2Strategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    // Default primary timeframe for scalping is 5m
-    const primaryTimeframe = '5m';
-    
-    // Fallback if 5m isn't available
-    const timeframeToUse = (context.marketSnapshot.candles[primaryTimeframe] 
-      ? primaryTimeframe 
-      : Object.keys(context.marketSnapshot.candles)[0]) as import('../../market-data/Timeframe').Timeframe;
-      
+    // Fallback to highest timeframe available if preferred isn't there, or use 1h for breakout as baseline
+    const primaryTimeframe = '1h';
+    const timeframeToUse = (context.marketSnapshot.candles[primaryTimeframe]
+      ? primaryTimeframe
+      : Object.keys(context.marketSnapshot.candles)[0]) as Timeframe;
+
     if (!timeframeToUse) {
       return {
-        strategyId: 'scalper-v2',
+        strategyId: this.manifest.id,
         timestamp: context.timestamp,
         confidenceScore: 0,
         hasSignal: false,
@@ -75,8 +74,7 @@ export class ScalperV2Strategy implements IStrategy {
 
     const candles = context.marketSnapshot.candles[timeframeToUse];
     const currentPrice = candles[candles.length - 1]?.close || 0;
-    
-    // Safely retrieve ATR, assuming it was calculated
+
     const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
     const currentAtr = atrArray ? atrArray[atrArray.length - 1] : 0;
@@ -86,10 +84,7 @@ export class ScalperV2Strategy implements IStrategy {
       timestamp: context.timestamp,
       currentPrice,
       currentAtr,
-      // For this stateless evaluation, assume a dummy account balance 
-      // or pass it through a modified context if it existed. 
-      // Since context currently only has marketSnapshot, we use a default
-      accountBalance: 1000 
+      accountBalance: 1000 // Stateless engine evaluation default
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 

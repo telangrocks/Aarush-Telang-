@@ -1,6 +1,7 @@
 import { IStrategy } from '../interfaces/IStrategy';
 import { ScalperV2Strategy } from './scalper-v2/ScalperV2Strategy';
 import { MomentumStrategy } from './momentum/MomentumStrategy';
+import { BreakoutStrategy } from './breakout/BreakoutStrategy';
 import { StrategyManifest } from './StrategyManifest';
 
 export class StrategyRegistry {
@@ -21,7 +22,9 @@ export class StrategyRegistry {
   private registerDefaults(): void {
     this.registerStrategy('ScalperV2', new ScalperV2Strategy());
     this.registerStrategy('Momentum', new MomentumStrategy());
+    this.registerStrategy('Breakout', new BreakoutStrategy());
   }
+
 
   public registerStrategy(id: string, strategy: IStrategy): void {
     if (this.strategies.has(id)) {

@@ -28,7 +28,7 @@ describe('ScalperV2Strategy', () => {
     const context = new StrategyContext(snapshot).freeze();
     const result = strategy.evaluate(context);
 
-    expect(result.strategyId).toBe('scalper-v2');
+    expect(result.strategyId).toBe('ScalperV2');
     
     // We expect a valid signal or at least evaluation logic ran
     // Note: To precisely hit 100 confidence, we'd need exact mock math, 
