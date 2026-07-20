@@ -9,10 +9,12 @@ describe('Architecture v2.1 Plugin Validation', () => {
     const scalper = registry.getStrategy('ScalperV2');
     const momentum = registry.getStrategy('Momentum');
     const breakout = registry.getStrategy('Breakout');
+    const meanReversion = registry.getStrategy('MeanReversion');
 
     expect(scalper).toBeDefined();
     expect(momentum).toBeDefined();
     expect(breakout).toBeDefined();
+    expect(meanReversion).toBeDefined();
 
     // Create a market snapshot
     const snapshot: MarketSnapshot = {
@@ -58,14 +60,21 @@ describe('Architecture v2.1 Plugin Validation', () => {
     expect(breakoutResult.strategyId).toBe('Breakout');
     expect(breakoutResult.hasSignal).toBeDefined();
 
+    // Evaluate MeanReversion
+    const meanReversionResult = meanReversion!.evaluate(context);
+    expect(meanReversionResult.strategyId).toBe('MeanReversion');
+    expect(meanReversionResult.hasSignal).toBeDefined();
+
     // They must produce independent evaluations without affecting the frozen engine state
     expect(scalperResult.metadata.signal).toBeDefined();
     expect(momentumResult.metadata.signal).toBeDefined();
     expect(breakoutResult.metadata.signal).toBeDefined();
     
-    // The three results should be isolated instances
+    // MeanReversion will return HOLD and early abort due to logic (not 2 candles), or it may run.
+    // Ensure independence
     expect(scalperResult).not.toEqual(momentumResult);
     expect(momentumResult).not.toEqual(breakoutResult);
-    expect(breakoutResult).not.toEqual(scalperResult);
+    expect(breakoutResult).not.toEqual(meanReversionResult);
   });
 });
+
