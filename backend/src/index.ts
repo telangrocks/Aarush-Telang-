@@ -542,3 +542,4 @@ app.notFound((c) => {
 });
 
 export { TradingBot } from "./trading-bot";
+export interface Env { USE_NEW_ENGINE?: string; }

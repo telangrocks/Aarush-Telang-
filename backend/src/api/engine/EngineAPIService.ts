@@ -1,95 +1,67 @@
-import { EngineStatusDTO, MarketAnalysisDTO, SignalDTO, AndroidIntegrationContract, IndicatorSummary, ConditionSummary } from './index';
+import { EngineStatusDTO, MarketAnalysisDTO, SignalDTO, AndroidIntegrationContract } from './index';
+import { EngineState, EvaluationResult } from '../../engine';
 
 export class EngineAPIService {
   public transform(
-    state: string,
-    strategyId: string | null,
-    coinId: string | null,
-    result?: any // EvaluationResult
+    state: EngineState,
+    coinId: string,
+    result?: EvaluationResult
   ): AndroidIntegrationContract {
     
     const engineStatus: EngineStatusDTO = {
-      state: state,
-      activeStrategy: strategyId || 'None',
-      lastEvaluationTimestamp: result?.timestamp || Date.now(),
-      nextEvaluationTime: (result?.timestamp || Date.now()) + 15000,
-      health: 'OK'
+      state: state.toString(),
+      activeStrategy: result ? result.strategyId : 'NONE',
+      lastEvaluationTimestamp: result ? result.timestamp : Date.now(),
+      nextEvaluationTime: null, // Populated by DO logic later if needed
+      health: state === EngineState.ERROR ? 'ERROR' : 'OK'
     };
 
-    let indicatorSummary: IndicatorSummary[] = [];
-    let conditionSummary: ConditionSummary[] = [];
-    let confidenceScore = 0;
-    let confidenceExplanation: string[] = [];
-    let tradingSignal: SignalDTO = {
-      type: 'HOLD',
-      entryContext: '',
-      stopLoss: null,
-      takeProfit: null,
-      riskClassification: 'LOW',
-      reasoning: ['No data evaluated']
-    };
-
-    if (result) {
-      confidenceScore = result.confidenceScore || 0;
-      
-      const indSnap = result.metadata?.indicatorSnapshot;
-      if (indSnap && Object.keys(indSnap.timeframes).length > 0) {
-        // Just take the first available timeframe for the summary
-        const tf = Object.keys(indSnap.timeframes)[0];
-        const tfData = indSnap.timeframes[tf];
-        
-        if (tfData.rsi && tfData.rsi[14]) {
-          const rsiVal = tfData.rsi[14][tfData.rsi[14].length - 1];
-          indicatorSummary.push({
-            name: 'RSI(14)',
-            value: rsiVal ? rsiVal.toFixed(2) : 'N/A',
-            signal: rsiVal > 60 ? 'BULLISH' : rsiVal < 40 ? 'BEARISH' : 'NEUTRAL'
-          });
-        }
-        if (tfData.macd && tfData.macd['12,26,9']) {
-          const macd = tfData.macd['12,26,9'][tfData.macd['12,26,9'].length - 1];
-          indicatorSummary.push({
-            name: 'MACD',
-            value: macd && macd.histogram !== undefined ? macd.histogram.toFixed(2) : 'N/A',
-            signal: macd && macd.histogram > 0 ? 'BULLISH' : 'BEARISH'
-          });
-        }
-      }
-
-      const condRes = result.metadata?.conditionResult;
-      if (condRes && condRes.results) {
-        condRes.results.forEach((r: any) => {
-          conditionSummary.push({
-            id: r.id,
-            name: r.id,
-            currentValue: String(r.actualValue),
-            targetValue: String(r.expectedValue),
-            status: r.isMet ? 'PASSED' : 'FAILED'
-          });
+    let indicatorSummary: any[] = [];
+    let conditionSummary: any[] = [];
+    
+    if (result && result.metadata && result.metadata.indicatorSnapshot) {
+      // Map indicator snapshots to simple key-value summaries
+      const indicators = result.metadata.indicatorSnapshot;
+      Object.keys(indicators).forEach(k => {
+        indicatorSummary.push({
+          name: k,
+          value: JSON.stringify(indicators[k]),
+          signal: 'NEUTRAL' // Basic rendering mapping; UI handles color
         });
-      }
+      });
+    }
 
-      const sig = result.metadata?.signal;
-      if (sig) {
-        tradingSignal = {
-          type: sig.type,
-          entryContext: `Entry on ${sig.timeframe}`,
-          stopLoss: sig.stopLoss,
-          takeProfit: sig.takeProfit,
-          riskClassification: sig.riskAssessment?.classification || 'UNKNOWN',
-          reasoning: sig.reasoning || result.metadata.reasoning
-        };
-        confidenceExplanation = sig.reasoning || result.metadata.reasoning;
-      }
+    if (result && result.metadata && result.metadata.conditionResult) {
+      // Map condition results
+      const conditions = result.metadata.conditionResult;
+      Object.keys(conditions).forEach(k => {
+        const val = conditions[k];
+        conditionSummary.push({
+          id: k,
+          name: k,
+          currentValue: typeof val === 'object' ? JSON.stringify(val) : String(val),
+          targetValue: '',
+          status: val === true ? 'PASSED' : (val === false ? 'FAILED' : 'WAITING')
+        });
+      });
     }
 
     const marketAnalysis: MarketAnalysisDTO = {
-      symbol: coinId || 'UNKNOWN',
-      timeframeStatus: 'SYNCED',
+      symbol: coinId,
+      timeframeStatus: 'SYNCED', // Assumed from successful execution
       indicatorSummary,
       conditionSummary,
-      confidenceScore,
-      confidenceExplanation
+      confidenceScore: result ? result.confidenceScore : 0,
+      confidenceExplanation: result && result.metadata ? result.metadata.reasoning : []
+    };
+
+    const tradingSignal: SignalDTO = {
+      type: result && result.metadata && result.metadata.signal ? result.metadata.signal.type : 'HOLD',
+      entryContext: result && result.metadata && result.metadata.signal ? JSON.stringify(result.metadata.signal.entryContext) : '',
+      stopLoss: result && result.metadata && result.metadata.signal ? result.metadata.signal.stopLoss : null,
+      takeProfit: result && result.metadata && result.metadata.signal ? result.metadata.signal.takeProfit : null,
+      riskClassification: result && result.metadata && result.metadata.riskAssessment ? result.metadata.riskAssessment.classification : 'UNKNOWN',
+      reasoning: result && result.metadata ? result.metadata.reasoning : []
     };
 
     return {

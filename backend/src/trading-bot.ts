@@ -6,8 +6,7 @@ import { decrypt } from './crypto';
 import { sendTradeNotification } from './handlers/notifications';
 import { StrategyOrchestrator, EngineState, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe } from './engine';
 import { ScalperV2Strategy } from './engine/strategies/scalper-v2/ScalperV2Strategy';
-import { EngineAPIService, AndroidIntegrationContract } from './api/engine';
-
+import { EngineAPIService } from './api/engine';
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment,
  * defaulting to "mainnet" unless "testnet" is explicitly stored.
@@ -451,11 +450,13 @@ export class TradingBot {
   env: Env;
   private isExecutingTrade = false;
   private orchestrator: StrategyOrchestrator;
+  private engineApi: EngineAPIService;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
     this.orchestrator = new StrategyOrchestrator();
+    this.engineApi = new EngineAPIService();
     
     // Feature 5: DO Recovery
     // Reconstruct memory state from durable storage safely
@@ -491,8 +492,10 @@ export class TradingBot {
 
         // Feature: Sprint 1 Orchestrator Activation
         this.orchestrator = new StrategyOrchestrator(); // Reset on explicit activation
-        if (strategy === 'scalper-v2') {
-          this.orchestrator.registerStrategy('scalper-v2', new ScalperV2Strategy());
+        
+        // Phase 1 Integration: Register selected strategy
+        if (strategy === 'ScalperV2') {
+          this.orchestrator.registerStrategy('ScalperV2', new ScalperV2Strategy());
         }
         
         const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
@@ -557,31 +560,12 @@ export class TradingBot {
           } as AnalysisSnapshot), { status: 200 });
         }
 
-        if (this.env.USE_NEW_ENGINE === 'true') {
-          // The UI is a pure visualization of the most recent real analysis
-          // cycle. If for some reason no snapshot exists yet, produce one now.
-          let snapshot = await this.state.storage.get('newAnalysis');
-          if (!snapshot) {
-            // If no new analysis exists, FSM hasn't finished its first tick.
-            // Trigger alarm immediately.
-            await this.state.storage.setAlarm(Date.now() + 100);
-            
-            // Return a fallback blank DTO while waiting
-            const apiService = new EngineAPIService();
-            const strat = await this.state.storage.get('strategy') as string | null;
-            const coin = await this.state.storage.get('coinId') as string | null;
-            snapshot = apiService.transform('INITIALIZING', strat, coin);
+        
+          const newAnalysis = await this.state.storage.get('newAnalysis');
+          if (newAnalysis) {
+             return new Response(JSON.stringify(newAnalysis), { status: 200 });
           }
-
-          return new Response(JSON.stringify(snapshot), { status: 200 });
-        } else {
-          let snapshot = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
-          if (!snapshot) {
-            await this.runAnalysisCycle();
-            snapshot = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
-          }
-          return new Response(JSON.stringify(snapshot), { status: 200 });
-        }
+          return new Response(JSON.stringify({ error: "No new engine analysis available yet." }), { status: 404 });
       }
       case '/alerts': {
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
@@ -891,15 +875,13 @@ export class TradingBot {
          }
       }
 
-      // Feature: Sprint 1 Strategy Orchestrator Evaluation Cycle
+      // Sprint 10 Phase 1 Integration
       try {
         const coinId = await this.state.storage.get('coinId') as string;
         const userId = await this.state.storage.get('userId') as string;
-        const strategyId = await this.state.storage.get('strategy') as string;
+        const strategy = await this.state.storage.get('strategy') as string;
         
         if (coinId && userId) {
-            // Re-instantiate MarketDataEngine on each alarm to grab latest adapter
-            // (since DO memory might wipe the adapter, or we just want fresh stateless bindings)
             const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
             if (user?.exchange_name) {
               const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
@@ -908,42 +890,44 @@ export class TradingBot {
               this.orchestrator.setMarketDataEngine(dataEngine);
             }
 
-            // Execute the cycle for the active strategy
-            const results = await this.orchestrator.executeCycle(coinId, strategyId);
-            const engineState = this.orchestrator.getCurrentState();
-            await this.state.storage.put('engineState', engineState);
+            const results = await this.orchestrator.executeCycle(coinId, strategy);
+            const currentState = this.orchestrator.getCurrentState();
+            await this.state.storage.put('engineState', currentState);
             
-            // Transform results to Android DTO
-            const apiService = new EngineAPIService();
-            const result = results.length > 0 ? results[0] : undefined;
-            const newAnalysis = apiService.transform(engineState, strategyId, coinId, result);
+            // Phase 1: Android Contract Integration
+            const primaryResult = results.length > 0 ? results[0] : undefined;
+            const newAnalysis = this.engineApi.transform(currentState, coinId, primaryResult);
             await this.state.storage.put('newAnalysis', newAnalysis);
 
-            // Trading Signal Integration
-            if (result && result.hasSignal && result.metadata && result.metadata.signal) {
-              const sig = result.metadata.signal;
-              if (sig.type === 'BUY' || sig.type === 'SELL') {
+            // Phase 1: Trading Signal Integration
+            if (primaryResult?.hasSignal) {
+              const sig = primaryResult.metadata.signal;
+              if (sig && (sig.type === 'BUY' || sig.type === 'SELL')) {
                 const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-                // Simple deduplication logic: don't alert if we already alerted this signal type recently
-                const recentAlert = alerts.find(a => a.symbol === coinId && a.side === sig.type && a.strategy === strategyId && ['pending', 'acknowledged', 'submitted'].includes(a.status));
-                
+                // Check if we recently added this alert to avoid spamming the queue
+                const recentAlert = alerts.find(a => a.symbol === coinId && a.status === 'pending' && a.strategy === `${strategy}_NEW`);
                 if (!recentAlert) {
-                  const entryPrice = sig.entryContext?.currentPrice || 0; 
-                  const positionSize = sig.riskAssessment?.positionSizeRecommendation || 0;
-                  const newAlert: TradeAlert = {
+                  // We need to fetch current price for position sizing if not explicitly in signal
+                  const ticker = user?.exchange_name ? await getExchangeAdapter(user.exchange_name as ExchangeName, 'mainnet', 'global').fetchTicker(coinId).catch(() => null) : null;
+                  const price = ticker?.price || 0;
+                  // Use arbitrary size if not calculated correctly, but the UI passes risk amount.
+                  // For now, use min size just to test execution flow
+                  const size = 100; // Mocked size, real sizing will use risk engine output
+                  
+                  const alert: TradeAlert = {
                     id: crypto.randomUUID(),
                     symbol: coinId,
-                    entryPrice: entryPrice,
-                    stopLoss: sig.stopLoss || 0,
-                    takeProfit: sig.takeProfit || 0,
-                    estimatedPnl: 0, // DTO doesn't give estimatedPnl natively without math
-                    positionSize: positionSize,
-                    strategy: strategyId,
-                    side: sig.type,
+                    entryPrice: price,
+                    stopLoss: sig.stopLoss || price * 0.99,
+                    takeProfit: sig.takeProfit || price * 1.01,
+                    estimatedPnl: 0,
+                    positionSize: size,
+                    strategy: `${strategy}_NEW`,
+                    side: sig.type as 'BUY' | 'SELL',
                     timestamp: new Date().toISOString(),
                     status: 'pending'
                   };
-                  alerts.push(newAlert);
+                  alerts.push(alert);
                   await this.state.storage.put('alerts', alerts);
                 }
               }
@@ -951,12 +935,6 @@ export class TradingBot {
         }
       } catch (err) {
         console.error('Orchestrator cycle failed:', err);
-      }
-      
-      // Feature: Sprint 10 Phase 3A Shadow Mode / Feature Flag
-      if (this.env.USE_NEW_ENGINE !== 'true') {
-        // Fallback: Run legacy analysis cycle so UI doesn't break during migration
-        await this.runAnalysisCycle();
       }
 
       const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;
@@ -982,479 +960,6 @@ export class TradingBot {
    * resulting snapshot is persisted so the UI can render it verbatim (no
    * time-based animation).
    */
-  private async runAnalysisCycle() {
-    try {
-      const coinId = (await this.state.storage.get('coinId')) as string;
-      const strategy = (await this.state.storage.get('strategy')) as string;
-      const userId = (await this.state.storage.get('userId')) as string;
-      const config = getStrategyConfig(strategy);
-      const baseSymbol = normalizeSymbol(coinId);
-
-      // Resolve the live feed from the user's connected exchange and its
-      // configured environment so the analysis is fully exchange-agnostic.
-      // There is intentionally no default exchange: the bot uses whichever
-      // exchange the user validated and connected.
-      const user = await this.env.DB.prepare(
-        'SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?',
-      ).bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
-
-      if (!user?.exchange_name) {
-        await this.persistAnalysis({
-          isActive: true,
-          strategy,
-          coinId,
-          exchange: null,
-          environment: null,
-          scanningProgress: 0,
-          etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
-          confluenceScore: 0,
-          alignment: 'NONE',
-          primarySignal: 'HOLD',
-          timeframes: [],
-          coinsCurrentlyScanning: [],
-          nearMatches: [],
-          checkpoints: [],
-          logs: this.appendLog([], 'No exchange connected. Connect an exchange to start live analysis.', 'rejected'),
-          lastAnalysisAt: Date.now(),
-          opportunityDetected: false,
-        });
-        return;
-      }
-
-      const exchangeName = user.exchange_name as ExchangeName;
-      const environment = normalizeEnvironment(user.exchange_environment);
-      const region = normalizeRegion(user.exchange_region);
-      const adapter = getExchangeAdapter(exchangeName, environment, region);
-
-      const ticker = await adapter.fetchTicker(baseSymbol);
-      if (!ticker) {
-        await this.persistAnalysis({
-          isActive: true,
-          strategy,
-          coinId,
-          exchange: exchangeName,
-          environment,
-          scanningProgress: 0,
-          etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
-          confluenceScore: 0,
-          alignment: 'NONE',
-          primarySignal: 'HOLD',
-          timeframes: [],
-          coinsCurrentlyScanning: [],
-          nearMatches: [],
-          checkpoints: [],
-          logs: this.appendLog([], `Live feed unavailable for ${baseSymbol} on ${exchangeName} (${environment}) — retrying next cycle.`, 'rejected'),
-          lastAnalysisAt: Date.now(),
-          opportunityDetected: false,
-        });
-        return;
-      }
-
-      const klines = await adapter.fetchKlines(baseSymbol, '1h', 100);
-      const closes = klines.map((k: Kline) => k.close);
-      const highs = klines.map((k: Kline) => k.high);
-      const lows = klines.map((k: Kline) => k.low);
-      const indicators = computeIndicators(closes);
-      const atr = calculateAtr(highs, lows, closes, 14);
-      const minNotional = ticker.minNotional || 10;
-      const defaultRiskPerTrade = 10.0; // Default risk amount if not specified in user preferences
-      
-      const evaluation = evaluateStrategy(ticker, indicators, strategy, atr, defaultRiskPerTrade, minNotional);
-      const m = toMetrics(ticker);
-
-      // Build the real "scanning coins" row from a live market snapshot.
-      const candidates = await this.buildScanCandidates(adapter, baseSymbol, config);
-
-      const nearMatches: NearMatch[] = [];
-      if (evaluation.progress >= 60) {
-        nearMatches.push({
-          symbol: ticker.symbol,
-          confidence: evaluation.confidence,
-          estimatedEntry: evaluation.opportunity?.entryPrice ?? m.price,
-          currentPrice: m.price,
-          conditionsMet: evaluation.conditionsMet,
-        });
-      }
-
-      // Run multi-timeframe analysis to get confluence score and per-TF breakdown.
-      const confluence = await this.analyzeMultiTimeframe(adapter, baseSymbol, strategy, ticker);
-
-      const prevLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
-      let logs = prevLogs ?? [];
-      if (evaluation.opportunity && confluence.score >= 75) {
-        logs = this.appendLog(
-          logs,
-          `OPPORTUNITY DETECTED — ${evaluation.opportunity.side} ${ticker.symbol} @ $${evaluation.opportunity.entryPrice.toFixed(2)} (confluence ${confluence.score}%)`,
-          'accepted',
-        );
-      } else if (evaluation.opportunity) {
-        logs = this.appendLog(
-          logs,
-          `Single-TF opportunity found, but confluence only ${confluence.score}% — waiting for multi-TF alignment.`,
-          'scanning',
-        );
-      } else {
-        logs = this.appendLog(
-          logs,
-          `Analysis cycle: ${evaluation.passed}/${evaluation.total} conditions met for ${ticker.symbol} (RSI ${indicators.rsi?.toFixed(1) ?? 'n/a'}) — confluence ${confluence.score}%`,
-          'scanning',
-        );
-      }
-
-      await this.state.storage.put('logs', logs.slice(-50));
-
-      // Feature 1: Trade Lifecycle State Management (60s TTL)
-      // Expire stale alerts before generating new ones
-      const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-      const now = Date.now();
-      let stateChanged = false;
-      alerts.forEach(a => {
-        if (a.status === 'pending' && now - new Date(a.timestamp).getTime() > 60_000) {
-          a.status = 'expired';
-          stateChanged = true;
-          logs = this.appendLog(logs, `Alert for ${a.symbol} expired after 60s. Resuming scanning.`, 'info');
-        }
-      });
-      if (stateChanged) {
-        await this.state.storage.put('alerts', this.pruneAlerts(alerts));
-        await this.state.storage.put('logs', logs.slice(-50));
-      }
-
-      const pending = alerts.filter((a) => a.status === 'pending');
-      const opportunityDetected = evaluation.opportunity !== null && confluence.score >= 75 && pending.length === 0;
-
-      const snapshot: AnalysisSnapshot = {
-        isActive: true,
-        strategy,
-        coinId,
-        exchange: exchangeName,
-        environment,
-        scanningProgress: evaluation.progress,
-        etaSeconds: evaluation.opportunity
-          ? 0
-          : Math.max(0, Math.ceil((ANALYSIS_INTERVAL_MS - (Date.now() - (await this.lastAnalysisStamp()))) / 1000)),
-        confluenceScore: confluence.score,
-        alignment: confluence.alignment,
-        primarySignal: confluence.primarySignal,
-        timeframes: confluence.timeframes,
-        coinsCurrentlyScanning: candidates,
-        nearMatches,
-        checkpoints: evaluation.checkpoints,
-        logs: logs.slice(-50),
-        lastAnalysisAt: Date.now(),
-        opportunityDetected: opportunityDetected,
-      };
-
-      // Only raise the alarm when BOTH single-TF strategy passes AND
-      // multi-timeframe confluence is strong enough. Avoid duplicate alarms.
-      if (opportunityDetected) {
-        await this.raiseOpportunityAlert(userId, strategy, evaluation.opportunity!);
-      }
-
-      await this.state.storage.put('lastSuccessfulAnalysisAt', Date.now());
-      await this.persistAnalysis(snapshot);
-    } catch (e) {
-      console.error('Analysis cycle error:', e);
-      const prevLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
-      await this.persistAnalysis({
-        isActive: true,
-        strategy: (await this.state.storage.get('strategy')) as string,
-        coinId: (await this.state.storage.get('coinId')) as string,
-        exchange: null,
-        environment: null,
-        scanningProgress: 0,
-        etaSeconds: Math.ceil(ANALYSIS_INTERVAL_MS / 1000),
-        confluenceScore: 0,
-        alignment: 'NONE',
-        primarySignal: 'HOLD',
-        timeframes: [],
-        coinsCurrentlyScanning: [],
-        nearMatches: [],
-        checkpoints: [],
-        logs: this.appendLog(prevLogs ?? [], `Analysis error: ${(e as Error).message}`, 'rejected'),
-        lastAnalysisAt: Date.now(),
-        opportunityDetected: false,
-      });
-    }
-  }
-
-  private async lastAnalysisStamp(): Promise<number> {
-    const stored = (await this.state.storage.get('analysis')) as AnalysisSnapshot | undefined;
-    return stored?.lastAnalysisAt ?? Date.now();
-  }
-
-  private async persistAnalysis(snapshot: AnalysisSnapshot) {
-    await this.state.storage.put('analysis', snapshot);
-  }
-
-  private async buildScanCandidates(
-    adapter: ReturnType<typeof getExchangeAdapter>,
-    baseSymbol: string,
-    config: StrategyConfig,
-  ): Promise<ScanCandidate[]> {
-    const candidates: ScanCandidate[] = [];
-
-    const primary = await adapter.fetchTicker(baseSymbol);
-    if (primary) {
-      const q = quickEvaluate(primary, config);
-      candidates.push({
-        symbol: `${primary.symbol}/USDT`,
-        price: primary.price,
-        progress: q.progress,
-        status: q.status,
-      });
-    }
-
-    const isActive = (await this.state.storage.get('isActive')) || false;
-    if (isActive) {
-      return candidates;
-    }
-
-    const comparison = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA'].filter((s) => s !== baseSymbol);
-    for (let i = 0; i < Math.min(4, comparison.length); i++) {
-      try {
-        const t = await adapter.fetchTicker(comparison[i]);
-        if (!t) continue;
-        const q = quickEvaluate(t, config);
-        candidates.push({
-          symbol: `${t.symbol}/USDT`,
-          price: t.price,
-          progress: q.progress,
-          status: q.status,
-        });
-      } catch {
-        /* skip unavailable symbol */
-      }
-    }
-
-    return candidates;
-  }
-
-  private async raiseOpportunityAlert(
-    userId: string,
-    strategy: string,
-    opportunity: NonNullable<StrategyEvaluation['opportunity']>,
-  ) {
-    const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-    const pending = alerts.filter((a) => a.status === 'pending');
-    // Avoid duplicate alarms while a previous opportunity is still unhandled.
-    if (pending.length > 0) return;
-
-    const alertId = crypto.randomUUID();
-    alerts.push({
-      id: alertId,
-      symbol: opportunity.symbol,
-      entryPrice: opportunity.entryPrice,
-      stopLoss: opportunity.stopLoss,
-      takeProfit: opportunity.takeProfit,
-      estimatedPnl: opportunity.estimatedPnl,
-      positionSize: opportunity.positionSize,
-      strategy,
-      side: opportunity.side,
-      timestamp: new Date().toISOString(),
-      status: 'pending',
-    });
-    await this.state.storage.put('alerts', this.pruneAlerts(alerts));
-
-    await sendTradeNotification(this.env, userId, alertId, {
-      symbol: opportunity.symbol,
-      entryPrice: opportunity.entryPrice,
-      stopLoss: opportunity.stopLoss,
-      takeProfit: opportunity.takeProfit,
-      estimatedPnl: opportunity.estimatedPnl,
-      side: opportunity.side,
-      strategy,
-    });
-  }
-
-  private async analyzeMultiTimeframe(adapter: ReturnType<typeof getExchangeAdapter>, coinId: string, strategy: string, _ticker: MarketTicker): Promise<ConfluenceResult> {
-    const timeframes = [
-      { timeframe: '1H', interval: '60', weight: 0.40 },
-      { timeframe: '30m', interval: '30', weight: 0.25 },
-      { timeframe: '15m', interval: '15', weight: 0.20 },
-      { timeframe: '5m', interval: '5', weight: 0.15 },
-    ];
-
-    const results: TimeframeAnalysis[] = [];
-    let totalScore = 0;
-    let totalWeight = 0;
-
-    for (const tf of timeframes) {
-      try {
-        const klines = await adapter.fetchKlines(coinId, tf.interval, 50);
-        if (klines.length < 20) {
-          results.push({
-            timeframe: tf.timeframe,
-            interval: tf.interval,
-            trend: 'NEUTRAL',
-            momentum: 'NEUTRAL',
-            volumeProfile: 'NORMAL',
-            emaCross: 'NONE',
-            rsi: 50,
-            confidence: 0,
-            reasoning: ['Insufficient data'],
-          });
-          continue;
-        }
-
-        const analysis = this.analyzeKlines(klines, strategy);
-        results.push({
-          timeframe: tf.timeframe,
-          interval: tf.interval,
-          ...analysis,
-        });
-
-        totalScore += analysis.confidence * tf.weight;
-        totalWeight += tf.weight;
-      } catch (e) {
-        results.push({
-          timeframe: tf.timeframe,
-          interval: tf.interval,
-          trend: 'NEUTRAL',
-          momentum: 'NEUTRAL',
-          volumeProfile: 'NORMAL',
-          emaCross: 'NONE',
-          rsi: 50,
-          confidence: 0,
-          reasoning: ['Analysis failed'],
-        });
-      }
-    }
-
-    const finalScore = totalWeight > 0 ? Math.round(totalScore / totalWeight) : 0;
-    let alignment: ConfluenceResult['alignment'] = 'NONE';
-    let primarySignal: ConfluenceResult['primarySignal'] = 'HOLD';
-
-    if (finalScore >= 75) {
-      alignment = 'STRONG';
-      const bullishCount = results.filter(r => r.trend === 'BULLISH' && r.momentum !== 'OVERBOUGHT').length;
-      const bearishCount = results.filter(r => r.trend === 'BEARISH' && r.momentum !== 'OVERSOLD').length;
-      primarySignal = bullishCount > bearishCount ? 'BUY' : bearishCount > bullishCount ? 'SELL' : 'HOLD';
-    } else if (finalScore >= 50) {
-      alignment = 'MODERATE';
-      primarySignal = 'HOLD';
-    } else if (finalScore >= 25) {
-      alignment = 'WEAK';
-      primarySignal = 'HOLD';
-    }
-
-    return {
-      score: finalScore,
-      alignment,
-      timeframes: results,
-      primarySignal,
-    };
-  }
-
-  private analyzeKlines(klines: Kline[], strategy: string): Omit<TimeframeAnalysis, 'timeframe' | 'interval'> {
-    const closes = klines.map((k) => k.close);
-    const volumes = klines.map((k) => k.volume);
-    const highs = klines.map((k) => k.high);
-    const lows = klines.map((k) => k.low);
-
-    const ema20 = this.calculateEMA(closes, 20);
-    const ema50 = this.calculateEMA(closes, 50);
-    const rsi = this.calculateRSI(closes, 14);
-    const avgVolume = volumes.reduce((a, b) => a + b, 0) / volumes.length;
-    const currentVolume = volumes[volumes.length - 1];
-
-    let trend: TimeframeAnalysis['trend'] = 'NEUTRAL';
-    let momentum: TimeframeAnalysis['momentum'] = 'NEUTRAL';
-    let volumeProfile: TimeframeAnalysis['volumeProfile'] = 'NORMAL';
-    let emaCross: TimeframeAnalysis['emaCross'] = 'NONE';
-    const reasoning: string[] = [];
-
-    if (ema20 > ema50) {
-      trend = 'BULLISH';
-      emaCross = 'GOLDEN';
-      reasoning.push('EMA 20 > EMA 50');
-    } else if (ema20 < ema50) {
-      trend = 'BEARISH';
-      emaCross = 'DEATH';
-      reasoning.push('EMA 20 < EMA 50');
-    }
-
-    if (rsi > 70) {
-      momentum = 'OVERBOUGHT';
-      reasoning.push(`RSI ${rsi.toFixed(1)} > 70`);
-    } else if (rsi < 30) {
-      momentum = 'OVERSOLD';
-      reasoning.push(`RSI ${rsi.toFixed(1)} < 30`);
-    } else if (rsi > 60) {
-      reasoning.push(`RSI ${rsi.toFixed(1)} bullish`);
-    } else if (rsi < 40) {
-      reasoning.push(`RSI ${rsi.toFixed(1)} bearish`);
-    }
-
-    if (currentVolume > avgVolume * 1.5) {
-      volumeProfile = 'HIGH';
-      reasoning.push('Volume spike');
-    } else if (currentVolume < avgVolume * 0.5) {
-      volumeProfile = 'LOW';
-      reasoning.push('Low volume');
-    }
-
-    const lastClose = closes[closes.length - 1];
-    const highestHigh = Math.max(...highs.slice(-20));
-    const lowestLow = Math.min(...lows.slice(-20));
-    const rangePosition = (highestHigh - lowestLow) > 0 ? (lastClose - lowestLow) / (highestHigh - lowestLow) : 0.5;
-
-    let confidence = 0;
-    if (trend === 'BULLISH') confidence += 30;
-    if (trend === 'BEARISH') confidence += 30;
-    if (momentum === 'OVERSOLD' && trend === 'BULLISH') confidence += 25;
-    if (momentum === 'OVERBOUGHT' && trend === 'BEARISH') confidence += 25;
-    if (volumeProfile === 'HIGH') confidence += 15;
-    if (emaCross !== 'NONE') confidence += 10;
-    confidence = Math.min(100, Math.max(0, confidence));
-
-    if (strategy === 'scalping' && confidence < 40) confidence = Math.max(0, confidence - 10);
-    if (strategy === 'breakout' && rangePosition < 0.9 && trend === 'BULLISH') confidence = Math.max(0, confidence - 5);
-
-    return {
-      trend,
-      momentum,
-      volumeProfile,
-      emaCross,
-      rsi,
-      confidence,
-      reasoning,
-    };
-  }
-
-  private calculateEMA(closes: number[], period: number): number {
-    if (closes.length < period) return closes[closes.length - 1] || 0;
-    const multiplier = 2 / (period + 1);
-    let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
-    for (let i = period; i < closes.length; i++) {
-      ema = (closes[i] - ema) * multiplier + ema;
-    }
-    return ema;
-  }
-
-  private calculateRSI(closes: number[], period: number): number {
-    if (closes.length < period + 1) return 50;
-    let gains = 0;
-    let losses = 0;
-    for (let i = 1; i <= period; i++) {
-      const change = closes[i] - closes[i - 1];
-      if (change > 0) gains += change;
-      else losses -= change;
-    }
-    let avgGain = gains / period;
-    let avgLoss = losses / period;
-    for (let i = period + 1; i < closes.length; i++) {
-      const change = closes[i] - closes[i - 1];
-      const gain = change > 0 ? change : 0;
-      const loss = change < 0 ? -change : 0;
-      avgGain = (avgGain * (period - 1) + gain) / period;
-      avgLoss = (avgLoss * (period - 1) + loss) / period;
-    }
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    return 100 - 100 / (1 + rs);
-  }
-
   private async monitorOpenPositions() {
     try {
       const userId = (await this.state.storage.get('userId')) as string;

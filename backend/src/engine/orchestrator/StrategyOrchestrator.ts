@@ -44,9 +44,7 @@ export class StrategyOrchestrator {
 
       const results: EvaluationResult[] = [];
       for (const [id, strategy] of this.registeredStrategies) {
-        if (strategyId && id !== strategyId) {
-          continue;
-        }
+        if (strategyId && id !== strategyId) continue;
         console.log(`[Orchestrator] Evaluating strategy: ${id}`);
         try {
             const result = strategy.evaluate(frozenContext);
