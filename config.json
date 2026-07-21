@@ -1,9 +1,0 @@
-{
-  "title": "Ollama local model",
-  "provider": "ollama",
-  "model": "deepseek-coder:6.7b",
-  "completionOptions": {
-    "temperature": 0.2,
-    "maxTokens": 2048
-  }
-}
