@@ -491,6 +491,11 @@ export class TradingBot {
         } else {
           await this.state.storage.delete('targetEntryPrice');
         }
+        if (positionSize != null) {
+          await this.state.storage.put('positionSize', positionSize);
+        } else {
+          await this.state.storage.delete('positionSize');
+        }
 
         await this.state.storage.put('alerts', [] as TradeAlert[]);
         await this.state.storage.put('tradeActive', false);
@@ -979,16 +984,16 @@ export class TradingBot {
                 // Check if we recently added this alert to avoid spamming the queue
                 const recentAlert = alerts.find(a => a.symbol === coinId && a.status === 'pending' && a.strategy === `${strategy}_NEW`);
                 if (!recentAlert) {
-                  // We need to fetch current price for position sizing if not explicitly in signal
+                  // Fetch live market price at the exact moment of signal generation
                   const ticker = user?.exchange_name ? await getExchangeAdapter(user.exchange_name as ExchangeName, 'mainnet', 'global').fetchTicker(coinId).catch(() => null) : null;
                   const price = ticker?.price || 0;
-                  // Use arbitrary size if not calculated correctly, but the UI passes risk amount.
-                  // For now, use min size just to test execution flow
-                  const size = 100; // Mocked size, real sizing will use risk engine output
+                  
+                  const storedPositionSize = (await this.state.storage.get('positionSize')) as number | undefined;
+                  const size = storedPositionSize ?? 0;
                   
                   const targetEntryPrice = (await this.state.storage.get('targetEntryPrice')) as number | undefined;
-                  const alertSignalPrice = sig.signalPrice || sig.entryPrice || price;
-                  const alertTargetPrice = targetEntryPrice || sig.targetEntryPrice || alertSignalPrice;
+                  const alertSignalPrice = sig.signalPrice || price;
+                  const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
 
                   const alert: TradeAlert = {
                     id: crypto.randomUUID(),
@@ -1007,6 +1012,24 @@ export class TradingBot {
                   };
                   alerts.push(alert);
                   await this.state.storage.put('alerts', alerts);
+
+                  // Trigger real-time FCM Push Notification to user's Android device
+                  try {
+                    await sendTradeNotification(this.env, userId, alert.id, {
+                      symbol: alert.symbol,
+                      side: alert.side,
+                      entryPrice: alert.entryPrice,
+                      targetEntryPrice: alert.targetEntryPrice,
+                      signalPrice: alert.signalPrice,
+                      stopLoss: alert.stopLoss,
+                      takeProfit: alert.takeProfit,
+                      estimatedPnl: alert.estimatedPnl,
+                      positionSize: alert.positionSize,
+                      strategy: alert.strategy,
+                    });
+                  } catch (notifErr) {
+                    console.error('Failed to send FCM trade notification:', notifErr);
+                  }
                 }
               }
             }

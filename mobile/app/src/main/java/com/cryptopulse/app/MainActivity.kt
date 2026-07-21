@@ -277,7 +277,7 @@ class MainActivity : FragmentActivity() {
                             val targetEntryPrice = (alert?.get("targetEntryPrice") as? Double)
                             
                             // Feature 5: Dynamic Estimated P&L Calculation using (TP - Signal) * Qty (or simulated positionSize/price ratio)
-                            val positionSize = (alert?.get("positionSize") as? Double) ?: 100.0
+                            val positionSize = (alert?.get("positionSize") as? Double) ?: 0.0
                             val refPrice = targetEntryPrice ?: signalPrice
                             val quantity = if (refPrice > 0.0) positionSize / refPrice else 0.0
                             val calculatedPnl = if (quantity > 0.0) {
@@ -357,6 +357,7 @@ class MainActivity : FragmentActivity() {
             val estimatedPnl = intent.getDoubleExtra("alert_estimated_pnl", 0.0)
             val signalPrice = intent.getDoubleExtra("alert_signal_price", entryPrice)
             val targetEntryPrice = if (intent.hasExtra("alert_target_entry_price")) intent.getDoubleExtra("alert_target_entry_price", 0.0) else null
+            val positionSize = if (intent.hasExtra("alert_position_size")) intent.getDoubleExtra("alert_position_size", 0.0) else null
             val alertId = intent.getStringExtra("alert_id")
             if (entryPrice > 0 && alertId != null) {
                 val alert = mutableMapOf<String, Any>(
@@ -370,6 +371,9 @@ class MainActivity : FragmentActivity() {
                 )
                 if (targetEntryPrice != null && targetEntryPrice > 0.0) {
                     alert["targetEntryPrice"] = targetEntryPrice
+                }
+                if (positionSize != null && positionSize > 0.0) {
+                    alert["positionSize"] = positionSize
                 }
                 lifecycleScope.launch {
                     AlertBus.send(alert)

@@ -263,9 +263,12 @@ export async function sendTradeNotification(
     symbol: string;
     side: "BUY" | "SELL";
     entryPrice: number;
+    targetEntryPrice?: number;
+    signalPrice?: number;
     stopLoss: number;
     takeProfit: number;
     estimatedPnl: number;
+    positionSize?: number;
     strategy: string;
   },
 ): Promise<void> {
@@ -283,6 +286,27 @@ export async function sendTradeNotification(
   const title = "Trade Detected";
   const body = `${opportunity.side} ${opportunity.symbol} | ${opportunity.strategy} | Entry: ${opportunity.entryPrice.toFixed(2)}`;
 
+  const dataPayload: Record<string, string> = {
+    type: "trade_alert",
+    alertId: alertId,
+    symbol: opportunity.symbol,
+    side: opportunity.side,
+    strategy: opportunity.strategy,
+    entryPrice: opportunity.entryPrice.toString(),
+    stopLoss: opportunity.stopLoss.toString(),
+    takeProfit: opportunity.takeProfit.toString(),
+    estimatedPnl: opportunity.estimatedPnl.toString(),
+  };
+  if (opportunity.targetEntryPrice != null) {
+    dataPayload.targetEntryPrice = opportunity.targetEntryPrice.toString();
+  }
+  if (opportunity.signalPrice != null) {
+    dataPayload.signalPrice = opportunity.signalPrice.toString();
+  }
+  if (opportunity.positionSize != null) {
+    dataPayload.positionSize = opportunity.positionSize.toString();
+  }
+
   // 1. Try FCM v1 HTTP API if keys are provided
   if (env.FCM_PROJECT_ID && env.FCM_CLIENT_EMAIL && env.FCM_PRIVATE_KEY) {
     try {
@@ -295,17 +319,7 @@ export async function sendTradeNotification(
             title,
             body,
           },
-          data: {
-            type: "trade_alert",
-            alertId: alertId,
-            symbol: opportunity.symbol,
-            side: opportunity.side,
-            strategy: opportunity.strategy,
-            entryPrice: opportunity.entryPrice.toString(),
-            stopLoss: opportunity.stopLoss.toString(),
-            takeProfit: opportunity.takeProfit.toString(),
-            estimatedPnl: opportunity.estimatedPnl.toString(),
-          },
+          data: dataPayload,
           android: {
             notification: {
               sound: "default",
@@ -353,17 +367,7 @@ export async function sendTradeNotification(
             sound: "default",
             priority: "high",
           },
-          data: {
-            type: "trade_alert",
-            alertId: alertId,
-            symbol: opportunity.symbol,
-            side: opportunity.side,
-            strategy: opportunity.strategy,
-            entryPrice: opportunity.entryPrice.toString(),
-            stopLoss: opportunity.stopLoss.toString(),
-            takeProfit: opportunity.takeProfit.toString(),
-            estimatedPnl: opportunity.estimatedPnl.toString(),
-          },
+          data: dataPayload,
         }),
       });
 

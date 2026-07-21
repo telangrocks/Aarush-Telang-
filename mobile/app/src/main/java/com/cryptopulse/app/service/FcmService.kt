@@ -36,6 +36,7 @@ class FcmService : FirebaseMessagingService() {
                 val entryPrice = data["entryPrice"]?.toDoubleOrNull() ?: 0.0
                 val signalPrice = data["signalPrice"]?.toDoubleOrNull() ?: entryPrice
                 val targetEntryPrice = data["targetEntryPrice"]?.toDoubleOrNull()
+                val positionSize = data["positionSize"]?.toDoubleOrNull()
                 val alert = mutableMapOf<String, Any>(
                     "id" to (data["alertId"] ?: data["id"] ?: ""),
                     "symbol" to (data["symbol"] ?: "UNKNOWN"),
@@ -47,6 +48,9 @@ class FcmService : FirebaseMessagingService() {
                 )
                 if (targetEntryPrice != null && targetEntryPrice > 0.0) {
                     alert["targetEntryPrice"] = targetEntryPrice
+                }
+                if (positionSize != null && positionSize > 0.0) {
+                    alert["positionSize"] = positionSize
                 }
                 // Surface the alert immediately if the app is in the foreground.
                 serviceScope.launch { AlertBus.send(alert) }
