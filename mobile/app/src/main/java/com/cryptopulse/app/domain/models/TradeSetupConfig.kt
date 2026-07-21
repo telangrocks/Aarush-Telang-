@@ -14,5 +14,6 @@ package com.cryptopulse.app.domain.models
 data class TradeSetupConfig(
     val strategyId: String,
     val symbol: String,
+    val entryPrice: Double,
     val parameters: Map<String, String>
 )

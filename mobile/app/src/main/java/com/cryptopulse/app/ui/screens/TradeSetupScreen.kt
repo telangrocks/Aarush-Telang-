@@ -3,6 +3,7 @@ package com.cryptopulse.app.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.filled.Check
@@ -15,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cryptopulse.app.ui.components.CoinInfoCard
@@ -52,13 +54,12 @@ fun TradeSetupScreen(
                         .background(NavyDeep)
                         .padding(horizontal = 20.dp, vertical = 12.dp)
                 ) {
-                    val isSuccess = !uiState.isLoading && uiState.error == null
+                    val isSuccess = !uiState.isLoading && uiState.error == null && uiState.entryPriceError == null
                     GradientButton(
                         text = if (isSuccess) "Start Analysis" else "Loading...",
                         onClick = {
                             val result = viewModel.buildConfig(candidate.symbol)
                             if (result is TradeSetupConfigResult.Success) {
-                                // For Phase 5, session will hold it. But right now we just navigate
                                 onProceedToConfirm()
                             }
                         },
@@ -118,6 +119,46 @@ fun TradeSetupScreen(
                         )
                     }
                 } else {
+                    item {
+                        OutlinedTextField(
+                            value = uiState.entryPrice,
+                            onValueChange = { newValue ->
+                                if (newValue.isEmpty() || newValue.matches(Regex("^\\d*\\.?\\d*$"))) {
+                                    viewModel.updateEntryPrice(newValue)
+                                }
+                            },
+                            label = { Text("Target Entry Price (USDT)") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("trade_setup_entry_price"),
+                            isError = uiState.entryPriceError != null,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary,
+                                cursorColor = CyanPrimary,
+                                focusedBorderColor = CyanPrimary,
+                                unfocusedBorderColor = Color(0xFF2A3650),
+                                errorBorderColor = LossRed
+                            ),
+                            supportingText = {
+                                val entryPriceError = uiState.entryPriceError
+                                if (entryPriceError != null) {
+                                    Text(
+                                        text = entryPriceError,
+                                        color = LossRed,
+                                        fontSize = 12.sp
+                                    )
+                                } else if (candidate.currentMarketPrice > 0.0) {
+                                    Text(
+                                        text = "Current price: $${"%.2f".format(candidate.currentMarketPrice)}",
+                                        color = TextSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        )
+                    }
                     items(items = uiState.fields, key = { it.key }) { field ->
                         val currentValue = uiState.formValues[field.key] ?: ""
                         val error = uiState.formErrors[field.key]

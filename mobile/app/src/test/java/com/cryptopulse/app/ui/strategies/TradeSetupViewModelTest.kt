@@ -87,6 +87,8 @@ class TradeSetupViewModelTest {
         assertEquals("1.5", state.formValues["risk"])
         assertEquals("Safe", state.formValues["mode"])
         assertEquals("false", state.formValues["trailing_stop"])
+        assertEquals("", state.entryPrice)
+        assertEquals(null, state.entryPriceError)
     }
 
     @Test
@@ -131,15 +133,30 @@ class TradeSetupViewModelTest {
         val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
         testDispatcher.scheduler.advanceUntilIdle()
 
-        // Change from default to valid
         viewModel.updateFieldValue("leverage", "20")
+        viewModel.updateEntryPrice("50000.0")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.Success)
         val config = (result as TradeSetupConfigResult.Success).config
         assertEquals("test_strat", config.strategyId)
         assertEquals("BTC", config.symbol)
+        assertEquals(50000.0, config.entryPrice, 0.001)
         assertEquals("20", config.parameters["leverage"])
+    }
+
+    @Test
+    fun `buildConfig returns ValidationFailed when entry price is invalid`() = runTest {
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.updateEntryPrice("-10")
+
+        val result = viewModel.buildConfig("BTC")
+        assertTrue(result is TradeSetupConfigResult.ValidationFailed)
+        val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
+        assertEquals("Entry price must be greater than 0.", errors["entryPrice"])
+        assertEquals("Entry price must be greater than 0.", viewModel.uiState.value.entryPriceError)
     }
 
     @Test
@@ -147,14 +164,16 @@ class TradeSetupViewModelTest {
         val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
         testDispatcher.scheduler.advanceUntilIdle()
 
-        viewModel.updateFieldValue("leverage", "") // required
+        viewModel.updateFieldValue("leverage", "")
+        viewModel.updateEntryPrice("")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
         val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
         assertEquals("This field is required.", errors["leverage"])
+        assertEquals("Entry price is required.", errors["entryPrice"])
         
-        // Also check UI state got updated with the error
         assertEquals("This field is required.", viewModel.uiState.value.formErrors["leverage"])
+        assertEquals("Entry price is required.", viewModel.uiState.value.entryPriceError)
     }
 }

@@ -62,6 +62,7 @@ class ExchangeViewModel @Inject constructor(
     private val tokenManager: com.cryptopulse.app.data.local.TokenManager,
     private val fcmApi: com.cryptopulse.app.data.api.FcmApi,
     private val exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager,
+    private val sessionRepository: com.cryptopulse.app.data.repository.TradeSessionRepository
 ) : ViewModel() {
 
     private val _formState = MutableStateFlow(ExchangeFormState())
@@ -511,7 +512,7 @@ class ExchangeViewModel @Inject constructor(
 
     fun activateBot(symbol: String, strategy: String, config: Map<String, Any>? = null) {
         _botError.value = null
-        val targetPrice = _tradeSetup.value?.entryPrice
+        val targetPrice = sessionRepository.tradeSetupConfig.value?.entryPrice?.takeIf { it > 0.0 }
         viewModelScope.launch {
             try {
                 val token = tokenManager.getToken()

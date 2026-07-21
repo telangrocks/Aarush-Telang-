@@ -58,7 +58,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                         coinId = config.symbol,
                         strategy = config.strategyId,
                         positionSize = null,
-                        targetEntryPrice = null,
+                        targetEntryPrice = if (config.entryPrice > 0.0) config.entryPrice else null,
                         config = config.parameters
                     )
                 )

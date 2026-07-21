@@ -21,7 +21,9 @@ data class TradeSetupUiState(
     val error: String? = null,
     val fields: List<DynamicFieldModel> = emptyList(),
     val formValues: Map<String, String> = emptyMap(),
-    val formErrors: Map<String, String?> = emptyMap()
+    val formErrors: Map<String, String?> = emptyMap(),
+    val entryPrice: String = "",
+    val entryPriceError: String? = null
 )
 
 sealed interface TradeSetupConfigResult {
@@ -84,6 +86,18 @@ class TradeSetupViewModel @Inject constructor(
         }
     }
 
+    fun updateEntryPrice(value: String) {
+        val error = validateEntryPrice(value)
+        _uiState.update { it.copy(entryPrice = value, entryPriceError = error) }
+    }
+
+    private fun validateEntryPrice(value: String): String? {
+        if (value.isBlank()) return "Entry price is required."
+        val doubleVal = value.toDoubleOrNull() ?: return "Must be a valid number."
+        if (doubleVal <= 0.0) return "Entry price must be greater than 0."
+        return null
+    }
+
     private fun validateField(key: String, value: String, fields: List<DynamicFieldModel>): String? {
         val field = fields.find { it.key == key } ?: return null
         var error: String? = null
@@ -127,6 +141,13 @@ class TradeSetupViewModel @Inject constructor(
         val newErrors = currentState.formErrors.toMutableMap()
         val finalErrors = mutableMapOf<String, String>()
 
+        val entryPriceError = validateEntryPrice(currentState.entryPrice)
+        newErrors["entryPrice"] = entryPriceError
+        if (entryPriceError != null) {
+            hasErrors = true
+            finalErrors["entryPrice"] = entryPriceError
+        }
+
         currentState.fields.forEach { field ->
             val value = currentState.formValues[field.key] ?: field.defaultValue
             val error = validateField(field.key, value, currentState.fields)
@@ -138,13 +159,14 @@ class TradeSetupViewModel @Inject constructor(
         }
         
         if (hasErrors) {
-            _uiState.update { it.copy(formErrors = newErrors) }
+            _uiState.update { it.copy(formErrors = newErrors, entryPriceError = entryPriceError) }
             return TradeSetupConfigResult.ValidationFailed(finalErrors)
         }
 
         val config = TradeSetupConfig(
             strategyId = sessionRepository.selectedStrategyId.value!!,
             symbol = symbol,
+            entryPrice = currentState.entryPrice.toDouble(),
             parameters = currentState.formValues
         )
         sessionRepository.setTradeSetupConfig(config)
