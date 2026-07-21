@@ -22,7 +22,7 @@ export class StrategyOrchestrator {
     this.marketDataEngine = engine;
   }
 
-  public async executeCycle(symbol: string, strategyId?: string): Promise<EvaluationResult[]> {
+  public async executeCycle(symbol: string, strategyId?: string, config?: any): Promise<EvaluationResult[]> {
     const cycleStart = performance.now();
     let successfulEvaluations = 0;
     let failedEvaluations = 0;
@@ -52,9 +52,9 @@ export class StrategyOrchestrator {
       const metrics = MetricsEngine.getInstance();
       
       if (strategyId) {
-        const strategy = registry.getStrategy(strategyId);
+        const strategy = registry.createStrategy(strategyId, config);
         if (strategy) {
-          console.log(`[Orchestrator] Evaluating strategy: ${strategyId}`);
+          console.log(`[Orchestrator] Evaluating strategy: ${strategyId} (with config overrides)`);
           const { result, success } = this.evaluateWithTelemetry(strategy, strategyId, symbol, frozenContext);
           if (result) results.push(result);
           if (success) {

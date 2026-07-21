@@ -1,87 +1,80 @@
 package com.cryptopulse.app.data.repository
 
+import com.cryptopulse.app.data.api.StrategyApi
 import com.cryptopulse.app.domain.models.*
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.delay
 
 @Singleton
-class StrategyRepositoryImpl @Inject constructor() : StrategyRepository {
+class StrategyRepositoryImpl @Inject constructor(
+    private val api: StrategyApi
+) : StrategyRepository {
     
-    // Mock data for Phase 1
-    private val mockStrategies = listOf(
-        Strategy(
-            id = "scalping_v1",
-            name = "Scalping",
-            description = "Quick in-and-out trades capturing small price movements.",
-            category = StrategyCategory.SCALPING,
-            riskLevel = RiskLevel.HIGH,
-            schemaVersion = 1,
-            requiredParameters = listOf(
-                StrategyParameterSchema(
-                    key = "leverage",
-                    displayName = "Leverage",
-                    type = ParameterType.INT,
-                    defaultValue = "10",
-                    isRequired = true,
-                    minValue = 1.0,
-                    maxValue = 50.0
-                ),
-                StrategyParameterSchema(
-                    key = "stop_loss_pct",
-                    displayName = "Stop Loss (%)",
-                    type = ParameterType.DOUBLE,
-                    defaultValue = "1.0",
-                    isRequired = true,
-                    minValue = 0.1,
-                    maxValue = 5.0
-                ),
-                StrategyParameterSchema(
-                    key = "use_trailing_sl",
-                    displayName = "Use Trailing SL",
-                    type = ParameterType.BOOLEAN,
-                    defaultValue = "true",
-                    isRequired = true
-                )
-            )
-        ),
-        Strategy(
-            id = "swing_v1",
-            name = "Swing Trading",
-            description = "Capture multi-day trends with wider targets.",
-            category = StrategyCategory.SWING,
-            riskLevel = RiskLevel.MEDIUM,
-            schemaVersion = 1,
-            requiredParameters = listOf(
-                StrategyParameterSchema(
-                    key = "leverage",
-                    displayName = "Leverage",
-                    type = ParameterType.INT,
-                    defaultValue = "3",
-                    isRequired = true,
-                    minValue = 1.0,
-                    maxValue = 10.0
-                ),
-                StrategyParameterSchema(
-                    key = "target_count",
-                    displayName = "Number of Targets",
-                    type = ParameterType.ENUM,
-                    defaultValue = "2",
-                    isRequired = true,
-                    options = listOf("1", "2", "3")
-                )
-            )
-        )
-    )
+    private var cachedStrategies: List<Strategy>? = null
+    private var lastFetchTime = 0L
+    private val CACHE_TTL_MS = 60 * 1000L // 1 minute
 
     override suspend fun getStrategies(): Result<List<Strategy>> {
-        delay(300) // Simulate network delay
-        return Result.success(mockStrategies)
+        val now = System.currentTimeMillis()
+        if (cachedStrategies != null && (now - lastFetchTime) < CACHE_TTL_MS) {
+            return Result.success(cachedStrategies!!)
+        }
+
+        return try {
+            val response = api.getStrategies()
+            val strategies = response.strategies.map { dto ->
+                Strategy(
+                    id = dto.id,
+                    name = dto.displayName,
+                    description = dto.description,
+                    category = parseCategory(dto.category),
+                    riskLevel = parseRisk(dto.riskProfile),
+                    schemaVersion = 1,
+                    requiredParameters = dto.parameters?.map { p ->
+                        StrategyParameterSchema(
+                            key = p.key,
+                            displayName = p.displayName,
+                            type = ParameterType.valueOf(p.type),
+                            defaultValue = p.defaultValue,
+                            isRequired = p.isRequired,
+                            minValue = p.minValue,
+                            maxValue = p.maxValue,
+                            options = p.options
+                        )
+                    } ?: emptyList()
+                )
+            }
+            cachedStrategies = strategies
+            lastFetchTime = now
+            Result.success(strategies)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            // Fallback to cache if available, else error
+            if (cachedStrategies != null) {
+                Result.success(cachedStrategies!!)
+            } else {
+                Result.failure(e)
+            }
+        }
     }
 
     override suspend fun getStrategyById(id: String): Result<Strategy?> {
-        delay(150)
-        val strategy = mockStrategies.find { it.id == id }
+        if (cachedStrategies == null) {
+            val result = getStrategies()
+            if (result.isFailure) {
+                return Result.failure(result.exceptionOrNull() ?: Exception("Failed to fetch strategies"))
+            }
+        }
+        val strategy = cachedStrategies?.find { it.id == id }
         return Result.success(strategy)
+    }
+
+    private fun parseCategory(cat: String): StrategyCategory {
+        return try { StrategyCategory.valueOf(cat.uppercase()) } catch (e: Exception) { StrategyCategory.CUSTOM }
+    }
+
+    private fun parseRisk(risk: String): RiskLevel {
+        return try { RiskLevel.valueOf(risk.uppercase()) } catch (e: Exception) { RiskLevel.MEDIUM }
     }
 }

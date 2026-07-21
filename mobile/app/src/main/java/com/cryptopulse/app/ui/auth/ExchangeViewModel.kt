@@ -368,7 +368,7 @@ class ExchangeViewModel @Inject constructor(
 
 
 
-    fun fetchTechnicalAnalysis(strategy: String) {
+    fun fetchTechnicalAnalysis(strategy: String, config: Map<String, Any>? = null) {
         val candidate = _selectedCandidate.value ?: return
         _analysisError.value = null
 
@@ -378,6 +378,7 @@ class ExchangeViewModel @Inject constructor(
                     TechnicalAnalysisRequest(
                         symbol = candidate.symbol,
                         strategy = strategy,
+                        config = config
                     )
                 )
                 if (response.isSuccessful && response.body() != null) {
@@ -511,7 +512,7 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
-    fun activateBot(symbol: String, strategy: String) {
+    fun activateBot(symbol: String, strategy: String, config: Map<String, Any>? = null) {
         _botError.value = null
         val targetPrice = _tradeSetup.value?.entryPrice
         viewModelScope.launch {
@@ -523,6 +524,7 @@ class ExchangeViewModel @Inject constructor(
                             coinId = symbol,
                             strategy = strategy,
                             targetEntryPrice = targetPrice,
+                            config = config
                         )
                     )
                     if (!response.isSuccessful) {

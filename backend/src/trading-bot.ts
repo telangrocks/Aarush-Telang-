@@ -474,13 +474,18 @@ export class TradingBot {
 
     switch (url.pathname) {
       case '/activate': {
-        const { userId, coinId, strategy, positionSize, targetEntryPrice } = await request.json<{ userId: string; coinId: string; strategy: string; positionSize?: number; targetEntryPrice?: number }>();
+        const { userId, coinId, strategy, positionSize, targetEntryPrice, config } = await request.json<{ userId: string; coinId: string; strategy: string; positionSize?: number; targetEntryPrice?: number; config?: any }>();
         
         await this.logAuditEvent(userId, 'BOT_ACTIVATED', { strategy, coinId, positionSize, targetEntryPrice });
         await this.state.storage.put('isActive', true);
         await this.state.storage.put('coinId', coinId);
         await this.state.storage.put('strategy', strategy);
         await this.state.storage.put('userId', userId);
+        if (config) {
+          await this.state.storage.put('strategyConfig', config);
+        } else {
+          await this.state.storage.delete('strategyConfig');
+        }
         if (targetEntryPrice != null) {
           await this.state.storage.put('targetEntryPrice', targetEntryPrice);
         } else {
@@ -956,7 +961,8 @@ export class TradingBot {
               this.orchestrator.setMarketDataEngine(dataEngine);
             }
 
-            const results = await this.orchestrator.executeCycle(coinId, strategy);
+            const strategyConfig = await this.state.storage.get('strategyConfig');
+            const results = await this.orchestrator.executeCycle(coinId, strategy, strategyConfig);
             const currentState = this.orchestrator.getCurrentState();
             await this.state.storage.put('engineState', currentState);
             

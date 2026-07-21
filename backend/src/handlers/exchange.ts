@@ -368,9 +368,10 @@ export async function handleGetTechnicalAnalysis(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
-    const { symbol, strategy } = await c.req.json<{
+    const { symbol, strategy, config } = await c.req.json<{
       symbol: string;
       strategy: string;
+      config?: any;
     }>();
 
     if (!symbol || !strategy) {
@@ -463,7 +464,7 @@ export async function handleActivateTradingBot(
   try {
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
-    const { coinId, strategy, positionSize, targetEntryPrice } = await c.req.json<{ coinId: string; strategy: string; positionSize?: number; targetEntryPrice?: number }>();
+    const { coinId, strategy, positionSize, targetEntryPrice, config } = await c.req.json<{ coinId: string; strategy: string; positionSize?: number; targetEntryPrice?: number; config?: any }>();
 
     const botId = c.env.TRADING_BOTS.idFromName(userId);
     const bot = c.env.TRADING_BOTS.get(botId);
@@ -472,7 +473,7 @@ export async function handleActivateTradingBot(
       new Request("http://bot/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, coinId, strategy, positionSize, targetEntryPrice }),
+        body: JSON.stringify({ userId, coinId, strategy, positionSize, targetEntryPrice, config }),
       }),
     );
 

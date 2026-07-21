@@ -7,6 +7,7 @@ import retrofit2.http.POST
 data class TechnicalAnalysisRequest(
     val symbol: String,
     val strategy: String,
+    val config: Map<String, Any>? = null
 )
 
 data class TechnicalAnalysisResponse(

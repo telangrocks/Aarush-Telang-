@@ -155,8 +155,9 @@ class MainActivity : FragmentActivity() {
                             )
                         }
                         composable("trade_setup") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
+                            val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>()
+                            val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
                             val candidate = selectedCandidate ?: MarketCandidate(
                                 rank = 1,
                                 symbol = "BTC",
@@ -170,11 +171,13 @@ class MainActivity : FragmentActivity() {
                             TradeSetupScreen(
                                 candidate = candidate,
                                 onBack = { navController.popBackStack() },
-                                onProceedToConfirm = { entryPrice, stopLoss, takeProfit ->
-                                    viewModel.setTradeSetup(entryPrice, stopLoss, takeProfit)
-                                    navController.navigate("technical_analysis")
+                                onProceedToConfirm = {
+                                    val result = tradeSetupViewModel.buildConfig(candidate.symbol)
+                                    if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) {
+                                        navController.navigate("technical_analysis")
+                                    }
                                 },
-                                viewModel = viewModel,
+                                viewModel = tradeSetupViewModel,
                             )
                         }
 
@@ -195,15 +198,20 @@ class MainActivity : FragmentActivity() {
                             StrategySelectionScreen(
                                 candidate = candidate,
                                 onBack = { navController.popBackStack() },
-                                onProceed = { navController.navigate("trade_setup") },
+                                onProceed = { 
+                                    val strategyId = strategyViewModel.selectedStrategyId.value
+                                    if (strategyId != null) {
+                                        navController.navigate("trade_setup") 
+                                    }
+                                },
                                 viewModel = strategyViewModel
                             )
                         }
                         composable("technical_analysis") {
                             val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
+                            val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                            val selectedStrategy by strategyViewModel.selectedStrategyId.collectAsState()
+                            val config by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
                             val candidate = selectedCandidate ?: MarketCandidate(
                                 rank = 1,
                                 symbol = "BTC",
@@ -214,7 +222,7 @@ class MainActivity : FragmentActivity() {
                                 minNotional = 10.0,
                                 coinColor = Color(0xFFF7931A),
                             )
-                            val strategy = selectedStrategy ?: "scalping"
+                            val strategy = config?.strategyId ?: "scalping"
 
                             LaunchedEffect(Unit) {
                                 AlertBus.alerts.collect { alert ->
@@ -233,6 +241,7 @@ class MainActivity : FragmentActivity() {
                                     }
                                 },
                                 viewModel = viewModel,
+                                technicalAnalysisViewModel = technicalAnalysisViewModel
                             )
                         }
                         composable("live_analysis") {

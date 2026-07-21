@@ -12,6 +12,7 @@ data class ActivateBotRequest(
     val strategy: String,
     val positionSize: Double? = null,
     val targetEntryPrice: Double? = null,
+    val config: Map<String, Any>? = null
 )
 
 data class BotStatusResponse(

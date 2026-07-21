@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.screens
 
+import com.cryptopulse.app.ui.components.CoinInfoCard
+
 import android.annotation.SuppressLint
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -412,5 +414,6 @@ private fun SummaryRow(label: String, value: String, valueColor: Color) {
         Text(value, color = valueColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
+
 
 

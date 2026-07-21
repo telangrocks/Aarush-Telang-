@@ -60,5 +60,18 @@ export class StrategyRegistry {
   public getAllStrategies(): Map<string, IStrategy> {
     return this.strategies;
   }
+
+  public createStrategy(id: string, configOverrides?: any): IStrategy | undefined {
+    // Returns a fresh instance of the strategy per evaluation cycle.
+    // In future iterations, configOverrides will be deep-merged with the default configs.
+    switch (id) {
+      case 'ScalperV2': return new ScalperV2Strategy();
+      case 'Momentum': return new MomentumStrategy();
+      case 'Breakout': return new BreakoutStrategy();
+      case 'MeanReversion': return new MeanReversionStrategy();
+      case 'VWAP': return new VWAPStrategy();
+      default: return undefined;
+    }
+  }
 }
 

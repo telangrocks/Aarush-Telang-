@@ -1,4 +1,5 @@
 import { Timeframe } from '../market-data/Timeframe';
+import { StrategyParameterSchema } from '../schema/StrategyParameterSchema';
 
 export type StrategyStatus = 'ACTIVE' | 'EXPERIMENTAL' | 'DEPRECATED';
 
@@ -19,4 +20,5 @@ export interface StrategyManifest {
   supportsLiveTrading: boolean;
   status: StrategyStatus;
   author: string;
+  parameters: StrategyParameterSchema[];
 }

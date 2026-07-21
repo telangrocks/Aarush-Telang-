@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.screens
 
+import com.cryptopulse.app.ui.components.CoinInfoCard
+
 import android.content.Context
 import android.media.RingtoneManager
 import android.net.Uri
@@ -243,5 +245,6 @@ private fun SummaryRow(label: String, value: String, valueColor: Color, testTag:
         Text(value, color = valueColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
     }
 }
+
 
 

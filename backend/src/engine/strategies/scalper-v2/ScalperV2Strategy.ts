@@ -28,7 +28,13 @@ export class ScalperV2Strategy implements IStrategy {
     supportsPaperTrading: true,
     supportsLiveTrading: true,
     status: 'ACTIVE',
-    author: 'System'
+    author: 'System',
+    parameters: [
+      { key: 'leverage', displayName: 'Leverage', type: 'INT', defaultValue: '10', isRequired: true, minValue: 1, maxValue: 100 },
+      { key: 'risk_level', displayName: 'Risk Level', type: 'ENUM', defaultValue: 'Medium', isRequired: true, options: ['Low', 'Medium', 'High'] },
+      { key: 'mode', displayName: 'Mode', type: 'ENUM', defaultValue: 'Aggressive', isRequired: true, options: ['Conservative', 'Moderate', 'Aggressive'] },
+      { key: 'trailing_stop', displayName: 'Trailing Stop', type: 'BOOLEAN', defaultValue: 'true', isRequired: true }
+    ]
   };
 
   private indicatorEngine: IndicatorEngine;

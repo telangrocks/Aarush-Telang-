@@ -3,6 +3,7 @@ package com.cryptopulse.app.ui.strategies
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cryptopulse.app.data.repository.StrategyRepository
+import com.cryptopulse.app.data.repository.TradeSessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -13,14 +14,13 @@ import javax.inject.Inject
 @HiltViewModel
 class StrategySelectionViewModel @Inject constructor(
     private val repository: StrategyRepository,
-    private val savedStateHandle: androidx.lifecycle.SavedStateHandle
+    private val sessionRepository: TradeSessionRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<StrategySelectionState>(StrategySelectionState.Loading)
     val uiState: StateFlow<StrategySelectionState> = _uiState.asStateFlow()
 
-    private val _selectedStrategyId = savedStateHandle.getStateFlow<String?>("selected_strategy_id", null)
-    val selectedStrategyId: StateFlow<String?> = _selectedStrategyId
+    val selectedStrategyId: StateFlow<String?> = sessionRepository.selectedStrategyId
 
     init {
         loadStrategies()
@@ -43,6 +43,6 @@ class StrategySelectionViewModel @Inject constructor(
     }
 
     fun selectStrategy(id: String) {
-        savedStateHandle["selected_strategy_id"] = id
+        sessionRepository.setStrategyId(id)
     }
 }

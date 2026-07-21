@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.ui.platform.LocalContext
+import com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel
+import com.cryptopulse.app.ui.components.CoinInfoCard
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.components.GradientButton
@@ -41,6 +43,7 @@ fun TechnicalAnalysisScreen(
     onBack: () -> Unit,
     onBotActivated: () -> Unit = {},
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
+    technicalAnalysisViewModel: TechnicalAnalysisViewModel = hiltViewModel()
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
@@ -48,15 +51,16 @@ fun TechnicalAnalysisScreen(
     var isLoading by remember { mutableStateOf(true) }
     var lastUpdated by remember { mutableStateOf(System.currentTimeMillis()) }
 
+    val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
     val analysisResult by viewModel.technicalAnalysis.collectAsState(initial = null)
     val analysisError by viewModel.analysisError.collectAsState(initial = null)
     val botError by viewModel.botError.collectAsState(initial = null)
     val scope = rememberCoroutineScope()
     val appContext = LocalContext.current.applicationContext
 
-    LaunchedEffect(strategy, candidate.symbol) {
+    LaunchedEffect(strategy, candidate.symbol, tradeSetupConfig) {
         isLoading = true
-        viewModel.fetchTechnicalAnalysis(strategy)
+        viewModel.fetchTechnicalAnalysis(strategy, tradeSetupConfig?.parameters)
         delay(10000)
         if (analysisResult == null) {
             isLoading = false
@@ -99,7 +103,7 @@ fun TechnicalAnalysisScreen(
                             isBotActive = !isBotActive
                             scope.launch {
                                 if (isBotActive) {
-                                    viewModel.activateBot(candidate.symbol, strategy)
+                                    viewModel.activateBot(candidate.symbol, strategy, tradeSetupConfig?.parameters)
                                     BackgroundMonitoringService.startService(appContext)
                                     onBotActivated()
                                 } else {
@@ -147,6 +151,34 @@ fun TechnicalAnalysisScreen(
 
                 Spacer(Modifier.height(14.dp))
 
+                if (tradeSetupConfig != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = NavyCard),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, NavyBorder)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                "Trade Setup Configuration",
+                                color = CyanPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            tradeSetupConfig!!.parameters.forEach { (key, value) ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(text = key, color = TextSecondary, fontSize = 13.sp)
+                                    Text(text = value, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+                }
+
                 if (analysisError != null && analysisResult == null) {
                     Box(
                         modifier = Modifier
@@ -163,7 +195,7 @@ fun TechnicalAnalysisScreen(
                                 text = "Retry",
                                 onClick = {
                                     viewModel.clearAnalysisError()
-                                    viewModel.fetchTechnicalAnalysis(strategy)
+                                    viewModel.fetchTechnicalAnalysis(strategy, tradeSetupConfig?.parameters)
                                 },
                                 leadingIcon = Icons.Default.Refresh,
                                 modifier = Modifier.fillMaxWidth(0.6f),
@@ -379,7 +411,7 @@ fun TechnicalAnalysisScreen(
                                 text = "Retry",
                                 onClick = {
                                     viewModel.clearBotError()
-                                    viewModel.activateBot(candidate.symbol, strategy)
+                                    viewModel.activateBot(candidate.symbol, strategy, tradeSetupConfig?.parameters)
                                 },
                                 leadingIcon = Icons.Default.Refresh,
                                 testTag = "technical_analysis_bot_retry"
