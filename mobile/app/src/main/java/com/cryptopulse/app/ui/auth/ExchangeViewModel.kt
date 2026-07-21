@@ -9,8 +9,6 @@ import com.cryptopulse.app.data.api.KlineDto
 import com.cryptopulse.app.data.api.KlineService
 import com.cryptopulse.app.data.api.MarketCandidateDto
 import com.cryptopulse.app.data.api.MarketService
-import com.cryptopulse.app.data.api.StrategyDto
-import com.cryptopulse.app.data.api.StrategyService
 import com.cryptopulse.app.data.api.TechnicalAnalysisRequest
 import com.cryptopulse.app.data.api.TechnicalAnalysisResponse
 import com.cryptopulse.app.data.api.TechnicalAnalysisService
@@ -57,7 +55,6 @@ data class TradeSetupState(
 class ExchangeViewModel @Inject constructor(
     private val exchangeService: ExchangeService,
     private val marketService: MarketService,
-    private val strategyService: StrategyService,
     private val technicalAnalysisService: TechnicalAnalysisService,
     private val tickerService: TickerService,
     private val klineService: KlineService,

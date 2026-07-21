@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -47,6 +48,7 @@ fun StrategySelectionScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(bgGradient)
+            .testTag("strategy_selection_root")
     ) {
         Scaffold(
             topBar = { CryptoPulseTopBar(onBack = onBack) },
@@ -139,13 +141,18 @@ fun StrategyCard(strategy: Strategy, isSelected: Boolean, onClick: () -> Unit) {
         StrategyCategory.SCALPING -> Icons.Default.Speed
         StrategyCategory.SWING -> Icons.Default.TrendingUp
         StrategyCategory.INTRADAY -> Icons.Default.SwapHoriz
+        StrategyCategory.TREND_FOLLOWING -> Icons.Default.TrendingUp
+        StrategyCategory.BREAKOUT -> Icons.Default.AutoGraph
+        StrategyCategory.MEAN_REVERSION -> Icons.Default.SwapHoriz
+        StrategyCategory.VWAP -> Icons.Default.AutoGraph
         else -> Icons.Default.AutoGraph
     }
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() },
+            .clickable { onClick() }
+            .testTag("strategy_option_${strategy.id.lowercase()}"),
         color = bgColor,
         shape = RoundedCornerShape(12.dp),
         border = androidx.compose.foundation.BorderStroke(if (isSelected) 2.dp else 1.dp, if (isSelected) borderColor else Color(0xFF2A3650))

@@ -3,7 +3,9 @@ package com.cryptopulse.app.ui.strategies
 import com.cryptopulse.app.data.repository.StrategyRepository
 import com.cryptopulse.app.data.repository.TradeSessionRepository
 import com.cryptopulse.app.domain.models.ParameterType
+import com.cryptopulse.app.domain.models.RiskLevel
 import com.cryptopulse.app.domain.models.Strategy
+import com.cryptopulse.app.domain.models.StrategyCategory
 import com.cryptopulse.app.domain.models.StrategyParameterSchema
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -60,7 +62,9 @@ class TradeSetupViewModelTest {
         id = "test_strat",
         name = "Test",
         description = "Desc",
-        categories = emptyList(),
+        category = StrategyCategory.CUSTOM,
+        riskLevel = RiskLevel.LOW,
+        schemaVersion = 1,
         requiredParameters = listOf(
             StrategyParameterSchema("leverage", "Leverage", ParameterType.INT, "10", true, 1.0, 100.0, null),
             StrategyParameterSchema("risk", "Risk", ParameterType.DOUBLE, "1.5", true, 0.1, 5.0, null),

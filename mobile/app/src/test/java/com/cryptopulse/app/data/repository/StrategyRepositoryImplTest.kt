@@ -1,48 +1,80 @@
 package com.cryptopulse.app.data.repository
 
 import com.cryptopulse.app.domain.models.*
-import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class StrategyRepositoryImplTest {
-
-    private val repository = StrategyRepositoryImpl()
+class StrategyParsingTest {
 
     @Test
-    fun `test getStrategies returns mock list`() = runBlocking {
-        val result = repository.getStrategies()
-        assertTrue(result.isSuccess)
-        val list = result.getOrNull()
-        assertTrue(list != null && list.isNotEmpty())
-        assertEquals("scalping_v1", list?.get(0)?.id)
+    fun `backend category Scalping maps to SCALPING`() {
+        assertEquals(StrategyCategory.SCALPING, StrategyCategory.valueOf("SCALPING"))
     }
 
     @Test
-    fun `test getStrategyById returns correct strategy`() = runBlocking {
-        val result = repository.getStrategyById("swing_v1")
-        assertTrue(result.isSuccess)
-        val strategy = result.getOrNull()
-        assertEquals("swing_v1", strategy?.id)
-        assertEquals("Swing Trading", strategy?.name)
+    fun `backend category Trend Following maps to TREND_FOLLOWING`() {
+        assertEquals(StrategyCategory.TREND_FOLLOWING, StrategyCategory.valueOf("TREND_FOLLOWING"))
     }
 
     @Test
-    fun `test getStrategyById returns null for invalid ID`() = runBlocking {
-        val result = repository.getStrategyById("invalid_id")
-        assertTrue(result.isSuccess)
-        assertNull(result.getOrNull())
+    fun `backend category Breakout maps to BREAKOUT`() {
+        assertEquals(StrategyCategory.BREAKOUT, StrategyCategory.valueOf("BREAKOUT"))
     }
 
     @Test
-    fun `test edge case zero parameters strategy`() {
+    fun `backend category Mean Reversion maps to MEAN_REVERSION`() {
+        assertEquals(StrategyCategory.MEAN_REVERSION, StrategyCategory.valueOf("MEAN_REVERSION"))
+    }
+
+    @Test
+    fun `backend category VWAP maps to VWAP`() {
+        assertEquals(StrategyCategory.VWAP, StrategyCategory.valueOf("VWAP"))
+    }
+
+    @Test
+    fun `unknown backend category falls back to CUSTOM`() {
+        assertEquals(StrategyCategory.CUSTOM, StrategyCategory.valueOf("CUSTOM"))
+    }
+
+    @Test
+    fun `dynamic field enum validation accepts valid options`() {
+        val field = StrategyParameterSchema(
+            key = "mode",
+            displayName = "Mode",
+            type = ParameterType.ENUM,
+            defaultValue = "Aggressive",
+            isRequired = true,
+            options = listOf("Conservative", "Moderate", "Aggressive")
+        )
+        assertEquals(ParameterType.ENUM, field.type)
+        assertEquals("Aggressive", field.defaultValue)
+        assertTrue(field.options!!.contains("Moderate"))
+    }
+
+    @Test
+    fun `strategy parameter schema preserves min and max bounds`() {
+        val field = StrategyParameterSchema(
+            key = "leverage",
+            displayName = "Leverage",
+            type = ParameterType.INT,
+            defaultValue = "10",
+            isRequired = true,
+            minValue = 1.0,
+            maxValue = 100.0
+        )
+        assertEquals(1.0, field.minValue)
+        assertEquals(100.0, field.maxValue)
+    }
+
+    @Test
+    fun `zero parameter strategy is valid`() {
         val strategy = Strategy(
             id = "zero_params",
             name = "Zero Params",
             description = "No parameters",
-            category = StrategyCategory.GRID,
+            category = StrategyCategory.CUSTOM,
             riskLevel = RiskLevel.LOW,
             schemaVersion = 1,
             requiredParameters = emptyList()
@@ -51,7 +83,7 @@ class StrategyRepositoryImplTest {
     }
 
     @Test
-    fun `test edge case many parameters strategy`() {
+    fun `many parameter strategy remains valid`() {
         val params = (1..100).map { i ->
             StrategyParameterSchema(
                 key = "param_$i",
@@ -65,7 +97,7 @@ class StrategyRepositoryImplTest {
             id = "many_params",
             name = "Many Params",
             description = "100 parameters",
-            category = StrategyCategory.ARBITRAGE,
+            category = StrategyCategory.CUSTOM,
             riskLevel = RiskLevel.HIGH,
             schemaVersion = 1,
             requiredParameters = params

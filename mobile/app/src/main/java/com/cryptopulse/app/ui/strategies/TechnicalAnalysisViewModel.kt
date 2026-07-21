@@ -34,7 +34,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 _analysisStatus.value = "Running Analysis..."
                 val response = technicalAnalysisService.getAnalysis(
                     TechnicalAnalysisRequest(
-                        symbol = "BTC-PERP", // Hardcoded for now
+                        symbol = config.symbol,
                         strategy = config.strategyId,
                         config = config.parameters
                     )
@@ -55,7 +55,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 _analysisStatus.value = "Activating Bot..."
                 val response = tradingBotService.activate(
                     ActivateBotRequest(
-                        coinId = "BTC-PERP",
+                        coinId = config.symbol,
                         strategy = config.strategyId,
                         positionSize = null,
                         targetEntryPrice = null,

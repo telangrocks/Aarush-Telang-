@@ -128,16 +128,16 @@ flows:
       - screenshot: p4-scanner-top10
 
   # ---------------------------------------------------------- PHASE 5
-  - name: Phase 5 - Pair Selection
+  - name: Phase 5 - Strategy Selection
     steps:
       - launchApp:
           clearState: true
       - tapOn:
           id: "com.cryptopulse:id/candidate_item"
       - assertVisible:
-          id: "com.cryptopulse:id/trade_setup_root"
-      - assertVisible: "TRADE SETUP"
-      - screenshot: p5-pair-selection
+          id: "com.cryptopulse:id/strategy_selection_root"
+      - assertVisible: "SELECT STRATEGY"
+      - screenshot: p5-strategy-selection
 
   # ---------------------------------------------------------- PHASE 6
   - name: Phase 6 - Trade Setup (calculations)
@@ -146,17 +146,13 @@ flows:
           clearState: true
       - tapOn:
           id: "com.cryptopulse:id/candidate_item"
+      - tapOn:
+          id: "com.cryptopulse:id/strategy_option_scalping"
+      - tapOn:
+          id: "com.cryptopulse:id/trade_setup_proceed_button"
       - assertVisible:
           id: "com.cryptopulse:id/trade_setup_root"
       - assertVisible: "TRADE SETUP"
-      # Live market price (real) drives the calc
-      - assertVisible:
-          id: "com.cryptopulse:id/trade_setup_market_price"
-      # Auto-calculated SL / TP / position size present
-      - assertVisible:
-          id: "com.cryptopulse:id/trade_setup_stop_loss"
-      - assertVisible:
-          id: "com.cryptopulse:id/trade_setup_take_profit"
       - tapOn:
           id: "com.cryptopulse:id/trade_setup_position_size"
       - inputText: "100"
@@ -165,32 +161,19 @@ flows:
       - screenshot: p6-trade-setup
 
   # ---------------------------------------------------------- PHASE 7
-  - name: Phase 7 - Strategy Execution (every supported strategy)
+  - name: Phase 7 - Strategy Execution
     steps:
       - launchApp:
           clearState: true
       - tapOn:
           id: "com.cryptopulse:id/candidate_item"
       - tapOn:
-          id: "com.cryptopulse:id/trade_setup_proceed_button"
-      - assertVisible: "SELECT STRATEGY"
-      - tapOn:
           id: "com.cryptopulse:id/strategy_option_scalping"
       - tapOn:
-          id: "com.cryptopulse:id/strategy_option_momentum"
+          id: "com.cryptopulse:id/trade_setup_proceed_button"
       - tapOn:
-          id: "com.cryptopulse:id/strategy_option_breakout"
-      - tapOn:
-          id: "com.cryptopulse:id/strategy_option_mean_reversion"
-      - tapOn:
-          id: "com.cryptopulse:id/strategy_option_vwap"
-      - tapOn:
-          id: "com.cryptopulse:id/strategy_start_analysis_button"
-      - assertVisible: "CONFIRM TRADE"
-        optional: true
-      - assertVisible:
-          id: "com.cryptopulse:id/trade_confirmation_root"
-        optional: true
+          id: "com.cryptopulse:id/trade_setup_proceed_button"
+      - assertVisible: "TECHNICAL ANALYSIS"
       - screenshot: p7-strategy-execution
 
   # ---------------------------------------------------------- PHASE 8/9

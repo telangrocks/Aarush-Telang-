@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -39,6 +40,7 @@ fun TradeSetupScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(bgGradient)
+            .testTag("trade_setup_root")
     ) {
         Scaffold(
             topBar = { CryptoPulseTopBar(onBack = onBack) },
@@ -61,7 +63,8 @@ fun TradeSetupScreen(
                             }
                         },
                         enabled = isSuccess,
-                        leadingIcon = Icons.Default.Check
+                        leadingIcon = Icons.Default.Check,
+                        testTag = "trade_setup_proceed_button"
                     )
                 }
             }

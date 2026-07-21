@@ -1,7 +1,8 @@
 package com.cryptopulse.app.domain.models
 
 enum class StrategyCategory {
-    INTRADAY, SWING, SCALPING, GRID, ARBITRAGE, CUSTOM
+    SCALPING, SWING, INTRADAY, GRID, ARBITRAGE, CUSTOM,
+    TREND_FOLLOWING, BREAKOUT, MEAN_REVERSION, VWAP
 }
 
 enum class RiskLevel {

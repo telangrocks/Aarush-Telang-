@@ -7,7 +7,6 @@ import com.cryptopulse.app.data.api.FcmApi
 import com.cryptopulse.app.data.api.KlineService
 import com.cryptopulse.app.data.api.MarketService
 import com.cryptopulse.app.data.api.StrategyApi
-import com.cryptopulse.app.data.api.StrategyService
 import com.cryptopulse.app.data.api.TechnicalAnalysisService
 import com.cryptopulse.app.data.api.TickerService
 import com.cryptopulse.app.data.api.TradingBotService
@@ -186,12 +185,6 @@ object AppModule {
     @Singleton
     fun provideMarketService(retrofit: Retrofit): MarketService {
         return retrofit.create(MarketService::class.java)
-    }
-
-    @Provides
-    @Singleton
-    fun provideStrategyService(retrofit: Retrofit): StrategyService {
-        return retrofit.create(StrategyService::class.java)
     }
 
     @Provides

@@ -71,7 +71,18 @@ class StrategyRepositoryImpl @Inject constructor(
     }
 
     private fun parseCategory(cat: String): StrategyCategory {
-        return try { StrategyCategory.valueOf(cat.uppercase()) } catch (e: Exception) { StrategyCategory.CUSTOM }
+        return when (cat.uppercase()) {
+            "SCALPING" -> StrategyCategory.SCALPING
+            "TREND FOLLOWING" -> StrategyCategory.TREND_FOLLOWING
+            "BREAKOUT" -> StrategyCategory.BREAKOUT
+            "MEAN REVERSION" -> StrategyCategory.MEAN_REVERSION
+            "VWAP" -> StrategyCategory.VWAP
+            "SWING" -> StrategyCategory.SWING
+            "INTRADAY" -> StrategyCategory.INTRADAY
+            "GRID" -> StrategyCategory.GRID
+            "ARBITRAGE" -> StrategyCategory.ARBITRAGE
+            else -> StrategyCategory.CUSTOM
+        }
     }
 
     private fun parseRisk(risk: String): RiskLevel {
