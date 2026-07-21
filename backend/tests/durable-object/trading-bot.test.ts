@@ -2,6 +2,29 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TradingBot } from "../../src/trading-bot";
 import { StrategyOrchestrator } from "../../src/engine/orchestrator/StrategyOrchestrator";
 
+// Mock security crypto
+vi.mock("../../src/crypto", () => ({
+  decrypt: vi.fn().mockResolvedValue("mocked_secret_key")
+}));
+
+// Mock exchanges adapter
+vi.mock("../../src/exchanges", () => ({
+  getExchangeAdapter: vi.fn().mockReturnValue({
+    fetchTicker: vi.fn().mockResolvedValue({ price: 50100, lotSize: 0.001, minOrderQty: 0.001, maxOrderQty: 1000, minNotional: 10 }),
+    placeOrder: vi.fn().mockResolvedValue({ success: true, price: 50100, quantity: 0.02, orderId: 'ord-123' })
+  }),
+  normalizeEnvironment: vi.fn().mockReturnValue('testnet'),
+  normalizeRegion: vi.fn().mockReturnValue('global'),
+  // Pass-through implementation so normalizeQuantity does not throw inside the execute-trade handler
+  normalizeQuantity: vi.fn().mockImplementation((qty: number, lotSize: number, minQty: number, maxQty: number) => {
+    if (qty <= 0) return 0;
+    const safeStep = lotSize > 0 ? lotSize : 1;
+    const precision = safeStep < 1 ? Math.round(-Math.log10(safeStep)) : 0;
+    const rounded = parseFloat((Math.floor((qty / safeStep) + 1e-10) * safeStep).toFixed(precision));
+    return Math.max(Math.min(Math.max(rounded, minQty), maxQty), 0);
+  })
+}));
+
 // Mock the StrategyOrchestrator prototype
 vi.mock("../../src/engine/orchestrator/StrategyOrchestrator", () => {
   const StrategyOrchestratorMock = vi.fn();
@@ -105,5 +128,62 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
 
     expect(mockStorage.get('engineState')).toBeUndefined();
     expect(mockState.storage.setAlarm).toHaveBeenCalled();
+  });
+
+  it("should execute trade using targetEntryPrice and record averageFillPrice and execution audit in D1", async () => {
+    mockDb.run = vi.fn().mockResolvedValue({ success: true });
+    mockDb.prepare = vi.fn().mockReturnValue({
+      bind: vi.fn().mockReturnValue({
+        run: vi.fn().mockResolvedValue({ success: true }),
+        first: vi.fn().mockResolvedValue({
+          exchange_name: 'binance',
+          exchange_environment: 'testnet',
+          exchange_region: 'global',
+          exchange_api_key: 'key',
+          exchange_api_secret_iv: 'bW9ja19pdk1vY2tJdk1vY2s=',
+          exchange_api_secret_encrypted: 'sec'
+        })
+      })
+    });
+
+    const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set('userId', 'user-123');
+    mockStorage.set('coinId', 'BTCUSDT');
+    mockStorage.set('targetEntryPrice', 50000);
+    mockStorage.set('alerts', [
+      {
+        id: 'alert-1',
+        symbol: 'BTCUSDT',
+        signalPrice: 50100,
+        targetEntryPrice: 50000,
+        entryPrice: 50100,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 0,
+        positionSize: 1000,
+        strategy: 'scalper-v2',
+        side: 'BUY',
+        timestamp: new Date().toISOString(),
+        status: 'pending'
+      }
+    ]);
+
+    const req = new Request('http://bot/execute-trade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'user-123', coinId: 'BTCUSDT' })
+    });
+
+    const res = await bot.fetch(req);
+    expect(res.status).toBe(200);
+
+    // Verify D1 query executions
+    console.log('PREPARE CALLS:', mockDb.prepare.mock.calls);
+    const prepareCalls = mockDb.prepare.mock.calls.map((c: any) => c[0]);
+    const insertPositionCall = prepareCalls.find((sql: string) => sql.includes('INSERT OR IGNORE INTO trade_positions') && sql.includes('target_entry_price'));
+    const insertAuditCall = prepareCalls.find((sql: string) => sql.includes('INSERT INTO trade_execution_audit'));
+
+    expect(insertPositionCall).toBeDefined();
+    expect(insertAuditCall).toBeDefined();
   });
 });

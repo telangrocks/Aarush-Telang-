@@ -536,6 +536,7 @@ class ExchangeViewModel @Inject constructor(
 
     fun activateBot(symbol: String, strategy: String) {
         _botError.value = null
+        val targetPrice = _tradeSetup.value?.entryPrice
         viewModelScope.launch {
             try {
                 val token = tokenManager.getToken()
@@ -544,6 +545,7 @@ class ExchangeViewModel @Inject constructor(
                         ActivateBotRequest(
                             coinId = symbol,
                             strategy = strategy,
+                            targetEntryPrice = targetPrice,
                         )
                     )
                     if (!response.isSuccessful) {

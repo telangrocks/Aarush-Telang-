@@ -205,17 +205,20 @@ export class ReconciliationEngine {
           const positionId = crypto.randomUUID();
           const now = new Date().toISOString();
           
+          const fillPrice = tx.data.entryPrice || 0;
           await this.env.DB.prepare(
             `INSERT INTO trade_positions (
-              id, user_id, symbol, side, entry_price, quantity, stop_loss, take_profit,
+              id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, stop_loss, take_profit,
               status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             positionId,
             this.userId,
             tx.symbol,
             tx.data.side === 'short' ? 'SELL' : 'BUY',
-            tx.data.entryPrice,
+            fillPrice,
+            null,
+            fillPrice,
             tx.data.size,
             0, // Requires manual review of SL/TP or advanced parsing
             0,
@@ -253,7 +256,8 @@ export class ReconciliationEngine {
   private async validatePositionConfidence(exPos: PositionResult): Promise<boolean> {
     // strict validation rules
     if (!exPos || exPos.size <= 0) return false;
-    if ((exPos as any).entryPrice <= 0) return false;
+    const fillPx = exPos.entry_price || 0;
+    if (fillPx <= 0) return false;
     // In a real production system, we would validate max leverage, max loss, etc.
     // Here we ensure it has a valid symbol and size, and leverage is not insane.
     if ((exPos as any).leverage && (exPos as any).leverage > 20) return false; 

@@ -42,6 +42,8 @@ fun TradeAlertScreen(
     stopLossPrice: Double,
     takeProfitPrice: Double,
     estimatedPnl: Double,
+    signalPrice: Double,
+    targetEntryPrice: Double? = null,
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
@@ -209,6 +211,10 @@ fun TradeAlertScreen(
                         Spacer(Modifier.height(10.dp))
 
                         SummaryRow("Pair", candidate.pairName, TextPrimary, "trade_alert_pair")
+                        if (targetEntryPrice != null && targetEntryPrice > 0.0) {
+                            SummaryRow("Planned Entry", "${"%.2f".format(targetEntryPrice)} USDT", TextPrimary, "trade_alert_target_entry")
+                        }
+                        SummaryRow("Signal Price", "${"%.2f".format(signalPrice)} USDT", TextPrimary, "trade_alert_signal_price")
                         SummaryRow("Entry Price", "${"%.2f".format(entryPrice)} USDT", TextPrimary, "trade_alert_entry")
                         SummaryRow("Stop Loss", "${"%.2f".format(stopLossPrice)} USDT", LossRed, "trade_alert_stop_loss")
                         SummaryRow("Take Profit", "${"%.2f".format(takeProfitPrice)} USDT", ProfitGreen, "trade_alert_take_profit")

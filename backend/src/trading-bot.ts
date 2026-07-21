@@ -656,8 +656,9 @@ export class TradingBot {
             try {
               if (adapter.placeOrder) {
                 const ticker = await adapter.fetchTicker(orderSymbol);
-                const rawQty = target.positionSize > 0 && target.entryPrice > 0
-                  ? target.positionSize / target.entryPrice
+                const refPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
+                const rawQty = target.positionSize > 0 && refPrice > 0
+                  ? target.positionSize / refPrice
                   : undefined;
                   
                 if (target.positionSize < (ticker?.minNotional || 0)) {
@@ -681,7 +682,14 @@ export class TradingBot {
             await this.state.storage.put('alerts', this.pruneAlerts(alerts));
             
             if (orderResult.success) {
-              await this.logAuditEvent(userId, 'TRADE_FILLED', { symbol: orderSymbol, side, orderId: orderResult.orderId, price: orderResult.price, quantity: orderResult.quantity, strategy: target.strategy });
+              const refPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
+              let averageFillPrice = orderResult.price;
+              if (!averageFillPrice || averageFillPrice <= 0) {
+                const fallbackTicker = await adapter.fetchTicker(orderSymbol).catch(() => null);
+                averageFillPrice = fallbackTicker?.price || refPrice;
+              }
+
+              await this.logAuditEvent(userId, 'TRADE_FILLED', { symbol: orderSymbol, side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, strategy: target.strategy });
               await this.state.storage.put('tradeActive', true);
               await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
               await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
@@ -694,7 +702,10 @@ export class TradingBot {
                   userId,
                   orderSymbol,
                   side,
-                  entryPrice: orderResult.price > 0 ? orderResult.price : target.entryPrice,
+                  entryPrice: averageFillPrice,
+                  targetEntryPrice: target.targetEntryPrice || null,
+                  signalPrice: target.signalPrice || target.entryPrice,
+                  averageFillPrice: averageFillPrice,
                   quantity: orderResult.quantity || 0,
                   stopLoss: target.stopLoss,
                   takeProfit: target.takeProfit,
@@ -711,9 +722,9 @@ export class TradingBot {
               try {
                 await this.env.DB.prepare(
                   `INSERT OR IGNORE INTO trade_positions (
-                    id, user_id, symbol, side, entry_price, quantity, stop_loss, take_profit,
+                    id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, stop_loss, take_profit,
                     status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
                 )
                   .bind(
                     positionData.id,
@@ -721,6 +732,8 @@ export class TradingBot {
                     positionData.orderSymbol,
                     positionData.side,
                     positionData.entryPrice,
+                    positionData.targetEntryPrice,
+                    positionData.averageFillPrice,
                     positionData.quantity,
                     positionData.stopLoss,
                     positionData.takeProfit,
@@ -734,11 +747,36 @@ export class TradingBot {
                   )
                   .run();
 
+                // Record Audit Entry
+                const targetPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
+                const slippagePercent = targetPrice > 0 ? (Math.abs(averageFillPrice - targetPrice) / targetPrice) * 100 : 0;
+                await this.env.DB.prepare(
+                  `INSERT INTO trade_execution_audit (
+                    id, alert_id, user_id, symbol, strategy, target_entry_price, signal_price, execution_price, average_fill_price, stop_loss, take_profit, slippage_percent, fill_timestamp, created_at
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                )
+                  .bind(
+                    crypto.randomUUID(),
+                    target.id,
+                    userId,
+                    orderSymbol,
+                    target.strategy,
+                    target.targetEntryPrice || null,
+                    target.signalPrice || target.entryPrice,
+                    refPrice,
+                    averageFillPrice,
+                    target.stopLoss,
+                    target.takeProfit,
+                    slippagePercent,
+                    now,
+                    now,
+                  )
+                  .run();
+
                 // If DB write succeeds, remove from WAL
                 await this.state.storage.delete('pendingPositionSync');
-              } catch (dbError) {
-                console.error("D1 write failed, position is safely in DO WAL:", dbError);
-                // System will recover it on the next sweep or restart
+              } catch (dbError: any) {
+                console.error("D1 write failed, position is safely in DO WAL:", dbError?.stack || dbError?.message || dbError);
               }
             } else {
               await this.logAuditEvent(userId, 'TRADE_FAILED', { symbol: orderSymbol, side, message: orderResult.message, clientOrderId });
@@ -851,14 +889,27 @@ export class TradingBot {
         try {
           await this.env.DB.prepare(
             `INSERT OR IGNORE INTO trade_positions (
-              id, user_id, symbol, side, entry_price, quantity, stop_loss, take_profit,
+              id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, stop_loss, take_profit,
               status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
-            pendingPositionSync.id, pendingPositionSync.userId, pendingPositionSync.orderSymbol, pendingPositionSync.side,
-            pendingPositionSync.entryPrice, pendingPositionSync.quantity, pendingPositionSync.stopLoss, pendingPositionSync.takeProfit,
-            pendingPositionSync.exchangeName, pendingPositionSync.environment, pendingPositionSync.strategy, pendingPositionSync.orderId,
-            pendingPositionSync.now, pendingPositionSync.now, pendingPositionSync.now
+            pendingPositionSync.id,
+            pendingPositionSync.userId,
+            pendingPositionSync.orderSymbol,
+            pendingPositionSync.side,
+            pendingPositionSync.entryPrice,
+            pendingPositionSync.targetEntryPrice || null,
+            pendingPositionSync.averageFillPrice || pendingPositionSync.entryPrice,
+            pendingPositionSync.quantity,
+            pendingPositionSync.stopLoss,
+            pendingPositionSync.takeProfit,
+            pendingPositionSync.exchangeName,
+            pendingPositionSync.environment,
+            pendingPositionSync.strategy,
+            pendingPositionSync.orderId,
+            pendingPositionSync.now,
+            pendingPositionSync.now,
+            pendingPositionSync.now
           ).run();
           await this.state.storage.delete('pendingPositionSync');
         } catch (e) {

@@ -33,14 +33,21 @@ class FcmService : FirebaseMessagingService() {
         message.data.let { data ->
             Log.d("FcmService", "Message data: $data")
             if (data["type"] == "trade_alert") {
-                val alert = mapOf(
+                val entryPrice = data["entryPrice"]?.toDoubleOrNull() ?: 0.0
+                val signalPrice = data["signalPrice"]?.toDoubleOrNull() ?: entryPrice
+                val targetEntryPrice = data["targetEntryPrice"]?.toDoubleOrNull()
+                val alert = mutableMapOf<String, Any>(
                     "id" to (data["alertId"] ?: data["id"] ?: ""),
                     "symbol" to (data["symbol"] ?: "UNKNOWN"),
-                    "entryPrice" to (data["entryPrice"]?.toDoubleOrNull() ?: 0.0),
+                    "entryPrice" to entryPrice,
                     "stopLoss" to (data["stopLoss"]?.toDoubleOrNull() ?: 0.0),
                     "takeProfit" to (data["takeProfit"]?.toDoubleOrNull() ?: 0.0),
                     "estimatedPnl" to (data["estimatedPnl"]?.toDoubleOrNull() ?: 0.0),
+                    "signalPrice" to signalPrice,
                 )
+                if (targetEntryPrice != null && targetEntryPrice > 0.0) {
+                    alert["targetEntryPrice"] = targetEntryPrice
+                }
                 // Surface the alert immediately if the app is in the foreground.
                 serviceScope.launch { AlertBus.send(alert) }
             }

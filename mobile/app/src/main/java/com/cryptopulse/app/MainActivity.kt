@@ -270,8 +270,18 @@ class MainActivity : FragmentActivity() {
                                 ?: (entryPrice * 0.99)
                             val takeProfitPrice = (alert?.get("takeProfit") as? Double)
                                 ?: (entryPrice * 1.02)
-                            val estimatedPnl = (alert?.get("estimatedPnl") as? Double)
-                                ?: if (entryPrice > 0) (takeProfitPrice - entryPrice) / entryPrice * 100.0 else 0.0
+                            val signalPrice = (alert?.get("signalPrice") as? Double) ?: entryPrice
+                            val targetEntryPrice = (alert?.get("targetEntryPrice") as? Double)
+                            
+                            // Feature 5: Dynamic Estimated P&L Calculation using (TP - Signal) * Qty (or simulated positionSize/price ratio)
+                            val positionSize = (alert?.get("positionSize") as? Double) ?: 100.0
+                            val refPrice = targetEntryPrice ?: signalPrice
+                            val quantity = if (refPrice > 0.0) positionSize / refPrice else 0.0
+                            val calculatedPnl = if (quantity > 0.0) {
+                                kotlin.math.abs(takeProfitPrice - signalPrice) * quantity
+                            } else {
+                                (alert?.get("estimatedPnl") as? Double) ?: 0.0
+                            }
 
                             val marketCandidate = candidate ?: MarketCandidate(
                                 rank = 1,
@@ -294,7 +304,9 @@ class MainActivity : FragmentActivity() {
                                 entryPrice = entryPrice,
                                 stopLossPrice = stopLossPrice,
                                 takeProfitPrice = takeProfitPrice,
-                                estimatedPnl = estimatedPnl,
+                                estimatedPnl = calculatedPnl,
+                                signalPrice = signalPrice,
+                                targetEntryPrice = targetEntryPrice,
                             )
                         }
                         composable("live_pnl_monitoring") {
@@ -367,16 +379,22 @@ class MainActivity : FragmentActivity() {
             val stopLoss = intent.getDoubleExtra("alert_stop_loss", 0.0)
             val takeProfit = intent.getDoubleExtra("alert_take_profit", 0.0)
             val estimatedPnl = intent.getDoubleExtra("alert_estimated_pnl", 0.0)
+            val signalPrice = intent.getDoubleExtra("alert_signal_price", entryPrice)
+            val targetEntryPrice = if (intent.hasExtra("alert_target_entry_price")) intent.getDoubleExtra("alert_target_entry_price", 0.0) else null
             val alertId = intent.getStringExtra("alert_id")
             if (entryPrice > 0 && alertId != null) {
-                val alert = mapOf(
+                val alert = mutableMapOf<String, Any>(
                     "id" to alertId,
                     "symbol" to (intent.getStringExtra("alert_symbol") ?: "UNKNOWN"),
                     "entryPrice" to entryPrice,
                     "stopLoss" to stopLoss,
                     "takeProfit" to takeProfit,
                     "estimatedPnl" to estimatedPnl,
+                    "signalPrice" to signalPrice,
                 )
+                if (targetEntryPrice != null && targetEntryPrice > 0.0) {
+                    alert["targetEntryPrice"] = targetEntryPrice
+                }
                 lifecycleScope.launch {
                     AlertBus.send(alert)
                 }

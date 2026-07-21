@@ -11,6 +11,7 @@ data class ActivateBotRequest(
     val coinId: String,
     val strategy: String,
     val positionSize: Double? = null,
+    val targetEntryPrice: Double? = null,
 )
 
 data class BotStatusResponse(
@@ -86,6 +87,8 @@ data class BotAlert(
     val strategy: String?,
     val side: String?,
     val timestamp: String?,
+    val signalPrice: Double? = null,
+    val targetEntryPrice: Double? = null,
 ) {
     companion object {
         fun fromMap(map: Map<String, Any>): BotAlert = BotAlert(
@@ -98,6 +101,8 @@ data class BotAlert(
             strategy = map["strategy"] as? String,
             side = map["side"] as? String,
             timestamp = map["timestamp"] as? String,
+            signalPrice = (map["signalPrice"] as? Number)?.toDouble() ?: (map["entryPrice"] as? Number)?.toDouble(),
+            targetEntryPrice = (map["targetEntryPrice"] as? Number)?.toDouble(),
         )
     }
 }
