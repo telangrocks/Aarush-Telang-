@@ -82,11 +82,7 @@ class ExchangeViewModel @Inject constructor(
     private val _selectedCandidate = MutableStateFlow<MarketCandidate?>(null)
     val selectedCandidate: StateFlow<MarketCandidate?> = _selectedCandidate
 
-    private val _strategies = MutableStateFlow<List<StrategyDto>>(emptyList())
-    val strategies: StateFlow<List<StrategyDto>> = _strategies
 
-    private val _selectedStrategy = MutableStateFlow<String?>(null)
-    val selectedStrategy: StateFlow<String?> = _selectedStrategy
 
     private val _technicalAnalysis = MutableStateFlow<TechnicalAnalysisResponse?>(null)
     val technicalAnalysis: StateFlow<TechnicalAnalysisResponse?> = _technicalAnalysis
@@ -319,8 +315,7 @@ class ExchangeViewModel @Inject constructor(
         _candidates.value = emptyList()
         _readyForCandidates.value = false
         _selectedCandidate.value = null
-        _strategies.value = emptyList()
-        _selectedStrategy.value = null
+
         _technicalAnalysis.value = null
         _tradeSetup.value = null
         _ticker.value = null
@@ -367,32 +362,14 @@ class ExchangeViewModel @Inject constructor(
             minNotional = 0.0,
             coinColor = androidx.compose.ui.graphics.Color(0xFF00B4FF),
         )
-        if (!strategy.isNullOrBlank()) {
-            _selectedStrategy.value = strategy
-        }
+        // strategy ignored in ExchangeViewModel as it's now handled by StrategySelectionViewModel
     }
 
 
-    fun fetchStrategies() {
-        viewModelScope.launch {
-            try {
-                val response = strategyService.getStrategies()
-                if (response.isSuccessful && response.body() != null) {
-                    _strategies.value = response.body()!!
-                }
-            } catch (e: Exception) {
-                // Silently fail
-            }
-        }
-    }
 
-    fun selectStrategy(strategyId: String) {
-        _selectedStrategy.value = strategyId
-    }
 
-    fun fetchTechnicalAnalysis() {
+    fun fetchTechnicalAnalysis(strategy: String) {
         val candidate = _selectedCandidate.value ?: return
-        val strategy = _selectedStrategy.value ?: return
         _analysisError.value = null
 
         viewModelScope.launch {

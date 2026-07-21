@@ -1,0 +1,48 @@
+package com.cryptopulse.app.ui.strategies
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.cryptopulse.app.data.repository.StrategyRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+@HiltViewModel
+class StrategySelectionViewModel @Inject constructor(
+    private val repository: StrategyRepository,
+    private val savedStateHandle: androidx.lifecycle.SavedStateHandle
+) : ViewModel() {
+
+    private val _uiState = MutableStateFlow<StrategySelectionState>(StrategySelectionState.Loading)
+    val uiState: StateFlow<StrategySelectionState> = _uiState.asStateFlow()
+
+    private val _selectedStrategyId = savedStateHandle.getStateFlow<String?>("selected_strategy_id", null)
+    val selectedStrategyId: StateFlow<String?> = _selectedStrategyId
+
+    init {
+        loadStrategies()
+    }
+
+    fun loadStrategies() {
+        viewModelScope.launch {
+            _uiState.value = StrategySelectionState.Loading
+            val result = repository.getStrategies()
+            result.onSuccess { strategies ->
+                if (strategies.isEmpty()) {
+                    _uiState.value = StrategySelectionState.Empty
+                } else {
+                    _uiState.value = StrategySelectionState.Success(strategies)
+                }
+            }.onFailure { error ->
+                _uiState.value = StrategySelectionState.Error(error.message ?: "An unknown error occurred")
+            }
+        }
+    }
+
+    fun selectStrategy(id: String) {
+        savedStateHandle["selected_strategy_id"] = id
+    }
+}

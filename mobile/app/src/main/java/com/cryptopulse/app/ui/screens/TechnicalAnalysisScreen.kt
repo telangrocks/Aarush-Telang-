@@ -56,7 +56,7 @@ fun TechnicalAnalysisScreen(
 
     LaunchedEffect(strategy, candidate.symbol) {
         isLoading = true
-        viewModel.fetchTechnicalAnalysis()
+        viewModel.fetchTechnicalAnalysis(strategy)
         delay(10000)
         if (analysisResult == null) {
             isLoading = false
@@ -163,7 +163,7 @@ fun TechnicalAnalysisScreen(
                                 text = "Retry",
                                 onClick = {
                                     viewModel.clearAnalysisError()
-                                    viewModel.fetchTechnicalAnalysis()
+                                    viewModel.fetchTechnicalAnalysis(strategy)
                                 },
                                 leadingIcon = Icons.Default.Refresh,
                                 modifier = Modifier.fillMaxWidth(0.6f),

@@ -149,7 +149,7 @@ class MainActivity : FragmentActivity() {
                             MarketCandidatesScreen(
                                 onCandidateClick = { candidate ->
                                     viewModel.selectCandidate(candidate)
-                                    navController.navigate("trade_setup")
+                                    navController.navigate("strategy_selection")
                                 },
                                 onBack = { navController.popBackStack() }
                             )
@@ -172,15 +172,16 @@ class MainActivity : FragmentActivity() {
                                 onBack = { navController.popBackStack() },
                                 onProceedToConfirm = { entryPrice, stopLoss, takeProfit ->
                                     viewModel.setTradeSetup(entryPrice, stopLoss, takeProfit)
-                                    navController.navigate("strategy_selection")
+                                    navController.navigate("technical_analysis")
                                 },
                                 viewModel = viewModel,
                             )
                         }
 
                         composable("strategy_selection") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
+                            val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
+                            val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
                             val candidate = selectedCandidate ?: MarketCandidate(
                                 rank = 1,
                                 symbol = "BTC",
@@ -191,24 +192,18 @@ class MainActivity : FragmentActivity() {
                                 minNotional = 10.0,
                                 coinColor = Color(0xFFF7931A),
                             )
-                            LaunchedEffect(Unit) {
-                                viewModel.fetchStrategies()
-                            }
                             StrategySelectionScreen(
                                 candidate = candidate,
                                 onBack = { navController.popBackStack() },
-                                viewModel = viewModel,
-                                onStrategySelected = { strategy ->
-                                    viewModel.selectStrategy(strategy)
-                                    viewModel.fetchTechnicalAnalysis()
-                                    navController.navigate("technical_analysis")
-                                }
+                                onProceed = { navController.navigate("trade_setup") },
+                                viewModel = strategyViewModel
                             )
                         }
                         composable("technical_analysis") {
                             val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
+                            val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                            val selectedStrategy by viewModel.selectedStrategy.collectAsState(initial = null)
+                            val selectedStrategy by strategyViewModel.selectedStrategyId.collectAsState()
                             val candidate = selectedCandidate ?: MarketCandidate(
                                 rank = 1,
                                 symbol = "BTC",
