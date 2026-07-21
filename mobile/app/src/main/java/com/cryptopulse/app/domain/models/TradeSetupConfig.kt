@@ -15,5 +15,6 @@ data class TradeSetupConfig(
     val strategyId: String,
     val symbol: String,
     val entryPrice: Double,
+    val tradeValueUsdt: Double,
     val parameters: Map<String, String>
 )

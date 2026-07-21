@@ -57,7 +57,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                     ActivateBotRequest(
                         coinId = config.symbol,
                         strategy = config.strategyId,
-                        positionSize = null,
+                        positionSize = if (config.tradeValueUsdt > 0.0) config.tradeValueUsdt else null,
                         targetEntryPrice = if (config.entryPrice > 0.0) config.entryPrice else null,
                         config = config.parameters
                     )

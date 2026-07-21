@@ -133,8 +133,10 @@ class TradeSetupViewModelTest {
         val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
         testDispatcher.scheduler.advanceUntilIdle()
 
+        viewModel.setMinNotional(10.0)
         viewModel.updateFieldValue("leverage", "20")
         viewModel.updateEntryPrice("50000.0")
+        viewModel.updateTradeValueUsdt("100.0")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.Success)
@@ -142,6 +144,7 @@ class TradeSetupViewModelTest {
         assertEquals("test_strat", config.strategyId)
         assertEquals("BTC", config.symbol)
         assertEquals(50000.0, config.entryPrice, 0.001)
+        assertEquals(100.0, config.tradeValueUsdt, 0.001)
         assertEquals("20", config.parameters["leverage"])
     }
 
@@ -157,6 +160,21 @@ class TradeSetupViewModelTest {
         val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
         assertEquals("Entry price must be greater than 0.", errors["entryPrice"])
         assertEquals("Entry price must be greater than 0.", viewModel.uiState.value.entryPriceError)
+    }
+
+    @Test
+    fun `buildConfig returns ValidationFailed when order value is below minNotional`() = runTest {
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.setMinNotional(10.0)
+        viewModel.updateEntryPrice("50000.0")
+        viewModel.updateTradeValueUsdt("5.0") // 5.0 is below minNotional of 10.0
+
+        val result = viewModel.buildConfig("BTC")
+        assertTrue(result is TradeSetupConfigResult.ValidationFailed)
+        val state = viewModel.uiState.value
+        assertTrue(state.tradeValueUsdtError?.contains("below minimum notional requirement") == true)
     }
 
     @Test
@@ -177,3 +195,4 @@ class TradeSetupViewModelTest {
         assertEquals("Entry price is required.", viewModel.uiState.value.entryPriceError)
     }
 }
+

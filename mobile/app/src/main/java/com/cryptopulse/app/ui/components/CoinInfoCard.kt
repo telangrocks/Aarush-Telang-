@@ -21,6 +21,7 @@ import com.cryptopulse.app.ui.theme.NavyCard
 import com.cryptopulse.app.ui.theme.ProfitGreen
 import com.cryptopulse.app.ui.theme.TextPrimary
 import com.cryptopulse.app.ui.theme.TextSecondary
+import com.cryptopulse.app.ui.theme.CyanPrimary
 
 @Composable
 fun CoinInfoCard(candidate: MarketCandidate) {
@@ -45,6 +46,14 @@ fun CoinInfoCard(candidate: MarketCandidate) {
         Column(modifier = Modifier.weight(1f)) {
             Text(candidate.pairName, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
             Text(candidate.coinName, color = TextSecondary, fontSize = 12.sp)
+            if (candidate.minNotional > 0.0) {
+                Text(
+                    text = "Min Notional: $${String.format("%.2f", candidate.minNotional)}",
+                    color = CyanPrimary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
         Column(horizontalAlignment = Alignment.End) {
             Box(

@@ -38,6 +38,10 @@ fun TradeSetupScreen(
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val uiState by viewModel.uiState.collectAsState()
 
+    LaunchedEffect(candidate) {
+        viewModel.setMinNotional(candidate.minNotional)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -54,7 +58,7 @@ fun TradeSetupScreen(
                         .background(NavyDeep)
                         .padding(horizontal = 20.dp, vertical = 12.dp)
                 ) {
-                    val isSuccess = !uiState.isLoading && uiState.error == null && uiState.entryPriceError == null
+                    val isSuccess = !uiState.isLoading && uiState.error == null && uiState.entryPriceError == null && uiState.tradeValueUsdtError == null
                     GradientButton(
                         text = if (isSuccess) "Start Analysis" else "Loading...",
                         onClick = {
@@ -100,6 +104,33 @@ fun TradeSetupScreen(
 
                     Spacer(Modifier.height(14.dp))
                     CoinInfoCard(candidate = candidate)
+                    if (candidate.minNotional > 0.0) {
+                        Spacer(Modifier.height(8.dp))
+                        Surface(
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+                            color = Color(0xFF131D30),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Exchange Requirement:",
+                                    color = TextSecondary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Normal
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = "Min Notional = $${"%.2f".format(candidate.minNotional)} USDT",
+                                    color = CyanPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(14.dp))
                 }
 
@@ -151,7 +182,8 @@ fun TradeSetupScreen(
                                     )
                                 } else if (candidate.currentMarketPrice > 0.0) {
                                     Text(
-                                        text = "Current price: $${"%.2f".format(candidate.currentMarketPrice)}",
+                                        text = "Current price: $${"%.2f".format(candidate.currentMarketPrice)}" +
+                                                if (uiState.minNotional > 0.0) " | Min Notional: $${"%.2f".format(uiState.minNotional)} USDT" else "",
                                         color = TextSecondary,
                                         fontSize = 12.sp
                                     )
@@ -159,6 +191,48 @@ fun TradeSetupScreen(
                             }
                         )
                     }
+
+                    item {
+                        OutlinedTextField(
+                            value = uiState.tradeValueUsdt,
+                            onValueChange = { newValue ->
+                                if (newValue.isEmpty() || newValue.matches(Regex("^\\d*\\.?\\d*$"))) {
+                                    viewModel.updateTradeValueUsdt(newValue)
+                                }
+                            },
+                            label = { Text("Trade Amount (USDT)") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("trade_setup_trade_value"),
+                            isError = uiState.tradeValueUsdtError != null,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary,
+                                cursorColor = CyanPrimary,
+                                focusedBorderColor = CyanPrimary,
+                                unfocusedBorderColor = Color(0xFF2A3650),
+                                errorBorderColor = LossRed
+                            ),
+                            supportingText = {
+                                val tradeValueUsdtError = uiState.tradeValueUsdtError
+                                if (tradeValueUsdtError != null) {
+                                    Text(
+                                        text = tradeValueUsdtError,
+                                        color = LossRed,
+                                        fontSize = 12.sp
+                                    )
+                                } else if (uiState.minNotional > 0.0) {
+                                    Text(
+                                        text = "Minimum notional: $${"%.2f".format(uiState.minNotional)} USDT",
+                                        color = TextSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        )
+                    }
+
                     items(items = uiState.fields, key = { it.key }) { field ->
                         val currentValue = uiState.formValues[field.key] ?: ""
                         val error = uiState.formErrors[field.key]

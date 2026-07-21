@@ -23,7 +23,10 @@ data class TradeSetupUiState(
     val formValues: Map<String, String> = emptyMap(),
     val formErrors: Map<String, String?> = emptyMap(),
     val entryPrice: String = "",
-    val entryPriceError: String? = null
+    val entryPriceError: String? = null,
+    val tradeValueUsdt: String = "",
+    val tradeValueUsdtError: String? = null,
+    val minNotional: Double = 0.0
 )
 
 sealed interface TradeSetupConfigResult {
@@ -86,15 +89,65 @@ class TradeSetupViewModel @Inject constructor(
         }
     }
 
-    fun updateEntryPrice(value: String) {
-        val error = validateEntryPrice(value)
-        _uiState.update { it.copy(entryPrice = value, entryPriceError = error) }
+    fun setMinNotional(minNotional: Double) {
+        _uiState.update { currentState ->
+            val entryErr = validateEntryPrice(currentState.entryPrice, minNotional, currentState.tradeValueUsdt)
+            val tradeErr = validateTradeValueUsdt(currentState.tradeValueUsdt, minNotional)
+            currentState.copy(
+                minNotional = minNotional,
+                entryPriceError = entryErr,
+                tradeValueUsdtError = tradeErr
+            )
+        }
     }
 
-    private fun validateEntryPrice(value: String): String? {
-        if (value.isBlank()) return "Entry price is required."
-        val doubleVal = value.toDoubleOrNull() ?: return "Must be a valid number."
-        if (doubleVal <= 0.0) return "Entry price must be greater than 0."
+    fun updateEntryPrice(value: String) {
+        _uiState.update { currentState ->
+            val error = validateEntryPrice(value, currentState.minNotional, currentState.tradeValueUsdt)
+            currentState.copy(entryPrice = value, entryPriceError = error)
+        }
+    }
+
+    fun updateTradeValueUsdt(value: String) {
+        _uiState.update { currentState ->
+            val tradeErr = validateTradeValueUsdt(value, currentState.minNotional)
+            val entryErr = validateEntryPrice(currentState.entryPrice, currentState.minNotional, value)
+            currentState.copy(
+                tradeValueUsdt = value,
+                tradeValueUsdtError = tradeErr,
+                entryPriceError = entryErr
+            )
+        }
+    }
+
+    private fun validateEntryPrice(
+        entryPriceStr: String,
+        minNotional: Double,
+        tradeValueStr: String
+    ): String? {
+        if (entryPriceStr.isBlank()) return "Entry price is required."
+        val price = entryPriceStr.toDoubleOrNull() ?: return "Must be a valid number."
+        if (price <= 0.0) return "Entry price must be greater than 0."
+
+        if (minNotional > 0.0 && tradeValueStr.isNotBlank()) {
+            val tradeVal = tradeValueStr.toDoubleOrNull()
+            if (tradeVal != null && tradeVal < minNotional) {
+                return "Order value ($${"%.2f".format(tradeVal)} USDT) is below minimum notional requirement of $${"%.2f".format(minNotional)} USDT."
+            }
+        }
+        return null
+    }
+
+    private fun validateTradeValueUsdt(
+        tradeValueStr: String,
+        minNotional: Double
+    ): String? {
+        if (tradeValueStr.isBlank()) return null
+        val doubleVal = tradeValueStr.toDoubleOrNull() ?: return "Must be a valid number."
+        if (doubleVal <= 0.0) return "Trade amount must be greater than 0."
+        if (minNotional > 0.0 && doubleVal < minNotional) {
+            return "Order value ($${"%.2f".format(doubleVal)} USDT) is below minimum notional requirement of $${"%.2f".format(minNotional)} USDT."
+        }
         return null
     }
 
@@ -141,11 +194,18 @@ class TradeSetupViewModel @Inject constructor(
         val newErrors = currentState.formErrors.toMutableMap()
         val finalErrors = mutableMapOf<String, String>()
 
-        val entryPriceError = validateEntryPrice(currentState.entryPrice)
+        val entryPriceError = validateEntryPrice(currentState.entryPrice, currentState.minNotional, currentState.tradeValueUsdt)
         newErrors["entryPrice"] = entryPriceError
         if (entryPriceError != null) {
             hasErrors = true
             finalErrors["entryPrice"] = entryPriceError
+        }
+
+        val tradeValueUsdtError = validateTradeValueUsdt(currentState.tradeValueUsdt, currentState.minNotional)
+        newErrors["tradeValueUsdt"] = tradeValueUsdtError
+        if (tradeValueUsdtError != null) {
+            hasErrors = true
+            finalErrors["tradeValueUsdt"] = tradeValueUsdtError
         }
 
         currentState.fields.forEach { field ->
@@ -159,14 +219,21 @@ class TradeSetupViewModel @Inject constructor(
         }
         
         if (hasErrors) {
-            _uiState.update { it.copy(formErrors = newErrors, entryPriceError = entryPriceError) }
+            _uiState.update { it.copy(formErrors = newErrors, entryPriceError = entryPriceError, tradeValueUsdtError = tradeValueUsdtError) }
             return TradeSetupConfigResult.ValidationFailed(finalErrors)
+        }
+
+        val finalTradeValue = if (currentState.tradeValueUsdt.isNotBlank()) {
+            currentState.tradeValueUsdt.toDouble()
+        } else {
+            if (currentState.minNotional > 0.0) currentState.minNotional else 100.0
         }
 
         val config = TradeSetupConfig(
             strategyId = sessionRepository.selectedStrategyId.value!!,
             symbol = symbol,
             entryPrice = currentState.entryPrice.toDouble(),
+            tradeValueUsdt = finalTradeValue,
             parameters = currentState.formValues
         )
         sessionRepository.setTradeSetupConfig(config)
