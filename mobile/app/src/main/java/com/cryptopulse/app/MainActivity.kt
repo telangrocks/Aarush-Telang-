@@ -42,7 +42,6 @@ import com.cryptopulse.app.ui.screens.TradeSetupScreen
 import com.cryptopulse.app.ui.screens.UserOnboardingScreen
 import com.cryptopulse.app.ui.screens.WelcomeScreen
 import com.cryptopulse.app.ui.screens.TradeAlertScreen
-import com.cryptopulse.app.ui.screens.LivePnLMonitoringScreen
 import com.cryptopulse.app.ui.screens.PositionsScreen
 import com.cryptopulse.app.ui.screens.StrategySelectionScreen
 import com.cryptopulse.app.ui.screens.TechnicalAnalysisScreen
@@ -300,7 +299,7 @@ class MainActivity : FragmentActivity() {
                             TradeAlertScreen(
                                 onBack = { navController.popBackStack() },
                                 onTradeExecuted = {
-                                    navController.navigate("live_pnl_monitoring") {
+                                    navController.navigate("positions") {
                                         popUpTo("technical_analysis") { inclusive = false }
                                     }
                                 },
@@ -313,34 +312,7 @@ class MainActivity : FragmentActivity() {
                                 targetEntryPrice = targetEntryPrice,
                             )
                         }
-                        composable("live_pnl_monitoring") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                            val tradeSetup by viewModel.lastTrade.collectAsState(initial = null)
-                            val candidate = selectedCandidate ?: MarketCandidate(
-                                rank = 1,
-                                symbol = "BTC",
-                                pairName = "BTC/USDT",
-                                coinName = "Bitcoin",
-                                notations = 100,
-                                currentMarketPrice = 50000.0,
-                                minNotional = 10.0,
-                                coinColor = Color(0xFFF7931A),
-                            )
-                            val setup = tradeSetup ?: TradeSetupState(
-                                entryPrice = candidate.currentMarketPrice,
-                                stopLossPrice = candidate.currentMarketPrice * 0.99,
-                                takeProfitPrice = candidate.currentMarketPrice * 1.02,
-                            )
-                            LivePnLMonitoringScreen(
-                                candidate = candidate,
-                                entryPrice = setup.entryPrice,
-                                stopLossPrice = setup.stopLossPrice,
-                                takeProfitPrice = setup.takeProfitPrice,
-                                onBack = { navController.popBackStack() },
-                                onNavigateToPositions = { navController.navigate("positions") },
-                            )
-                        }
+
                         composable("positions") {
                             PositionsScreen(
                                 onBack = { navController.popBackStack() }
