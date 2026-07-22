@@ -252,6 +252,61 @@ private fun PositionCard(position: PositionResponse, onClose: () -> Unit) {
                 )
             }
 
+            if (strategy.isNotEmpty() || position.orderType != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val orderTypeLabel = position.orderType ?: "MARKET"
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xFF29B6F6).copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(orderTypeLabel, color = Color(0xFF29B6F6), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    val protLabel = position.protectionMode ?: "ATTACHED_TPSL"
+                    Box(
+                        modifier = Modifier
+                            .background(Color(0xFFAB47BC).copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(protLabel, color = Color(0xFFAB47BC), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    if (status == "PROTECTION_WARNING") {
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFFFFB74D).copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("⚠️ PROTECTION WARNING", color = Color(0xFFFFB74D), fontSize = 9.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+                }
+            }
+
+            if (position.entryExchangeOrderId != null || position.ocoGroupId != null) {
+                Spacer(Modifier.height(6.dp))
+                Column {
+                    position.entryExchangeOrderId?.let {
+                        Text("Entry Order: $it", color = TextMuted, fontSize = 9.sp)
+                    }
+                    position.ocoGroupId?.let {
+                        Text("OCO Group: $it", color = Color(0xFFAB47BC), fontSize = 9.sp)
+                    }
+                    position.tpExchangeOrderId?.let {
+                        Text("TP Order: $it", color = ProfitGreen, fontSize = 9.sp)
+                    }
+                    position.slExchangeOrderId?.let {
+                        Text("SL Order: $it", color = LossRed, fontSize = 9.sp)
+                    }
+                }
+            }
+
             if (strategy.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
                 Text(
