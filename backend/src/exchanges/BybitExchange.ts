@@ -276,6 +276,7 @@ export class BybitExchange implements IExchangeAdapter {
       return tickersData.result.list
         .filter((item: any) => item.symbol.endsWith("USDT"))
         .slice(0, 50)
+        .map((item: any) => {
           const lot = this.metadataCache?.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1, minNotional: 5.0 };
           const lastPrice = parseFloat(item.lastPrice || 0);
           const prevPrice = parseFloat(item.prevPrice24h || lastPrice);
@@ -294,7 +295,7 @@ export class BybitExchange implements IExchangeAdapter {
             priceChangePercent24h: priceChangePercent,
             highPrice24h: parseFloat(item.highPrice24h || 0),
             lowPrice24h: parseFloat(item.lowPrice24h || 0),
-            minNotional: Math.max(lot.minNotional || 5.0, lot.minQty * lastPrice),
+            minNotional: lot.minNotional || 5.0,
             minOrderQty: lot.minQty,
             maxOrderQty: lot.maxQty,
             tickSize: lot.tickSize,
