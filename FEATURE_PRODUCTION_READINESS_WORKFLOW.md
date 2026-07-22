@@ -170,3 +170,13 @@ Production Readiness (Loop Until Confirmed)
 - Phase 6 loops back to the relevant earlier phase when failures are found.
 - All outputs must be traceable to repository artifacts.
 - External logic or assumptions are forbidden unless derived from repository state.
+
+---
+
+## Exchange Layer Architecture Guidelines
+
+To maintain scalability across exchanges and market types:
+1. **Spot Markets**: Use the exchange-provided `minOrderAmt` (or equivalent quote order floor).
+2. **Linear / Futures Markets**: Use `minNotionalValue` or the exchange's documented minimum order rule. Only derive from `minOrderQty × livePrice` if the exchange does not expose a direct quote minimum.
+3. **Adapter Isolation**: Keep each exchange adapter (Bybit, Binance, Delta, OKX) market-aware so symbol metadata rules do not bleed across market types or UI components.
+
