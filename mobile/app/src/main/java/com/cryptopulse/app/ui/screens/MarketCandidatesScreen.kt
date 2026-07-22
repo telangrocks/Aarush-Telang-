@@ -207,7 +207,7 @@ fun MarketCandidatesScreen(
                     ) {
                         Text("#", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, modifier = Modifier.width(28.dp))
                         Text("COIN / PAIR", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, modifier = Modifier.weight(1f))
-                        Text("MIN. NOTATIONS", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.End)
+                        Text("MIN. NOTIONAL", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.End)
                     }
                     Divider(color = NavyBorder, thickness = 1.dp, modifier = Modifier.padding(vertical = 4.dp))
                 }
@@ -326,21 +326,20 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                 fontSize = 11.sp,
             )
             Text(
-                text = "Min Notional: $${String.format("%.2f", candidate.minNotional)}",
-                color = CyanPrimary,
+                text = "AI Score: ${candidate.notations} pts",
+                color = TextMuted,
                 fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
             )
         }
 
         Box(
             modifier = Modifier
-                .border(1.dp, ProfitGreen, RoundedCornerShape(6.dp))
+                .border(1.dp, CyanPrimary, RoundedCornerShape(6.dp))
                 .padding(horizontal = 8.dp, vertical = 4.dp),
         ) {
             Text(
-                text = "${candidate.notations}+ NOTATIONS",
-                color = ProfitGreen,
+                text = "$${String.format("%.2f", candidate.minNotional)} MIN",
+                color = CyanPrimary,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 0.3.sp,
