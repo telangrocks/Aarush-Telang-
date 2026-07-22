@@ -187,4 +187,19 @@ To maintain scalability across exchanges and market types:
    - `sourceField` (e.g. `minOrderAmt`, `MIN_NOTIONAL`, `contract_value`)
    - `calculationMethod` (direct vs. derived per exchange rules)
 
+---
+
+## Project Milestone Verification Status
+
+- **Phase 1: Exchange Layer (Bybit, Binance, Delta)** — ✅ Complete & Verified
+- **Phase 2: Candidate Engine & Ranking** — ✅ Complete & Verified
+- **Phase 3: Focus Mode & Symbol Locking** — ✅ Complete & Verified
+- **Phase 4: Technical Analysis Engine** — ✅ Complete & Verified
+- **Phase 5: Strategy Engine (5 Strategies)** — ✅ Complete & Verified
+- **Phase 6: Trade Setup & Min Notional Rules** — ✅ Complete & Verified
+- **Phase 7: Notification Engine & FCM Payload** — ✅ Complete & Verified
+- **Phase 8: Trade Lifecycle Architecture & FSM** — ✅ Complete (Design & Code Verified)
+- **Phase 9: Live Operational Validation** — ⏳ Pending (Live Testnet/Paper-Trading Runtime)
+
+
 
