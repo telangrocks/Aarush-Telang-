@@ -4,6 +4,11 @@ export interface OrderResult {
   success: boolean;
   message: string;
   orderId?: string;
+  exchangeOrderId?: string;
+  tpOrderId?: string;
+  slOrderId?: string;
+  ocoGroupId?: string;
+  protectionMode?: 'NATIVE_OCO' | 'ATTACHED_TPSL' | 'REDUCE_ONLY_TPSL' | 'SOFTWARE_FALLBACK';
   price?: number;
   quantity?: number;
   /** Stable error code for user-friendly mapping (optional). */
@@ -42,7 +47,29 @@ export interface IExchangeAdapter {
   fetchMarketData(): Promise<MarketTicker[]>;
   fetchTicker(symbol: string): Promise<MarketTicker | null>;
   fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]>;
-  placeOrder?(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number, clientOrderId?: string): Promise<OrderResult>;
+  placeOrder?(
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    apiKey: string,
+    apiSecret: string,
+    quantity?: number,
+    clientOrderId?: string,
+    orderType?: 'MARKET' | 'LIMIT',
+    price?: number,
+    stopLoss?: number,
+    takeProfit?: number
+  ): Promise<OrderResult>;
+  placeOcoOrder?(
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    apiKey: string,
+    apiSecret: string,
+    quantity: number,
+    takeProfitPrice: number,
+    stopLossPrice: number,
+    clientOrderId?: string
+  ): Promise<OrderResult>;
+  cancelOrder?(orderId: string, symbol: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }>;
   fetchOrder?(orderId: string, apiKey: string, apiSecret: string): Promise<OrderResult>;
   fetchPositions?(apiKey: string, apiSecret: string): Promise<PositionsResponse>;
   setEnvironment?(environment: ExchangeEnvironment): void;
