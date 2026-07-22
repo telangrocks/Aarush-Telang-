@@ -207,7 +207,7 @@ fun MarketCandidatesScreen(
                     ) {
                         Text("#", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, modifier = Modifier.width(28.dp))
                         Text("COIN / PAIR", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, modifier = Modifier.weight(1f))
-                        Text("MIN. NOTIONAL", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.End)
+                        Text("MIN. TRADABLE PRICE", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.End)
                     }
                     Divider(color = NavyBorder, thickness = 1.dp, modifier = Modifier.padding(vertical = 4.dp))
                 }

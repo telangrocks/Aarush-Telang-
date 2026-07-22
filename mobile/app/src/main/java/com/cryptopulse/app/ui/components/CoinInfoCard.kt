@@ -48,7 +48,7 @@ fun CoinInfoCard(candidate: MarketCandidate) {
             Text(candidate.coinName, color = TextSecondary, fontSize = 12.sp)
             if (candidate.minNotional > 0.0) {
                 Text(
-                    text = "Min Notional: $${String.format("%.2f", candidate.minNotional)}",
+                    text = "Min Tradable Price: $${String.format("%.2f", candidate.minNotional)} USDT",
                     color = CyanPrimary,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold

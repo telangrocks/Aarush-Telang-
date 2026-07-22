@@ -116,14 +116,14 @@ fun TradeSetupScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Exchange Requirement:",
+                                    text = "Minimum Tradable Price:",
                                     color = TextSecondary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Normal
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(
-                                    text = "Min Notional = $${"%.2f".format(candidate.minNotional)} USDT",
+                                    text = "$${"%.2f".format(candidate.minNotional)} USDT",
                                     color = CyanPrimary,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
