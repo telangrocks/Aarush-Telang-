@@ -340,8 +340,12 @@ export class BinanceExchange implements IExchangeAdapter {
     side: "BUY" | "SELL",
     apiKey: string,
     apiSecret: string,
-    quantity: number,
+    quantity?: number,
     clientOrderId?: string,
+    orderType?: 'MARKET' | 'LIMIT',
+    price?: number,
+    stopLoss?: number,
+    takeProfit?: number
   ): Promise<OrderResult> {
     const breakerState = this.breaker.check();
     if (!breakerState.allowed) {
@@ -353,15 +357,28 @@ export class BinanceExchange implements IExchangeAdapter {
       const recvWindow = 5000;
       const fullSymbol = `${symbol.toUpperCase()}USDT`;
       const qty = quantity ?? 10;
+      const type = orderType || 'MARKET';
       
       const orderParams = new URLSearchParams({
         symbol: fullSymbol,
         side: side,
-        type: 'MARKET',
+        type: type,
         quantity: qty.toString(),
         timestamp: timestamp.toString(),
         recvWindow: recvWindow.toString(),
       });
+
+      if (type === 'LIMIT') {
+        if (!price || price <= 0) {
+          return { success: false, message: "Limit price is required for LIMIT orders." };
+        }
+        orderParams.append('price', price.toString());
+        orderParams.append('timeInForce', 'GTC');
+      }
+
+      if (clientOrderId) {
+        orderParams.append('newClientOrderId', clientOrderId);
+      }
 
       const signature = await hmacSha256(orderParams.toString(), apiSecret);
       const url = `${this.getRestUrl()}/api/v3/order?signature=${signature}`;
@@ -389,13 +406,124 @@ export class BinanceExchange implements IExchangeAdapter {
         success: true,
         message: `Order placed successfully`,
         orderId: data.orderId?.toString(),
-        price: parseFloat(data.fills?.[0]?.price || '0'),
+        exchangeOrderId: data.orderId?.toString(),
+        price: parseFloat(data.fills?.[0]?.price || price?.toString() || '0'),
         quantity: parseFloat(data.fills?.[0]?.qty || qty.toString()),
+        status: data.status?.toLowerCase() || (type === 'LIMIT' ? 'open' : 'filled'),
       };
     } catch (e: any) {
       this.breaker.recordFailure();
       const err = classifyException(e, this.config.displayName);
       return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+    }
+  }
+
+  async placeOcoOrder(
+    symbol: string,
+    side: "BUY" | "SELL",
+    apiKey: string,
+    apiSecret: string,
+    quantity: number,
+    takeProfitPrice: number,
+    stopLossPrice: number,
+    clientOrderId?: string
+  ): Promise<OrderResult> {
+    const breakerState = this.breaker.check();
+    if (!breakerState.allowed) {
+      return { success: false, message: `Circuit breaker is OPEN. Fast-failing request.` };
+    }
+
+    try {
+      const timestamp = Date.now();
+      const recvWindow = 5000;
+      const fullSymbol = `${symbol.toUpperCase()}USDT`;
+      const stopLimitPrice = (stopLossPrice * 0.995).toFixed(4);
+      
+      const params = new URLSearchParams({
+        symbol: fullSymbol,
+        side: side,
+        quantity: quantity.toString(),
+        price: takeProfitPrice.toString(),
+        stopPrice: stopLossPrice.toString(),
+        stopLimitPrice: stopLimitPrice.toString(),
+        stopLimitTimeInForce: 'GTC',
+        timestamp: timestamp.toString(),
+        recvWindow: recvWindow.toString(),
+      });
+
+      if (clientOrderId) {
+        params.append('listClientOrderId', clientOrderId);
+      }
+
+      const signature = await hmacSha256(params.toString(), apiSecret);
+      const url = `${this.getRestUrl()}/api/v3/order/oco?signature=${signature}`;
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-MBX-APIKEY': apiKey,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: params.toString(),
+      });
+
+      const data = await response.json() as any;
+      
+      if (!response.ok || data.code) {
+        this.breaker.recordFailure();
+        const detail = data.msg || `HTTP ${response.status}: OCO Order failed`;
+        const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
+        return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
+      }
+
+      this.breaker.recordSuccess();
+      const tpReport = data.orderReports?.find((r: any) => r.type === 'LIMIT_MAKER');
+      const slReport = data.orderReports?.find((r: any) => r.type === 'STOP_LOSS_LIMIT');
+
+      return {
+        success: true,
+        message: "Native OCO Order placed successfully",
+        ocoGroupId: data.orderListId?.toString(),
+        tpOrderId: tpReport?.orderId?.toString(),
+        slOrderId: slReport?.orderId?.toString(),
+        protectionMode: 'NATIVE_OCO',
+        status: 'open',
+      };
+    } catch (e: any) {
+      this.breaker.recordFailure();
+      const err = classifyException(e, this.config.displayName);
+      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+    }
+  }
+
+  async cancelOrder(orderId: string, symbol: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const timestamp = Date.now();
+      const fullSymbol = `${symbol.toUpperCase()}USDT`;
+      const params = new URLSearchParams({
+        symbol: fullSymbol,
+        orderId: orderId,
+        timestamp: timestamp.toString(),
+      });
+
+      const signature = await hmacSha256(params.toString(), apiSecret);
+      const url = `${this.getRestUrl()}/api/v3/order?${params.toString()}&signature=${signature}`;
+
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          'X-MBX-APIKEY': apiKey,
+        },
+      });
+
+      const data = await response.json() as any;
+      if (!response.ok) {
+        return { success: false, message: data.msg || "Failed to cancel order" };
+      }
+
+      return { success: true, message: "Order cancelled successfully" };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Failed to cancel order" };
     }
   }
 

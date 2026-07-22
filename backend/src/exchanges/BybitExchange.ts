@@ -369,20 +369,53 @@ export class BybitExchange implements IExchangeAdapter {
     }
   }
 
-  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number): Promise<OrderResult> {
+  async placeOrder(
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    apiKey: string,
+    apiSecret: string,
+    quantity?: number,
+    clientOrderId?: string,
+    orderType?: 'MARKET' | 'LIMIT',
+    price?: number,
+    stopLoss?: number,
+    takeProfit?: number
+  ): Promise<OrderResult> {
     try {
       const timestamp = Date.now().toString();
       const recvWindow = "5000";
-      const orderId = crypto.randomUUID();
+      const orderId = clientOrderId || crypto.randomUUID();
       const qty = quantity ?? 0.001;
-      const body = JSON.stringify({
+      const type = orderType || 'MARKET';
+
+      const payload: any = {
         category: "spot",
         symbol: `${symbol.toUpperCase()}USDT`,
         side: side === "BUY" ? "Buy" : "Sell",
-        orderType: "MARKET",
+        orderType: type === "LIMIT" ? "Limit" : "MARKET",
         qty: qty.toString(),
         orderLinkId: orderId,
-      });
+      };
+
+      if (type === "LIMIT") {
+        if (!price || price <= 0) {
+          return { success: false, message: "Limit price is required for LIMIT orders." };
+        }
+        payload.price = price.toString();
+        payload.timeInForce = "GTC";
+      }
+
+      if (takeProfit && takeProfit > 0) {
+        payload.takeProfit = takeProfit.toString();
+        payload.tpTriggerBy = "LastPrice";
+      }
+
+      if (stopLoss && stopLoss > 0) {
+        payload.stopLoss = stopLoss.toString();
+        payload.slTriggerBy = "LastPrice";
+      }
+
+      const body = JSON.stringify(payload);
 
       const signature = await hmacSha256(
         timestamp + apiKey + recvWindow + body,
@@ -412,12 +445,142 @@ export class BybitExchange implements IExchangeAdapter {
         success: true,
         message: "Order placed successfully",
         orderId: data.result?.orderId,
-        price: parseFloat(data.result?.avgPrice || 0),
+        exchangeOrderId: data.result?.orderId,
+        protectionMode: (takeProfit || stopLoss) ? 'ATTACHED_TPSL' : undefined,
+        price: parseFloat(data.result?.avgPrice || price?.toString() || 0),
         quantity: parseFloat(data.result?.qty || qty.toString()),
+        status: type === 'LIMIT' ? 'open' : 'filled',
       };
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);
       return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+    }
+  }
+
+  async fetchOrder(orderId: string, apiKey: string, apiSecret: string): Promise<OrderResult> {
+    try {
+      const timestamp = Date.now().toString();
+      const recvWindow = "5000";
+      const query = `category=spot&orderId=${encodeURIComponent(orderId)}&timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
+      const signature = await hmacSha256(timestamp + apiKey + recvWindow + query, apiSecret);
+
+      const response = await fetch(`${this.getRestUrl()}/v5/order/realtime?${query}`, {
+        headers: {
+          "X-BAPI-API-KEY": apiKey,
+          "X-BAPI-SIGN": signature,
+          "X-BAPI-TIMESTAMP": timestamp,
+          "X-BAPI-RECV-WINDOW": recvWindow,
+        },
+      });
+
+      if (!response.ok) {
+        return { success: false, message: "Failed to fetch order" };
+      }
+
+      const data = await response.json() as any;
+      if (data.retCode !== 0 || !Array.isArray(data.result?.list) || data.result.list.length === 0) {
+        return { success: false, message: data.retMsg || "Order not found" };
+      }
+
+      const o = data.result.list[0];
+      const statusMap: Record<string, any> = {
+        'New': 'open',
+        'PartiallyFilled': 'partially_filled',
+        'Filled': 'filled',
+        'Cancelled': 'cancelled',
+        'Rejected': 'rejected',
+      };
+
+      return {
+        success: true,
+        message: "Order fetched successfully",
+        orderId: o.orderId,
+        exchangeOrderId: o.orderId,
+        status: statusMap[o.orderStatus] || o.orderStatus?.toLowerCase(),
+        averageFillPrice: parseFloat(o.avgPrice || 0),
+        filledQuantity: parseFloat(o.cumExecQty || 0),
+      };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Failed to fetch order" };
+    }
+  }
+
+  async fetchPositions(apiKey: string, apiSecret: string): Promise<{ success: boolean; result: any[]; message: string }> {
+    try {
+      const timestamp = Date.now().toString();
+      const recvWindow = "5000";
+      const query = `category=spot&timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
+      const signature = await hmacSha256(timestamp + apiKey + recvWindow + query, apiSecret);
+
+      const response = await fetch(`${this.getRestUrl()}/v5/account/wallet-balance?accountType=UNIFIED&${query}`, {
+        headers: {
+          "X-BAPI-API-KEY": apiKey,
+          "X-BAPI-SIGN": signature,
+          "X-BAPI-TIMESTAMP": timestamp,
+          "X-BAPI-RECV-WINDOW": recvWindow,
+        },
+      });
+
+      if (!response.ok) {
+        return { success: false, result: [], message: "Failed to fetch balances" };
+      }
+
+      const data = await response.json() as any;
+      if (data.retCode !== 0 || !Array.isArray(data.result?.list) || data.result.list.length === 0) {
+        return { success: false, result: [], message: data.retMsg || "No balances found" };
+      }
+
+      const coins = data.result.list[0].coin || [];
+      const positions: any[] = [];
+      for (const c of coins) {
+        const total = parseFloat(c.walletBalance || "0");
+        if (total > 0 && c.coin !== "USDT") {
+          positions.push({
+            symbol: `${c.coin}USDT`,
+            size: total,
+            entry_price: 0,
+            side: "BUY"
+          });
+        }
+      }
+
+      return { success: true, result: positions, message: "Balances fetched" };
+    } catch (e: any) {
+      return { success: false, result: [], message: e.message || "Failed to fetch balances" };
+    }
+  }
+
+  async cancelOrder(orderId: string, symbol: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const timestamp = Date.now().toString();
+      const recvWindow = "5000";
+      const body = JSON.stringify({
+        category: "spot",
+        symbol: `${symbol.toUpperCase()}USDT`,
+        orderId: orderId,
+      });
+
+      const signature = await hmacSha256(timestamp + apiKey + recvWindow + body, apiSecret);
+      const response = await fetch(`${this.getRestUrl()}/v5/order/cancel`, {
+        method: "POST",
+        headers: {
+          "X-BAPI-API-KEY": apiKey,
+          "X-BAPI-SIGN": signature,
+          "X-BAPI-TIMESTAMP": timestamp,
+          "X-BAPI-RECV-WINDOW": recvWindow,
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+
+      const data = await response.json() as any;
+      if (data.retCode !== 0) {
+        return { success: false, message: data.retMsg || "Failed to cancel order" };
+      }
+
+      return { success: true, message: "Order cancelled successfully" };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Failed to cancel order" };
     }
   }
 }

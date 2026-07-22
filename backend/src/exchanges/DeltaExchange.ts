@@ -360,7 +360,18 @@ export class DeltaExchange implements IExchangeAdapter {
     }
   }
 
-  async placeOrder(symbol: string, side: 'BUY' | 'SELL', apiKey: string, apiSecret: string, quantity?: number, clientOrderId?: string): Promise<OrderResult> {
+  async placeOrder(
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    apiKey: string,
+    apiSecret: string,
+    quantity?: number,
+    clientOrderId?: string,
+    orderType?: 'MARKET' | 'LIMIT',
+    price?: number,
+    stopLoss?: number,
+    takeProfit?: number
+  ): Promise<OrderResult> {
     const breakerState = this.breaker.check();
     if (!breakerState.allowed) {
       return { success: false, message: `Circuit breaker is OPEN. Fast-failing request.`, code: "CIRCUIT_BREAKER_OPEN" };
@@ -412,12 +423,36 @@ export class DeltaExchange implements IExchangeAdapter {
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const requestPath = "/v2/orders";
       const qty = quantity ?? 0.001;
+      const type = orderType || 'MARKET';
+
       const orderPayload: any = {
         symbol: `${symbol.toUpperCase()}USD`,
         side: side === "BUY" ? "buy" : "sell",
-        type: "market",
-        quantity: qty,
+        type: type === "LIMIT" ? "limit" : "market",
+        size: qty,
       };
+
+      if (type === "LIMIT") {
+        if (!price || price <= 0) {
+          return { success: false, message: "Limit price is required for LIMIT orders." };
+        }
+        orderPayload.limit_price = price.toString();
+      }
+
+      if (takeProfit && takeProfit > 0) {
+        orderPayload.take_profit_order = {
+          trigger_price: takeProfit.toString(),
+          order_type: "market_order",
+        };
+      }
+
+      if (stopLoss && stopLoss > 0) {
+        orderPayload.stop_loss_order = {
+          trigger_price: stopLoss.toString(),
+          order_type: "market_order",
+        };
+      }
+
       if (clientOrderId) {
         orderPayload.client_order_id = clientOrderId;
       }
@@ -446,13 +481,43 @@ export class DeltaExchange implements IExchangeAdapter {
         success: true,
         message: "Order placed successfully",
         orderId: data.result?.id,
-        price: parseFloat(data.result?.avg_price || 0),
-        quantity: parseFloat(data.result?.quantity || qty.toString()),
+        exchangeOrderId: data.result?.id,
+        protectionMode: (takeProfit || stopLoss) ? 'ATTACHED_TPSL' : undefined,
+        price: parseFloat(data.result?.avg_price || price?.toString() || 0),
+        quantity: parseFloat(data.result?.size || qty.toString()),
+        status: type === 'LIMIT' ? 'open' : 'filled',
       };
     } catch (e: any) {
       this.breaker.recordFailure();
       const err = classifyException(e, this.config.displayName);
       return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+    }
+  }
+
+  async cancelOrder(orderId: string, symbol: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const requestPath = `/v2/orders/${orderId}`;
+      const prehash = "DELETE" + timestamp + requestPath;
+      const signature = await hmacSha256(prehash, apiSecret);
+
+      const response = await this.fetchWithRetry(`${this.getRestUrl()}${requestPath}`, {
+        method: "DELETE",
+        headers: {
+          "api-key": apiKey,
+          "signature": signature,
+          "timestamp": timestamp,
+        },
+      });
+
+      const data = await response.json() as any;
+      if (!data.success) {
+        return { success: false, message: data.error?.message || "Failed to cancel order" };
+      }
+
+      return { success: true, message: "Order cancelled successfully" };
+    } catch (e: any) {
+      return { success: false, message: e.message || "Failed to cancel order" };
     }
   }
 
