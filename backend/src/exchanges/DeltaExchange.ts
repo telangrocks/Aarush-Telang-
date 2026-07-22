@@ -107,16 +107,18 @@ export class DeltaExchange implements IExchangeAdapter {
     const map = new Map<string, SymbolMetadata>();
     for (const product of data.result) {
       const symbol = product.symbol;
-      const minQty = parseFloat(product.min_notional_value ?? product.min_notional ?? "0.001");
+      const contractValue = parseFloat(product.contract_value ?? product.min_notional_value ?? "1.0");
+      const minQty = contractValue > 0 ? contractValue : 1.0;
       const maxQty = parseFloat(product.max_notional_value ?? product.max_notional ?? "999999999");
       const lotSize = parseFloat(product.lot_size ?? product.step_size ?? "1");
       const tickSize = parseFloat(product.tick_size ?? "0.01");
       if (symbol) {
         map.set(symbol, {
-          minQty: minQty > 0 ? minQty : 0.001,
+          minQty: minQty,
           maxQty: maxQty > 0 ? maxQty : 999999999,
           tickSize: tickSize > 0 ? tickSize : 0.01,
           lotSize: lotSize > 0 ? lotSize : 1,
+          minNotional: minQty,
           id: product.id,
         });
       }
