@@ -202,14 +202,41 @@ To maintain scalability across exchanges and market types:
 - **Phase 7: Notification Engine & FCM Payload** — ✅ Complete & Verified
 - **Phase 8: Trade Lifecycle Architecture & FSM** — ✅ Complete (Design & Code Verified)
 - **Phase 9: Live Operational Validation** — ⏳ Pending (Live Testnet/Paper-Trading Runtime)
+- **Phase 10: Production Readiness Review** — ⏳ Pending (Final Deployment Checklist)
 
 ---
 
-## Phase 9 Operational Validation Log Template
+## Phase 9 Operational Validation Log & Exit Criteria
 
-| Date/Time (UTC) | Exchange | Strategy | Symbol | Signal Generated | Notification Delivered | Entry Triggered | TP/SL / Exit Reason | Duration | D1 / DO Sync | Errors / Discrepancies | Notes |
-| :--- | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- | :--- |
-| *YYYY-MM-DD HH:MM* | *Bybit / Binance / Delta* | *ScalperV2 / Breakout / etc.* | *Symbol* | *Yes/No* | *Yes/No* | *Yes/No* | *TP / SL / Manual* | *min* | *Yes/No* | *None* | *Normal execution* |
+### Operational Log Template
+| Date/Time (UTC) | Exchange | Strategy | Symbol | Signal Correctness | Entry Accuracy | TP/SL Accuracy | Notif. Latency | Data Freshness | Duplicate Check | API Retries | Response Time | D1/DO Sync | Exit Reason | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- | :--- |
+| *YYYY-MM-DD HH:MM* | *Bybit/Binance/Delta* | *ScalperV2/Breakout/etc.* | *Symbol* | *Matched rules* | *At trigger px* | *Matched RiskEngine* | *< 3s* | *< 1s* | *Zero duplicates* | *0* | *< 300ms* | *Synced* | *TP/SL/Manual* | *Passed* |
+
+### Phase 9 Exit Criteria Checklist
+1. **Exchange Coverage**: Bybit (✅), Binance (✅), Delta Exchange (✅)
+2. **Strategy Coverage**: Scalper V2, Breakout, Momentum, Mean Reversion, VWAP
+3. **Runtime Evidence Requirements**:
+   - [ ] At least 1 genuine signal generated per strategy/exchange
+   - [ ] At least 1 notification delivered per strategy/exchange
+   - [ ] At least 1 successful entry confirmation
+   - [ ] At least 1 TP or SL exit execution
+   - [ ] Manual close behavior verified
+   - [ ] D1 SQLite persistence verified
+   - [ ] Durable Object recovery verified
+   - [ ] Zero duplicate trades & zero duplicate notifications
+   - [ ] Zero cross-symbol leakage & zero application crashes
+
+---
+
+## Phase 10 Production Readiness Review Checklist
+
+1. **Configuration & Secrets**: Secure API key encryption, environment isolation, secrets management.
+2. **Observability**: Structured logging, audit log persistence, health metrics endpoints.
+3. **Resilience**: Rate limiting, retry backoffs (`fetchWithRetry`), circuit breakers.
+4. **Data Integrity**: D1 database migrations, Write-Ahead Logging (WAL) recovery, reconciliation sweep.
+5. **Security & Rollback**: Auth token validation, global trading halt switch, rollback procedure.
+
 
 
 
