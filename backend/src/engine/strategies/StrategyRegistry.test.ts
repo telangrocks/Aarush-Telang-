@@ -46,4 +46,24 @@ describe('StrategyRegistry', () => {
       expect(strategy.manifest.id).toBe(id);
     }
   });
+
+  it('should normalize strategy aliases and instantiate all 5 strategies with config overrides', () => {
+    const registry = StrategyRegistry.getInstance();
+
+    const aliases = [
+      { alias: 'scalper-v2', expectedId: 'ScalperV2' },
+      { alias: 'scalping', expectedId: 'ScalperV2' },
+      { alias: 'breakout', expectedId: 'Breakout' },
+      { alias: 'mean_reversion', expectedId: 'MeanReversion' },
+      { alias: 'mean-reversion', expectedId: 'MeanReversion' },
+      { alias: 'momentum', expectedId: 'Momentum' },
+      { alias: 'vwap', expectedId: 'VWAP' },
+    ];
+
+    for (const { alias, expectedId } of aliases) {
+      const strategy = registry.createStrategy(alias, { leverage: '25', risk_level: 'High' });
+      expect(strategy).toBeDefined();
+      expect(strategy?.manifest.id).toBe(expectedId);
+    }
+  });
 });
