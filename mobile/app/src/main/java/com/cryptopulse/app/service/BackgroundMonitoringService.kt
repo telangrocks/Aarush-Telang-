@@ -83,7 +83,7 @@ class BackgroundMonitoringService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        stopAlertSound()
+        TradeAlertManager.getInstance(applicationContext).dismissOrExecuteAlert()
         pollingJob?.cancel()
         serviceScope.cancel()
     }
@@ -171,62 +171,7 @@ class BackgroundMonitoringService : Service() {
     }
 
     private fun showTradeAlert(alert: Map<String, Any>) {
-        val symbol = alert["symbol"] as? String ?: "UNKNOWN"
-        val entryPrice = (alert["entryPrice"] as? Double) ?: 0.0
-        val stopLoss = (alert["stopLoss"] as? Double) ?: 0.0
-        val takeProfit = (alert["takeProfit"] as? Double) ?: 0.0
-        val estimatedPnl = (alert["estimatedPnl"] as? Double) ?: 0.0
-
-        val alertIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("extra_alert", true)
-            putExtra("alert_symbol", symbol)
-            putExtra("alert_entry_price", entryPrice)
-            putExtra("alert_stop_loss", stopLoss)
-            putExtra("alert_take_profit", takeProfit)
-            putExtra("alert_estimated_pnl", estimatedPnl)
-            putExtra("alert_id", alert["id"] as? String)
-        }
-
-        val pendingIntent = PendingIntent.getActivity(
-            this, 2, alertIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Trade Detected!")
-            .setContentText("$symbol - Entry: $${"%.2f".format(entryPrice)}")
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentIntent(pendingIntent)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setAutoCancel(true)
-            .build()
-
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(NOTIFICATION_ID + 1, notification)
-
-        playAlertSound()
-    }
-
-    private fun playAlertSound() {
-        try {
-            stopAlertSound()
-            val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            alertRingtone = RingtoneManager.getRingtone(this, soundUri)
-            alertRingtone?.play()
-        } catch (e: Exception) {
-            Log.e("BackgroundMonitoring", "Failed to play alert sound", e)
-        }
-    }
-
-    private fun stopAlertSound() {
-        try {
-            alertRingtone?.stop()
-        } catch (e: Exception) {
-            // ignore
-        } finally {
-            alertRingtone = null
-        }
+        TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(alert)
     }
 }
+

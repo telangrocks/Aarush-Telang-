@@ -325,6 +325,11 @@ class MainActivity : FragmentActivity() {
 
             val exchangeViewModelForFcm = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
             LaunchedEffect(Unit) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+                    }
+                }
                 try {
                     val token = tokenManager.getToken()
                     if (!token.isNullOrEmpty()) {
@@ -375,9 +380,7 @@ class MainActivity : FragmentActivity() {
                 if (positionSize != null && positionSize > 0.0) {
                     alert["positionSize"] = positionSize
                 }
-                lifecycleScope.launch {
-                    AlertBus.send(alert)
-                }
+                com.cryptopulse.app.service.TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(alert)
             }
         }
     }

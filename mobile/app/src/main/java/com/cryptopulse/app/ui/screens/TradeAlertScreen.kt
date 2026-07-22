@@ -56,9 +56,7 @@ fun TradeAlertScreen(
     val lastTrade by viewModel.lastTrade.collectAsState(initial = null)
 
     LaunchedEffect(Unit) {
-        val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        val ringtone = RingtoneManager.getRingtone(context, notification)
-        ringtone.play()
+        com.cryptopulse.app.service.TradeAlertManager.getInstance(context).onUserViewingAlertScreen()
     }
 
     // Resolve the outcome of an in-flight trade execution: navigate forward on a
@@ -68,6 +66,7 @@ fun TradeAlertScreen(
             when {
                 lastTrade != null -> {
                     isProcessing = false
+                    com.cryptopulse.app.service.TradeAlertManager.getInstance(context).dismissOrExecuteAlert()
                     onTradeExecuted()
                 }
                 tradeError != null -> {
@@ -83,7 +82,10 @@ fun TradeAlertScreen(
             .background(bgGradient)
     ) {
         Scaffold(
-            topBar = { CryptoPulseTopBar(onBack = onBack) },
+            topBar = { CryptoPulseTopBar(onBack = {
+                com.cryptopulse.app.service.TradeAlertManager.getInstance(context).dismissOrExecuteAlert()
+                onBack()
+            }) },
             containerColor = Color.Transparent,
             bottomBar = {
                 Column(
@@ -122,6 +124,7 @@ fun TradeAlertScreen(
                         GradientButton(
                             text = if (tradeError != null) "Retry" else "Cancel",
                             onClick = {
+                                com.cryptopulse.app.service.TradeAlertManager.getInstance(context).dismissOrExecuteAlert()
                                 if (tradeError != null) {
                                     viewModel.clearTradeError()
                                     isProcessing = true
@@ -143,6 +146,7 @@ fun TradeAlertScreen(
                         GradientButton(
                             text = "Trade",
                             onClick = {
+                                com.cryptopulse.app.service.TradeAlertManager.getInstance(context).dismissOrExecuteAlert()
                                 viewModel.clearTradeError()
                                 isProcessing = true
                                 scope.launch {

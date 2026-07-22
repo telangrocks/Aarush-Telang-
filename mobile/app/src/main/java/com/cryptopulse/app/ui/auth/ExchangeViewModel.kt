@@ -53,6 +53,7 @@ data class TradeSetupState(
 
 @HiltViewModel
 class ExchangeViewModel @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
     private val exchangeService: ExchangeService,
     private val marketService: MarketService,
     private val technicalAnalysisService: TechnicalAnalysisService,
@@ -438,6 +439,7 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun dismissCurrentAlert() {
+        com.cryptopulse.app.service.TradeAlertManager.getInstance(appContext).dismissOrExecuteAlert()
         val alertId = _pendingAlert.value?.get("id") as? String
         if (alertId != null) {
             viewModelScope.launch {

@@ -52,8 +52,7 @@ class FcmService : FirebaseMessagingService() {
                 if (positionSize != null && positionSize > 0.0) {
                     alert["positionSize"] = positionSize
                 }
-                // Surface the alert immediately if the app is in the foreground.
-                serviceScope.launch { AlertBus.send(alert) }
+                TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(alert)
             }
         }
 
