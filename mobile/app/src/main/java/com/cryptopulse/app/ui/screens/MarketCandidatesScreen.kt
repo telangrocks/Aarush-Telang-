@@ -326,8 +326,8 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                 fontSize = 11.sp,
             )
             Text(
-                text = "AI Score: ${candidate.notations} pts",
-                color = TextMuted,
+                text = "24h Vol: $${String.format("%.1fM", candidate.quoteVolume24h / 1_000_000.0)}",
+                color = TextSecondary,
                 fontSize = 11.sp,
             )
         }
@@ -338,7 +338,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                 .padding(horizontal = 8.dp, vertical = 4.dp),
         ) {
             Text(
-                text = "$${String.format("%.2f", candidate.minNotional)} MIN",
+                text = "$${String.format("%.2f", candidate.minNotional)} USDT",
                 color = CyanPrimary,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,

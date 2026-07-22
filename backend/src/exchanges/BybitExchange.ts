@@ -274,17 +274,24 @@ export class BybitExchange implements IExchangeAdapter {
         .filter((item: any) => item.symbol.endsWith("USDT"))
         .slice(0, 50)
         .map((item: any) => {
-          const lot = this.metadataCache?.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+          const lastPrice = parseFloat(item.lastPrice || 0);
+          const prevPrice = parseFloat(item.prevPrice24h || lastPrice);
+          const priceChange = lastPrice - prevPrice;
+          const priceChangePercent = item.price24hPcnt != null ? parseFloat(item.price24hPcnt) * 100 : (prevPrice > 0 ? (priceChange / prevPrice) * 100 : 0);
+          const turnover = parseFloat(item.turnover24h || 0);
+          const vol = parseFloat(item.volume24h || 0);
+          const quoteVol = turnover > 0 ? turnover : vol * lastPrice;
+
           return {
             symbol: item.symbol.replace("USDT", ""),
-            price: parseFloat(item.lastPrice || 0),
-            volume24h: parseFloat(item.volume24h || 0),
-            quoteVolume24h: parseFloat(item.volume24h || 0) * parseFloat(item.lastPrice || 0),
-            priceChange24h: parseFloat(item.priceChange || 0),
-            priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
+            price: lastPrice,
+            volume24h: vol,
+            quoteVolume24h: quoteVol,
+            priceChange24h: priceChange,
+            priceChangePercent24h: priceChangePercent,
             highPrice24h: parseFloat(item.highPrice24h || 0),
             lowPrice24h: parseFloat(item.lowPrice24h || 0),
-            minNotional: lot.minQty * (parseFloat(item.lastPrice || 0) || 1),
+            minNotional: lot.minQty * (lastPrice || 1),
             minOrderQty: lot.minQty,
             maxOrderQty: lot.maxQty,
             tickSize: lot.tickSize,
