@@ -61,35 +61,89 @@ export class ReconciliationEngine {
 
   public async runReconciliationSweep() {
     const sweepStartTime = Date.now();
+    const nowIso = new Date().toISOString();
+
     // 1. Fetch current exchange state
     let exchangePositions: PositionResult[] = [];
     if (this.adapter.fetchPositions) {
-      const posRes = await this.adapter.fetchPositions(this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted); // Note: Assuming the secret passed is already decrypted by the caller
+      const posRes = await this.adapter.fetchPositions(this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
       if (posRes.success) {
         exchangePositions = posRes.result;
       } else {
         console.error("Reconciliation failed to fetch positions:", posRes.message);
-        return; // Abort sweep if we can't talk to the exchange
+        return;
       }
     }
 
-    // 2. Fetch known positions from D1
+    // 2. Fetch known PENDING_ENTRY and OPEN positions from D1
     const { results } = await this.env.DB.prepare(
-      "SELECT symbol, side, quantity, entry_price, stop_loss, take_profit, strategy FROM trade_positions WHERE user_id = ? AND status = 'OPEN'"
+      "SELECT * FROM trade_positions WHERE user_id = ? AND status IN ('PENDING_ENTRY', 'OPEN', 'PROTECTION_WARNING')"
     )
       .bind(this.userId)
       .all();
     const knownPositions = (results || []) as any[];
 
+    // 3. Reconcile known D1 positions against exchange order status & protection health
+    for (const pos of knownPositions) {
+      try {
+        const orderIdToQuery = pos.entry_exchange_order_id || pos.order_id;
+        if (orderIdToQuery && this.adapter.fetchOrder) {
+          const ordStatus = await this.adapter.fetchOrder(orderIdToQuery, this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
+          
+          if (ordStatus.success) {
+            // Update D1 entry order status and fill data
+            if (pos.status === 'PENDING_ENTRY' && ordStatus.status === 'filled') {
+              await this.env.DB.prepare(
+                `UPDATE trade_positions SET status = 'OPEN', entry_status = 'FILLED', filled_quantity = ?, average_fill_price = ?, entry_filled_at = ?, updated_at = ? WHERE id = ?`
+              )
+                .bind(ordStatus.filledQuantity || pos.quantity, ordStatus.averageFillPrice || pos.entry_price, nowIso, nowIso, pos.id)
+                .run();
+              await this.logDecision('PENDING_ENTRY_FILLED', { symbol: pos.symbol, positionId: pos.id, orderId: orderIdToQuery });
+            }
+
+            // Retrieve and persist TP/SL exchange order IDs if available from adapter
+            if (ordStatus.tpOrderId || ordStatus.slOrderId || ordStatus.ocoGroupId) {
+              await this.env.DB.prepare(
+                `UPDATE trade_positions SET tp_exchange_order_id = COALESCE(?, tp_exchange_order_id), sl_exchange_order_id = COALESCE(?, sl_exchange_order_id), oco_group_id = COALESCE(?, oco_group_id), updated_at = ? WHERE id = ?`
+              )
+                .bind(ordStatus.tpOrderId || null, ordStatus.slOrderId || null, ordStatus.ocoGroupId || null, nowIso, pos.id)
+                .run();
+            }
+          }
+        }
+
+        // Protection Health Check for ACTIVE / OPEN positions
+        if (pos.status === 'OPEN' || pos.status === 'PROTECTION_WARNING') {
+          const hasProtectionIds = pos.tp_exchange_order_id || pos.sl_exchange_order_id || pos.oco_group_id || pos.protection_mode === 'ATTACHED_TPSL';
+          if (!hasProtectionIds && pos.protection_mode !== 'SOFTWARE_FALLBACK') {
+            await this.env.DB.prepare(
+              `UPDATE trade_positions SET status = 'PROTECTION_WARNING', last_health_check_at = ?, updated_at = ? WHERE id = ?`
+            )
+              .bind(nowIso, nowIso, pos.id)
+              .run();
+            await this.logDecision('PROTECTION_HEALTH_WARNING', { symbol: pos.symbol, positionId: pos.id, reason: 'Missing exchange protection IDs' });
+          } else {
+            await this.env.DB.prepare(
+              `UPDATE trade_positions SET last_health_check_at = ?, updated_at = ? WHERE id = ?`
+            )
+              .bind(nowIso, nowIso, pos.id)
+              .run();
+          }
+        }
+      } catch (err: any) {
+        console.error(`Error reconciling position ${pos.id}:`, err);
+      }
+    }
+
     const transactions = await this.getTransactions();
 
-    // 3. Identify Orphaned Positions
+    // 4. Identify Orphaned Positions
     for (const exPos of exchangePositions) {
       if (exPos.size > 0) {
         const isKnown = knownPositions.find(p => exPos.symbol.includes(p.symbol) && (
             (exPos.side as any === 'long' && p.side === 'BUY') || 
             (exPos.side as any === 'short' && p.side === 'SELL') ||
-            (exPos.side as any === 'both') // spot or one-way mode
+            (exPos.side as any === 'both')
         ));
 
         if (!isKnown) {
@@ -111,43 +165,15 @@ export class ReconciliationEngine {
       }
     }
 
-    // 3.5 Identify Orphaned Orders
-    let exchangeOrders: any[] = [];
-    if ((this.adapter as any).fetchOpenOrders) {
-       const ordRes = await (this.adapter as any).fetchOpenOrders(this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
-       if (ordRes.success) exchangeOrders = ordRes.result;
-    }
-    
-    // In our simplified logic, the bot only uses market orders or immediate cancel, so any open orders found are considered orphaned (since we don't actively manage a persistent grid of limit orders in D1).
-    for (const exOrd of exchangeOrders) {
-       const txId = `ord_${exOrd.id}`;
-       if (!transactions.has(txId)) {
-          transactions.set(txId, {
-            id: txId,
-            type: 'ORDER',
-            symbol: exOrd.symbol,
-            status: 'RECOVERY_PENDING',
-            attempts: 0,
-            lastAttemptAt: 0,
-            firstDetectedAt: Date.now(),
-            data: exOrd
-          });
-          await this.logDecision('ORPHANED_ORDER_DETECTED', { symbol: exOrd.symbol, orderId: exOrd.id });
-       }
-    }
-
-    // 4. Process all pending recovery transactions independently
+    // 5. Process all pending recovery transactions
     for (const [txId, tx] of transactions.entries()) {
       await this.processTransaction(tx, knownPositions);
     }
       
-    // 5. Generate Final Reconciliation Summary
     const summary = {
       positionsScanned: exchangePositions.length,
-      ordersScanned: 0,
+      knownPositionsReconciled: knownPositions.length,
       orphanedPositionsFound: transactions.size,
-      recoveredPositions: Array.from(transactions.values()).filter(t => t.status === 'RECOVERY_COMPLETED').length,
-      failedRecoveries: Array.from(transactions.values()).filter(t => t.status === 'RECOVERY_FAILED').length,
       executionTimeMs: Date.now() - sweepStartTime,
       status: 'COMPLETED'
     };
@@ -155,7 +181,6 @@ export class ReconciliationEngine {
     await this.stateStorage.put('lastReconciliationSummary', summary);
     await this.logDecision('RECONCILIATION_SWEEP_COMPLETED', summary);
 
-    // Cleanup completed/failed transactions after some time or immediately
     for (const [txId, tx] of transactions.entries()) {
       if (tx.status === 'RECOVERY_COMPLETED' || tx.status === 'RECOVERY_FAILED') {
          transactions.delete(txId);
@@ -163,8 +188,6 @@ export class ReconciliationEngine {
     }
 
     await this.saveTransactions(transactions);
-    
-    // Save summary
     await this.stateStorage.put('lastReconciliationAt', Date.now());
   }
 
