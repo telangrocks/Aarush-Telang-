@@ -663,10 +663,23 @@ export class TradingBot {
             await this.logAuditEvent(userId, 'TRADE_SUBMITTED', { symbol: orderSymbol, side, clientOrderId, strategy: target.strategy, entryPrice: target.entryPrice });
 
             let orderResult: any = { success: true, message: 'Trade executed (simulated).', orderId: clientOrderId };
+            let orderType: 'MARKET' | 'LIMIT' = 'MARKET';
+            let limitPrice: number | undefined = undefined;
+
             try {
               if (adapter.placeOrder) {
                 const ticker = await adapter.fetchTicker(orderSymbol);
-                const refPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
+                const currentPrice = ticker?.price || target.signalPrice || target.entryPrice;
+                const targetPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
+                
+                // Hybrid Order Selection: If target price differs by > 0.05% from current live price, use LIMIT order
+                const deltaPercent = currentPrice > 0 ? (Math.abs(targetPrice - currentPrice) / currentPrice) : 0;
+                if (target.targetEntryPrice && deltaPercent > 0.0005) {
+                  orderType = 'LIMIT';
+                  limitPrice = target.targetEntryPrice;
+                }
+
+                const refPrice = limitPrice || currentPrice;
                 const rawQty = target.positionSize > 0 && refPrice > 0
                   ? target.positionSize / refPrice
                   : undefined;
@@ -675,14 +688,44 @@ export class TradingBot {
                   throw new Error(`Order size ${target.positionSize} is below exchange minimum notional of ${ticker?.minNotional}`);
                 }
                 
-                // Feature 10: Exchange Compatibility Validation (Rounding)
-                // Enforce strict lotSize and tickSize rounding pre-execution
                 const qty = rawQty != null && ticker
                   ? normalizeQuantity(rawQty, ticker.lotSize, ticker.minOrderQty, ticker.maxOrderQty)
                   : rawQty;
                   
-                // Feature 2: Pass clientOrderId for Idempotency
-                orderResult = await adapter.placeOrder(orderSymbol, side, userKeys.exchange_api_key, decryptedSecret, qty, clientOrderId);
+                orderResult = await adapter.placeOrder(
+                  orderSymbol,
+                  side,
+                  userKeys.exchange_api_key,
+                  decryptedSecret,
+                  qty,
+                  clientOrderId,
+                  orderType,
+                  limitPrice,
+                  target.stopLoss,
+                  target.takeProfit
+                );
+
+                // Binance Post-Fill Native OCO Creation
+                if (orderResult.success && userKeys.exchange_name === 'binance' && adapter.placeOcoOrder && orderResult.status === 'filled') {
+                  const ocoSide = side === 'BUY' ? 'SELL' : 'BUY';
+                  const ocoResult = await adapter.placeOcoOrder(
+                    orderSymbol,
+                    ocoSide,
+                    userKeys.exchange_api_key,
+                    decryptedSecret,
+                    orderResult.quantity || qty || 0.001,
+                    target.takeProfit,
+                    target.stopLoss,
+                    `oco_${clientOrderId}`
+                  ).catch((err: any) => ({ success: false, message: err.message }));
+
+                  if (ocoResult.success) {
+                    orderResult.ocoGroupId = ocoResult.ocoGroupId;
+                    orderResult.tpOrderId = ocoResult.tpOrderId;
+                    orderResult.slOrderId = ocoResult.slOrderId;
+                    orderResult.protectionMode = 'NATIVE_OCO';
+                  }
+                }
               }
             } catch (e: any) {
               orderResult = { success: false, message: e.message || 'Trade execution failed' };
@@ -706,6 +749,7 @@ export class TradingBot {
 
               const positionId = crypto.randomUUID();
               const now = new Date().toISOString();
+              const initialStatus = orderResult.status === 'open' ? 'PENDING_ENTRY' : 'OPEN';
               
               const positionData = {
                   id: positionId,
@@ -723,6 +767,15 @@ export class TradingBot {
                   environment: userKeys.exchange_environment || 'mainnet',
                   strategy: target.strategy,
                   orderId: orderResult.orderId || null,
+                  entryExchangeOrderId: orderResult.exchangeOrderId || orderResult.orderId || null,
+                  tpExchangeOrderId: orderResult.tpOrderId || null,
+                  slExchangeOrderId: orderResult.slOrderId || null,
+                  ocoGroupId: orderResult.ocoGroupId || null,
+                  protectionMode: orderResult.protectionMode || 'ATTACHED_TPSL',
+                  orderType: orderType,
+                  limitPrice: limitPrice || null,
+                  entryStatus: initialStatus,
+                  submittedAt: now,
                   now
               };
 
@@ -733,8 +786,9 @@ export class TradingBot {
                 await this.env.DB.prepare(
                   `INSERT OR IGNORE INTO trade_positions (
                     id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, stop_loss, take_profit,
-                    status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
+                    status, exchange, environment, strategy, order_id, entry_exchange_order_id, tp_exchange_order_id, sl_exchange_order_id,
+                    oco_group_id, protection_mode, order_type, limit_price, entry_status, entry_submitted_at, entry_at, created_at, updated_at
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                 )
                   .bind(
                     positionData.id,
@@ -747,10 +801,20 @@ export class TradingBot {
                     positionData.quantity,
                     positionData.stopLoss,
                     positionData.takeProfit,
+                    initialStatus === 'PENDING_ENTRY' ? 'PENDING_ENTRY' : 'OPEN',
                     positionData.exchangeName,
                     positionData.environment,
                     positionData.strategy,
                     positionData.orderId,
+                    positionData.entryExchangeOrderId,
+                    positionData.tpExchangeOrderId,
+                    positionData.slExchangeOrderId,
+                    positionData.ocoGroupId,
+                    positionData.protectionMode,
+                    positionData.orderType,
+                    positionData.limitPrice,
+                    positionData.entryStatus,
+                    positionData.submittedAt,
                     positionData.now,
                     positionData.now,
                     positionData.now,

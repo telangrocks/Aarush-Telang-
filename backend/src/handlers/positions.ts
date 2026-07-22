@@ -92,6 +92,34 @@ export async function handleClosePosition(c: Context<{ Bindings: Env }>): Promis
       position.exchange as ExchangeName,
       normalizeEnvironment(position.environment)
     );
+
+    // Cancel exchange-native protection orders prior to manual market exit
+    if (adapter.cancelOrder) {
+      const userKeys = await c.env.DB.prepare(
+        "SELECT exchange_api_key, exchange_api_secret_encrypted, exchange_api_secret_iv FROM users WHERE id = ?"
+      ).bind(userId).first<any>();
+
+      if (userKeys && userKeys.exchange_api_key) {
+        const decryptedSecret = await decrypt(
+          { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted },
+          c.env.ENCRYPTION_KEY
+        ).catch(() => "");
+
+        if (decryptedSecret) {
+          const cancelTargets = [
+            position.oco_group_id,
+            position.tp_exchange_order_id,
+            position.sl_exchange_order_id,
+            position.entry_exchange_order_id
+          ].filter(Boolean);
+
+          for (const targetId of cancelTargets) {
+            await adapter.cancelOrder(targetId, position.symbol, userKeys.exchange_api_key, decryptedSecret).catch(() => null);
+          }
+        }
+      }
+    }
+
     const ticker = await adapter.fetchTicker(position.symbol);
 
     const closePrice = ticker?.price ?? position.entry_price;
