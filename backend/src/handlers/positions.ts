@@ -1,6 +1,7 @@
 import { Context } from "hono";
 import { Env } from "../index";
 import { getExchangeAdapter, ExchangeName, ExchangeEnvironment } from "../exchanges";
+import { decrypt } from "../crypto";
 
 function normalizeEnvironment(value: unknown): ExchangeEnvironment {
   return value === "testnet" ? "testnet" : "mainnet";

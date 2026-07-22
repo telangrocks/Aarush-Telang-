@@ -719,11 +719,12 @@ export class TradingBot {
                     `oco_${clientOrderId}`
                   ).catch((err: any) => ({ success: false, message: err.message }));
 
-                  if (ocoResult.success) {
-                    orderResult.ocoGroupId = ocoResult.ocoGroupId;
-                    orderResult.tpOrderId = ocoResult.tpOrderId;
-                    orderResult.slOrderId = ocoResult.slOrderId;
-                    orderResult.protectionMode = 'NATIVE_OCO';
+                  if (ocoResult.success && 'ocoGroupId' in ocoResult) {
+                    const res = orderResult as any;
+                    res.ocoGroupId = (ocoResult as any).ocoGroupId;
+                    res.tpOrderId = (ocoResult as any).tpOrderId;
+                    res.slOrderId = (ocoResult as any).slOrderId;
+                    res.protectionMode = 'NATIVE_OCO';
                   }
                 }
               }
