@@ -179,4 +179,12 @@ To maintain scalability across exchanges and market types:
 1. **Spot Markets**: Use the exchange-provided `minOrderAmt` (or equivalent quote order floor).
 2. **Linear / Futures Markets**: Use `minNotionalValue` or the exchange's documented minimum order rule. Only derive from `minOrderQty × livePrice` if the exchange does not expose a direct quote minimum.
 3. **Adapter Isolation**: Keep each exchange adapter (Bybit, Binance, Delta, OKX) market-aware so symbol metadata rules do not bleed across market types or UI components.
+4. **Normalized Exchange Contract**: For future exchange integrations (OKX, Bitget, KuCoin, Gate.io), expose a normalized `ExchangeTradingRules` structure:
+   - `minimumTradableValueUSDT`
+   - `minimumQuantity`
+   - `quantityStep`
+   - `priceTickSize`
+   - `sourceField` (e.g. `minOrderAmt`, `MIN_NOTIONAL`, `contract_value`)
+   - `calculationMethod` (direct vs. derived per exchange rules)
+
 
