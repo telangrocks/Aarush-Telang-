@@ -223,7 +223,6 @@ describe("App Endpoints", () => {
       "users",
       "watchlist",
       "portfolio_transactions",
-      "price_alerts",
       "jwt_blacklist",
       "refresh_tokens",
       "login_attempts",
@@ -502,31 +501,6 @@ describe("App Endpoints", () => {
       expect(res.status).toBe(401);
     });
 
-    it("POST /api/alerts should create a new price alert", async () => {
-      const body = {
-        token_id: "bitcoin",
-        target_price: 70000,
-        condition: "ABOVE",
-      };
-      const req = new Request("http://localhost/api/alerts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(body),
-      });
-
-      const res = await worker.fetch(req, mockEnv as Env);
-      expect(res.status).toBe(200);
-      const data = await res.json<{ success: boolean; token_id: string }>();
-      expect(data.success).toBe(true);
-      expect(data.token_id).toBe("bitcoin");
-      expect(mockEnv.DB?.prepare).toHaveBeenCalledWith(
-        "INSERT INTO price_alerts (id, user_id, token_id, target_price, condition, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-      );
-    });
-
     it("POST /api/exchange/connect should store encrypted keys", async () => {
       const body = { exchangeName: "binance", apiKey: "test-api-key", apiSecret: "test-api-secret", environment: "testnet" };
       const req = new Request("http://localhost/api/exchange/connect", {
@@ -662,21 +636,6 @@ describe("App Endpoints", () => {
         "UPDATE users SET fcm_token = NULL WHERE id = ?",
       );
     });
-  });
-
-  it("scheduled handler should run without errors", async () => {
-    const mockEnv = {
-      DB: {
-        prepare: vi.fn().mockReturnValue({
-          all: vi.fn().mockResolvedValue({ results: [] }),
-        }),
-      } as unknown as D1Database,
-      RESEND_API_KEY: "test-key",
-      ALLOWED_ORIGINS: "https://example.com",
-    };
-    const ctx = { waitUntil: vi.fn() } as unknown as ExecutionContext;
-    await worker.scheduled!({} as ScheduledEvent, mockEnv as Env, ctx);
-    expect(ctx.waitUntil).toHaveBeenCalled();
   });
 
   it("POST /api/resend-verification sends a new verification email", async () => {

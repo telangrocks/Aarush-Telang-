@@ -28,8 +28,5 @@ bindings = [{ name = "TRADING_BOTS", class_name = "TradingBot" }]
 tag = "v1"
 new_sqlite_classes = ["TradingBot"]
 
-[triggers]
-crons = ["*/5 * * * *"]
-
 # Deployed via GitHub Actions (deploy.yml). RESEND_API_KEY is set from the
 # repo secret during the push-to-main deploy step.

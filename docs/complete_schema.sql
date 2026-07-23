@@ -65,25 +65,6 @@ CREATE INDEX IF NOT EXISTS idx_portfolio_transactions_user_id ON portfolio_trans
 CREATE INDEX IF NOT EXISTS idx_portfolio_transactions_token_id ON portfolio_transactions(token_id);
 
 -- ============================================================================
--- PRICE_ALERTS TABLE
--- ============================================================================
--- Migration 0003
-
-CREATE TABLE IF NOT EXISTS price_alerts (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  token_id TEXT NOT NULL,
-  target_price REAL NOT NULL,
-  condition TEXT NOT NULL CHECK(condition IN ('ABOVE', 'BELOW')),
-  created_at TEXT NOT NULL,
-  is_active INTEGER NOT NULL DEFAULT 1,
-  triggered_at TEXT,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_price_alerts_user_id ON price_alerts(user_id);
-CREATE INDEX IF NOT EXISTS idx_price_alerts_is_active ON price_alerts(is_active);
-
 -- ============================================================================
 -- REGISTRATION_ATTEMPTS TABLE
 -- ============================================================================
@@ -123,21 +104,6 @@ SELECT
 FROM users
 WHERE status = 'ACTIVE'
   AND exchange_name IS NOT NULL;
-
--- Active price alerts with user info
-CREATE VIEW IF NOT EXISTS v_active_price_alerts AS
-SELECT
-  pa.id,
-  pa.user_id,
-  u.email AS user_email,
-  pa.token_id,
-  pa.target_price,
-  pa.condition,
-  pa.created_at,
-  pa.triggered_at
-FROM price_alerts pa
-JOIN users u ON pa.user_id = u.id
-WHERE pa.is_active = 1;
 
 -- User portfolio summary
 CREATE VIEW IF NOT EXISTS v_user_portfolio_summary AS

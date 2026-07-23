@@ -373,28 +373,27 @@ async function run() {
     }
   }
 
-  // 12. Price alerts (MEDIUM)
+  // 12. Trading Bot Alerts (MEDIUM)
   {
     const start = Date.now();
     try {
       if (!authToken) throw new Error("No auth token");
-      const createAlert = await request("POST", "/api/alerts", {
+      const botAlerts = await request("GET", "/api/trading-bot/alerts", {
         headers: authHeaders,
-        body: { token_id: "bitcoin", target_price: 50000, condition: "ABOVE" }
       });
 
-      const ok = createAlert.status === 200 && createAlert.json?.id;
+      const ok = botAlerts.status === 200 && Array.isArray(botAlerts.json);
 
       recordCheck({
-        id: "price-alerts",
-        name: "Price alerts — create alert",
+        id: "trading-bot-alerts",
+        name: "Trading Bot Alerts — list pending signals",
         severity: "medium",
         status: ok ? "PASS" : "FAIL",
-        details: ok ? `alert id=${createAlert.json.id}` : `status=${createAlert.status}`,
+        details: ok ? `count=${botAlerts.json.length}` : `status=${botAlerts.status}`,
         durationMs: Date.now() - start,
       });
     } catch (e) {
-      recordCheck({ id: "price-alerts", name: "Price alerts", severity: "medium", status: "FAIL", details: e.message, durationMs: Date.now() - start });
+      recordCheck({ id: "trading-bot-alerts", name: "Trading Bot Alerts", severity: "medium", status: "FAIL", details: e.message, durationMs: Date.now() - start });
     }
   }
 

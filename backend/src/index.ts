@@ -42,11 +42,10 @@ import {
   handleGetBotAlerts,
   handleAcknowledgeAlert,
 } from "./handlers/exchange";
-import { handleRegisterFcmToken, sendPriceAlertNotification } from "./handlers/notifications";
+import { handleRegisterFcmToken } from "./handlers/notifications";
 import { handleGetPositions, handleClosePosition } from "./handlers/positions";
 import { isTokenRevoked } from "./handlers/auth";
 import { chatWithKimiK3 } from "./services/kimi";
-import { getExchangeAdapter, type ExchangeName, type ExchangeEnvironment, type ExchangeRegion } from "./exchanges";
 
 export interface Env {
   DB: D1Database;
@@ -167,7 +166,6 @@ app.get("/db-status", async (c) => {
       "users",
       "watchlist",
       "portfolio_transactions",
-      "price_alerts",
       "jwt_blacklist",
       "refresh_tokens",
       "login_attempts",
@@ -308,32 +306,6 @@ api.delete("/watchlist/:id", async (c) => {
   return c.json({ success: true });
 });
 
-api.post("/alerts", async (c) => {
-  const payload = c.get("jwtPayload") as { sub: string };
-  const userId = payload.sub;
-  const { token_id, target_price, condition } = await c.req.json<{
-    token_id: string;
-    target_price: number;
-    condition: "ABOVE" | "BELOW";
-  }>();
-
-  const alertId = crypto.randomUUID();
-  await c.env.DB.prepare(
-    "INSERT INTO price_alerts (id, user_id, token_id, target_price, condition, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-  )
-    .bind(
-      alertId,
-      userId,
-      token_id,
-      target_price,
-      condition,
-      new Date().toISOString(),
-    )
-    .run();
-
-  return c.json({ success: true, id: alertId, token_id });
-});
-
 api.post("/exchange/validate", handleValidateExchange);
 
 api.post("/exchange/connect", handleConnectExchange);
@@ -432,94 +404,8 @@ app.post("/api/confirm-pin-reset", handleConfirmPinReset);
 
 app.route("/api", api);
 
-// ==========================================
-// SCHEDULED HANDLER
-// ==========================================
-const scheduled = async (
-  _event: ScheduledEvent,
-  env: Env,
-  ctx: ExecutionContext,
-) => {
-  ctx.waitUntil(
-    (async () => {
-      console.log("Starting alert processing...");
-      const { results } = await env.DB.prepare(
-        "SELECT * FROM price_alerts WHERE is_active = 1",
-      ).all();
-      if (!results || results.length === 0) {
-        console.log("No active alerts to process.");
-        return;
-      }
-
-      // Resolve each user's connected exchange + environment so price alerts
-      // are checked against the correct exchange (mainnet or testnet) — never
-      // hard-coded to a single venue.
-      const exchangeCache = new Map<string, { name: ExchangeName; environment: ExchangeEnvironment; region: ExchangeRegion } | null>();
-      for (const alert of results as any[]) {
-        try {
-          const tokenId = alert.token_id as string;
-          const targetPrice = parseFloat(alert.target_price as string);
-          const condition = alert.condition as string;
-          const userId = alert.user_id as string;
-          const symbol = tokenId.toUpperCase();
-
-          let cached = exchangeCache.get(userId);
-          if (cached === undefined) {
-            const user = await env.DB.prepare(
-              "SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?"
-            ).bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
-            cached = user?.exchange_name
-              ? {
-                  name: user.exchange_name as ExchangeName,
-                  environment: user.exchange_environment === "testnet" ? "testnet" : "mainnet",
-                  region: user.exchange_region === "global" ? "global" : "india",
-                }
-              : null;
-            exchangeCache.set(userId, cached);
-          }
-
-          if (!cached) {
-            console.log(`Skipping price alert ${alert.id}: no exchange connected for user ${userId}`);
-            continue;
-          }
-
-          const adapter = getExchangeAdapter(cached.name, cached.environment, cached.region);
-          const ticker = await adapter.fetchTicker(symbol);
-          if (!ticker) continue;
-
-          const currentPrice = ticker.price;
-          let triggered = false;
-
-          if (condition === "ABOVE" && currentPrice >= targetPrice) {
-            triggered = true;
-          } else if (condition === "BELOW" && currentPrice <= targetPrice) {
-            triggered = true;
-          }
-
-          if (triggered) {
-            await env.DB.prepare(
-              "UPDATE price_alerts SET is_active = 0, triggered_at = ? WHERE id = ?"
-            ).bind(new Date().toISOString(), alert.id).run();
-            console.log(`Alert ${alert.id} triggered for ${symbol} at ${currentPrice}`);
-
-            await sendPriceAlertNotification(env, userId, {
-              tokenId,
-              targetPrice,
-              condition: condition as "ABOVE" | "BELOW",
-              currentPrice,
-            });
-          }
-        } catch (err) {
-          console.error("Error processing alert:", err);
-        }
-      }
-    })(),
-  );
-};
-
 export default {
   fetch: app.fetch,
-  scheduled,
 };
 
 // Generic error handler
