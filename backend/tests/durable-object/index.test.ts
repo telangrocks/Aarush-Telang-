@@ -445,7 +445,7 @@ describe("App Endpoints", () => {
         ALLOWED_ORIGINS: "https://example.com",
       };
       token = await sign(
-        { sub: userId, email: "test@test.com", jti: testJti },
+        { sub: userId, email: "test@test.com", type: "access", jti: testJti },
         mockEnv.JWT_SECRET!,
       );
     });

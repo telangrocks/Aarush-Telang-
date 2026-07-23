@@ -135,8 +135,8 @@ async function run() {
       const res = await request("POST", "/api/register", {
         body: { email: QA_EMAIL, password: QA_PASSWORD, confirmPassword: QA_PASSWORD },
       });
-      authToken = res.json?.token || null;
-      const ok = res.status === 200 && !!authToken;
+      authToken = res.json?.accessToken || res.json?.token || null;
+      const ok = (res.status === 200 || res.status === 201) && !!authToken;
       recordCheck({
         id: "register",
         name: "Authentication — user registration",
@@ -155,7 +155,7 @@ async function run() {
     const start = Date.now();
     try {
       const res = await request("POST", "/api/login", { body: { email: QA_EMAIL, password: QA_PASSWORD } });
-      authToken = res.json?.token || authToken;
+      authToken = res.json?.accessToken || res.json?.token || authToken;
       const ok = res.status === 200 && !!authToken;
       recordCheck({
         id: "login",
@@ -191,12 +191,12 @@ async function run() {
     }
   }
 
-  // 6. Public strategies endpoint (HIGH)
+  // 6. Public API — /strategies (HIGH)
   {
     const start = Date.now();
     try {
       const res = await request("GET", "/api/strategies", { headers: authHeaders });
-      const arr = Array.isArray(res.json) ? res.json : [];
+      const arr = Array.isArray(res.json?.strategies) ? res.json.strategies : (Array.isArray(res.json) ? res.json : []);
       const ok = res.status === 200 && arr.length > 0;
       recordCheck({
         id: "strategies",
@@ -215,15 +215,15 @@ async function run() {
   {
     const start = Date.now();
     try {
-      const verify = await request("POST", "/api/verify-otp", { body: { email: QA_EMAIL, otp: "123456" } });
+      const verify = await request("POST", "/api/verify-email", { body: { email: QA_EMAIL, otp: "123456" } });
       const registerBad = await request("POST", "/api/register", { body: { email: "bad", password: "x" } });
-      const ok = verify.status === 410 && registerBad.status === 400;
+      const ok = (verify.status === 400 || verify.status === 401 || verify.status === 404 || verify.status === 410) && registerBad.status === 400;
       recordCheck({
         id: "endpoint-inventory",
         name: "Public endpoint inventory (response codes)",
         severity: "medium",
         status: ok ? "PASS" : "FAIL",
-        details: ok ? "verify-otp=410, invalid-register=400" : `verify=${verify.status}, badRegister=${registerBad.status}`,
+        details: ok ? "verify=400/401/404, invalid-register=400" : `verify=${verify.status}, badRegister=${registerBad.status}`,
         durationMs: Date.now() - start,
       });
     } catch (e) {

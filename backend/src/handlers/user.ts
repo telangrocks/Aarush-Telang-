@@ -26,7 +26,7 @@ const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@
 const MAX_REGISTRATIONS_PER_WINDOW = 10;
 const REGISTRATION_WINDOW_MS = 60 * 60 * 1000;
 
-const MAX_LOGIN_ATTEMPTS_PER_IP = 20;
+const MAX_LOGIN_ATTEMPTS_PER_IP = 5;
 const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 
 function normalizeEmail(email: string): string {
@@ -64,23 +64,13 @@ function getClientIp(c: Context<{ Bindings: Env }>): string {
 }
 
 /**
- * Throttles account creation atomically to prevent race conditions.
+ * Throttles account creation atomically per IP.
  */
 async function isRegistrationAllowed(
   c: Context<{ Bindings: Env }>,
 ): Promise<boolean> {
   const ip = getClientIp(c);
   const now = Date.now();
-
-  await c.env.DB.prepare(
-    `INSERT INTO registration_attempts (ip, count, window_start)
-     VALUES (?, 1, ?)
-     ON CONFLICT(ip) DO UPDATE SET
-       count = CASE WHEN excluded.window_start > window_start THEN 1 ELSE count + 1 END,
-       window_start = CASE WHEN excluded.window_start > window_start THEN excluded.window_start ELSE window_start END`,
-  )
-    .bind(ip, now)
-    .run();
 
   const row = await c.env.DB.prepare(
     "SELECT count, window_start FROM registration_attempts WHERE ip = ?",
@@ -89,10 +79,27 @@ async function isRegistrationAllowed(
     .first<{ count: number; window_start: number }>();
 
   if (!row || now - row.window_start >= REGISTRATION_WINDOW_MS) {
+    await c.env.DB.prepare(
+      `INSERT INTO registration_attempts (ip, count, window_start)
+       VALUES (?, 1, ?)
+       ON CONFLICT(ip) DO UPDATE SET count = 1, window_start = excluded.window_start`,
+    )
+      .bind(ip, now)
+      .run();
     return true;
   }
 
-  return row.count < MAX_REGISTRATIONS_PER_WINDOW;
+  if (row.count >= MAX_REGISTRATIONS_PER_WINDOW) {
+    return false;
+  }
+
+  await c.env.DB.prepare(
+    "UPDATE registration_attempts SET count = count + 1 WHERE ip = ?",
+  )
+    .bind(ip)
+    .run();
+
+  return true;
 }
 
 /**
@@ -104,16 +111,6 @@ async function isLoginAllowed(
   const ip = getClientIp(c);
   const now = Date.now();
 
-  await c.env.DB.prepare(
-    `INSERT INTO login_attempts (ip, count, window_start)
-     VALUES (?, 1, ?)
-     ON CONFLICT(ip) DO UPDATE SET
-       count = CASE WHEN excluded.window_start > window_start THEN 1 ELSE count + 1 END,
-       window_start = CASE WHEN excluded.window_start > window_start THEN excluded.window_start ELSE window_start END`,
-  )
-    .bind(ip, now)
-    .run();
-
   const row = await c.env.DB.prepare(
     "SELECT count, window_start FROM login_attempts WHERE ip = ?",
   )
@@ -121,10 +118,27 @@ async function isLoginAllowed(
     .first<{ count: number; window_start: number }>();
 
   if (!row || now - row.window_start >= LOGIN_RATE_LIMIT_WINDOW_MS) {
+    await c.env.DB.prepare(
+      `INSERT INTO login_attempts (ip, count, window_start)
+       VALUES (?, 1, ?)
+       ON CONFLICT(ip) DO UPDATE SET count = 1, window_start = excluded.window_start`,
+    )
+      .bind(ip, now)
+      .run();
     return true;
   }
 
-  return row.count < MAX_LOGIN_ATTEMPTS_PER_IP;
+  if (row.count >= MAX_LOGIN_ATTEMPTS_PER_IP) {
+    return false;
+  }
+
+  await c.env.DB.prepare(
+    "UPDATE login_attempts SET count = count + 1 WHERE ip = ?",
+  )
+    .bind(ip)
+    .run();
+
+  return true;
 }
 
 /**
