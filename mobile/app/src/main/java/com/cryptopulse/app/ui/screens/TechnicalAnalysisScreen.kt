@@ -97,23 +97,69 @@ fun TechnicalAnalysisScreen(
                         .background(NavyDeep)
                         .padding(horizontal = 20.dp, vertical = 12.dp),
                 ) {
-                    GradientButton(
-                        text = if (isBotActive) "Stop Bot" else "Start Bot",
-                        onClick = {
-                            isBotActive = !isBotActive
-                            scope.launch {
-                                if (isBotActive) {
-                                    viewModel.activateBot(candidate.symbol, strategy, tradeSetupConfig?.parameters)
-                                    BackgroundMonitoringService.startService(appContext)
-                                    onBotActivated()
-                                } else {
-                                    BackgroundMonitoringService.stopService(appContext)
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        GradientButton(
+                            text = if (isBotActive) "Stop Bot" else "Start Bot",
+                            onClick = {
+                                isBotActive = !isBotActive
+                                scope.launch {
+                                    if (isBotActive) {
+                                        viewModel.activateBot(candidate.symbol, strategy, tradeSetupConfig?.parameters)
+                                        BackgroundMonitoringService.startService(appContext)
+                                        onBotActivated()
+                                    } else {
+                                        BackgroundMonitoringService.stopService(appContext)
+                                    }
                                 }
-                            }
-                        },
-                        leadingIcon = if (isBotActive) Icons.Default.Stop else Icons.Default.PlayArrow,
-                        enabled = !isLoading,
-                    )
+                            },
+                            leadingIcon = if (isBotActive) Icons.Default.Stop else Icons.Default.PlayArrow,
+                            enabled = !isLoading,
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        val hasOpportunity = analysisResult?.opportunity != null
+                        val opportunity = analysisResult?.opportunity
+
+                        OutlinedButton(
+                            onClick = {
+                                if (opportunity != null) {
+                                    val alertPayload = opportunity.toMutableMap().apply {
+                                        putIfAbsent("id", "alert_${System.currentTimeMillis()}")
+                                        putIfAbsent("strategy", strategy)
+                                    }
+                                    com.cryptopulse.app.service.TradeAlertManager
+                                        .getInstance(appContext)
+                                        .onNewAlertReceived(alertPayload)
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .testTag("mock_trade_button"),
+                            shape = RoundedCornerShape(10.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, if (hasOpportunity) CyanPrimary else Color.Gray.copy(alpha = 0.3f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = CyanPrimary),
+                            enabled = !isLoading && hasOpportunity
+                        ) {
+                            Icon(
+                                Icons.Default.NotificationsActive,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (hasOpportunity) CyanPrimary else TextMuted
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = if (hasOpportunity) "Mock Trade Signal" else "No Trade Signal Detected Yet",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = if (hasOpportunity) CyanPrimary else TextMuted
+                            )
+                        }
+                    }
                 }
             }
         ) { padding ->
