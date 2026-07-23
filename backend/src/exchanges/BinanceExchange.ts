@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline, PositionsResponse } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline, PositionsResponse, BalanceResponse, BalanceItem } from "./BaseExchange";
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 import { CircuitBreaker } from "./CircuitBreaker";
@@ -630,6 +630,85 @@ export class BinanceExchange implements IExchangeAdapter {
     } catch (e: any) {
       this.breaker.recordFailure();
       return { success: false, result: [], message: e.message || 'Unknown error' };
+    }
+  }
+
+  async fetchBalances(apiKey: string, apiSecret: string): Promise<BalanceResponse> {
+    const breakerState = this.breaker.check();
+    if (!breakerState.allowed) {
+      return {
+        success: false,
+        exchange: this.getName(),
+        environment: this.environment,
+        primaryAsset: "USDT",
+        message: "Circuit breaker is OPEN. Fast-failing request.",
+        code: "EXCHANGE_UNAVAILABLE",
+        friendlyMessage: "Exchange service is temporarily unavailable. Please try again in a moment.",
+      };
+    }
+
+    try {
+      const timestamp = Date.now();
+      const params = new URLSearchParams({ timestamp: timestamp.toString() });
+      const signature = await hmacSha256(params.toString(), apiSecret);
+      const url = `${this.getRestUrl()}/api/v3/account?${params.toString()}&signature=${signature}`;
+
+      const response = await fetch(url, {
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+
+      const data = (await response.json()) as any;
+      if (!response.ok) {
+        this.breaker.recordFailure();
+        const err = classifyExchangeResponse(response.status, JSON.stringify(data), this.config.displayName);
+        return {
+          success: false,
+          exchange: this.getName(),
+          environment: this.environment,
+          primaryAsset: "USDT",
+          message: data.msg || "Failed to fetch account balance",
+          code: err.code,
+          friendlyMessage: err.friendlyMessage,
+        };
+      }
+
+      const balances: BalanceItem[] = [];
+      const rawBalances = data.balances || [];
+      for (const b of rawBalances) {
+        const free = parseFloat(b.free || "0");
+        const locked = parseFloat(b.locked || "0");
+        const total = free + locked;
+        if (total > 0 || b.asset === "USDT") {
+          balances.push({ asset: b.asset, free, locked, total });
+        }
+      }
+
+      // Ensure USDT is present
+      if (!balances.some((b) => b.asset === "USDT")) {
+        balances.unshift({ asset: "USDT", free: 0, locked: 0, total: 0 });
+      }
+
+      this.breaker.recordSuccess();
+      return {
+        success: true,
+        exchange: this.getName(),
+        environment: this.environment,
+        primaryAsset: "USDT",
+        balances,
+        message: "Success",
+      };
+    } catch (e: any) {
+      this.breaker.recordFailure();
+      const err = classifyException(e, this.config.displayName);
+      return {
+        success: false,
+        exchange: this.getName(),
+        environment: this.environment,
+        primaryAsset: "USDT",
+        message: err.technicalDetail,
+        code: err.code,
+        friendlyMessage: err.friendlyMessage,
+      };
     }
   }
 }

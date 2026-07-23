@@ -34,17 +34,82 @@ sealed interface TradeSetupConfigResult {
     data class ValidationFailed(val errors: Map<String, String>) : TradeSetupConfigResult
 }
 
+sealed interface BalanceUiState {
+    object Loading : BalanceUiState
+    data class Success(
+        val primaryAsset: String,
+        val freeBalance: Double,
+        val totalBalance: Double,
+        val exchangeName: String,
+        val environment: String
+    ) : BalanceUiState
+    data class Error(val message: String, val code: String? = null) : BalanceUiState
+    object NotConnected : BalanceUiState
+}
+
 @HiltViewModel
 class TradeSetupViewModel @Inject constructor(
     private val repository: StrategyRepository,
-    private val sessionRepository: TradeSessionRepository
+    private val sessionRepository: TradeSessionRepository,
+    private val exchangeService: com.cryptopulse.app.data.api.ExchangeService
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TradeSetupUiState())
     val uiState: StateFlow<TradeSetupUiState> = _uiState.asStateFlow()
 
+    private val _balanceState = MutableStateFlow<BalanceUiState>(BalanceUiState.Loading)
+    val balanceState: StateFlow<BalanceUiState> = _balanceState.asStateFlow()
+
     init {
         loadStrategySchema()
+        loadBalance()
+    }
+
+    fun loadBalance() {
+        viewModelScope.launch {
+            _balanceState.value = BalanceUiState.Loading
+            try {
+                val response = exchangeService.getBalance()
+                if (!response.isSuccessful) {
+                    _balanceState.value = BalanceUiState.Error("Failed to fetch exchange balance (${response.code()})")
+                    return@launch
+                }
+
+                val body = response.body()
+                if (body == null) {
+                    _balanceState.value = BalanceUiState.Error("Empty response from exchange service.")
+                    return@launch
+                }
+
+                if (!body.success) {
+                    if (body.code == "NO_EXCHANGE_CONNECTED") {
+                        _balanceState.value = BalanceUiState.NotConnected
+                    } else {
+                        _balanceState.value = BalanceUiState.Error(body.message ?: "Failed to fetch balance.", body.code)
+                    }
+                    return@launch
+                }
+
+                val primaryAsset = body.primaryAsset ?: "USDT"
+                val balances = body.balances ?: emptyList()
+                val primaryItem = balances.find { it.asset.equals(primaryAsset, ignoreCase = true) }
+                
+                val free = primaryItem?.free ?: 0.0
+                val total = primaryItem?.total ?: 0.0
+                val exchange = body.exchange?.replaceFirstChar { it.uppercase() } ?: "Exchange"
+                val env = body.environment?.replaceFirstChar { it.uppercase() } ?: "Mainnet"
+
+                _balanceState.value = BalanceUiState.Success(
+                    primaryAsset = primaryAsset.uppercase(),
+                    freeBalance = free,
+                    totalBalance = total,
+                    exchangeName = exchange,
+                    environment = env
+                )
+            } catch (e: Exception) {
+                _balanceState.value = BalanceUiState.Error(e.message ?: "Network error fetching balance.")
+            }
+        }
     }
 
     private fun loadStrategySchema() {

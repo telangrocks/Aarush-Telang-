@@ -133,6 +133,21 @@ function createStatementForQuery(query: string) {
     };
   }
 
+  if (query.includes("SELECT exchange_name")) {
+    return {
+      bind: vi.fn(() => ({
+        first: vi.fn().mockResolvedValue({
+          exchange_name: null,
+          exchange_environment: null,
+          exchange_region: null,
+          exchange_api_key: null,
+          exchange_api_secret_iv: null,
+          exchange_api_secret_encrypted: null,
+        }),
+      })),
+    };
+  }
+
   return null;
 }
 
@@ -406,7 +421,8 @@ describe("App Endpoints", () => {
         .fn()
         .mockResolvedValue({ results: [{ id: "btc", user_id: userId }] });
       const run = vi.fn().mockResolvedValue({ success: true });
-      const bind = vi.fn(() => ({ all, run }));
+      const first = vi.fn().mockResolvedValue(null);
+      const bind = vi.fn(() => ({ all, run, first }));
 
       mockEnv = {
         DB: {
@@ -499,6 +515,18 @@ describe("App Endpoints", () => {
       const req = new Request("http://localhost/api/watchlist");
       const res = await worker.fetch(req, mockEnv as Env);
       expect(res.status).toBe(401);
+    });
+
+    it("GET /api/exchange/balance should return NO_EXCHANGE_CONNECTED if user has no connected exchange", async () => {
+      const req = new Request("http://localhost/api/exchange/balance", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const res = await worker.fetch(req, mockEnv as Env);
+      expect(res.status).toBe(200);
+      const data = await res.json<any>();
+      expect(data.success).toBe(false);
+      expect(data.code).toBe("NO_EXCHANGE_CONNECTED");
     });
 
     it("POST /api/exchange/connect should store encrypted keys", async () => {

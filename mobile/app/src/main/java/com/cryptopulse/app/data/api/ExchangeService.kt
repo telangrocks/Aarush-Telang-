@@ -42,6 +42,24 @@ data class ExchangeStatusResponse(
     val region: String? = null,
 )
 
+data class BalanceItemData(
+    val asset: String,
+    val free: Double,
+    val locked: Double,
+    val total: Double
+)
+
+data class ExchangeBalanceResponse(
+    val success: Boolean,
+    val exchange: String? = null,
+    val environment: String? = null,
+    val primaryAsset: String? = "USDT",
+    val balances: List<BalanceItemData>? = null,
+    val code: String? = null,
+    val message: String? = null,
+    val hint: String? = null
+)
+
 interface ExchangeService {
     @POST("/api/exchange/validate")
     suspend fun validate(@Body request: ValidateExchangeRequest): Response<ValidationResponse>
@@ -51,4 +69,7 @@ interface ExchangeService {
 
     @GET("/api/exchange/status")
     suspend fun getStatus(): Response<ExchangeStatusResponse>
+
+    @GET("/api/exchange/balance")
+    suspend fun getBalance(): Response<ExchangeBalanceResponse>
 }

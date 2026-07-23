@@ -1,6 +1,6 @@
 import { Context } from "hono";
 import { Env } from "../index";
-import { encrypt } from "../crypto";
+import { encrypt, decrypt } from "../crypto";
 import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion } from "../exchanges";
 import { FRIENDLY_MESSAGES, type ExchangeErrorCode } from "../exchanges/errors";
 import {
@@ -201,6 +201,69 @@ export async function handleGetExchangeStatus(
     const error = e as Error;
     c.status(500);
     return c.json({ isConnected: false, exchangeName: null, environment: null, message: error.message || "Failed to get exchange status" });
+  }
+}
+
+export async function handleGetExchangeBalances(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const user = await c.env.DB.prepare(
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+    )
+      .bind(userId)
+      .first<{
+        exchange_name: string | null;
+        exchange_environment: string | null;
+        exchange_region: string | null;
+        exchange_api_key: string | null;
+        exchange_api_secret_iv: string | null;
+        exchange_api_secret_encrypted: string | null;
+      }>();
+
+    if (!user?.exchange_name || !user?.exchange_api_key || !user?.exchange_api_secret_encrypted || !user?.exchange_api_secret_iv) {
+      return c.json({
+        success: false,
+        code: "NO_EXCHANGE_CONNECTED",
+        message: "No exchange account is connected.",
+        hint: "Connect your Binance, Bybit, or Delta Exchange account in settings.",
+      });
+    }
+
+    const decryptedSecret = await decrypt(
+      { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted },
+      c.env.ENCRYPTION_KEY,
+    );
+
+    const environment = normalizeEnvironment(user.exchange_environment);
+    const region = normalizeRegion(user.exchange_region);
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, environment, region);
+
+    if (!adapter.fetchBalances) {
+      return c.json({
+        success: false,
+        exchange: user.exchange_name,
+        environment,
+        primaryAsset: "USDT",
+        code: "EXCHANGE_UNAVAILABLE",
+        message: `Exchange adapter for ${user.exchange_name} does not support fetching balances.`,
+      });
+    }
+
+    const balanceRes = await adapter.fetchBalances(user.exchange_api_key, decryptedSecret);
+    return c.json(balanceRes);
+  } catch (e: unknown) {
+    const error = e as Error;
+    console.error(`[exchange-balance] exception: ${error?.stack || error?.message || e}`);
+    return c.json({
+      success: false,
+      code: "UNKNOWN_EXCHANGE_ERROR",
+      message: FRIENDLY_MESSAGES.UNKNOWN_EXCHANGE_ERROR.friendlyMessage,
+      hint: FRIENDLY_MESSAGES.UNKNOWN_EXCHANGE_ERROR.hint,
+    });
   }
 }
 

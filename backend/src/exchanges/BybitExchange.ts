@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult, BalanceResponse, BalanceItem } from "./BaseExchange";
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 
@@ -581,6 +581,87 @@ export class BybitExchange implements IExchangeAdapter {
       return { success: true, message: "Order cancelled successfully" };
     } catch (e: any) {
       return { success: false, message: e.message || "Failed to cancel order" };
+    }
+  }
+
+  async fetchBalances(apiKey: string, apiSecret: string): Promise<BalanceResponse> {
+    try {
+      const timestamp = Date.now().toString();
+      const recvWindow = "5000";
+      const query = `category=spot&timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
+      const signature = await hmacSha256(timestamp + apiKey + recvWindow + query, apiSecret);
+
+      const response = await fetch(`${this.getRestUrl()}/v5/account/wallet-balance?accountType=UNIFIED&${query}`, {
+        headers: {
+          "X-BAPI-API-KEY": apiKey,
+          "X-BAPI-SIGN": signature,
+          "X-BAPI-TIMESTAMP": timestamp,
+          "X-BAPI-RECV-WINDOW": recvWindow,
+        },
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        const err = classifyExchangeResponse(response.status, body, this.config.displayName);
+        return {
+          success: false,
+          exchange: this.getName(),
+          environment: this.environment,
+          primaryAsset: "USDT",
+          message: "Failed to fetch wallet balances from Bybit",
+          code: err.code,
+          friendlyMessage: err.friendlyMessage,
+        };
+      }
+
+      const data = (await response.json()) as any;
+      if (data.retCode !== 0 || !Array.isArray(data.result?.list) || data.result.list.length === 0) {
+        const err = classifyByBody(data.retMsg || "No balances found", this.config.displayName);
+        return {
+          success: false,
+          exchange: this.getName(),
+          environment: this.environment,
+          primaryAsset: "USDT",
+          message: data.retMsg || "No balances found",
+          code: err.code,
+          friendlyMessage: err.friendlyMessage,
+        };
+      }
+
+      const coins = data.result.list[0].coin || [];
+      const balances: BalanceItem[] = [];
+      for (const c of coins) {
+        const free = parseFloat(c.availableToWithdraw || c.walletBalance || "0");
+        const total = parseFloat(c.walletBalance || "0");
+        const locked = Math.max(0, total - free);
+        if (total > 0 || c.coin === "USDT") {
+          balances.push({ asset: c.coin, free, locked, total });
+        }
+      }
+
+      if (!balances.some((b) => b.asset === "USDT")) {
+        balances.unshift({ asset: "USDT", free: 0, locked: 0, total: 0 });
+      }
+
+      return {
+        success: true,
+        exchange: this.getName(),
+        environment: this.environment,
+        primaryAsset: "USDT",
+        balances,
+        message: "Success",
+      };
+    } catch (e: any) {
+      const err = classifyException(e, this.config.displayName);
+      return {
+        success: false,
+        exchange: this.getName(),
+        environment: this.environment,
+        primaryAsset: "USDT",
+        message: err.technicalDetail,
+        code: err.code,
+        friendlyMessage: err.friendlyMessage,
+      };
     }
   }
 }

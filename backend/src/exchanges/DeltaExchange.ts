@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult, PositionsResponse, PositionResult } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult, PositionsResponse, PositionResult, BalanceResponse, BalanceItem } from "./BaseExchange";
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 import { CircuitBreaker } from "./CircuitBreaker";
@@ -628,6 +628,106 @@ export class DeltaExchange implements IExchangeAdapter {
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);
       return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+    }
+  }
+
+  async fetchBalances(apiKey: string, apiSecret: string): Promise<BalanceResponse> {
+    const breakerState = this.breaker.check();
+    if (!breakerState.allowed) {
+      return {
+        success: false,
+        exchange: this.getName(),
+        environment: this.environment,
+        primaryAsset: "USDT",
+        message: "Circuit breaker is OPEN. Fast-failing request.",
+        code: "EXCHANGE_UNAVAILABLE",
+        friendlyMessage: "Exchange service is temporarily unavailable. Please try again in a moment.",
+      };
+    }
+
+    try {
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const requestPath = "/v2/wallet/balances";
+      const query = `timestamp=${timestamp}`;
+      const prehash = "GET" + timestamp + requestPath + "?" + query;
+      const signature = await hmacSha256(prehash, apiSecret);
+
+      const response = await fetch(`${this.getRestUrl()}${requestPath}?${query}`, {
+        headers: {
+          "api-key": apiKey,
+          "signature": signature,
+          "timestamp": timestamp,
+        },
+      });
+
+      if (!response.ok) {
+        this.breaker.recordFailure();
+        const body = await response.text();
+        const err = classifyExchangeResponse(response.status, body, this.config.displayName);
+        return {
+          success: false,
+          exchange: this.getName(),
+          environment: this.environment,
+          primaryAsset: "USDT",
+          message: err.technicalDetail,
+          code: err.code,
+          friendlyMessage: err.friendlyMessage,
+        };
+      }
+
+      const data = (await response.json()) as any;
+      if (data.success === false) {
+        this.breaker.recordFailure();
+        const detail = data.error?.message || "Failed to fetch balances";
+        const err = classifyByBody(detail, this.config.displayName);
+        return {
+          success: false,
+          exchange: this.getName(),
+          environment: this.environment,
+          primaryAsset: "USDT",
+          message: detail,
+          code: err.code,
+          friendlyMessage: err.friendlyMessage,
+        };
+      }
+
+      const balances: BalanceItem[] = [];
+      const rawList = Array.isArray(data.result) ? data.result : [];
+      for (const item of rawList) {
+        const asset = item.asset_symbol || item.asset || "UNKNOWN";
+        const free = parseFloat(item.available_balance || item.available || "0");
+        const total = parseFloat(item.balance || "0");
+        const locked = parseFloat(item.locked_balance || "0");
+        if (total > 0 || asset === "USDT") {
+          balances.push({ asset, free, locked, total });
+        }
+      }
+
+      if (!balances.some((b) => b.asset === "USDT")) {
+        balances.unshift({ asset: "USDT", free: 0, locked: 0, total: 0 });
+      }
+
+      this.breaker.recordSuccess();
+      return {
+        success: true,
+        exchange: this.getName(),
+        environment: this.environment,
+        primaryAsset: "USDT",
+        balances,
+        message: "Success",
+      };
+    } catch (e: any) {
+      this.breaker.recordFailure();
+      const err = classifyException(e, this.config.displayName);
+      return {
+        success: false,
+        exchange: this.getName(),
+        environment: this.environment,
+        primaryAsset: "USDT",
+        message: err.technicalDetail,
+        code: err.code,
+        friendlyMessage: err.friendlyMessage,
+      };
     }
   }
 }

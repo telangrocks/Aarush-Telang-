@@ -29,6 +29,7 @@ import {
   handleValidateExchange,
   handleConnectExchange,
   handleGetExchangeStatus,
+  handleGetExchangeBalances,
   handleGetPersonalizedMarketCandidates,
   handleGetStrategies,
   handleGetTechnicalAnalysis,
@@ -310,6 +311,7 @@ api.post("/exchange/validate", handleValidateExchange);
 
 api.post("/exchange/connect", handleConnectExchange);
 api.get("/exchange/status", handleGetExchangeStatus);
+api.get("/exchange/balance", handleGetExchangeBalances);
 
 api.get("/market/candidates", handleGetPersonalizedMarketCandidates);
 

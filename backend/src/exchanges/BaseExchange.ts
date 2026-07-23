@@ -40,6 +40,25 @@ export interface PositionsResponse {
   friendlyMessage?: string;
 }
 
+export interface BalanceItem {
+  asset: string;
+  free: number;
+  locked: number;
+  total: number;
+}
+
+export interface BalanceResponse {
+  success: boolean;
+  message: string;
+  exchange?: string;
+  environment?: string;
+  primaryAsset?: string;
+  balances?: BalanceItem[];
+  code?: string;
+  friendlyMessage?: string;
+  hint?: string;
+}
+
 export interface IExchangeAdapter {
   readonly config: ExchangeConfig;
   getName(): string;
@@ -72,6 +91,7 @@ export interface IExchangeAdapter {
   cancelOrder?(orderId: string, symbol: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }>;
   fetchOrder?(orderId: string, apiKey: string, apiSecret: string): Promise<OrderResult>;
   fetchPositions?(apiKey: string, apiSecret: string): Promise<PositionsResponse>;
+  fetchBalances?(apiKey: string, apiSecret: string): Promise<BalanceResponse>;
   setEnvironment?(environment: ExchangeEnvironment): void;
   setRegion?(region: ExchangeRegion): void;
   getRestUrl(): string;
