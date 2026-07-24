@@ -238,10 +238,12 @@ export function classifyBinanceCode(
 ): ClassifiedError | null {
   let code: number | undefined;
   try {
-    const parsed = JSON.parse(bodyText) as { code?: number };
+    const raw = bodyText.includes("{") ? bodyText.slice(bodyText.indexOf("{"), bodyText.lastIndexOf("}") + 1) : bodyText;
+    const parsed = JSON.parse(raw) as { code?: number };
     if (typeof parsed.code === "number") code = parsed.code;
   } catch {
-    return null;
+    const match = bodyText.match(/"code"\s*:\s*(-?\d+)/) || bodyText.match(/code=(-?\d+)/);
+    if (match) code = parseInt(match[1], 10);
   }
   if (code === undefined) return null;
 
@@ -267,25 +269,18 @@ export function classifyBinanceCode(
   return null;
 }
 
-/**
- * Map Bybit's well-known structured `retCode` values to accurate, user-facing
- * error codes. Bybit (v5) returns errors as `{"retCode": <int>, "retMsg": ...}`,
- * which is distinct from Binance's `code`/`msg` shape. Mapping the numeric code
- * gives precise, actionable messages instead of the generic fallback.
- *
- * Returns null when the retCode is unrecognised or absent so the caller can
- * fall back to text-based classification.
- */
 export function classifyBybitCode(
   bodyText: string,
   technicalDetail: string,
 ): ClassifiedError | null {
   let retCode: number | undefined;
   try {
-    const parsed = JSON.parse(bodyText) as { retCode?: number };
+    const raw = bodyText.includes("{") ? bodyText.slice(bodyText.indexOf("{"), bodyText.lastIndexOf("}") + 1) : bodyText;
+    const parsed = JSON.parse(raw) as { retCode?: number };
     if (typeof parsed.retCode === "number") retCode = parsed.retCode;
   } catch {
-    return null;
+    const match = bodyText.match(/"retCode"\s*:\s*(-?\d+)/) || bodyText.match(/retCode=(-?\d+)/);
+    if (match) retCode = parseInt(match[1], 10);
   }
   if (retCode === undefined) return null;
 
@@ -313,22 +308,20 @@ export function classifyBybitCode(
   return null;
 }
 
-/**
- * Map Delta Exchange's structured error `code` inside the `error` object.
- * Delta returns errors as `{"success": false, "error": {"code": "...", "message": "..."}}`.
- */
 export function classifyDeltaCode(
   bodyText: string,
   technicalDetail: string,
 ): ClassifiedError | null {
   let errCode: string | undefined;
   try {
-    const parsed = JSON.parse(bodyText) as { error?: { code?: string } };
+    const raw = bodyText.includes("{") ? bodyText.slice(bodyText.indexOf("{"), bodyText.lastIndexOf("}") + 1) : bodyText;
+    const parsed = JSON.parse(raw) as { error?: { code?: string } };
     if (parsed?.error?.code) {
       errCode = parsed.error.code.toLowerCase();
     }
   } catch {
-    return null;
+    const match = bodyText.match(/"code"\s*:\s*"([^"]+)"/);
+    if (match) errCode = match[1].toLowerCase();
   }
   if (!errCode) return null;
 

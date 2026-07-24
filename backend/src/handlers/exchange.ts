@@ -76,7 +76,10 @@ export async function handleValidateExchange(
       region?: ExchangeRegion;
     }>();
 
-    if (!exchangeName || !apiKey || !apiSecret) {
+    const cleanApiKey = (apiKey || "").trim().replace(/^[^a-zA-Z0-9]+/, '');
+    const cleanApiSecret = (apiSecret || "").trim();
+
+    if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
       c.status(400);
       return c.json({
         success: false,
@@ -88,7 +91,7 @@ export async function handleValidateExchange(
 
     const resolvedRegion = normalizeRegion(region);
     const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment), resolvedRegion);
-    const result = await adapter.validateCredentials(apiKey, apiSecret);
+    const result = await adapter.validateCredentials(cleanApiKey, cleanApiSecret);
 
     return c.json(shapeValidation(result, exchangeName, (d) => console.error(d)));
   } catch (e: unknown) {
@@ -119,7 +122,10 @@ export async function handleConnectExchange(
       region?: ExchangeRegion;
     }>();
 
-    if (!exchangeName || !apiKey || !apiSecret) {
+    const cleanApiKey = (apiKey || "").trim().replace(/^[^a-zA-Z0-9]+/, '');
+    const cleanApiSecret = (apiSecret || "").trim();
+
+    if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
       c.status(400);
       return c.json({
         success: false,
@@ -132,7 +138,7 @@ export async function handleConnectExchange(
     const resolvedEnvironment = normalizeEnvironment(environment);
     const resolvedRegion = normalizeRegion(region);
     const adapter = getExchangeAdapter(exchangeName, resolvedEnvironment, resolvedRegion);
-    const validation = await adapter.validateCredentials(apiKey, apiSecret);
+    const validation = await adapter.validateCredentials(cleanApiKey, cleanApiSecret);
     if (!validation.success) {
       c.status(401);
       return c.json(shapeValidation(validation, exchangeName, (d) => console.error(d)));

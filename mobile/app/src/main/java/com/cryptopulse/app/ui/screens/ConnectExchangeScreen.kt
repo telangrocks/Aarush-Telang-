@@ -80,8 +80,8 @@ fun ConnectExchangeScreen(
     val candidates by viewModel.candidates.collectAsState()
     val readyForCandidates by viewModel.readyForCandidates.collectAsState()
 
-    LaunchedEffect(readyForCandidates, candidates) {
-        if (readyForCandidates && candidates.isNotEmpty()) {
+    LaunchedEffect(uiState, readyForCandidates, candidates) {
+        if (uiState is ExchangeUiState.Connected || readyForCandidates) {
             navController.navigate("market_candidates") {
                 popUpTo("welcome") { inclusive = true }
             }

@@ -199,14 +199,16 @@ export class BinanceExchange implements IExchangeAdapter {
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
+      const cleanKey = apiKey.trim().replace(/^[^a-zA-Z0-9]+/, '');
+      const cleanSecret = apiSecret.trim();
       const timestamp = Date.now();
       const query = `timestamp=${timestamp}`;
-      const signature = await hmacSha256(query, apiSecret);
+      const signature = await hmacSha256(query, cleanSecret);
       const url = `${this.getRestUrl()}/api/v3/account?${query}&signature=${signature}`;
 
       const response = await fetch(url, {
         headers: {
-          "X-MBX-APIKEY": apiKey,
+          "X-MBX-APIKEY": cleanKey,
         },
       });
 

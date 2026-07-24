@@ -160,21 +160,33 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun onApiKeyChanged(apiKey: String) {
-        _formState.value = _formState.value.copy(apiKey = apiKey, apiKeyError = null)
+        val sanitized = apiKey.trim().replace("^[^a-zA-Z0-9]+".toRegex(), "")
+        _formState.value = _formState.value.copy(apiKey = sanitized, apiKeyError = null)
+        if (_uiState.value is ExchangeUiState.Error) {
+            _uiState.value = ExchangeUiState.Idle
+        }
     }
 
     fun onApiSecretChanged(apiSecret: String) {
-        _formState.value = _formState.value.copy(apiSecret = apiSecret, apiSecretError = null)
+        val sanitized = apiSecret.trim()
+        _formState.value = _formState.value.copy(apiSecret = sanitized, apiSecretError = null)
+        if (_uiState.value is ExchangeUiState.Error) {
+            _uiState.value = ExchangeUiState.Idle
+        }
     }
 
     private fun getUserFriendlyErrorMessage(
         response: retrofit2.Response<*>? = null,
         exception: Exception? = null
     ): Pair<String, String?> {
+        var rawErrorBody: String? = null
         if (response != null) {
-            println("Exchange API error: ${response.code()} ${response.message()}")
-            val errorBody = response.errorBody()
-            errorBody?.string()?.let { println("Error body: $it") }
+            try {
+                rawErrorBody = response.errorBody()?.string()
+                println("Exchange API error: ${response.code()} ${response.message()} body: $rawErrorBody")
+            } catch (e: Exception) {
+                println("Failed to read error body: ${e.message}")
+            }
         } else if (exception != null) {
             println("Exchange API exception: ${exception::class.simpleName}: ${exception.message}")
             exception.printStackTrace()
@@ -193,6 +205,20 @@ class ExchangeViewModel @Inject constructor(
                         return body.message to body.hint
                     }
                 }
+            }
+        }
+
+        if (!rawErrorBody.isNullOrBlank()) {
+            try {
+                val gson = com.google.gson.Gson()
+                val json = gson.fromJson(rawErrorBody, com.google.gson.JsonObject::class.java)
+                val msg = json.get("message")?.asString
+                val hint = json.get("hint")?.asString
+                if (!msg.isNullOrBlank()) {
+                    return msg to hint
+                }
+            } catch (e: Exception) {
+                // Fallback to HTTP code mapping
             }
         }
 

@@ -200,14 +200,16 @@ export class BybitExchange implements IExchangeAdapter {
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
+      const cleanKey = apiKey.trim().replace(/^[^a-zA-Z0-9]+/, '');
+      const cleanSecret = apiSecret.trim();
       const timestamp = Date.now().toString();
       const recvWindow = "5000";
       const query = `timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
-      const signature = await hmacSha256(timestamp + apiKey + recvWindow + query, apiSecret);
+      const signature = await hmacSha256(timestamp + cleanKey + recvWindow + query, cleanSecret);
 
       const response = await fetch(`${this.getRestUrl()}/v5/account/info?${query}`, {
         headers: {
-          "X-BAPI-API-KEY": apiKey,
+          "X-BAPI-API-KEY": cleanKey,
           "X-BAPI-SIGN": signature,
           "X-BAPI-TIMESTAMP": timestamp,
           "X-BAPI-RECV-WINDOW": recvWindow,
@@ -509,10 +511,10 @@ export class BybitExchange implements IExchangeAdapter {
     try {
       const timestamp = Date.now().toString();
       const recvWindow = "5000";
-      const query = `category=spot&timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
+      const query = `accountType=UNIFIED&category=spot&timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
       const signature = await hmacSha256(timestamp + apiKey + recvWindow + query, apiSecret);
 
-      const response = await fetch(`${this.getRestUrl()}/v5/account/wallet-balance?accountType=UNIFIED&${query}`, {
+      const response = await fetch(`${this.getRestUrl()}/v5/account/wallet-balance?${query}`, {
         headers: {
           "X-BAPI-API-KEY": apiKey,
           "X-BAPI-SIGN": signature,
@@ -588,10 +590,10 @@ export class BybitExchange implements IExchangeAdapter {
     try {
       const timestamp = Date.now().toString();
       const recvWindow = "5000";
-      const query = `category=spot&timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
+      const query = `accountType=UNIFIED&category=spot&timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
       const signature = await hmacSha256(timestamp + apiKey + recvWindow + query, apiSecret);
 
-      const response = await fetch(`${this.getRestUrl()}/v5/account/wallet-balance?accountType=UNIFIED&${query}`, {
+      const response = await fetch(`${this.getRestUrl()}/v5/account/wallet-balance?${query}`, {
         headers: {
           "X-BAPI-API-KEY": apiKey,
           "X-BAPI-SIGN": signature,
