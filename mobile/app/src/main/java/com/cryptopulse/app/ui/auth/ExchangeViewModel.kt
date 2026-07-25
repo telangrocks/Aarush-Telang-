@@ -160,7 +160,7 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun onApiKeyChanged(apiKey: String) {
-        val sanitized = apiKey.trim().replace("^[^a-zA-Z0-9]+".toRegex(), "")
+        val sanitized = apiKey.trim()
         _formState.value = _formState.value.copy(apiKey = sanitized, apiKeyError = null)
         if (_uiState.value is ExchangeUiState.Error) {
             _uiState.value = ExchangeUiState.Idle
@@ -182,8 +182,12 @@ class ExchangeViewModel @Inject constructor(
         var rawErrorBody: String? = null
         if (response != null) {
             try {
-                rawErrorBody = response.errorBody()?.string()
-                println("Exchange API error: ${response.code()} ${response.message()} body: $rawErrorBody")
+                if (!response.isSuccessful) {
+                    rawErrorBody = response.errorBody()?.string()
+                    println("Exchange API HTTP error: ${response.code()} ${response.message()} body: $rawErrorBody")
+                } else {
+                    println("Exchange API response HTTP 200: body success=false")
+                }
             } catch (e: Exception) {
                 println("Failed to read error body: ${e.message}")
             }
