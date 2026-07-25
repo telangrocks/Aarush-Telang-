@@ -15,6 +15,9 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,10 +41,13 @@ import kotlinx.coroutines.delay
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel) {
+    var passwordVisible by remember { mutableStateOf(false) }
+    var confirmPasswordVisible by remember { mutableStateOf(false) }
+
     LaunchedEffect(viewModel.isAuthenticated) {
         if (viewModel.isAuthenticated) {
             navController.navigate("connect_exchange") {
-                popUpTo("welcome") { inclusive = true }
+                popUpTo("onboarding") { inclusive = true }
             }
         }
     }
@@ -162,10 +168,17 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             onValueChange = { viewModel.password = it },
                             placeholder = "Min. 8 characters",
                             keyboardType = KeyboardType.Password,
-                            visualTransformation = PasswordVisualTransformation(),
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                             isError = viewModel.passwordError != null,
                             trailingIcon = {
-                                Icon(Icons.Default.Lock, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                         )
                         if (viewModel.passwordError != null) {
@@ -187,10 +200,17 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             onValueChange = { viewModel.confirmPassword = it },
                             placeholder = "Re-enter your password",
                             keyboardType = KeyboardType.Password,
-                            visualTransformation = PasswordVisualTransformation(),
+                            visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                             isError = viewModel.confirmPasswordError != null,
                             trailingIcon = {
-                                Icon(Icons.Default.Lock, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
+                                    Icon(
+                                        imageVector = if (confirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (confirmPasswordVisible) "Hide password" else "Show password",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                         )
                         if (viewModel.confirmPasswordError != null) {
@@ -258,9 +278,13 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
 
                 Spacer(Modifier.height(20.dp))
 
-                TextButton(onClick = { navController.navigate("auth") }) {
-                    Text("Already have an account? Sign In", color = CyanPrimary)
-                }
+                GradientButton(
+                    text = "Already Registered? Login",
+                    onClick = { navController.navigate("auth") },
+                    leadingIcon = Icons.AutoMirrored.Filled.Login,
+                    trailingIcon = Icons.Default.ArrowForward,
+                    testTag = "onboarding_login_button",
+                )
 
                 Spacer(Modifier.height(16.dp))
             }

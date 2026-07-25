@@ -40,7 +40,6 @@ import com.cryptopulse.app.ui.screens.MarketCandidatesScreen
 
 import com.cryptopulse.app.ui.screens.TradeSetupScreen
 import com.cryptopulse.app.ui.screens.UserOnboardingScreen
-import com.cryptopulse.app.ui.screens.WelcomeScreen
 import com.cryptopulse.app.ui.screens.TradeAlertScreen
 import com.cryptopulse.app.ui.screens.PositionsScreen
 import com.cryptopulse.app.ui.screens.StrategySelectionScreen
@@ -96,7 +95,7 @@ class MainActivity : FragmentActivity() {
                             BackgroundMonitoringService.stopService(this@MainActivity)
                         }
                         exchangeViewModel.resetState()
-                        navController.navigate("welcome") {
+                        navController.navigate("onboarding") {
                             popUpTo("splash") { inclusive = true }
                         }
                     }
@@ -114,9 +113,6 @@ class MainActivity : FragmentActivity() {
                                 tradingBotService = tradingBotService,
                             )
                         }
-                        composable("welcome") {
-                            WelcomeScreen(navController = navController)
-                        }
                         composable("onboarding") {
                             val viewModel = hiltViewModel<AuthViewModel>()
                             UserOnboardingScreen(
@@ -130,7 +126,7 @@ class MainActivity : FragmentActivity() {
                                 viewModel = viewModel,
                                 onAuthSuccess = {
                                     navController.navigate("connect_exchange") {
-                                        popUpTo("welcome") { inclusive = true }
+                                        popUpTo("onboarding") { inclusive = true }
                                     }
                                 }
                             )

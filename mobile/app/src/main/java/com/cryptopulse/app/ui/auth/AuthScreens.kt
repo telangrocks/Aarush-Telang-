@@ -72,6 +72,8 @@ fun AuthScreen(
     viewModel: AuthViewModel,
     onAuthSuccess: () -> Unit,
 ) {
+    var passwordVisible by remember { mutableStateOf(false) }
+
     // This screen is Sign In only. New-account creation lives on the dedicated
     // UserOnboardingScreen, so we avoid a second, redundant registration surface.
     LaunchedEffect(viewModel.isAuthenticated) {
@@ -188,10 +190,17 @@ fun AuthScreen(
                             onValueChange = { viewModel.password = it },
                             placeholder = "Enter your password",
                             keyboardType = KeyboardType.Password,
-                            visualTransformation = PasswordVisualTransformation(),
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                             testTag = "auth_password_input",
                             trailingIcon = {
-                                Icon(Icons.Default.Lock, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                         )
                     }

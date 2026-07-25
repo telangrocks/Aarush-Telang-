@@ -135,10 +135,10 @@ fun SplashScreen(
                 // Ignore bot status errors — fall back to normal routing
             }
         }
-        delay(3500)
+        delay(4500)
         val (isExchangeConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
         val destination = when {
-            token.isNullOrEmpty()               -> "welcome"
+            token.isNullOrEmpty()               -> "onboarding"
             !isExchangeConnected                -> "connect_exchange"
             activeBotCoinId != null             -> "live_analysis"   // resume Focus Mode
             else                                -> "market_candidates"
