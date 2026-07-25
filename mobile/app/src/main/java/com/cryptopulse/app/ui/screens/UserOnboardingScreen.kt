@@ -1,19 +1,13 @@
 package com.cryptopulse.app.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PersonAdd
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -36,7 +30,6 @@ import androidx.navigation.NavController
 import com.cryptopulse.app.ui.components.*
 import com.cryptopulse.app.ui.auth.*
 import com.cryptopulse.app.ui.theme.*
-import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,61 +75,48 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                     .fillMaxSize()
                     .padding(padding)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
 
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                ) {
                     Icon(
                         imageVector = Icons.Default.PersonAdd,
                         contentDescription = null,
                         tint = CyanPrimary,
-                        modifier = Modifier.size(26.dp)
+                        modifier = Modifier.size(24.dp)
                     )
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text(
                         text = "CREATE ACCOUNT",
                         color = CyanPrimary,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 22.sp,
+                        fontSize = 20.sp,
                         letterSpacing = 1.5.sp,
                     )
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(4.dp))
 
                 Text(
-                    text = "Start your trading journey with a secure CryptoPulse account.",
+                    text = "Start trading with a secure CryptoPulse account",
                     color = TextSecondary,
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     textAlign = TextAlign.Center,
-                    lineHeight = 20.sp,
                 )
 
-                Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(16.dp))
 
                 GlowCard {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.AccountCircle,
-                                contentDescription = null,
-                                tint = CyanPrimary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "ENTER CREDENTIALS",
-                                color = CyanPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                letterSpacing = 1.2.sp,
-                            )
-                        }
-
-                        Spacer(Modifier.height(16.dp))
-
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
                         AuthFieldLabel("EMAIL ADDRESS")
                         Spacer(Modifier.height(4.dp))
                         DarkTextField(
@@ -150,7 +130,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             }
                         )
                         if (viewModel.emailError != null) {
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(2.dp))
                             Text(
                                 text = viewModel.emailError!!,
                                 color = LossRed,
@@ -159,7 +139,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             )
                         }
 
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(12.dp))
 
                         AuthFieldLabel("PASSWORD")
                         Spacer(Modifier.height(4.dp))
@@ -176,13 +156,13 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                                         imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                                         contentDescription = if (passwordVisible) "Hide password" else "Show password",
                                         tint = TextSecondary,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
                         )
                         if (viewModel.passwordError != null) {
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(2.dp))
                             Text(
                                 text = viewModel.passwordError!!,
                                 color = LossRed,
@@ -191,7 +171,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             )
                         }
 
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(12.dp))
 
                         AuthFieldLabel("CONFIRM PASSWORD")
                         Spacer(Modifier.height(4.dp))
@@ -208,13 +188,13 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                                         imageVector = if (confirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                                         contentDescription = if (confirmPasswordVisible) "Hide password" else "Show password",
                                         tint = TextSecondary,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
                         )
                         if (viewModel.confirmPasswordError != null) {
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height(2.dp))
                             Text(
                                 text = viewModel.confirmPasswordError!!,
                                 color = LossRed,
@@ -223,26 +203,6 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             )
                         }
                     }
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0x1400B4FF), RoundedCornerShape(10.dp))
-                        .border(1.dp, CyanPrimary.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Default.Info, null, tint = CyanPrimary, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "Your account will be created instantly. Optional email verification can be enabled later.",
-                        color = TextSecondary,
-                        fontSize = 11.sp,
-                        lineHeight = 17.sp,
-                    )
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -259,24 +219,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                     testTag = "onboarding_create_account_button",
                 )
 
-                Spacer(Modifier.height(14.dp))
-
-                Row(
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Default.Lock, null, tint = TextMuted, modifier = Modifier.size(12.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Secure Connection", color = TextMuted, fontSize = 11.sp)
-                }
-                Text(
-                    "We support all major exchanges",
-                    color = TextMuted,
-                    fontSize = 10.sp,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(12.dp))
 
                 GradientButton(
                     text = "Already Registered? Login",
@@ -286,10 +229,8 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                     testTag = "onboarding_login_button",
                 )
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(12.dp))
             }
         }
     }
 }
-
-

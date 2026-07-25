@@ -209,27 +209,7 @@ fun AuthScreen(
                     }
                 }
 
-                Spacer(Modifier.height(14.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0x1400B4FF), RoundedCornerShape(10.dp))
-                        .border(1.dp, CyanPrimary.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Default.Info, null, tint = CyanPrimary, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "Use the same email and password you created during signup.",
-                        color = TextSecondary,
-                        fontSize = 11.sp,
-                        lineHeight = 17.sp,
-                    )
-                }
-
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
 
                 GradientButton(
                     text = if (viewModel.isLoading) "Signing in…" else "Sign In",
@@ -238,23 +218,6 @@ fun AuthScreen(
                     leadingIcon = Icons.Default.Login,
                     trailingIcon = Icons.Default.ArrowForward,
                     testTag = "auth_sign_in_button",
-                )
-
-                Spacer(Modifier.height(14.dp))
-
-                Row(
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Default.Lock, null, tint = TextMuted, modifier = Modifier.size(12.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Secure Connection", color = TextMuted, fontSize = 11.sp)
-                }
-                Text(
-                    "We support all major exchanges",
-                    color = TextMuted,
-                    fontSize = 10.sp,
-                    modifier = Modifier.padding(top = 2.dp)
                 )
 
                 Spacer(Modifier.height(16.dp))
