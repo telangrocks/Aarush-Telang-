@@ -56,6 +56,11 @@ export class BinanceExchange implements IExchangeAdapter {
   private environment: ExchangeEnvironment = "mainnet";
   private region: ExchangeRegion = "global";
 
+  constructor(environment: ExchangeEnvironment = "mainnet", region: ExchangeRegion = "global") {
+    this.environment = environment;
+    this.region = region;
+  }
+
   // Cache state properties
   private metadataCache: Map<string, SymbolMetadata> | null = null;
   private lastCacheFetch = 0;
@@ -217,7 +222,6 @@ export class BinanceExchange implements IExchangeAdapter {
       let lastSpotStatus: number | null = null;
       let lastSpotBody = "";
 
-      // 1. Try Spot endpoint
       const spotUrl = `${this.getRestUrl()}/api/v3/account?${query}&signature=${signature}`;
       try {
         const spotResponse = await fetch(spotUrl, {
@@ -684,19 +688,22 @@ export class BinanceExchange implements IExchangeAdapter {
     }
 
     try {
+      const cleanKey = cleanCredential(apiKey);
+      const cleanSecret = cleanCredential(apiSecret);
       const timestamp = Date.now();
-      const params = new URLSearchParams({ timestamp: timestamp.toString() });
-      const signature = await hmacSha256(params.toString(), apiSecret);
+      const recvWindow = 10000;
+      const query = `recvWindow=${recvWindow}&timestamp=${timestamp}`;
+      const signature = await hmacSha256(query, cleanSecret);
 
-      let response = await fetch(`${this.getRestUrl()}/api/v3/account?${params.toString()}&signature=${signature}`, {
-        headers: { 'X-MBX-APIKEY': apiKey },
+      let response = await fetch(`${this.getRestUrl()}/api/v3/account?${query}&signature=${signature}`, {
+        headers: { 'X-MBX-APIKEY': cleanKey },
       });
 
       let data = (await response.json()) as any;
 
       if (!response.ok || (data.code && data.code !== 0)) {
-        const futuresResponse = await fetch(`${this.getFuturesRestUrl()}/fapi/v2/account?${params.toString()}&signature=${signature}`, {
-          headers: { 'X-MBX-APIKEY': apiKey },
+        const futuresResponse = await fetch(`${this.getFuturesRestUrl()}/fapi/v2/account?${query}&signature=${signature}`, {
+          headers: { 'X-MBX-APIKEY': cleanKey },
         });
         if (futuresResponse.ok) {
           response = futuresResponse;

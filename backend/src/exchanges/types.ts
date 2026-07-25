@@ -109,6 +109,10 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
       global: "https://api.binance.com",
       india: "https://api.binance.com",
     },
+    regionTestnetUrls: {
+      global: "https://testnet.binance.vision",
+      india: "https://testnet.binance.vision",
+    },
   },
   {
     // Delta Exchange India accounts MUST use the India domain. The global
@@ -132,6 +136,10 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
     regionUrls: {
       global: "https://api.bybit.com",
       india: "https://api.bybit.com",
+    },
+    regionTestnetUrls: {
+      global: "https://api-testnet.bybit.com",
+      india: "https://api-testnet.bybit.com",
     },
   },
 ];
