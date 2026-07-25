@@ -185,18 +185,18 @@ export function classifyExchangeResponse(
   const lower = (bodyText || "").toLowerCase();
   const technicalDetail = `exchange=${exchangeName} status=${status} body=${bodyText.slice(0, 500)}`;
 
-  // ---- Network / availability (independent of credentials) ----
-  if (status === 403 && (lower.includes("ip") || lower.includes("request blocked"))) {
-    return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
-  }
-  // For credential/permission errors Binance/Bybit return a structured
-  // {code,...} / {retCode,...} body. Resolve it precisely before falling back
-  // to generic auth failure.
+  // For credential/permission errors Binance/Bybit/Delta return a structured
+  // {code,...} / {retCode,...} body. Resolve it precisely FIRST before text matching!
   const structured =
     classifyBinanceCode(bodyText, technicalDetail) ??
     classifyBybitCode(bodyText, technicalDetail) ??
     classifyDeltaCode(bodyText, technicalDetail);
   if (structured) return structured;
+
+  // ---- Network / CloudFront / IP restrictions ----
+  if (status === 403 && (lower.includes("ip_restricted") || lower.includes("ip whitelist") || lower.includes("request blocked"))) {
+    return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
+  }
   if (status === 401 || status === 403) {
     return mk("AUTHENTICATION_FAILED", technicalDetail, lower);
   }
