@@ -550,7 +550,7 @@ describe("App Endpoints", () => {
       expect(mockEnv.DB?.prepare("stmt").bind).toHaveBeenCalledWith(
         "binance",
         "testnet",
-        "india",
+        "global",
         "test-api-key",
         expect.any(String),
         expect.any(String),

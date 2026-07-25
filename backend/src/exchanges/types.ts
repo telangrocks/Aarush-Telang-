@@ -58,6 +58,37 @@ export interface Kline {
   closeTime: number;
 }
 
+export interface ExchangeHealthMetrics {
+  exchange: string;
+  environment: string;
+  region: string;
+  authStatus: 'CONNECTED' | 'DISCONNECTED' | 'DEGRADED' | 'RATE_LIMITED';
+  lastSuccessAt: number | null;
+  lastErrorAt: number | null;
+  lastErrorMessage: string | null;
+  currentEndpoint: string;
+  timeOffsetMs: number;
+  lastLatencyMs: number;
+  wsStatus: 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING';
+  wsReconnectCount: number;
+  consecutiveFailures: number;
+  circuitBreakerState: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+}
+
+export interface OperationalMetrics {
+  exchange: string;
+  authSuccessCount: number;
+  authFailureCount: number;
+  avgLatencyMs: number;
+  wsUptimeSeconds: number;
+  wsReconnectCount: number;
+  retryCount: number;
+  rateLimitHits: number;
+  endpointFailovers: number;
+  circuitBreakerTrips: number;
+  lastErrorCode: string | null;
+}
+
 export interface ValidationResult {
   success: boolean;
   message: string;
@@ -65,6 +96,8 @@ export interface ValidationResult {
   code?: string;
   /** Plain-language, actionable message safe to show the user (optional). */
   friendlyMessage?: string;
+  /** Actionable hint (e.g. IP whitelist) */
+  hint?: string;
 }
 
 export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [

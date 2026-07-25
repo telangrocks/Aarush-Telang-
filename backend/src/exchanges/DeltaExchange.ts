@@ -2,6 +2,7 @@ import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult, P
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 import { CircuitBreaker } from "./CircuitBreaker";
+import { cleanCredential } from "../crypto";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -224,12 +225,11 @@ export class DeltaExchange implements IExchangeAdapter {
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
-      const cleanKey = apiKey.trim();
-      const cleanSecret = apiSecret.trim();
+      const cleanKey = cleanCredential(apiKey);
+      const cleanSecret = cleanCredential(apiSecret);
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const requestPath = "/v2/wallet/balances";
-      const query = `timestamp=${timestamp}`;
-      const prehash = "GET" + timestamp + requestPath + "?" + query;
+      const prehash = "GET" + timestamp + requestPath;
       const signature = await hmacSha256(prehash, cleanSecret);
 
       const targetUrls = [this.getRestUrl(), this.getFallbackRestUrl()];
@@ -238,7 +238,7 @@ export class DeltaExchange implements IExchangeAdapter {
 
       for (const baseUrl of targetUrls) {
         try {
-          const response = await fetch(`${baseUrl}${requestPath}?${query}`, {
+          const response = await fetch(`${baseUrl}${requestPath}`, {
             headers: {
               "api-key": cleanKey,
               "signature": signature,
@@ -263,13 +263,13 @@ export class DeltaExchange implements IExchangeAdapter {
 
       if (lastResponse) {
         const err: ClassifiedError = classifyExchangeResponse(lastResponse.status, lastBody, this.config.displayName);
-        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
       }
 
-      return { success: false, message: "Failed to connect to Delta Exchange", code: "EXCHANGE_UNAVAILABLE", friendlyMessage: "Unable to reach Delta Exchange servers. Please check your internet connection." };
+      return { success: false, message: "Failed to connect to Delta Exchange", code: "EXCHANGE_UNAVAILABLE", friendlyMessage: "Unable to reach Delta Exchange servers. Please check your internet connection.", hint: "Check if your network blocks api.delta.exchange or api.india.delta.exchange." };
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);
-      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
     }
   }
 
@@ -669,24 +669,37 @@ export class DeltaExchange implements IExchangeAdapter {
     }
 
     try {
+      const cleanKey = cleanCredential(apiKey);
+      const cleanSecret = cleanCredential(apiSecret);
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const requestPath = "/v2/wallet/balances";
-      const query = `timestamp=${timestamp}`;
-      const prehash = "GET" + timestamp + requestPath + "?" + query;
-      const signature = await hmacSha256(prehash, apiSecret);
+      const prehash = "GET" + timestamp + requestPath;
+      const signature = await hmacSha256(prehash, cleanSecret);
 
-      const response = await fetch(`${this.getRestUrl()}${requestPath}?${query}`, {
-        headers: {
-          "api-key": apiKey,
-          "signature": signature,
-          "timestamp": timestamp,
-        },
-      });
+      const targetUrls = [this.getRestUrl(), this.getFallbackRestUrl()];
+      let response: Response | null = null;
+      let bodyText = "";
 
-      if (!response.ok) {
+      for (const baseUrl of targetUrls) {
+        try {
+          const res = await fetch(`${baseUrl}${requestPath}`, {
+            headers: {
+              "api-key": cleanKey,
+              "signature": signature,
+              "timestamp": timestamp,
+            },
+          });
+          response = res;
+          if (res.ok) break;
+        } catch {
+          // Try fallback URL
+        }
+      }
+
+      if (!response || !response.ok) {
         this.breaker.recordFailure();
-        const body = await response.text();
-        const err = classifyExchangeResponse(response.status, body, this.config.displayName);
+        bodyText = response ? await response.text() : "";
+        const err = classifyExchangeResponse(response ? response.status : 503, bodyText, this.config.displayName);
         return {
           success: false,
           exchange: this.getName(),
@@ -695,6 +708,7 @@ export class DeltaExchange implements IExchangeAdapter {
           message: err.technicalDetail,
           code: err.code,
           friendlyMessage: err.friendlyMessage,
+          hint: err.hint,
         };
       }
 
@@ -711,6 +725,7 @@ export class DeltaExchange implements IExchangeAdapter {
           message: detail,
           code: err.code,
           friendlyMessage: err.friendlyMessage,
+          hint: err.hint,
         };
       }
 
@@ -750,6 +765,7 @@ export class DeltaExchange implements IExchangeAdapter {
         message: err.technicalDetail,
         code: err.code,
         friendlyMessage: err.friendlyMessage,
+        hint: err.hint,
       };
     }
   }

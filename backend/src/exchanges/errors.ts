@@ -237,10 +237,12 @@ export function classifyBinanceCode(
   technicalDetail: string,
 ): ClassifiedError | null {
   let code: number | undefined;
+  let msg = "";
   try {
     const raw = bodyText.includes("{") ? bodyText.slice(bodyText.indexOf("{"), bodyText.lastIndexOf("}") + 1) : bodyText;
-    const parsed = JSON.parse(raw) as { code?: number };
+    const parsed = JSON.parse(raw) as { code?: number; msg?: string };
     if (typeof parsed.code === "number") code = parsed.code;
+    if (parsed.msg) msg = parsed.msg;
   } catch {
     const match = bodyText.match(/"code"\s*:\s*(-?\d+)/) || bodyText.match(/code=(-?\d+)/);
     if (match) code = parseInt(match[1], 10);
@@ -248,9 +250,25 @@ export function classifyBinanceCode(
   if (code === undefined) return null;
 
   // Reference: https://binance-docs.github.io/apidocs/spot/en/#error-codes
+  if (code === -2015) {
+    const lowerMsg = (msg || bodyText).toLowerCase();
+    const ipMatch = bodyText.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+    if (lowerMsg.includes("request ip:") || lowerMsg.includes("ip whitelist") || lowerMsg.includes("ip restricted") || ipMatch) {
+      const hint = ipMatch
+        ? `Crypto Pulse server IP is ${ipMatch[0]}. Please add this IP to your Binance API Key whitelist.`
+        : FRIENDLY_MESSAGES.IP_NOT_WHITELISTED.hint;
+      return {
+        code: "IP_NOT_WHITELISTED",
+        friendlyMessage: FRIENDLY_MESSAGES.IP_NOT_WHITELISTED.friendlyMessage,
+        hint,
+        technicalDetail,
+      };
+    }
+    return mk("INVALID_API_KEY", technicalDetail, lowerMsg);
+  }
+
   const byCode: Record<number, ExchangeErrorCode> = {
     "-2014": "INVALID_API_KEY", // API-key format invalid
-    "-2015": "INVALID_API_KEY", // Invalid API-key, IP, or permissions for ...
     "-2016": "INVALID_API_SECRET", // Invalid API secret / IP or permissions
     "-1022": "INVALID_SIGNATURE", // Invalid signature
     "-1021": "TIMESTAMP_OUT_OF_SYNC", // Timestamp for this request was outside of the recvWindow

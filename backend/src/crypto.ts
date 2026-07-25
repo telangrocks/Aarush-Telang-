@@ -1,5 +1,14 @@
 // src/utils/crypto.ts
 
+export function cleanCredential(val: string | undefined | null): string {
+  if (!val) return "";
+  return val
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .trim();
+}
+
 async function getKey(secret: string, salt: BufferSource): Promise<CryptoKey> {
   const keyMaterial = await crypto.subtle.importKey(
     'raw',

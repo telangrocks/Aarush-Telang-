@@ -1,5 +1,6 @@
 import { IExchangeAdapter, PositionResult } from './BaseExchange';
 import { Env } from '../index';
+import { decrypt } from '../crypto';
 
 export interface RecoveryTransaction {
   id: string; // usually clientOrderId or position id
@@ -29,6 +30,21 @@ export class ReconciliationEngine {
     this.userId = userId;
     this.adapter = adapter;
     this.userKeys = userKeys;
+  }
+
+  private async getDecryptedSecret(): Promise<string> {
+    if (!this.userKeys || !this.userKeys.exchange_api_secret_encrypted || !this.userKeys.exchange_api_secret_iv) {
+      return "";
+    }
+    try {
+      return await decrypt(
+        { iv: this.userKeys.exchange_api_secret_iv, encrypted: this.userKeys.exchange_api_secret_encrypted },
+        this.env.ENCRYPTION_KEY
+      );
+    } catch (e) {
+      console.error("[ReconciliationEngine] Failed to decrypt user secret:", e);
+      return "";
+    }
   }
 
   private async logDecision(action: string, metadata: any) {
@@ -62,11 +78,12 @@ export class ReconciliationEngine {
   public async runReconciliationSweep() {
     const sweepStartTime = Date.now();
     const nowIso = new Date().toISOString();
+    const apiSecret = await this.getDecryptedSecret();
 
     // 1. Fetch current exchange state
     let exchangePositions: PositionResult[] = [];
-    if (this.adapter.fetchPositions) {
-      const posRes = await this.adapter.fetchPositions(this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
+    if (this.adapter.fetchPositions && apiSecret) {
+      const posRes = await this.adapter.fetchPositions(this.userKeys.exchange_api_key, apiSecret);
       if (posRes.success) {
         exchangePositions = posRes.result;
       } else {
@@ -87,8 +104,8 @@ export class ReconciliationEngine {
     for (const pos of knownPositions) {
       try {
         const orderIdToQuery = pos.entry_exchange_order_id || pos.order_id;
-        if (orderIdToQuery && this.adapter.fetchOrder) {
-          const ordStatus = await this.adapter.fetchOrder(orderIdToQuery, this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
+        if (orderIdToQuery && this.adapter.fetchOrder && apiSecret) {
+          const ordStatus = await this.adapter.fetchOrder(orderIdToQuery, this.userKeys.exchange_api_key, apiSecret);
           
           if (ordStatus.success) {
             // Update D1 entry order status and fill data
@@ -167,7 +184,7 @@ export class ReconciliationEngine {
 
     // 5. Process all pending recovery transactions
     for (const tx of transactions.values()) {
-      await this.processTransaction(tx, knownPositions);
+      await this.processTransaction(tx, knownPositions, apiSecret);
     }
       
     const summary = {
@@ -191,7 +208,7 @@ export class ReconciliationEngine {
     await this.stateStorage.put('lastReconciliationAt', Date.now());
   }
 
-  private async processTransaction(tx: RecoveryTransaction, _knownPositions: any[]) {
+  private async processTransaction(tx: RecoveryTransaction, _knownPositions: any[], apiSecret: string) {
     tx.attempts++;
     tx.lastAttemptAt = Date.now();
     const duration = Date.now() - tx.firstDetectedAt;
@@ -260,8 +277,8 @@ export class ReconciliationEngine {
         }
       } else if (tx.type === 'ORDER') {
         try {
-          if ((this.adapter as any).cancelOrder) {
-             const res = await (this.adapter as any).cancelOrder(tx.symbol, tx.id.replace('ord_', ''), this.userKeys.exchange_api_key, this.userKeys.exchange_api_secret_encrypted);
+          if ((this.adapter as any).cancelOrder && apiSecret) {
+             const res = await (this.adapter as any).cancelOrder(tx.symbol, tx.id.replace('ord_', ''), this.userKeys.exchange_api_key, apiSecret);
              if (res.success) {
                tx.status = 'RECOVERY_COMPLETED';
                await this.logDecision('RECOVERY_COMPLETED', { txId: tx.id, symbol: tx.symbol, action: 'CANCELLED' });

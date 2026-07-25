@@ -65,6 +65,16 @@ export class WebSocketManager {
     this.eventListeners = this.eventListeners.filter(l => l !== listener);
   }
 
+  public getPingPayload(exchange: ExchangeName): string | null {
+    if (exchange === "bybit") {
+      return JSON.stringify({ op: "ping" });
+    }
+    if (exchange === "delta") {
+      return JSON.stringify({ type: "ping" });
+    }
+    return null;
+  }
+
   public emitEvent(event: ExchangeEvent) {
     if (this.deduplicator.isDuplicateOrOutofOrder(event)) {
       return;

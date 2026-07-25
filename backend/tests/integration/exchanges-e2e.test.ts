@@ -4,6 +4,7 @@ import { WebSocketManager } from "../../src/exchanges/WebSocketManager";
 import { BinanceExchange } from "../../src/exchanges/BinanceExchange";
 import { BybitExchange } from "../../src/exchanges/BybitExchange";
 import { DeltaExchange } from "../../src/exchanges/DeltaExchange";
+import { cleanCredential } from "../../src/crypto";
 
 describe("Multi-Exchange Integration & Architectural Alignment E2E Tests", () => {
   it("should support all three target exchanges in ExchangeFactory", () => {
@@ -133,6 +134,12 @@ describe("Multi-Exchange Integration & Architectural Alignment E2E Tests", () =>
       expect(event?.averageFillPrice).toBe(50000);
     });
 
+    it("should correctly generate WebSocket ping payloads for heartbeats", () => {
+      expect(wsManager.getPingPayload("bybit")).toBe('{"op":"ping"}');
+      expect(wsManager.getPingPayload("delta")).toBe('{"type":"ping"}');
+      expect(wsManager.getPingPayload("binance")).toBeNull();
+    });
+
     it("should correctly normalize Delta Exchange order stream events", () => {
       const deltaPayload = {
         type: "orders",
@@ -158,6 +165,15 @@ describe("Multi-Exchange Integration & Architectural Alignment E2E Tests", () =>
       expect(event?.status).toBe("filled");
       expect(event?.filledQuantity).toBe(0.1);
       expect(event?.averageFillPrice).toBe(50000);
+    });
+  });
+
+  describe("Credential Sanitization Utility", () => {
+    it("should strip wrapping single and double quotes, zero-width spaces, and whitespace", () => {
+      const dirtyKey = '  "key_12345\u200B\uFEFF" ';
+      const dirtySecret = " 'secret_67890' \u200C";
+      expect(cleanCredential(dirtyKey)).toBe("key_12345");
+      expect(cleanCredential(dirtySecret)).toBe("secret_67890");
     });
   });
 });

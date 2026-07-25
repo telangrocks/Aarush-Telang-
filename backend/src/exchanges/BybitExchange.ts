@@ -2,6 +2,7 @@ import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult, B
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 import { CircuitBreaker } from "./CircuitBreaker";
+import { cleanCredential } from "../crypto";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -203,14 +204,14 @@ export class BybitExchange implements IExchangeAdapter {
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
-      const cleanKey = apiKey.trim();
-      const cleanSecret = apiSecret.trim();
+      const cleanKey = cleanCredential(apiKey);
+      const cleanSecret = cleanCredential(apiSecret);
       const timestamp = Date.now().toString();
-      const recvWindow = "5000";
-      const query = `timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
-      const signature = await hmacSha256(timestamp + cleanKey + recvWindow + query, cleanSecret);
+      const recvWindow = "10000";
+      // For GET /v5/account/info with no query params, canonical query string is empty ""
+      const signature = await hmacSha256(timestamp + cleanKey + recvWindow + "", cleanSecret);
 
-      const response = await fetch(`${this.getRestUrl()}/v5/account/info?${query}`, {
+      const response = await fetch(`${this.getRestUrl()}/v5/account/info`, {
         headers: {
           "X-BAPI-API-KEY": cleanKey,
           "X-BAPI-SIGN": signature,
@@ -222,20 +223,20 @@ export class BybitExchange implements IExchangeAdapter {
       if (!response.ok) {
         const body = await response.text();
         const err: ClassifiedError = classifyExchangeResponse(response.status, body, this.config.displayName);
-        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
       }
 
       const data = await response.json() as any;
       if (data.retCode !== 0) {
         const detail = data.retMsg || "Invalid API credentials";
         const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
-        return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
+        return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
       }
 
       return { success: true, message: "Bybit credentials validated successfully" };
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);
-      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
     }
   }
 
@@ -568,19 +569,46 @@ export class BybitExchange implements IExchangeAdapter {
 
   async fetchBalances(apiKey: string, apiSecret: string): Promise<BalanceResponse> {
     try {
+      const cleanKey = cleanCredential(apiKey);
+      const cleanSecret = cleanCredential(apiSecret);
       const timestamp = Date.now().toString();
-      const recvWindow = "5000";
-      const query = `accountType=UNIFIED&category=spot&timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
-      const signature = await hmacSha256(timestamp + apiKey + recvWindow + query, apiSecret);
+      const recvWindow = "10000";
 
-      const response = await fetch(`${this.getRestUrl()}/v5/account/wallet-balance?${query}`, {
+      // 1. Try UNIFIED account balance
+      const queryUnified = `accountType=UNIFIED`;
+      const sigUnified = await hmacSha256(timestamp + cleanKey + recvWindow + queryUnified, cleanSecret);
+
+      let response = await fetch(`${this.getRestUrl()}/v5/account/wallet-balance?${queryUnified}`, {
         headers: {
-          "X-BAPI-API-KEY": apiKey,
-          "X-BAPI-SIGN": signature,
+          "X-BAPI-API-KEY": cleanKey,
+          "X-BAPI-SIGN": sigUnified,
           "X-BAPI-TIMESTAMP": timestamp,
           "X-BAPI-RECV-WINDOW": recvWindow,
         },
       });
+
+      let data = (await response.json()) as any;
+
+      // 2. Fallback to SPOT account if UNIFIED fails
+      if (!response.ok || data.retCode !== 0) {
+        const querySpot = `accountType=SPOT`;
+        const sigSpot = await hmacSha256(timestamp + cleanKey + recvWindow + querySpot, cleanSecret);
+        const spotResponse = await fetch(`${this.getRestUrl()}/v5/account/wallet-balance?${querySpot}`, {
+          headers: {
+            "X-BAPI-API-KEY": cleanKey,
+            "X-BAPI-SIGN": sigSpot,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recvWindow,
+          },
+        });
+        if (spotResponse.ok) {
+          const spotData = await spotResponse.json() as any;
+          if (spotData.retCode === 0) {
+            response = spotResponse;
+            data = spotData;
+          }
+        }
+      }
 
       if (!response.ok) {
         const body = await response.text();
@@ -593,10 +621,10 @@ export class BybitExchange implements IExchangeAdapter {
           message: "Failed to fetch wallet balances from Bybit",
           code: err.code,
           friendlyMessage: err.friendlyMessage,
+          hint: err.hint,
         };
       }
 
-      const data = (await response.json()) as any;
       if (data.retCode !== 0 || !Array.isArray(data.result?.list) || data.result.list.length === 0) {
         const err = classifyByBody(data.retMsg || "No balances found", this.config.displayName);
         return {
@@ -607,6 +635,7 @@ export class BybitExchange implements IExchangeAdapter {
           message: data.retMsg || "No balances found",
           code: err.code,
           friendlyMessage: err.friendlyMessage,
+          hint: err.hint,
         };
       }
 
@@ -643,6 +672,7 @@ export class BybitExchange implements IExchangeAdapter {
         message: err.technicalDetail,
         code: err.code,
         friendlyMessage: err.friendlyMessage,
+        hint: err.hint,
       };
     }
   }

@@ -2,6 +2,7 @@ import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline, B
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 import { CircuitBreaker } from "./CircuitBreaker";
+import { cleanCredential } from "../crypto";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -206,11 +207,15 @@ export class BinanceExchange implements IExchangeAdapter {
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
-      const cleanKey = apiKey.trim();
-      const cleanSecret = apiSecret.trim();
+      const cleanKey = cleanCredential(apiKey);
+      const cleanSecret = cleanCredential(apiSecret);
       const timestamp = Date.now();
-      const query = `timestamp=${timestamp}`;
+      const recvWindow = 10000;
+      const query = `recvWindow=${recvWindow}&timestamp=${timestamp}`;
       const signature = await hmacSha256(query, cleanSecret);
+
+      let lastSpotStatus: number | null = null;
+      let lastSpotBody = "";
 
       // 1. Try Spot endpoint
       const spotUrl = `${this.getRestUrl()}/api/v3/account?${query}&signature=${signature}`;
@@ -218,9 +223,11 @@ export class BinanceExchange implements IExchangeAdapter {
         const spotResponse = await fetch(spotUrl, {
           headers: { "X-MBX-APIKEY": cleanKey },
         });
+        lastSpotStatus = spotResponse.status;
+        lastSpotBody = await spotResponse.text();
 
         if (spotResponse.ok) {
-          const data = (await spotResponse.json()) as any;
+          const data = JSON.parse(lastSpotBody) as any;
           if (!data.code || data.code === 0) {
             return { success: true, message: "Binance credentials validated successfully" };
           }
@@ -229,26 +236,42 @@ export class BinanceExchange implements IExchangeAdapter {
         // Fall through to Futures endpoint
       }
 
-      // 2. Try Futures endpoint (Binance Demo / Futures Testnet)
+      // 2. Try Futures endpoint (Binance Futures / Testnet)
       const futuresUrl = `${this.getFuturesRestUrl()}/fapi/v2/account?${query}&signature=${signature}`;
-      const futuresResponse = await fetch(futuresUrl, {
-        headers: { "X-MBX-APIKEY": cleanKey },
-      });
+      try {
+        const futuresResponse = await fetch(futuresUrl, {
+          headers: { "X-MBX-APIKEY": cleanKey },
+        });
 
-      if (futuresResponse.ok) {
-        const data = (await futuresResponse.json()) as any;
-        if (!data.code || data.code === 0) {
-          return { success: true, message: "Binance credentials validated successfully" };
+        if (futuresResponse.ok) {
+          const data = (await futuresResponse.json()) as any;
+          if (!data.code || data.code === 0) {
+            return { success: true, message: "Binance credentials validated successfully" };
+          }
         }
-      }
 
-      // If both endpoints failed, classify error from Futures response
-      const body = await futuresResponse.text();
-      const err: ClassifiedError = classifyExchangeResponse(futuresResponse.status, body, this.config.displayName);
-      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+        // If Spot gave a structured error (e.g. -2015), prioritize Spot error over generic Futures error
+        if (lastSpotBody && lastSpotStatus) {
+          const spotErr: ClassifiedError = classifyExchangeResponse(lastSpotStatus, lastSpotBody, this.config.displayName);
+          if (spotErr.code !== "UNKNOWN_EXCHANGE_ERROR") {
+            return { success: false, message: spotErr.technicalDetail, code: spotErr.code, friendlyMessage: spotErr.friendlyMessage, hint: spotErr.hint };
+          }
+        }
+
+        const futuresBody = await futuresResponse.text();
+        const err: ClassifiedError = classifyExchangeResponse(futuresResponse.status, futuresBody, this.config.displayName);
+        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
+      } catch {
+        // If futures fetch threw, fallback to spot error
+        if (lastSpotBody && lastSpotStatus) {
+          const spotErr: ClassifiedError = classifyExchangeResponse(lastSpotStatus, lastSpotBody, this.config.displayName);
+          return { success: false, message: spotErr.technicalDetail, code: spotErr.code, friendlyMessage: spotErr.friendlyMessage, hint: spotErr.hint };
+        }
+        throw new Error("Unable to reach Binance endpoints");
+      }
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);
-      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
     }
   }
 

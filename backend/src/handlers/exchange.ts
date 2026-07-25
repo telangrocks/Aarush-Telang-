@@ -1,6 +1,6 @@
 import { Context } from "hono";
 import { Env } from "../index";
-import { encrypt, decrypt } from "../crypto";
+import { encrypt, decrypt, cleanCredential } from "../crypto";
 import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion } from "../exchanges";
 import { FRIENDLY_MESSAGES, type ExchangeErrorCode } from "../exchanges/errors";
 import {
@@ -18,33 +18,24 @@ import { analyzeMarket } from "../market-analysis";
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
- * Anything other than the explicit string "testnet" falls back to "mainnet"
- * so that the default behaviour is always the safe, well-defined production
- * endpoint unless testnet is explicitly requested.
+ * Anything other than the explicit string "testnet" falls back to "mainnet".
  */
 function normalizeEnvironment(value: unknown): ExchangeEnvironment {
   return value === "testnet" ? "testnet" : "mainnet";
 }
 
 /**
- * Normalize an untrusted region value into a valid ExchangeRegion. Anything
- * other than "global" or "india" falls back to "india" so that Delta Exchange
- * India accounts reach the India domain (api.india.delta.exchange) by default
- * instead of the geo-blocked global endpoint.
+ * Normalize an untrusted region value into a valid ExchangeRegion.
  */
-function normalizeRegion(value: unknown): ExchangeRegion {
-  return value === "global" || value === "india" ? value : "india";
+function normalizeRegion(value: unknown): ExchangeRegion | undefined {
+  return value === "global" || value === "india" ? value : undefined;
 }
 
 /**
  * Shape an adapter ValidationResult into the response the app consumes.
- *
- * The user-facing payload (`message`, `code`, `hint`) is plain-language and
- * actionable. The raw/technical adapter `message` is logged server-side via
- * `logTechnical` and is never sent to the client.
  */
 function shapeValidation(
-  result: { success: boolean; message: string; code?: string; friendlyMessage?: string },
+  result: { success: boolean; message: string; code?: string; friendlyMessage?: string; hint?: string },
   exchangeName: string,
   logTechnical: (detail: string) => void,
 ) {
@@ -60,7 +51,7 @@ function shapeValidation(
     success: false as const,
     code,
     message: result.friendlyMessage || info.friendlyMessage,
-    hint: info.hint,
+    hint: result.hint || info.hint,
   };
 }
 
@@ -76,8 +67,8 @@ export async function handleValidateExchange(
       region?: ExchangeRegion;
     }>();
 
-    const cleanApiKey = (apiKey || "").trim();
-    const cleanApiSecret = (apiSecret || "").trim();
+    const cleanApiKey = cleanCredential(apiKey);
+    const cleanApiSecret = cleanCredential(apiSecret);
 
     if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
       c.status(400);
@@ -89,8 +80,7 @@ export async function handleValidateExchange(
       });
     }
 
-    const resolvedRegion = normalizeRegion(region);
-    const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment), resolvedRegion);
+    const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment), region);
     const result = await adapter.validateCredentials(cleanApiKey, cleanApiSecret);
 
     return c.json(shapeValidation(result, exchangeName, (d) => console.error(d)));
@@ -122,8 +112,8 @@ export async function handleConnectExchange(
       region?: ExchangeRegion;
     }>();
 
-    const cleanApiKey = (apiKey || "").trim();
-    const cleanApiSecret = (apiSecret || "").trim();
+    const cleanApiKey = cleanCredential(apiKey);
+    const cleanApiSecret = cleanCredential(apiSecret);
 
     if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
       c.status(400);
@@ -136,8 +126,7 @@ export async function handleConnectExchange(
     }
 
     const resolvedEnvironment = normalizeEnvironment(environment);
-    const resolvedRegion = normalizeRegion(region);
-    const adapter = getExchangeAdapter(exchangeName, resolvedEnvironment, resolvedRegion);
+    const adapter = getExchangeAdapter(exchangeName, resolvedEnvironment, region);
     const validation = await adapter.validateCredentials(cleanApiKey, cleanApiSecret);
     if (!validation.success) {
       c.status(401);
@@ -145,6 +134,7 @@ export async function handleConnectExchange(
     }
 
     const encryptedSecret = await encrypt(cleanApiSecret, c.env.ENCRYPTION_KEY);
+    const resolvedRegion = adapter?.config?.defaultRegion || (region === "india" ? "india" : "global");
 
     await c.env.DB.prepare(
       `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?`,
