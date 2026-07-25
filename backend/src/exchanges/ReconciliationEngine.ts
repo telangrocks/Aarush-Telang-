@@ -1,4 +1,5 @@
 import { IExchangeAdapter, PositionResult } from './BaseExchange';
+import { Env } from '../index';
 
 export interface RecoveryTransaction {
   id: string; // usually clientOrderId or position id

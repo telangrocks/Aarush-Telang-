@@ -203,7 +203,7 @@ export class BybitExchange implements IExchangeAdapter {
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
-      const cleanKey = apiKey.trim().replace(/^[^a-zA-Z0-9]+/, '');
+      const cleanKey = apiKey.trim();
       const cleanSecret = apiSecret.trim();
       const timestamp = Date.now().toString();
       const recvWindow = "5000";
@@ -230,29 +230,6 @@ export class BybitExchange implements IExchangeAdapter {
         const detail = data.retMsg || "Invalid API credentials";
         const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
         return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
-      }
-
-      const queryApi = `timestamp=${encodeURIComponent(timestamp)}&recv_window=${recvWindow}`;
-      const signatureQuery = await hmacSha256(timestamp + apiKey + recvWindow + queryApi, apiSecret);
-      const queryResponse = await fetch(`${this.getRestUrl()}/v5/user/query-api?${queryApi}`, {
-        headers: {
-          "X-BAPI-API-KEY": apiKey,
-          "X-BAPI-SIGN": signatureQuery,
-          "X-BAPI-TIMESTAMP": timestamp,
-          "X-BAPI-RECV-WINDOW": recvWindow,
-        },
-      });
-
-      if (queryResponse.ok) {
-        const queryData = await queryResponse.json() as any;
-        if (queryData.retCode === 0 && queryData.result?.readOnly === 1) {
-          return {
-            success: false,
-            message: "INSUFFICIENT_PERMISSIONS: API key is read-only",
-            code: "INSUFFICIENT_PERMISSIONS",
-            friendlyMessage: "Your API key doesn't have the required trading permissions. Please update the API permissions to allow trading and try again."
-          };
-        }
       }
 
       return { success: true, message: "Bybit credentials validated successfully" };

@@ -76,7 +76,7 @@ export async function handleValidateExchange(
       region?: ExchangeRegion;
     }>();
 
-    const cleanApiKey = (apiKey || "").trim().replace(/^[^a-zA-Z0-9]+/, '');
+    const cleanApiKey = (apiKey || "").trim();
     const cleanApiSecret = (apiSecret || "").trim();
 
     if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
@@ -122,7 +122,7 @@ export async function handleConnectExchange(
       region?: ExchangeRegion;
     }>();
 
-    const cleanApiKey = (apiKey || "").trim().replace(/^[^a-zA-Z0-9]+/, '');
+    const cleanApiKey = (apiKey || "").trim();
     const cleanApiSecret = (apiSecret || "").trim();
 
     if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
@@ -144,12 +144,12 @@ export async function handleConnectExchange(
       return c.json(shapeValidation(validation, exchangeName, (d) => console.error(d)));
     }
 
-    const encryptedSecret = await encrypt(apiSecret, c.env.ENCRYPTION_KEY);
+    const encryptedSecret = await encrypt(cleanApiSecret, c.env.ENCRYPTION_KEY);
 
     await c.env.DB.prepare(
       `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?`,
     )
-      .bind(exchangeName, resolvedEnvironment, resolvedRegion, apiKey, encryptedSecret.iv, encryptedSecret.encrypted, userId)
+      .bind(exchangeName, resolvedEnvironment, resolvedRegion, cleanApiKey, encryptedSecret.iv, encryptedSecret.encrypted, userId)
       .run();
 
     // Reset bot state and clear instrument locking upon exchange connection/reconnection

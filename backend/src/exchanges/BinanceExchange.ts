@@ -197,44 +197,55 @@ export class BinanceExchange implements IExchangeAdapter {
     return urls[this.region] ?? urls.global;
   }
 
+  getFuturesRestUrl(): string {
+    if (this.environment === "testnet") {
+      return "https://testnet.binancefuture.com";
+    }
+    return "https://fapi.binance.com";
+  }
+
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
-      const cleanKey = apiKey.trim().replace(/^[^a-zA-Z0-9]+/, '');
+      const cleanKey = apiKey.trim();
       const cleanSecret = apiSecret.trim();
       const timestamp = Date.now();
       const query = `timestamp=${timestamp}`;
       const signature = await hmacSha256(query, cleanSecret);
-      const url = `${this.getRestUrl()}/api/v3/account?${query}&signature=${signature}`;
 
-      const response = await fetch(url, {
-        headers: {
-          "X-MBX-APIKEY": cleanKey,
-        },
+      // 1. Try Spot endpoint
+      const spotUrl = `${this.getRestUrl()}/api/v3/account?${query}&signature=${signature}`;
+      try {
+        const spotResponse = await fetch(spotUrl, {
+          headers: { "X-MBX-APIKEY": cleanKey },
+        });
+
+        if (spotResponse.ok) {
+          const data = (await spotResponse.json()) as any;
+          if (!data.code || data.code === 0) {
+            return { success: true, message: "Binance credentials validated successfully" };
+          }
+        }
+      } catch {
+        // Fall through to Futures endpoint
+      }
+
+      // 2. Try Futures endpoint (Binance Demo / Futures Testnet)
+      const futuresUrl = `${this.getFuturesRestUrl()}/fapi/v2/account?${query}&signature=${signature}`;
+      const futuresResponse = await fetch(futuresUrl, {
+        headers: { "X-MBX-APIKEY": cleanKey },
       });
 
-      if (!response.ok) {
-        const body = await response.text();
-        const err: ClassifiedError = classifyExchangeResponse(response.status, body, this.config.displayName);
-        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
+      if (futuresResponse.ok) {
+        const data = (await futuresResponse.json()) as any;
+        if (!data.code || data.code === 0) {
+          return { success: true, message: "Binance credentials validated successfully" };
+        }
       }
 
-      const data = await response.json() as any;
-      if (data.code && data.code !== 0) {
-        const detail = data.msg || "Invalid API credentials";
-        const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
-        return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
-      }
-
-      if (data.canTrade === false) {
-        return {
-          success: false,
-          message: "SPOT_TRADING_NOT_ENABLED: API key lacks spot trade permission",
-          code: "SPOT_TRADING_NOT_ENABLED",
-          friendlyMessage: "Spot trading is not enabled on this API key. Go to your exchange API settings and check the 'Enable Spot Trading' permission."
-        };
-      }
-
-      return { success: true, message: "Binance credentials validated successfully" };
+      // If both endpoints failed, classify error from Futures response
+      const body = await futuresResponse.text();
+      const err: ClassifiedError = classifyExchangeResponse(futuresResponse.status, body, this.config.displayName);
+      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);
       return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
@@ -653,13 +664,23 @@ export class BinanceExchange implements IExchangeAdapter {
       const timestamp = Date.now();
       const params = new URLSearchParams({ timestamp: timestamp.toString() });
       const signature = await hmacSha256(params.toString(), apiSecret);
-      const url = `${this.getRestUrl()}/api/v3/account?${params.toString()}&signature=${signature}`;
 
-      const response = await fetch(url, {
+      let response = await fetch(`${this.getRestUrl()}/api/v3/account?${params.toString()}&signature=${signature}`, {
         headers: { 'X-MBX-APIKEY': apiKey },
       });
 
-      const data = (await response.json()) as any;
+      let data = (await response.json()) as any;
+
+      if (!response.ok || (data.code && data.code !== 0)) {
+        const futuresResponse = await fetch(`${this.getFuturesRestUrl()}/fapi/v2/account?${params.toString()}&signature=${signature}`, {
+          headers: { 'X-MBX-APIKEY': apiKey },
+        });
+        if (futuresResponse.ok) {
+          response = futuresResponse;
+          data = (await futuresResponse.json()) as any;
+        }
+      }
+
       if (!response.ok) {
         this.breaker.recordFailure();
         const err = classifyExchangeResponse(response.status, JSON.stringify(data), this.config.displayName);
@@ -675,19 +696,21 @@ export class BinanceExchange implements IExchangeAdapter {
       }
 
       const balances: BalanceItem[] = [];
-      const rawBalances = data.balances || [];
+      const rawBalances = data.balances || data.assets || [];
       for (const b of rawBalances) {
-        const free = parseFloat(b.free || "0");
-        const locked = parseFloat(b.locked || "0");
+        const free = parseFloat(b.free || b.availableBalance || b.walletBalance || "0");
+        const locked = parseFloat(b.locked || b.initialMargin || "0");
         const total = free + locked;
-        if (total > 0 || b.asset === "USDT") {
-          balances.push({ asset: b.asset, free, locked, total });
+        const asset = b.asset;
+        if (asset && (total > 0 || asset === "USDT")) {
+          balances.push({ asset, free, locked, total });
         }
       }
 
       // Ensure USDT is present
       if (!balances.some((b) => b.asset === "USDT")) {
-        balances.unshift({ asset: "USDT", free: 0, locked: 0, total: 0 });
+        const usdtVal = parseFloat(data.totalWalletBalance || "0");
+        balances.unshift({ asset: "USDT", free: usdtVal, locked: 0, total: usdtVal });
       }
 
       this.breaker.recordSuccess();

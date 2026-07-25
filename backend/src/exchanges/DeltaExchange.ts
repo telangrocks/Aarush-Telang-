@@ -214,15 +214,17 @@ export class DeltaExchange implements IExchangeAdapter {
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
+      const cleanKey = apiKey.trim();
+      const cleanSecret = apiSecret.trim();
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const requestPath = "/v2/wallet/balances";
       const query = `timestamp=${timestamp}`;
       const prehash = "GET" + timestamp + requestPath + "?" + query;
-      const signature = await hmacSha256(prehash, apiSecret);
+      const signature = await hmacSha256(prehash, cleanSecret);
 
       const response = await fetch(`${this.getRestUrl()}${requestPath}?${query}`, {
         headers: {
-          "api-key": apiKey,
+          "api-key": cleanKey,
           "signature": signature,
           "timestamp": timestamp,
         },
