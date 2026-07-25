@@ -212,6 +212,16 @@ export class DeltaExchange implements IExchangeAdapter {
     return urls[this.region] ?? urls.global;
   }
 
+  getFallbackRestUrl(): string {
+    const fallbackRegion: ExchangeRegion = this.region === "india" ? "global" : "india";
+    const urls = this.config.regionUrls;
+    const testnet = this.config.regionTestnetUrls;
+    if (this.environment === "testnet" && testnet && testnet[fallbackRegion]) {
+      return testnet[fallbackRegion]!;
+    }
+    return urls[fallbackRegion] ?? urls.global;
+  }
+
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
       const cleanKey = apiKey.trim();
@@ -222,35 +232,46 @@ export class DeltaExchange implements IExchangeAdapter {
       const prehash = "GET" + timestamp + requestPath + "?" + query;
       const signature = await hmacSha256(prehash, cleanSecret);
 
-      const response = await fetch(`${this.getRestUrl()}${requestPath}?${query}`, {
-        headers: {
-          "api-key": cleanKey,
-          "signature": signature,
-          "timestamp": timestamp,
-        },
-      });
+      const targetUrls = [this.getRestUrl(), this.getFallbackRestUrl()];
+      let lastResponse: Response | null = null;
+      let lastBody = "";
 
-      if (!response.ok) {
-        const body = await response.text();
-        const err: ClassifiedError = classifyExchangeResponse(response.status, body, this.config.displayName);
+      for (const baseUrl of targetUrls) {
+        try {
+          const response = await fetch(`${baseUrl}${requestPath}?${query}`, {
+            headers: {
+              "api-key": cleanKey,
+              "signature": signature,
+              "timestamp": timestamp,
+            },
+          });
+          lastResponse = response;
+
+          if (response.ok) {
+            const data = await response.json() as any;
+            if (data.success !== false) {
+              return { success: true, message: "Delta Exchange credentials validated successfully" };
+            }
+            lastBody = JSON.stringify(data);
+          } else {
+            lastBody = await response.text();
+          }
+        } catch {
+          // Try next endpoint URL
+        }
+      }
+
+      if (lastResponse) {
+        const err: ClassifiedError = classifyExchangeResponse(lastResponse.status, lastBody, this.config.displayName);
         return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
       }
 
-      const data = await response.json() as any;
-      if (data.success === false) {
-        const detail = data.error?.message || "Invalid API credentials";
-        const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
-        return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage };
-      }
-
-      return { success: true, message: "Delta Exchange credentials validated successfully" };
+      return { success: false, message: "Failed to connect to Delta Exchange", code: "EXCHANGE_UNAVAILABLE", friendlyMessage: "Unable to reach Delta Exchange servers. Please check your internet connection." };
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);
       return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage };
     }
   }
-
-
 
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
