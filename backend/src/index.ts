@@ -263,7 +263,7 @@ api.use("*", async (c, next) => {
     c.status(401);
     return c.json({ error: "Invalid token type. Access token required." });
   }
-  if (payload.jti && await isTokenRevoked(c, payload.jti)) {
+  if (payload?.jti && await isTokenRevoked(c, payload.jti)) {
     c.status(401);
     return c.json({ error: "Token has been revoked" });
   }

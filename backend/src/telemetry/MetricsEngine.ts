@@ -8,11 +8,7 @@
 
 import {
   TelemetryEvent,
-  StrategyExecutionEvent,
-  StrategyErrorEvent,
-  OrchestratorCycleEvent,
-  MalformedDataEvent,
-  TimeoutEvent
+  StrategyExecutionEvent
 } from './TelemetryEvents';
 
 export interface StrategyMetricsSummary {

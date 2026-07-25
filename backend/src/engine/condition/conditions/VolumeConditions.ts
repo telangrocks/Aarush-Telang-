@@ -1,7 +1,7 @@
 import { TimeframeIndicators } from '../../indicator/IndicatorTypes';
 import { VolumeConditionResult, ConditionConfig } from '../ConditionTypes';
 
-export function evaluateVolume(indicators: TimeframeIndicators, config: ConditionConfig): VolumeConditionResult {
+export function evaluateVolume(indicators: TimeframeIndicators, _config: ConditionConfig): VolumeConditionResult {
   const volumeArray = indicators.volume;
   
   let volumeTrend: 'INCREASING' | 'DECREASING' | 'NEUTRAL' = 'NEUTRAL';

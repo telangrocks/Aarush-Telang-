@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { BreakoutStrategy } from './BreakoutStrategy';
 import { StrategyContext } from '../../context/StrategyContext';
-import { Timeframe } from '../../market-data/Timeframe';
 
 describe('BreakoutStrategy', () => {
   it('should initialize and evaluate returning no signal when data is insufficient', () => {

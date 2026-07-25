@@ -1,4 +1,4 @@
-import { ConfidenceScore, TimeframeConfidence } from '../confidence';
+import { TimeframeConfidence } from '../confidence';
 import { RiskAssessment } from '../risk';
 
 export interface SignalRules {

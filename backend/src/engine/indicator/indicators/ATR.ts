@@ -1,6 +1,3 @@
-import { NormalizedCandle } from '../../market-data/MarketSnapshot';
-import { calculateSMA } from './SMA';
-
 export function calculateATR(candles: NormalizedCandle[], period: number): number[] {
   const result: number[] = new Array(candles.length).fill(NaN);
   if (candles.length <= period || period <= 0) return result;

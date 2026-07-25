@@ -60,7 +60,7 @@ export class MeanReversionStrategy implements IStrategy {
     const conditionResult = this.conditionEngine.evaluate(indicatorSnapshot);
 
     // 3. Confidence
-    let confidenceScore = this.confidenceEngine.evaluate(conditionResult);
+    const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
     // Dynamic timeframe selection
     const primaryTimeframe = this.config.preferredTimeframes[0] as Timeframe;
@@ -78,7 +78,6 @@ export class MeanReversionStrategy implements IStrategy {
     }
 
     const currentCandle = candles[candles.length - 1];
-    const previousCandle = candles[candles.length - 2];
     const currentPrice = currentCandle.close;
 
     const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];

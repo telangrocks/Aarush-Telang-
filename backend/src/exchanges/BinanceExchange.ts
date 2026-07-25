@@ -1,4 +1,4 @@
-import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline, PositionsResponse, BalanceResponse, BalanceItem } from "./BaseExchange";
+import { IExchangeAdapter, ValidationResult, MarketTicker, OrderResult, Kline, BalanceResponse, BalanceItem } from "./BaseExchange";
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 import { CircuitBreaker } from "./CircuitBreaker";
@@ -72,10 +72,10 @@ export class BinanceExchange implements IExchangeAdapter {
   };
 
   // Helper with exponential backoff retries
-  private async fetchWithRetry(url: string, retries = 2, delay = 500): Promise<Response> {
+  private async fetchWithRetry(url: string, options?: RequestInit, retries = 2, delay = 500): Promise<Response> {
     for (let attempt = 1; attempt <= retries + 1; attempt++) {
       try {
-        const res = await fetch(url);
+        const res = await fetch(url, options);
         if (res.ok) return res;
         throw new Error(`HTTP status ${res.status}`);
       } catch (err) {
@@ -346,8 +346,8 @@ export class BinanceExchange implements IExchangeAdapter {
     clientOrderId?: string,
     orderType?: 'MARKET' | 'LIMIT',
     price?: number,
-    stopLoss?: number,
-    takeProfit?: number
+    _stopLoss?: number,
+    _takeProfit?: number
   ): Promise<OrderResult> {
     const breakerState = this.breaker.check();
     if (!breakerState.allowed) {

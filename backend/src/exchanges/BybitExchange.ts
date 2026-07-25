@@ -1,6 +1,7 @@
 import { IExchangeAdapter, ValidationResult, MarketTicker, Kline, OrderResult, BalanceResponse, BalanceItem } from "./BaseExchange";
 import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } from "./types";
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
+import { CircuitBreaker } from "./CircuitBreaker";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -64,6 +65,7 @@ export class BybitExchange implements IExchangeAdapter {
   private metadataCache: Map<string, SymbolMetadata> | null = null;
   private lastCacheFetch = 0;
   private cacheFetchPromise: Promise<Map<string, SymbolMetadata>> | null = null;
+  public breaker = new CircuitBreaker(5, 60000);
 
   public cacheMetrics = {
     hits: 0,
@@ -71,12 +73,13 @@ export class BybitExchange implements IExchangeAdapter {
     refreshes: 0,
     failures: 0,
     staleUsage: 0,
+    circuitBreakerStatus: () => this.breaker.check().allowed ? "CLOSED" : "OPEN",
   };
 
-  private async fetchWithRetry(url: string, retries = 2, delay = 500): Promise<Response> {
+  private async fetchWithRetry(url: string, options?: RequestInit, retries = 2, delay = 500): Promise<Response> {
     for (let attempt = 1; attempt <= retries + 1; attempt++) {
       try {
-        const res = await fetch(url);
+        const res = await fetch(url, options);
         if (res.ok) return res;
         throw new Error(`HTTP status ${res.status}`);
       } catch (err) {

@@ -16,8 +16,8 @@ export class EngineAPIService {
       health: state === EngineState.ERROR ? 'ERROR' : 'OK'
     };
 
-    let indicatorSummary: any[] = [];
-    let conditionSummary: any[] = [];
+    const indicatorSummary: any[] = [];
+    const conditionSummary: any[] = [];
     
     if (result && result.metadata && result.metadata.indicatorSnapshot) {
       // Map indicator snapshots to simple key-value summaries

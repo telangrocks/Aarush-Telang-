@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { DeltaExchange } from './DeltaExchange';
+import { DeltaExchange } from '../../src/exchanges/DeltaExchange';
 
 describe('DeltaExchange Adapter Order & Leverage Enforcement', () => {
   let mockFetch: any;

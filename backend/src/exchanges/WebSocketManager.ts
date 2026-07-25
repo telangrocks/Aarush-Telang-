@@ -118,6 +118,37 @@ export class WebSocketManager {
     }
   }
 
+  // WebSocket Endpoint URL Resolver across Exchanges & Environments
+  public getWebSocketUrl(
+    exchange: ExchangeName,
+    environment: ExchangeEnvironment = "mainnet",
+    region: "global" | "india" = "global",
+    listenKey?: string
+  ): string {
+    if (exchange === "binance") {
+      const baseUrl = environment === "testnet"
+        ? "wss://testnet.binance.vision/ws"
+        : "wss://stream.binance.com:9443/ws";
+      return listenKey ? `${baseUrl}/${listenKey}` : baseUrl;
+    }
+    if (exchange === "bybit") {
+      return environment === "testnet"
+        ? "wss://stream-testnet.bybit.com/v5/private"
+        : "wss://stream.bybit.com/v5/private";
+    }
+    if (exchange === "delta") {
+      if (environment === "testnet") {
+        return region === "india"
+          ? "wss://socket-ind.testnet.deltaex.org"
+          : "wss://socket-testnet.delta.exchange";
+      }
+      return region === "india"
+        ? "wss://socket.india.delta.exchange"
+        : "wss://socket.delta.exchange";
+    }
+    throw new Error(`Unsupported exchange: ${exchange}`);
+  }
+
   // Event Ingestion Normalizers
   public normalizeBinanceExecutionReport(data: any): ExchangeEvent | null {
     if (data.e !== 'executionReport') return null;

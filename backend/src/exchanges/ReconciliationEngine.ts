@@ -1,5 +1,4 @@
-import { Env } from '../index';
-import { IExchangeAdapter, PositionResult, OrderResult } from './BaseExchange';
+import { IExchangeAdapter, PositionResult } from './BaseExchange';
 
 export interface RecoveryTransaction {
   id: string; // usually clientOrderId or position id
@@ -166,7 +165,7 @@ export class ReconciliationEngine {
     }
 
     // 5. Process all pending recovery transactions
-    for (const [txId, tx] of transactions.entries()) {
+    for (const tx of transactions.values()) {
       await this.processTransaction(tx, knownPositions);
     }
       
@@ -191,7 +190,7 @@ export class ReconciliationEngine {
     await this.stateStorage.put('lastReconciliationAt', Date.now());
   }
 
-  private async processTransaction(tx: RecoveryTransaction, knownPositions: any[]) {
+  private async processTransaction(tx: RecoveryTransaction, _knownPositions: any[]) {
     tx.attempts++;
     tx.lastAttemptAt = Date.now();
     const duration = Date.now() - tx.firstDetectedAt;

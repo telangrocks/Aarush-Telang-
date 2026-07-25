@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CircuitBreaker } from '../exchanges/CircuitBreaker';
-import { TradingBot } from '../trading-bot';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { CircuitBreaker } from '../../src/exchanges/CircuitBreaker';
+import { TradingBot } from '../../src/trading-bot';
 
 describe('Phase 3.2: Protection Mechanisms Validation', () => {
 
@@ -65,7 +65,7 @@ describe('Phase 3.2: Protection Mechanisms Validation', () => {
         storage: {
           get: async (key: string) => mockStorage.get(key),
           put: async (key: string, value: any) => mockStorage.set(key, value),
-          setAlarm: async (ms: number) => {},
+          setAlarm: async (_ms: number) => {},
           list: async () => mockStorage,
         },
         blockConcurrencyWhile: async (cb: () => Promise<any>) => await cb()
@@ -73,8 +73,8 @@ describe('Phase 3.2: Protection Mechanisms Validation', () => {
 
       mockEnv = {
         DB: {
-          prepare: (sql: string) => ({
-            bind: (...args: any[]) => ({
+          prepare: (_sql: string) => ({
+            bind: (..._args: any[]) => ({
               first: async () => null,
               run: async () => {}
             })

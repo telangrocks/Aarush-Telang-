@@ -4,8 +4,7 @@ import { type Kline } from './exchanges/types';
 import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
 import { sendTradeNotification } from './handlers/notifications';
-import { StrategyOrchestrator, EngineState, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe } from './engine';
-import { ScalperV2Strategy } from './engine/strategies/scalper-v2/ScalperV2Strategy';
+import { StrategyOrchestrator, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe } from './engine';
 import { EngineAPIService } from './api/engine';
 import { StrategyRegistry } from './engine/strategies/StrategyRegistry';
 /**
@@ -146,12 +145,7 @@ interface TimeframeAnalysis {
   reasoning: string[];
 }
 
-interface ConfluenceResult {
-  score: number;
-  alignment: 'STRONG' | 'MODERATE' | 'WEAK' | 'NONE';
-  timeframes: TimeframeAnalysis[];
-  primarySignal: 'BUY' | 'SELL' | 'HOLD';
-}
+
 
 interface StrategyConfig {
   volumeThreshold: number;
@@ -402,25 +396,7 @@ export function evaluateStrategy(
   return { checkpoints, total, passed, progress, confidence, conditionsMet, opportunity };
 }
 
-/**
- * Lightweight, fully real evaluation used to populate the "scanning coins" row
- * for comparison symbols. Reuses the strategy's universal filters
- * (volume / volatility / momentum) so every number on the screen is genuine.
- */
-function quickEvaluate(ticker: MarketTicker, config: StrategyConfig): { progress: number; status: ScanCandidate['status'] } {
-  const m = toMetrics(ticker);
-  let passed = 0;
-  const total = 3;
-  if (m.volume >= config.volumeThreshold) passed++;
-  if (m.rangePercent >= config.rangeThreshold) passed++;
-  if (Math.abs(m.change24h) >= config.momentumThreshold) passed++;
-  const progress = Math.round((passed / total) * 100);
-  return { progress, status: progress >= 100 ? 'queued' : 'scanning' };
-}
 
-function normalizeSymbol(symbol: string): string {
-  return symbol.replace('/USDT', '').replace('USDT', '').toUpperCase();
-}
 
 /**
  * AdapterCandleProvider acts as a bridge between the isolated MarketDataEngine

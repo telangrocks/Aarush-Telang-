@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TradingBot } from "../../src/trading-bot";
-import { StrategyOrchestrator } from "../../src/engine/orchestrator/StrategyOrchestrator";
 
 // Mock security crypto
 vi.mock("../../src/crypto", () => ({

@@ -41,7 +41,6 @@ export class RiskEngine {
     explanation.push(`Position size recommended at ${positionSize.toFixed(2)} (Risk: ${this.config.accountRiskPercent}% of balance).`);
 
     // Assess risk classification based on exposure and volatility
-    const riskAmount = context.accountBalance * (this.config.accountRiskPercent / 100);
     const maxAllowedExposure = context.accountBalance * (this.config.maxExposureLimit / 100);
     
     let riskClassification: RiskClassification = 'LOW';

@@ -77,7 +77,7 @@ describe('Endurance Stress Tests', () => {
     });
     const ctx = new StrategyContext(snapshot).freeze();
 
-    for (const [id, strategy] of allStrategies) {
+    for (const [, strategy] of allStrategies) {
       const result = strategy.evaluate(ctx);
       expect(result.strategyId).toBeDefined();
       expect(result.hasSignal).toBe(false);

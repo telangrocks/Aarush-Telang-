@@ -1,5 +1,3 @@
-import { Timeframe } from '../market-data';
-
 export interface TrendConditionResult {
   priceAboveEMA: boolean;
   emaCrossoverState: 'BULLISH' | 'BEARISH' | 'NONE';

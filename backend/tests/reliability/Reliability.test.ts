@@ -10,7 +10,7 @@
  * - Durable Object recovery simulation
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { StrategyRegistry } from '../../src/engine/strategies/StrategyRegistry';
 import { StrategyContext } from '../../src/engine/context/StrategyContext';
 import { MetricsEngine } from '../../src/telemetry/MetricsEngine';

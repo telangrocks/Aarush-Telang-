@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ReconciliationEngine } from '../exchanges/ReconciliationEngine';
-import { TradingBot } from '../trading-bot';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { ReconciliationEngine } from '../../src/exchanges/ReconciliationEngine';
+import { TradingBot } from '../../src/trading-bot';
 
 describe('Phase 3.3: Recovery & Exchange Reconciliation', () => {
 
@@ -20,7 +20,7 @@ describe('Phase 3.3: Recovery & Exchange Reconciliation', () => {
           get: async (key: string) => mockStorage.get(key),
           put: async (key: string, value: any) => mockStorage.set(key, value),
           delete: async (key: string) => mockStorage.delete(key),
-          setAlarm: async (ms: number) => {},
+          setAlarm: async (_ms: number) => {},
           list: async () => mockStorage,
         },
         blockConcurrencyWhile: async (cb: () => Promise<any>) => await cb()
@@ -28,8 +28,8 @@ describe('Phase 3.3: Recovery & Exchange Reconciliation', () => {
 
       mockEnv = {
         DB: {
-          prepare: (sql: string) => ({
-            bind: (...args: any[]) => ({
+          prepare: (_sql: string) => ({
+            bind: (..._args: any[]) => ({
               first: async () => null,
               run: async () => {
                 // Simulate DB success
@@ -55,11 +55,11 @@ describe('Phase 3.3: Recovery & Exchange Reconciliation', () => {
       });
 
       let dbInsertCalled = false;
-      mockEnv.DB.prepare = (sql: string) => {
+      mockEnv.DB.prepare = (_sql: string) => {
         return {
-          bind: (...args: any[]) => ({
+          bind: (..._args: any[]) => ({
             run: async () => {
-              if (sql.includes('INSERT OR IGNORE INTO trade_positions')) {
+              if (_sql.includes('INSERT OR IGNORE INTO trade_positions')) {
                 dbInsertCalled = true;
               }
             },
@@ -88,8 +88,8 @@ describe('Phase 3.3: Recovery & Exchange Reconciliation', () => {
       mockStorage = new Map<string, any>();
       mockEnv = {
         DB: {
-          prepare: (sql: string) => ({
-            bind: (...args: any[]) => ({
+          prepare: (_sql: string) => ({
+            bind: (..._args: any[]) => ({
               run: async () => {},
               first: async () => null,
               all: async () => ({ results: [] }) // Assume no known positions
@@ -132,10 +132,10 @@ describe('Phase 3.3: Recovery & Exchange Reconciliation', () => {
 
       // Cycle 2: Validate -> Reconcile
       let dbInsertCalled = false;
-      mockEnv.DB.prepare = (sql: string) => {
+      mockEnv.DB.prepare = (_sql: string) => {
         return {
-          bind: (...args: any[]) => ({
-            run: async () => { if (sql.includes('INSERT INTO trade_positions')) dbInsertCalled = true; },
+          bind: (..._args: any[]) => ({
+            run: async () => { if (_sql.includes('INSERT INTO trade_positions')) dbInsertCalled = true; },
             all: async () => ({ results: [] })
           })
         };

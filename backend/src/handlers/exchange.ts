@@ -437,7 +437,7 @@ export async function handleGetTechnicalAnalysis(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
-    const { symbol, strategy, config } = await c.req.json<{
+    const { symbol, strategy } = await c.req.json<{
       symbol: string;
       strategy: string;
       config?: any;

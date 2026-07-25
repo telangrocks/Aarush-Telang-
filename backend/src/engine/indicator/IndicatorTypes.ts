@@ -1,5 +1,3 @@
-import { Timeframe } from '../market-data';
-
 export interface MACDResult {
   macdLine: number;
   signalLine: number;
