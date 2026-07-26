@@ -94,7 +94,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 val response = tradingBotService.getStatus()
                 if (response.isSuccessful && response.body() != null) {
                     val status = response.body()!!
-                    if (status.isActive && !status.coinId.isNull meOrBlank() && !status.strategy.isNullOrBlank()) {
+                    if (status.isActive && !status.coinId.isNullOrBlank() && !status.strategy.isNullOrBlank()) {
                         transportAdapter.startObserving()
                         onSessionRestored(status.coinId, status.strategy)
                     }
