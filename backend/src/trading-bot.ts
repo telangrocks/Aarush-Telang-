@@ -1094,48 +1094,65 @@ export class TradingBot {
                   const price = ticker?.price || 0;
                   
                   const storedPositionSize = (await this.state.storage.get('positionSize')) as number | undefined;
-                  const size = storedPositionSize ?? 0;
+                  const calculatedSize = sig.riskAssessment?.positionSizeRecommendation;
+                  const size = (storedPositionSize && storedPositionSize > 0) ? storedPositionSize : (calculatedSize && calculatedSize > 0 ? calculatedSize : 0);
                   
-                  const targetEntryPrice = (await this.state.storage.get('targetEntryPrice')) as number | undefined;
-                  const alertSignalPrice = sig.signalPrice || price;
-                  const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
-
-                  const alert: TradeAlert = {
-                    id: crypto.randomUUID(),
-                    symbol: coinId,
-                    signalPrice: alertSignalPrice,
-                    targetEntryPrice: alertTargetPrice,
-                    entryPrice: alertSignalPrice,
-                    stopLoss: sig.stopLoss || alertSignalPrice * 0.99,
-                    takeProfit: sig.takeProfit || alertSignalPrice * 1.01,
-                    estimatedPnl: 0,
-                    positionSize: size,
-                    strategy: `${strategy}_NEW`,
-                    side: sig.type as 'BUY' | 'SELL',
-                    timestamp: new Date().toISOString(),
-                    status: 'pending'
-                  };
-                  alerts.push(alert);
-                  await this.state.storage.put('alerts', alerts);
-
-                  // Trigger real-time FCM Push Notification to user's Android device
-                  try {
-                    await sendTradeNotification(this.env, userId, alert.id, {
-                      symbol: alert.symbol,
-                      side: alert.side,
-                      entryPrice: alert.entryPrice,
-                      targetEntryPrice: alert.targetEntryPrice,
-                      signalPrice: alert.signalPrice,
-                      stopLoss: alert.stopLoss,
-                      takeProfit: alert.takeProfit,
-                      estimatedPnl: alert.estimatedPnl,
-                      positionSize: alert.positionSize,
-                      strategy: alert.strategy,
-                      confidenceScore: primaryResult?.confidenceScore || 0,
-                      reasoning: primaryResult?.metadata?.reasoning || [],
+                  if (size <= 0) {
+                    console.warn(`[trading-bot] Skipping TradeAlert generation for ${coinId}: No valid position size available from RiskEngine or manual override.`);
+                    await this.logAuditEvent(userId, 'ALERT_SKIPPED_MISSING_POSITION_SIZE', {
+                      symbol: coinId,
+                      strategy,
+                      reason: 'Trade opportunity detected, but execution was skipped because no valid position size was available.'
                     });
-                  } catch (notifErr) {
-                    console.error('Failed to send FCM trade notification:', notifErr);
+
+                    const existingLogs = (await this.state.storage.get('logs')) as string[] || [];
+                    existingLogs.push(`[${new Date().toISOString()}] WARN: Trade opportunity detected for ${coinId}, but alert generation was skipped because no valid position size was available.`);
+                    await this.state.storage.put('logs', existingLogs.slice(-50));
+                  } else {
+                    const targetEntryPrice = (await this.state.storage.get('targetEntryPrice')) as number | undefined;
+                    const alertSignalPrice = sig.signalPrice || price;
+                    const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
+                    const alertStopLoss = sig.stopLoss || alertSignalPrice * 0.99;
+                    const alertTakeProfit = sig.takeProfit || alertSignalPrice * 1.01;
+                    const estimatedPnl = Math.abs(alertTakeProfit - alertSignalPrice) * (alertSignalPrice > 0 ? size / alertSignalPrice : 0);
+
+                    const alert: TradeAlert = {
+                      id: crypto.randomUUID(),
+                      symbol: coinId,
+                      signalPrice: alertSignalPrice,
+                      targetEntryPrice: alertTargetPrice,
+                      entryPrice: alertSignalPrice,
+                      stopLoss: alertStopLoss,
+                      takeProfit: alertTakeProfit,
+                      estimatedPnl: estimatedPnl,
+                      positionSize: size,
+                      strategy: `${strategy}_NEW`,
+                      side: sig.type as 'BUY' | 'SELL',
+                      timestamp: new Date().toISOString(),
+                      status: 'pending'
+                    };
+                    alerts.push(alert);
+                    await this.state.storage.put('alerts', alerts);
+
+                    // Trigger real-time FCM Push Notification to user's Android device
+                    try {
+                      await sendTradeNotification(this.env, userId, alert.id, {
+                        symbol: alert.symbol,
+                        side: alert.side,
+                        entryPrice: alert.entryPrice,
+                        targetEntryPrice: alert.targetEntryPrice,
+                        signalPrice: alert.signalPrice,
+                        stopLoss: alert.stopLoss,
+                        takeProfit: alert.takeProfit,
+                        estimatedPnl: alert.estimatedPnl,
+                        positionSize: alert.positionSize,
+                        strategy: alert.strategy,
+                        confidenceScore: primaryResult?.confidenceScore || 0,
+                        reasoning: primaryResult?.metadata?.reasoning || [],
+                      });
+                    } catch (notifErr) {
+                      console.error('Failed to send FCM trade notification:', notifErr);
+                    }
                   }
                 }
               }

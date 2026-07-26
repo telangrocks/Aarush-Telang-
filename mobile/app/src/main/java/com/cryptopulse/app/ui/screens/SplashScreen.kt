@@ -75,81 +75,88 @@ fun SplashScreen(
 
     LaunchedEffect(Unit) {
         visible = true
-        var token = tokenManager.getToken()
-        if (tokenManager.isTokenExpired(token)) {
-            tokenManager.clearTokens()
-            token = null
-        }
-        // Hoisted here so routing logic below can always reference them,
-        // regardless of whether the token or exchange-status checks succeed.
+        var destination = "onboarding"
         var activeBotCoinId: String? = null
         var activeBotStrategy: String? = null
-        if (!token.isNullOrEmpty()) {
-            val biometricAuthManager = BiometricAuthManager(context)
-            // Only attempt biometric auth if the host is a FragmentActivity,
-            // otherwise BiometricPrompt would throw a ClassCastException.
-            val fragmentActivity = context as? FragmentActivity
-            if (fragmentActivity != null && biometricAuthManager.isBiometricEnrolled()) {
-                try {
-                    val authenticated = biometricAuthManager.authenticate(
-                        activity = fragmentActivity,
-                        title = "Biometric Authentication",
-                        subtitle = "Verify your identity to continue"
-                    )
-                    if (!authenticated) {
-                        tokenManager.clearTokens()
-                        token = null
-                    }
-                } catch (e: Exception) {
-                    tokenManager.clearTokens()
-                    token = null
-                }
+        try {
+            var token = tokenManager.getToken()
+            if (tokenManager.isTokenExpired(token)) {
+                tokenManager.clearTokens()
+                token = null
             }
-            try {
-                val response = exchangeService.getStatus()
-                if (response.isSuccessful && response.body() != null) {
-                    val status = response.body()!!
-                    if (status.isConnected) {
-                        exchangeConnectionManager.saveConnection(
-                            status.exchangeName ?: "binance",
-                            status.environment ?: "testnet"
+            if (!token.isNullOrEmpty()) {
+                val biometricAuthManager = BiometricAuthManager(context)
+                val fragmentActivity = context as? FragmentActivity
+                if (fragmentActivity != null && biometricAuthManager.isBiometricEnrolled()) {
+                    try {
+                        val authenticated = biometricAuthManager.authenticate(
+                            activity = fragmentActivity,
+                            title = "Biometric Authentication",
+                            subtitle = "Verify your identity to continue"
                         )
-                    } else {
-                        exchangeConnectionManager.clearConnection()
+                        if (!authenticated) {
+                            tokenManager.clearTokens()
+                            token = null
+                        }
+                    } catch (e: Exception) {
+                        // On biometric failure, allow fallback to standard session check
                     }
                 }
-            } catch (e: Exception) {
-                // Ignore status sync errors to allow offline start with cached credentials
+                if (!token.isNullOrEmpty()) {
+                    try {
+                        val response = exchangeService.getStatus()
+                        if (response.isSuccessful && response.body() != null) {
+                            val status = response.body()!!
+                            if (status.isConnected) {
+                                exchangeConnectionManager.saveConnection(
+                                    status.exchangeName ?: "binance",
+                                    status.environment ?: "testnet"
+                                )
+                            } else {
+                                exchangeConnectionManager.clearConnection()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // Ignore status sync errors to allow offline start with cached credentials
+                    }
+
+                    try {
+                        val botStatusResponse = tradingBotService.getStatus()
+                        if (botStatusResponse.isSuccessful && botStatusResponse.body()?.isActive == true) {
+                            activeBotCoinId = botStatusResponse.body()?.coinId
+                            activeBotStrategy = botStatusResponse.body()?.strategy
+                        }
+                    } catch (e: Exception) {
+                        // Ignore bot status errors
+                    }
+                }
             }
 
-            // Check whether a Focus Mode session is already active on the backend.
-            // If so, restore it so the user returns to live_analysis instead of
-            // going through a new market scan. No activation or scan is triggered.
-            try {
-                val botStatusResponse = tradingBotService.getStatus()
-                if (botStatusResponse.isSuccessful && botStatusResponse.body()?.isActive == true) {
-                    activeBotCoinId = botStatusResponse.body()?.coinId
-                    activeBotStrategy = botStatusResponse.body()?.strategy
-                }
-            } catch (e: Exception) {
-                // Ignore bot status errors — fall back to normal routing
+            val (isExchangeConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
+            destination = when {
+                token.isNullOrEmpty()   -> "onboarding"
+                !isExchangeConnected    -> "connect_exchange"
+                activeBotCoinId != null -> "technical_analysis"
+                else                    -> "market_candidates"
             }
+
+            if (activeBotCoinId != null) {
+                exchangeViewModel.restoreSession(activeBotCoinId, activeBotStrategy)
+            }
+        } catch (e: Exception) {
+            destination = "onboarding"
         }
-        delay(4500)
-        val (isExchangeConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
-        val destination = when {
-            token.isNullOrEmpty()               -> "onboarding"
-            !isExchangeConnected                -> "connect_exchange"
-            activeBotCoinId != null             -> "live_analysis"   // resume Focus Mode
-            else                                -> "market_candidates"
-        }
-        // Pre-populate the ViewModel before navigating so live_analysis has the
-        // correct locked instrument available immediately — without a new scan.
-        if (activeBotCoinId != null) {
-            exchangeViewModel.restoreSession(activeBotCoinId, activeBotStrategy)
-        }
-        navController.navigate(destination) {
-            popUpTo("splash") { inclusive = true }
+
+        delay(2000)
+        try {
+            navController.navigate(destination) {
+                popUpTo("splash") { inclusive = true }
+            }
+        } catch (e: Exception) {
+            // Fallback navigation in case of unexpected route failure
+            navController.navigate("onboarding") {
+                popUpTo("splash") { inclusive = true }
+            }
         }
     }
 

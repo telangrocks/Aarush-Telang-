@@ -109,16 +109,11 @@ object AppModule {
 
         override fun intercept(chain: Interceptor.Chain): Response {
             var retryCount = 0
-            var response: Response? = null
             var lastException: IOException? = null
 
             while (retryCount < MAX_RETRIES) {
                 try {
-                    response = chain.proceed(chain.request())
-                    if (response.isSuccessful) {
-                        return response
-                    }
-                    response.close()
+                    return chain.proceed(chain.request())
                 } catch (e: IOException) {
                     lastException = e
                 }

@@ -147,41 +147,10 @@ class MainActivity : FragmentActivity() {
                                 onBack = { navController.popBackStack() }
                             )
                         }
-                        composable("trade_setup") {
-                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>()
-                            val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
-                            val candidate = selectedCandidate ?: MarketCandidate(
-                                rank = 1,
-                                symbol = "BTC",
-                                pairName = "BTC/USDT",
-                                coinName = "Bitcoin",
-                                notations = 100,
-                                currentMarketPrice = 50000.0,
-                                minNotional = 0.0,
-                                coinColor = Color(0xFFF7931A),
-                            )
-                            TradeSetupScreen(
-                                candidate = candidate,
-                                onBack = { navController.popBackStack() },
-                                onProceedToConfirm = {
-                                    val result = tradeSetupViewModel.buildConfig(candidate.symbol)
-                                    if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) {
-                                        navController.navigate("strategy_selection")
-                                    }
-                                },
-                                viewModel = tradeSetupViewModel,
-                            )
-                        }
-
                         composable("strategy_selection") {
                             val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
-                            val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
                             val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
-                            val config by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
-                            val isActivating by technicalAnalysisViewModel.isActivating.collectAsState()
-                            val activationError by technicalAnalysisViewModel.activationError.collectAsState()
 
                             val candidate = selectedCandidate ?: MarketCandidate(
                                 rank = 1,
@@ -197,8 +166,38 @@ class MainActivity : FragmentActivity() {
                             StrategySelectionScreen(
                                 candidate = candidate,
                                 onBack = { navController.popBackStack() },
-                                onActivateConfirmed = {
+                                onProceedToTradeSetup = {
+                                    navController.navigate("trade_setup")
+                                },
+                                viewModel = strategyViewModel
+                            )
+                        }
+
+                        composable("trade_setup") {
+                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
+                            val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>()
+                            val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
+                            val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
+                            val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
+
+                            val candidate = selectedCandidate ?: MarketCandidate(
+                                rank = 1,
+                                symbol = "BTC",
+                                pairName = "BTC/USDT",
+                                coinName = "Bitcoin",
+                                notations = 100,
+                                currentMarketPrice = 50000.0,
+                                minNotional = 0.0,
+                                coinColor = Color(0xFFF7931A),
+                            )
+
+                            TradeSetupScreen(
+                                candidate = candidate,
+                                onBack = { navController.popBackStack() },
+                                onProceedToAnalysis = {
+                                    val result = tradeSetupViewModel.buildConfig(candidate.symbol)
                                     val strategyId = strategyViewModel.selectedStrategyId.value ?: "scalper-v2"
+                                    val config = if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) result.config else null
                                     technicalAnalysisViewModel.activateBot(
                                         symbol = candidate.symbol,
                                         strategy = strategyId,
@@ -206,16 +205,15 @@ class MainActivity : FragmentActivity() {
                                         onSuccess = {
                                             com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
                                             navController.navigate("technical_analysis") {
-                                                popUpTo("strategy_selection") { inclusive = true }
+                                                popUpTo("trade_setup") { inclusive = true }
                                             }
                                         }
                                     )
                                 },
-                                viewModel = strategyViewModel,
-                                isActivating = isActivating,
-                                activationError = activationError
+                                viewModel = tradeSetupViewModel,
                             )
                         }
+
                         composable("technical_analysis") {
                             val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
@@ -244,23 +242,23 @@ class MainActivity : FragmentActivity() {
                                 candidate = candidate,
                                 analysisState = analysisState,
                                 onBack = { navController.popBackStack() },
-                                onStopBot = {
-                                    technicalAnalysisViewModel.stopBot {
-                                        com.cryptopulse.app.service.BackgroundMonitoringService.stopService(applicationContext)
-                                        navController.navigate("positions") {
-                                            popUpTo("technical_analysis") { inclusive = true }
-                                        }
-                                    }
+                                onExecuteMockTrade = { mockAlert ->
+                                    com.cryptopulse.app.service.TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(mockAlert)
                                 }
                             )
                         }
+
+                        composable("live_analysis") {
+                            navController.navigate("technical_analysis") {
+                                popUpTo("live_analysis") { inclusive = true }
+                            }
+                        }
+
                         composable("trade_alert") {
                             val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val alert by viewModel.pendingAlert.collectAsState(initial = null)
                             val candidate by viewModel.selectedCandidate.collectAsState(initial = null)
 
-                            // Render the popup directly from the genuine opportunity
-                            // the backend detected — not from any stale manual setup.
                             val alertSymbol = (alert?.get("symbol") as? String) ?: candidate?.symbol ?: "BTC"
                             val entryPrice = (alert?.get("entryPrice") as? Double)
                                 ?: candidate?.currentMarketPrice ?: 0.0
@@ -271,7 +269,6 @@ class MainActivity : FragmentActivity() {
                             val signalPrice = (alert?.get("signalPrice") as? Double) ?: entryPrice
                             val targetEntryPrice = (alert?.get("targetEntryPrice") as? Double)
                             
-                            // Feature 5: Dynamic Estimated P&L Calculation using (TP - Signal) * Qty (or simulated positionSize/price ratio)
                             val positionSize = (alert?.get("positionSize") as? Double) ?: 0.0
                             val refPrice = targetEntryPrice ?: signalPrice
                             val quantity = if (refPrice > 0.0) positionSize / refPrice else 0.0
@@ -378,22 +375,6 @@ class MainActivity : FragmentActivity() {
                 com.cryptopulse.app.service.TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(alert)
             }
         }
-    }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Welcome to $name!",
-        modifier = modifier.padding(16.dp)
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    CryptoPulseTheme {
-        Greeting("Crypto Pulse")
     }
 }
 

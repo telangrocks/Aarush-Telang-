@@ -32,7 +32,7 @@ import com.cryptopulse.app.ui.theme.*
 fun TradeSetupScreen(
     candidate: MarketCandidate,
     onBack: () -> Unit,
-    onProceedToConfirm: () -> Unit,
+    onProceedToAnalysis: () -> Unit,
     viewModel: TradeSetupViewModel
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
@@ -59,16 +59,16 @@ fun TradeSetupScreen(
                         .background(NavyDeep)
                         .padding(horizontal = 20.dp, vertical = 12.dp)
                 ) {
-                    val isSuccess = !uiState.isLoading && uiState.error == null && uiState.entryPriceError == null && uiState.tradeValueUsdtError == null
+                    val isButtonEnabled = !uiState.isLoading && uiState.error == null
                     GradientButton(
-                        text = if (isSuccess) "Start Analysis" else "Loading...",
+                        text = if (uiState.isLoading) "Loading..." else "CONFIRM",
                         onClick = {
                             val result = viewModel.buildConfig(candidate.symbol)
                             if (result is TradeSetupConfigResult.Success) {
-                                onProceedToConfirm()
+                                onProceedToAnalysis()
                             }
                         },
-                        enabled = isSuccess,
+                        enabled = isButtonEnabled,
                         leadingIcon = Icons.Default.Check,
                         testTag = "trade_setup_proceed_button"
                     )
@@ -190,47 +190,6 @@ fun TradeSetupScreen(
                                     Text(
                                         text = "Current price: $${"%.2f".format(candidate.currentMarketPrice)}" +
                                                 if (uiState.minNotional > 0.0) " | Min Notional: $${"%.2f".format(uiState.minNotional)} USDT" else "",
-                                        color = TextSecondary,
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
-                        )
-                    }
-
-                    item {
-                        OutlinedTextField(
-                            value = uiState.tradeValueUsdt,
-                            onValueChange = { newValue ->
-                                if (newValue.isEmpty() || newValue.matches(Regex("^\\d*\\.?\\d*$"))) {
-                                    viewModel.updateTradeValueUsdt(newValue)
-                                }
-                            },
-                            label = { Text("Trade Amount (USDT)") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("trade_setup_trade_value"),
-                            isError = uiState.tradeValueUsdtError != null,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary,
-                                cursorColor = CyanPrimary,
-                                focusedBorderColor = CyanPrimary,
-                                unfocusedBorderColor = Color(0xFF2A3650),
-                                errorBorderColor = LossRed
-                            ),
-                            supportingText = {
-                                val tradeValueUsdtError = uiState.tradeValueUsdtError
-                                if (tradeValueUsdtError != null) {
-                                    Text(
-                                        text = tradeValueUsdtError,
-                                        color = LossRed,
-                                        fontSize = 12.sp
-                                    )
-                                } else if (uiState.minNotional > 0.0) {
-                                    Text(
-                                        text = "Minimum notional: $${"%.2f".format(uiState.minNotional)} USDT",
                                         color = TextSecondary,
                                         fontSize = 12.sp
                                     )

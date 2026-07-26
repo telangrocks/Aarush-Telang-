@@ -27,13 +27,15 @@ import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.theme.*
 
+import com.cryptopulse.app.ui.components.GradientButton
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TechnicalAnalysisScreen(
     candidate: MarketCandidate,
     analysisState: AnalysisSnapshot?,
     onBack: () -> Unit,
-    onStopBot: () -> Unit
+    onExecuteMockTrade: (Map<String, Any>) -> Unit
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
@@ -45,15 +47,36 @@ fun TechnicalAnalysisScreen(
         Scaffold(
             topBar = { CryptoPulseTopBar(onBack = onBack) },
             containerColor = Color.Transparent,
-            floatingActionButton = {
-                ExtendedFloatingActionButton(
-                    onClick = onStopBot,
-                    containerColor = LossRed,
-                    contentColor = Color.White,
-                    icon = { Icon(Icons.Default.Stop, contentDescription = "Stop Bot") },
-                    text = { Text("STOP BOT", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
-                    modifier = Modifier.testTag("stop_bot_button")
-                )
+            bottomBar = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(NavyDeep)
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
+                ) {
+                    GradientButton(
+                        text = "EXECUTE MOCK TRADE",
+                        onClick = {
+                            val currentPrice = if (candidate.currentMarketPrice > 0.0) candidate.currentMarketPrice else 50000.0
+                            val mockAlert = mapOf<String, Any>(
+                                "id" to "mock-alert-${System.currentTimeMillis()}",
+                                "symbol" to candidate.symbol,
+                                "side" to "BUY",
+                                "entryPrice" to currentPrice,
+                                "stopLoss" to (currentPrice * 0.985),
+                                "takeProfit" to (currentPrice * 1.03),
+                                "signalPrice" to currentPrice,
+                                "targetEntryPrice" to currentPrice,
+                                "positionSize" to 500.0,
+                                "estimatedPnl" to (500.0 * 0.03)
+                            )
+                            onExecuteMockTrade(mockAlert)
+                        },
+                        enabled = true,
+                        leadingIcon = Icons.Default.Bolt,
+                        testTag = "execute_mock_trade_button"
+                    )
+                }
             }
         ) { padding ->
             Column(

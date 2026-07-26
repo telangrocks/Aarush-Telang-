@@ -36,10 +36,8 @@ import com.cryptopulse.app.ui.theme.*
 fun StrategySelectionScreen(
     candidate: MarketCandidate,
     onBack: () -> Unit,
-    onActivateConfirmed: () -> Unit,
-    viewModel: StrategySelectionViewModel,
-    isActivating: Boolean = false,
-    activationError: String? = null
+    onProceedToTradeSetup: () -> Unit,
+    viewModel: StrategySelectionViewModel
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     
@@ -63,11 +61,11 @@ fun StrategySelectionScreen(
                         .padding(horizontal = 20.dp, vertical = 12.dp),
                 ) {
                     GradientButton(
-                        text = if (isActivating) "STARTING TRADING ENGINE..." else "ACTIVATE BOT",
-                        onClick = onActivateConfirmed,
-                        enabled = selectedId != null && !isActivating,
-                        leadingIcon = Icons.Default.PlayArrow,
-                        modifier = Modifier.testTag("activate_bot_button")
+                        text = "PROCEED TO TRADE SETUP",
+                        onClick = onProceedToTradeSetup,
+                        enabled = selectedId != null,
+                        leadingIcon = Icons.Default.ArrowForward,
+                        modifier = Modifier.testTag("proceed_to_trade_setup_button")
                     )
                 }
             }
@@ -91,22 +89,6 @@ fun StrategySelectionScreen(
                     letterSpacing = 1.5.sp,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
-
-                if (activationError != null) {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = LossRed.copy(alpha = 0.15f)),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, LossRed),
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
-                    ) {
-                        Text(
-                            text = activationError,
-                            color = LossRed,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(10.dp),
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
 
                 when (val state = uiState) {
                     is StrategySelectionState.Loading -> {

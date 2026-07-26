@@ -9,7 +9,7 @@ vi.mock("../../src/crypto", () => ({
 // Mock exchanges adapter
 vi.mock("../../src/exchanges", () => ({
   getExchangeAdapter: vi.fn().mockReturnValue({
-    fetchTicker: vi.fn().mockResolvedValue({ price: 50100, lotSize: 0.001, minOrderQty: 0.001, maxOrderQty: 1000, minNotional: 10 }),
+    fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', price: 50100, lotSize: 0.001, tickSize: 0.01, minOrderQty: 0.001, maxOrderQty: 1000, minNotional: 10 }),
     placeOrder: vi.fn().mockResolvedValue({ success: true, price: 50100, quantity: 0.02, orderId: 'ord-123' })
   }),
   normalizeEnvironment: vi.fn().mockReturnValue('testnet'),
@@ -36,7 +36,10 @@ vi.mock("../../src/engine/orchestrator/StrategyOrchestrator", () => {
         signal: {
           type: 'BUY',
           stopLoss: 59000,
-          takeProfit: 62000
+          takeProfit: 62000,
+          riskAssessment: {
+            positionSizeRecommendation: 1000
+          }
         }
       }
     }
@@ -180,7 +183,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     console.log('PREPARE CALLS:', mockDb.prepare.mock.calls);
     const prepareCalls = mockDb.prepare.mock.calls.map((c: any) => c[0]);
     const insertPositionCall = prepareCalls.find((sql: string) => sql.includes('INSERT OR IGNORE INTO trade_positions') && sql.includes('target_entry_price'));
-    const insertAuditCall = prepareCalls.find((sql: string) => sql.includes('INSERT INTO trade_execution_audit'));
+    const insertAuditCall = prepareCalls.find((sql: string) => sql.includes('INSERT INTO audit_log'));
 
     expect(insertPositionCall).toBeDefined();
     expect(insertAuditCall).toBeDefined();
