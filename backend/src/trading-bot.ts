@@ -840,6 +840,50 @@ export class TradingBot {
           }
         });
       }
+      case '/mock-trade': {
+        const userId: string | undefined = await this.state.storage.get('userId');
+        const coinId = ((await this.state.storage.get('coinId')) as string) || 'DOGE';
+        const strategy = ((await this.state.storage.get('strategy')) as string) || 'ScalperV2';
+
+        const user = userId
+          ? await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>()
+          : null;
+        const adapter = user?.exchange_name ? getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region)) : null;
+
+        const ticker = adapter ? await adapter.fetchTicker(coinId).catch(() => null) : null;
+        const currentPrice = ticker?.price || 0.0725;
+        const positionSizeUsdt = ((await this.state.storage.get('positionSize')) as number) || 100;
+        const quantity = parseFloat((positionSizeUsdt / currentPrice).toFixed(4));
+        const stopLoss = parseFloat((currentPrice * 0.985).toFixed(5));
+        const takeProfit = parseFloat((currentPrice * 1.03).toFixed(5));
+        const mockOrderId = `mock_${crypto.randomUUID()}`;
+
+        if (userId) {
+          await this.logAuditEvent(userId, 'MOCK_TRADE_EXECUTED', { symbol: coinId, side: 'BUY', mockOrderId, price: currentPrice, quantity, strategy });
+        }
+
+        await this.state.storage.put('tradeActive', true);
+        await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
+        await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
+
+        const mockResult = {
+          success: true,
+          isMockTrade: true,
+          message: 'Mock Trade executed successfully in Paper Trading mode.',
+          orderId: mockOrderId,
+          symbol: coinId,
+          side: 'BUY',
+          executionPrice: currentPrice,
+          positionSizeUsdt,
+          quantity,
+          stopLoss,
+          takeProfit,
+          riskRewardRatio: '1:2',
+          executedAt: new Date().toISOString(),
+        };
+
+        return new Response(JSON.stringify(mockResult), { status: 200 });
+      }
       case '/stop-trade': {
         await this.state.storage.put('tradeActive', false);
         return new Response(JSON.stringify({ success: true, message: 'Trade stopped.' }), { status: 200 });

@@ -631,6 +631,29 @@ export async function handleExecuteTrade(
   }
 }
 
+export async function handleMockTrade(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/mock-trade", { method: "POST" }),
+    );
+
+    const data = await response.json<any>();
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ success: false, message: error.message || "Failed to execute mock trade" });
+  }
+}
+
 export async function handleStopTradingBot(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {

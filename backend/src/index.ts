@@ -39,6 +39,7 @@ import {
   handleGetTradingBotStatus,
   handleGetAnalysisStatus,
   handleExecuteTrade,
+  handleMockTrade,
   handleStopTradingBot,
   handleGetBotAlerts,
   handleAcknowledgeAlert,
@@ -330,6 +331,7 @@ api.post("/trading-bot/activate", handleActivateTradingBot);
 api.get("/trading-bot/status", handleGetTradingBotStatus);
 api.get("/trading-bot/analysis-status", handleGetAnalysisStatus);
 api.post("/trading-bot/execute-trade", handleExecuteTrade);
+api.post("/trading-bot/mock-trade", handleMockTrade);
 api.post("/trading-bot/stop-trade", handleStopTradingBot);
 api.get("/trading-bot/alerts", handleGetBotAlerts);
 api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
