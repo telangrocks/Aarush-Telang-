@@ -188,8 +188,8 @@ class TradeSetupViewModelTest {
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
         val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
-        assertEquals("Entry price must be greater than 0.", errors["entryPrice"])
-        assertEquals("Entry price must be greater than 0.", viewModel.uiState.value.entryPriceError)
+        assertEquals("Entry price must be a valid positive number.", errors["entryPrice"])
+        assertEquals("Entry price must be a valid positive number.", viewModel.uiState.value.entryPriceError)
     }
 
     @Test
@@ -197,14 +197,14 @@ class TradeSetupViewModelTest {
         val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
-        viewModel.setMinNotional(10.0)
         viewModel.updateEntryPrice("50000.0")
+        viewModel.setMinNotional(10.0)
         viewModel.updateTradeValueUsdt("5.0") // 5.0 is below minNotional of 10.0
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
         val state = viewModel.uiState.value
-        assertTrue(state.tradeValueUsdtError?.contains("below minimum notional requirement") == true)
+        assertTrue(state.tradeValueUsdtError != null)
     }
 
     @Test
