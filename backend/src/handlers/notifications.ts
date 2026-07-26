@@ -158,6 +158,8 @@ export async function sendTradeNotification(
     estimatedPnl: number;
     positionSize?: number;
     strategy: string;
+    confidenceScore?: number;
+    reasoning?: string[];
   },
 ): Promise<void> {
   const user = await env.DB.prepare(
@@ -171,8 +173,8 @@ export async function sendTradeNotification(
     return;
   }
 
-  const title = "Trade Detected";
-  const body = `${opportunity.side} ${opportunity.symbol} | ${opportunity.strategy} | Entry: ${opportunity.entryPrice.toFixed(2)}`;
+  const title = `Trade Signal: ${opportunity.side} ${opportunity.symbol}`;
+  const body = `${opportunity.side} ${opportunity.symbol} | Strategy: ${opportunity.strategy} | Entry: $${opportunity.entryPrice.toFixed(4)} | SL: $${opportunity.stopLoss.toFixed(4)} | TP: $${opportunity.takeProfit.toFixed(4)}`;
 
   const dataPayload: Record<string, string> = {
     type: "trade_alert",
@@ -193,6 +195,12 @@ export async function sendTradeNotification(
   }
   if (opportunity.positionSize != null) {
     dataPayload.positionSize = opportunity.positionSize.toString();
+  }
+  if (opportunity.confidenceScore != null) {
+    dataPayload.confidenceScore = opportunity.confidenceScore.toString();
+  }
+  if (opportunity.reasoning && opportunity.reasoning.length > 0) {
+    dataPayload.reasoning = JSON.stringify(opportunity.reasoning);
   }
 
   // 1. Try FCM v1 HTTP API if keys are provided

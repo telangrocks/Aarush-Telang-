@@ -1111,6 +1111,8 @@ export class TradingBot {
                       estimatedPnl: alert.estimatedPnl,
                       positionSize: alert.positionSize,
                       strategy: alert.strategy,
+                      confidenceScore: primaryResult?.confidenceScore || 0,
+                      reasoning: primaryResult?.metadata?.reasoning || [],
                     });
                   } catch (notifErr) {
                     console.error('Failed to send FCM trade notification:', notifErr);
