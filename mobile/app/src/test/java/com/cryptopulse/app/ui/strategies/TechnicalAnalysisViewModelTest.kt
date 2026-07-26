@@ -55,8 +55,8 @@ class TechnicalAnalysisViewModelTest {
                 }
             }
 
-            override suspend fun deactivate(): Response<DeactivateBotResponse> {
-                return Response.success(DeactivateBotResponse(success = true, message = "Deactivated"))
+            override suspend fun deactivate(): Response<ActivateBotResponse> {
+                return Response.success(ActivateBotResponse(success = true, message = "Deactivated"))
             }
 
             override suspend fun getStatus(): Response<BotStatusResponse> {
@@ -67,11 +67,27 @@ class TechnicalAnalysisViewModelTest {
                 return Response.error(404, okhttp3.ResponseBody.create(null, "Not found"))
             }
 
+            override suspend fun executeTrade(): Response<Map<String, Any>> {
+                return Response.success(mapOf("success" to true))
+            }
+
+            override suspend fun stopTrade(): Response<Map<String, Any>> {
+                return Response.success(mapOf("success" to true))
+            }
+
+            override suspend fun getAlerts(): Response<List<Map<String, Any>>> {
+                return Response.success(emptyList())
+            }
+
             override suspend fun acknowledgeAlert(request: Map<String, String>): Response<Map<String, Any>> {
                 return Response.success(emptyMap())
             }
 
-            override suspend fun executeTrade(): Response<Map<String, Any>> {
+            override suspend fun getPositions(): Response<List<PositionResponse>> {
+                return Response.success(emptyList())
+            }
+
+            override suspend fun closePosition(positionId: String): Response<Map<String, Any>> {
                 return Response.success(mapOf("success" to true))
             }
         }
