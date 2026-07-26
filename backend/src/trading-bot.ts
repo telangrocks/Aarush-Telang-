@@ -1026,7 +1026,7 @@ export class TradingBot {
                 const recentAlert = alerts.find(a => a.symbol === coinId && a.status === 'pending' && a.strategy === `${strategy}_NEW`);
                 if (!recentAlert) {
                   // Fetch live market price at the exact moment of signal generation
-                  const ticker = user?.exchange_name ? await getExchangeAdapter(user.exchange_name as ExchangeName, 'mainnet', 'global').fetchTicker(coinId).catch(() => null) : null;
+                  const ticker = user?.exchange_name ? await getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region)).fetchTicker(coinId).catch(() => null) : null;
                   const price = ticker?.price || 0;
                   
                   const storedPositionSize = (await this.state.storage.get('positionSize')) as number | undefined;
