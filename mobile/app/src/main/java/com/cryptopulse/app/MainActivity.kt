@@ -44,7 +44,6 @@ import com.cryptopulse.app.ui.screens.TradeAlertScreen
 import com.cryptopulse.app.ui.screens.PositionsScreen
 import com.cryptopulse.app.ui.screens.StrategySelectionScreen
 import com.cryptopulse.app.ui.screens.TechnicalAnalysisScreen
-import com.cryptopulse.app.ui.screens.BotActivationScreen
 import com.cryptopulse.app.service.BackgroundMonitoringService
 import com.cryptopulse.app.service.AlertBus
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme
@@ -168,15 +167,16 @@ class MainActivity : FragmentActivity() {
                                 onProceedToConfirm = {
                                     val result = tradeSetupViewModel.buildConfig(candidate.symbol)
                                     if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) {
-                                        navController.navigate("bot_activation")
+                                        navController.navigate("strategy_selection")
                                     }
                                 },
                                 viewModel = tradeSetupViewModel,
                             )
                         }
 
-                        composable("bot_activation") {
+                        composable("strategy_selection") {
                             val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
+                            val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
                             val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
                             val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
                             val config by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
@@ -193,55 +193,27 @@ class MainActivity : FragmentActivity() {
                                 minNotional = 0.0,
                                 coinColor = Color(0xFFF7931A),
                             )
-                            val strategy = config?.strategyId ?: "scalping"
 
-                            BotActivationScreen(
+                            StrategySelectionScreen(
                                 candidate = candidate,
-                                strategy = strategy,
-                                config = config,
                                 onBack = { navController.popBackStack() },
                                 onActivateConfirmed = {
+                                    val strategyId = strategyViewModel.selectedStrategyId.value ?: "scalper-v2"
                                     technicalAnalysisViewModel.activateBot(
                                         symbol = candidate.symbol,
-                                        strategy = strategy,
+                                        strategy = strategyId,
                                         config = config,
                                         onSuccess = {
                                             com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
                                             navController.navigate("technical_analysis") {
-                                                popUpTo("bot_activation") { inclusive = true }
+                                                popUpTo("strategy_selection") { inclusive = true }
                                             }
                                         }
                                     )
                                 },
+                                viewModel = strategyViewModel,
                                 isActivating = isActivating,
                                 activationError = activationError
-                            )
-                        }
-
-                        composable("strategy_selection") {
-                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
-                            val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
-                            val candidate = selectedCandidate ?: MarketCandidate(
-                                rank = 1,
-                                symbol = "BTC",
-                                pairName = "BTC/USDT",
-                                coinName = "Bitcoin",
-                                notations = 100,
-                                currentMarketPrice = 50000.0,
-                                minNotional = 0.0,
-                                coinColor = Color(0xFFF7931A),
-                            )
-                            StrategySelectionScreen(
-                                candidate = candidate,
-                                onBack = { navController.popBackStack() },
-                                onProceed = { 
-                                    val strategyId = strategyViewModel.selectedStrategyId.value
-                                    if (strategyId != null) {
-                                        navController.navigate("trade_setup") 
-                                    }
-                                },
-                                viewModel = strategyViewModel
                             )
                         }
                         composable("technical_analysis") {
