@@ -26,10 +26,12 @@
   "author": "Aarush Telang",
   "license": "UNLICENSED",
   "dependencies": {
+    "bignumber.js": "^11.1.5",
     "hono": "^4.4.12"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260708.1",
+    "@types/bignumber.js": "^4.0.3",
     "@typescript-eslint/eslint-plugin": "^7.13.1",
     "@typescript-eslint/parser": "^7.13.1",
     "eslint": "^8.57.0",

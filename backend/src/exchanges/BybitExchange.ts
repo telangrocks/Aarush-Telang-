@@ -3,6 +3,7 @@ import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } f
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 import { CircuitBreaker } from "./CircuitBreaker";
 import { cleanCredential } from "../crypto";
+import { SymbolResolver } from "../utils/SymbolResolver";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -99,34 +100,57 @@ export class BybitExchange implements IExchangeAdapter {
       throw new Error(`Bybit API Error ${data.retCode}: ${data.retMsg}`);
     }
     const map = new Map<string, SymbolMetadata>();
+
     for (const instrument of data.result.list) {
-      const symbol = instrument.symbol;
+      if (instrument.status && instrument.status.toUpperCase() !== "TRADING") continue;
       const lotSize = instrument.lotSizeFilter ?? {};
       const priceFilter = instrument.priceFilter ?? {};
-      if (symbol) {
-        const minAmt = parseFloat(lotSize.minOrderAmt || "5.0");
-        const minQty = parseFloat(lotSize.minOrderQty || "0.001");
-        map.set(symbol, {
-          minQty: minQty,
-          maxQty: parseFloat(lotSize.maxOrderQty || "999999999"),
-          tickSize: parseFloat(priceFilter.tickSize || "0.01"),
-          lotSize: parseFloat(lotSize.qtyStep || "1"),
-          minNotional: minAmt > 0 ? minAmt : 5.0,
-        });
-      }
+
+      const minQty = parseFloat(lotSize.minOrderQty || "0.000001");
+      const maxQty = parseFloat(lotSize.maxOrderQty || "999999999");
+      const stepSize = parseFloat(lotSize.qtyStep || lotSize.basePrecision || lotSize.minOrderQty || "0.000001");
+      const minPrice = parseFloat(priceFilter.minPrice || "0");
+      const maxPrice = parseFloat(priceFilter.maxPrice || "999999999");
+      const tickSize = parseFloat(priceFilter.tickSize);
+
+      const rawMinAmt = lotSize.minOrderAmt ?? instrument.minNotionalValue;
+      const parsedMinAmt = rawMinAmt ? parseFloat(rawMinAmt) : undefined;
+      const minNotional = (parsedMinAmt && !isNaN(parsedMinAmt) && parsedMinAmt > 0)
+        ? parsedMinAmt
+        : minQty * (minPrice > 0 ? minPrice : 1.0);
+
+      if (isNaN(minQty) || isNaN(maxQty) || isNaN(stepSize) || isNaN(tickSize)) continue;
+
+      const resolved = SymbolResolver.resolve(instrument.symbol);
+      map.set(resolved.symbol, {
+        schemaVersion: "2.0",
+        symbol: resolved.symbol,
+        exchange: "bybit",
+        baseAsset: resolved.baseAsset,
+        quoteAsset: resolved.quoteAsset,
+        minNotional,
+        minQty,
+        maxQty,
+        stepSize,
+        tickSize,
+        minPrice,
+        maxPrice,
+        contractSize: 1.0,
+        lastUpdated: Date.now(),
+      });
     }
     console.log(`[Bybit] Metadata successfully loaded: ${map.size} symbols.`);
     return map;
   }
 
   private async getSymbolMetadata(symbol: string): Promise<SymbolMetadata | null> {
-    const fullSymbol = `${symbol.toUpperCase()}USDT`;
+    const key = SymbolResolver.toCacheKey(symbol);
     const now = Date.now();
     const expiryLimit = 1800000;
     const hasCache = this.metadataCache !== null;
     const isExpired = now - this.lastCacheFetch > expiryLimit;
 
-    if (hasCache && this.metadataCache!.has(fullSymbol)) {
+    if (hasCache && this.metadataCache!.has(key)) {
       this.cacheMetrics.hits++;
     } else {
       this.cacheMetrics.misses++;
@@ -151,7 +175,7 @@ export class BybitExchange implements IExchangeAdapter {
           }
         })();
       }
-      return this.metadataCache!.get(fullSymbol) ?? null;
+      return this.metadataCache!.get(key) ?? null;
     }
 
     if (!hasCache) {
@@ -178,7 +202,7 @@ export class BybitExchange implements IExchangeAdapter {
       }
     }
 
-    return this.metadataCache?.get(fullSymbol) ?? null;
+    return this.metadataCache?.get(key) ?? null;
   }
 
   getName() {
@@ -189,29 +213,48 @@ export class BybitExchange implements IExchangeAdapter {
     this.environment = environment;
   }
 
+  getEnvironment(): ExchangeEnvironment {
+    return this.environment;
+  }
+
   setRegion(region: ExchangeRegion) {
     this.region = region;
   }
 
-  getRestUrl(): string {
-    const urls = this.config.regionUrls;
-    const testnet = this.config.regionTestnetUrls;
-    if (this.environment === "testnet" && testnet && testnet[this.region]) {
-      return testnet[this.region]!;
-    }
-    return urls[this.region] ?? urls.global;
+  getRegion(): ExchangeRegion {
+    return this.region;
   }
 
-  async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
+  getRestUrl(): string {
+    if (this.environment === "testnet" && this.config.regionTestnetUrls?.[this.region]) {
+      return this.config.regionTestnetUrls[this.region]!;
+    }
+    return this.config.regionUrls[this.region] ?? this.config.regionUrls[this.config.defaultRegion];
+  }
+
+  async testConnection(apiKey: string, apiSecret: string): Promise<ValidationResult> {
     try {
       const cleanKey = cleanCredential(apiKey);
-      const cleanSecret = cleanCredential(apiSecret);
-      const timestamp = Date.now().toString();
-      const recvWindow = "10000";
-      // For GET /v5/account/info with no query params, canonical query string is empty ""
-      const signature = await hmacSha256(timestamp + cleanKey + recvWindow + "", cleanSecret);
+      const cleanSec = cleanCredential(apiSecret);
 
-      const response = await fetch(`${this.getRestUrl()}/v5/account/info`, {
+      if (!cleanKey || !cleanSec) {
+        return {
+          success: false,
+          code: "MISSING_CREDENTIALS",
+          message: "API key and API secret must be provided.",
+          friendlyMessage: "Please enter both your Bybit API key and API secret.",
+          hint: "Ensure you have copied the full API key and secret from your Bybit API management dashboard.",
+        };
+      }
+
+      const timestamp = Date.now().toString();
+      const recvWindow = "5000";
+      const queryString = `recvWindow=${recvWindow}&timestamp=${timestamp}`;
+      const signature = await hmacSha256(queryString, cleanSec);
+
+      const url = `${this.getRestUrl()}/v5/account/wallet-balance?accountType=UNIFIED`;
+      const response = await fetch(url, {
+        method: "GET",
         headers: {
           "X-BAPI-API-KEY": cleanKey,
           "X-BAPI-SIGN": signature,
@@ -220,71 +263,91 @@ export class BybitExchange implements IExchangeAdapter {
         },
       });
 
-      if (!response.ok) {
-        const body = await response.text();
-        const err: ClassifiedError = classifyExchangeResponse(response.status, body, this.config.displayName);
-        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
+      const bodyText = await response.text();
+      let resData: any = null;
+      try {
+        resData = JSON.parse(bodyText);
+      } catch {
+        resData = null;
       }
 
-      const data = await response.json() as any;
-      if (data.retCode !== 0) {
-        const detail = data.retMsg || "Invalid API credentials";
-        const err: ClassifiedError = classifyByBody(detail, this.config.displayName);
-        return { success: false, message: `${err.code}: ${detail}`, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
+      if (response.ok && resData && resData.retCode === 0) {
+        return { success: true, message: "Successfully authenticated with Bybit" };
       }
 
-      return { success: true, message: "Bybit credentials validated successfully" };
+      const retCode = resData?.retCode;
+      const retMsg = resData?.retMsg || bodyText;
+      const classified: ClassifiedError = classifyByBody(String(retMsg || retCode || ""), this.config.displayName);
+
+      return {
+        success: false,
+        code: classified.code,
+        message: classified.technicalDetail,
+        friendlyMessage: classified.friendlyMessage,
+        hint: classified.hint,
+      };
     } catch (e: any) {
       const err = classifyException(e, this.config.displayName);
-      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
+      return {
+        success: false,
+        code: err.code,
+        message: err.technicalDetail,
+        friendlyMessage: err.friendlyMessage,
+        hint: err.hint,
+      };
     }
+  }
+
+  async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
+    return this.testConnection(apiKey, apiSecret);
   }
 
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
-      const [tickersResponse] = await Promise.all([
+      const [response] = await Promise.all([
         fetch(`${this.getRestUrl()}/v5/market/tickers?category=spot`),
         this.getSymbolMetadata("BTC"),
       ]);
 
-      if (!tickersResponse.ok) {
-        return [];
-      }
+      if (!response.ok) return [];
 
-      const tickersData = await tickersResponse.json() as any;
-      if (tickersData.retCode !== 0 || !Array.isArray(tickersData.result?.list)) {
-        return [];
-      }
+      const data = await response.json() as any;
+      if (data.retCode !== 0 || !Array.isArray(data.result?.list)) return [];
 
-      return tickersData.result.list
-        .filter((item: any) => item.symbol.endsWith("USDT"))
-        .slice(0, 50)
-        .map((item: any) => {
-          const lot = this.metadataCache?.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1, minNotional: 5.0 };
-          const lastPrice = parseFloat(item.lastPrice || 0);
-          const prevPrice = parseFloat(item.prevPrice24h || lastPrice);
-          const priceChange = lastPrice - prevPrice;
-          const priceChangePercent = item.price24hPcnt != null ? parseFloat(item.price24hPcnt) * 100 : (prevPrice > 0 ? (priceChange / prevPrice) * 100 : 0);
-          const turnover = parseFloat(item.turnover24h || 0);
-          const vol = parseFloat(item.volume24h || 0);
-          const quoteVol = turnover > 0 ? turnover : vol * lastPrice;
+      const result: MarketTicker[] = [];
+      for (const item of data.result.list) {
+        if (!item.symbol.endsWith("USDT")) continue;
+        const key = SymbolResolver.toCacheKey(item.symbol);
+        const lot = this.metadataCache?.get(key);
+        if (!lot) continue; // Skip items without verified metadata
 
-          return {
-            symbol: item.symbol.replace("USDT", ""),
-            price: lastPrice,
-            volume24h: vol,
-            quoteVolume24h: quoteVol,
-            priceChange24h: priceChange,
-            priceChangePercent24h: priceChangePercent,
-            highPrice24h: parseFloat(item.highPrice24h || 0),
-            lowPrice24h: parseFloat(item.lowPrice24h || 0),
-            minNotional: lot.minNotional || 5.0,
-            minOrderQty: lot.minQty,
-            maxOrderQty: lot.maxQty,
-            tickSize: lot.tickSize,
-            lotSize: lot.lotSize,
-          };
+        const lastPrice = parseFloat(item.lastPrice || 0);
+        const prevPrice = parseFloat(item.prevPrice24h || lastPrice);
+        const priceChange = lastPrice - prevPrice;
+        const priceChangePercent = item.price24hPcnt != null ? parseFloat(item.price24hPcnt) * 100 : (prevPrice > 0 ? (priceChange / prevPrice) * 100 : 0);
+        const turnover = parseFloat(item.turnover24h || 0);
+        const vol = parseFloat(item.volume24h || 0);
+        const quoteVol = turnover > 0 ? turnover : vol * lastPrice;
+
+        result.push({
+          symbol: lot.baseAsset,
+          price: lastPrice,
+          volume24h: vol,
+          quoteVolume24h: quoteVol,
+          priceChange24h: priceChange,
+          priceChangePercent24h: priceChangePercent,
+          highPrice24h: parseFloat(item.highPrice24h || 0),
+          lowPrice24h: parseFloat(item.lowPrice24h || 0),
+          minNotional: lot.minNotional,
+          minOrderQty: lot.minQty,
+          maxOrderQty: lot.maxQty,
+          tickSize: lot.tickSize,
+          lotSize: lot.stepSize,
         });
+
+        if (result.length >= 50) break;
+      }
+      return result;
     } catch {
       return [];
     }
@@ -292,34 +355,34 @@ export class BybitExchange implements IExchangeAdapter {
 
   async fetchTicker(symbol: string): Promise<MarketTicker | null> {
     try {
-      if (!/^[A-Za-z0-9]+$/.test(symbol)) {
-        return null;
-      }
+      const resolved = SymbolResolver.resolve(symbol);
       const [response, lot] = await Promise.all([
-        fetch(`${this.getRestUrl()}/v5/market/tickers?category=spot&symbol=${encodeURIComponent(symbol.toUpperCase())}USDT`),
-        this.getSymbolMetadata(symbol),
+        fetch(`${this.getRestUrl()}/v5/market/tickers?category=spot&symbol=${encodeURIComponent(resolved.symbol)}`),
+        this.getSymbolMetadata(resolved.symbol),
       ]);
-      if (!response.ok) return null;
+      if (!response.ok || !lot) return null;
       const data = await response.json() as any;
       if (data.retCode !== 0 || !Array.isArray(data.result?.list) || data.result.list.length === 0) {
         return null;
       }
       const item = data.result.list[0];
-      const lotResolved = lot ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+      const lastPrice = parseFloat(item.lastPrice || 0);
+      const vol = parseFloat(item.volume24h || 0);
+
       return {
-        symbol: item.symbol.replace("USDT", ""),
-        price: parseFloat(item.lastPrice || 0),
-        volume24h: parseFloat(item.volume24h || 0),
-        quoteVolume24h: parseFloat(item.volume24h || 0) * parseFloat(item.lastPrice || 0),
+        symbol: lot.baseAsset,
+        price: lastPrice,
+        volume24h: vol,
+        quoteVolume24h: vol * lastPrice,
         priceChange24h: parseFloat(item.priceChange || 0),
         priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
         highPrice24h: parseFloat(item.highPrice24h || 0),
         lowPrice24h: parseFloat(item.lowPrice24h || 0),
-        minNotional: lotResolved.minQty * (parseFloat(item.lastPrice || 0) || 1),
-        minOrderQty: lotResolved.minQty,
-        maxOrderQty: lotResolved.maxQty,
-        tickSize: lotResolved.tickSize,
-        lotSize: lotResolved.lotSize,
+        minNotional: lot.minNotional,
+        minOrderQty: lot.minQty,
+        maxOrderQty: lot.maxQty,
+        tickSize: lot.tickSize,
+        lotSize: lot.stepSize,
       };
     } catch {
       return null;

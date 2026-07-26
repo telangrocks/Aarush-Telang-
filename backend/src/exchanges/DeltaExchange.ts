@@ -3,6 +3,7 @@ import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } f
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 import { CircuitBreaker } from "./CircuitBreaker";
 import { cleanCredential } from "../crypto";
+import { SymbolResolver } from "../utils/SymbolResolver";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -107,41 +108,60 @@ export class DeltaExchange implements IExchangeAdapter {
     }
     const map = new Map<string, SymbolMetadata>();
     for (const product of data.result) {
-      const symbol = product.symbol;
-      const contractValue = parseFloat(product.contract_value ?? product.min_notional_value ?? "1.0");
-      const minQty = contractValue > 0 ? contractValue : 1.0;
-      const maxQty = parseFloat(product.max_notional_value ?? product.max_notional ?? "999999999");
-      const lotSize = parseFloat(product.lot_size ?? product.step_size ?? "1");
-      const tickSize = parseFloat(product.tick_size ?? "0.01");
-      if (symbol) {
-        map.set(symbol, {
-          minQty: minQty,
-          maxQty: maxQty > 0 ? maxQty : 999999999,
-          tickSize: tickSize > 0 ? tickSize : 0.01,
-          lotSize: lotSize > 0 ? lotSize : 1,
-          minNotional: minQty,
-          id: product.id,
-        });
-      }
+      if (!product.symbol || (product.trading_status && product.trading_status !== "operational")) continue;
+
+      const contractValue = parseFloat(product.contract_value || "1.0");
+      const minQty = parseFloat(product.min_order_qty || "1");
+      const maxQty = parseFloat(product.max_order_qty || product.max_notional_value || "999999999");
+      const stepSize = parseFloat(product.lot_size || product.step_size || "1");
+      const tickSize = parseFloat(product.tick_size || "0.01");
+      const minPrice = parseFloat(product.min_price || "0");
+      const maxPrice = parseFloat(product.max_price || "999999999");
+
+      const rawNotional = product.min_notional_value ?? product.min_order_value;
+      const parsedNotional = rawNotional ? parseFloat(rawNotional) : undefined;
+      const minNotional = (parsedNotional && !isNaN(parsedNotional) && parsedNotional > 0)
+        ? parsedNotional
+        : minQty * contractValue * (minPrice > 0 ? minPrice : 1.0);
+
+      if (isNaN(minQty) || isNaN(stepSize) || isNaN(tickSize)) continue;
+
+      const resolved = SymbolResolver.resolve(product.symbol);
+      map.set(resolved.symbol, {
+        schemaVersion: "2.0",
+        symbol: resolved.symbol,
+        exchange: "delta",
+        baseAsset: resolved.baseAsset,
+        quoteAsset: resolved.quoteAsset,
+        minNotional,
+        minQty,
+        maxQty,
+        stepSize,
+        tickSize,
+        minPrice,
+        maxPrice,
+        contractSize: contractValue,
+        lastUpdated: Date.now(),
+        id: product.id,
+      });
     }
     console.log(`[Delta] Metadata successfully loaded: ${map.size} symbols.`);
     return map;
   }
 
   private async getSymbolMetadata(symbol: string): Promise<SymbolMetadata | null> {
-    const fullSymbol = `${symbol.toUpperCase()}USD`;
+    const key = SymbolResolver.toCacheKey(symbol);
     const now = Date.now();
     const expiryLimit = 1800000;
     const hasCache = this.metadataCache !== null;
     const isExpired = now - this.lastCacheFetch > expiryLimit;
 
-    if (hasCache && this.metadataCache!.has(fullSymbol)) {
+    if (hasCache && this.metadataCache!.has(key)) {
       this.cacheMetrics.hits++;
     } else {
       this.cacheMetrics.misses++;
     }
 
-    // 1. Stale-while-revalidate logic
     if (isExpired && hasCache) {
       this.cacheMetrics.staleUsage++;
       if (!this.cacheFetchPromise) {
@@ -161,10 +181,9 @@ export class DeltaExchange implements IExchangeAdapter {
           }
         })();
       }
-      return this.metadataCache!.get(fullSymbol) ?? null;
+      return this.metadataCache!.get(key) ?? null;
     }
 
-    // 2. Cold start / empty cache logic
     if (!hasCache) {
       if (!this.cacheFetchPromise) {
         this.cacheFetchPromise = (async () => {
@@ -189,7 +208,7 @@ export class DeltaExchange implements IExchangeAdapter {
       }
     }
 
-    return this.metadataCache?.get(fullSymbol) ?? null;
+    return this.metadataCache?.get(key) ?? null;
   }
 
   getName() {
@@ -200,117 +219,133 @@ export class DeltaExchange implements IExchangeAdapter {
     this.environment = environment;
   }
 
+  getEnvironment(): ExchangeEnvironment {
+    return this.environment;
+  }
+
   setRegion(region: ExchangeRegion) {
     this.region = region;
   }
 
-  getRestUrl(): string {
-    const urls = this.config.regionUrls;
-    const testnet = this.config.regionTestnetUrls;
-    if (this.environment === "testnet" && testnet && testnet[this.region]) {
-      return testnet[this.region]!;
-    }
-    return urls[this.region] ?? urls.global;
+  getRegion(): ExchangeRegion {
+    return this.region;
   }
 
-  getFallbackRestUrl(): string {
-    const fallbackRegion: ExchangeRegion = this.region === "india" ? "global" : "india";
-    const urls = this.config.regionUrls;
-    const testnet = this.config.regionTestnetUrls;
-    if (this.environment === "testnet" && testnet && testnet[fallbackRegion]) {
-      return testnet[fallbackRegion]!;
+  getRestUrl(): string {
+    if (this.environment === "testnet" && this.config.regionTestnetUrls?.[this.region]) {
+      return this.config.regionTestnetUrls[this.region]!;
     }
-    return urls[fallbackRegion] ?? urls.global;
+    return this.config.regionUrls[this.region] ?? this.config.regionUrls[this.config.defaultRegion];
+  }
+
+  async testConnection(apiKey: string, apiSecret: string): Promise<ValidationResult> {
+    try {
+      const cleanKey = cleanCredential(apiKey);
+      const cleanSec = cleanCredential(apiSecret);
+
+      if (!cleanKey || !cleanSec) {
+        return {
+          success: false,
+          code: "MISSING_CREDENTIALS",
+          message: "API key and API secret must be provided.",
+          friendlyMessage: "Please enter both your Delta API key and API secret.",
+          hint: "Ensure you have copied the full API key and secret from your Delta Exchange API dashboard.",
+        };
+      }
+
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const method = "GET";
+      const path = "/v2/wallet/balances";
+      const signatureData = method + timestamp + path;
+      const signature = await hmacSha256(signatureData, cleanSec);
+
+      const response = await fetch(`${this.getRestUrl()}${path}`, {
+        method: "GET",
+        headers: {
+          "api-key": cleanKey,
+          "signature": signature,
+          "timestamp": timestamp,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const bodyText = await response.text();
+      let resData: any = null;
+      try {
+        resData = JSON.parse(bodyText);
+      } catch {
+        resData = null;
+      }
+
+      if (response.ok && resData && resData.success) {
+        return { success: true, message: "Successfully authenticated with Delta Exchange" };
+      }
+
+      const classified: ClassifiedError = classifyByBody(resData?.error?.code || resData?.error?.message || bodyText, this.config.displayName);
+      return {
+        success: false,
+        code: classified.code,
+        message: classified.technicalDetail,
+        friendlyMessage: classified.friendlyMessage,
+        hint: classified.hint,
+      };
+    } catch (e: any) {
+      const err = classifyException(e, this.config.displayName);
+      return {
+        success: false,
+        code: err.code,
+        message: err.technicalDetail,
+        friendlyMessage: err.friendlyMessage,
+        hint: err.hint,
+      };
+    }
   }
 
   async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
-    try {
-      const cleanKey = cleanCredential(apiKey);
-      const cleanSecret = cleanCredential(apiSecret);
-      const timestamp = Math.floor(Date.now() / 1000).toString();
-      const requestPath = "/v2/wallet/balances";
-      const prehash = "GET" + timestamp + requestPath;
-      const signature = await hmacSha256(prehash, cleanSecret);
-
-      const targetUrls = [this.getRestUrl(), this.getFallbackRestUrl()];
-      let lastResponse: Response | null = null;
-      let lastBody = "";
-
-      for (const baseUrl of targetUrls) {
-        try {
-          const response = await fetch(`${baseUrl}${requestPath}`, {
-            headers: {
-              "api-key": cleanKey,
-              "signature": signature,
-              "timestamp": timestamp,
-            },
-          });
-          lastResponse = response;
-
-          if (response.ok) {
-            const data = await response.json() as any;
-            if (data.success !== false) {
-              return { success: true, message: "Delta Exchange credentials validated successfully" };
-            }
-            lastBody = JSON.stringify(data);
-          } else {
-            lastBody = await response.text();
-          }
-        } catch {
-          // Try next endpoint URL
-        }
-      }
-
-      if (lastResponse) {
-        const err: ClassifiedError = classifyExchangeResponse(lastResponse.status, lastBody, this.config.displayName);
-        return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
-      }
-
-      return { success: false, message: "Failed to connect to Delta Exchange", code: "EXCHANGE_UNAVAILABLE", friendlyMessage: "Unable to reach Delta Exchange servers. Please check your internet connection.", hint: "Check if your network blocks api.delta.exchange or api.india.delta.exchange." };
-    } catch (e: any) {
-      const err = classifyException(e, this.config.displayName);
-      return { success: false, message: err.technicalDetail, code: err.code, friendlyMessage: err.friendlyMessage, hint: err.hint };
-    }
+    return this.testConnection(apiKey, apiSecret);
   }
 
   async fetchMarketData(): Promise<MarketTicker[]> {
     try {
-      const [tickersResponse] = await Promise.all([
+      const [response] = await Promise.all([
         fetch(`${this.getRestUrl()}/v2/tickers`),
-        this.getSymbolMetadata("BTC"), // Seed cache if cold
+        this.getSymbolMetadata("BTC"),
       ]);
 
-      if (!tickersResponse.ok) {
-        return [];
-      }
+      if (!response.ok) return [];
 
-      const tickersData = await tickersResponse.json() as any;
-      if (!tickersData.success || !Array.isArray(tickersData.result)) {
-        return [];
-      }
+      const tickersData = await response.json() as any;
+      if (!tickersData.success || !Array.isArray(tickersData.result)) return [];
 
-      return tickersData.result
-        .filter((item: any) => item.symbol && (item.symbol.includes("USDT") || item.symbol.includes("USDC") || item.symbol.includes("USD")))
-        .slice(0, 50)
-        .map((item: any) => {
-          const lot = this.metadataCache?.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
-          const price = parseFloat(item.close || item.last_price || 0);
-          return {
-            symbol: item.symbol.replace(/USDT$|USDC$|USD$/, ""),
-            price: price,
-            volume24h: parseFloat(item.volume || 0),
-            quoteVolume24h: parseFloat(item.volume || 0) * price,
-            priceChange24h: parseFloat(item.price_change || 0),
-            priceChangePercent24h: parseFloat(item.price_change_percent || 0),
-            highPrice24h: parseFloat(item.high_24h || item.high || 0),
-            lowPrice24h: parseFloat(item.low_24h || item.low || 0),
-            minNotional: lot.minQty * (price || 1),
-            minOrderQty: lot.minQty,
-            maxOrderQty: lot.maxQty,
-            tickSize: lot.tickSize,
-            lotSize: lot.lotSize,
-          };
+      const result: MarketTicker[] = [];
+      for (const item of tickersData.result) {
+        if (!item.symbol) continue;
+        const key = SymbolResolver.toCacheKey(item.symbol);
+        const lot = this.metadataCache?.get(key);
+        if (!lot) continue;
+
+        const price = parseFloat(item.close || item.last_price || 0);
+        const volume24h = parseFloat(item.volume || 0);
+
+        result.push({
+          symbol: lot.baseAsset,
+          price,
+          volume24h,
+          quoteVolume24h: volume24h * price,
+          priceChange24h: parseFloat(item.price_change || 0),
+          priceChangePercent24h: parseFloat(item.price_change_percent || 0),
+          highPrice24h: parseFloat(item.high_24h || item.high || 0),
+          lowPrice24h: parseFloat(item.low_24h || item.low || 0),
+          minNotional: lot.minNotional,
+          minOrderQty: lot.minQty,
+          maxOrderQty: lot.maxQty,
+          tickSize: lot.tickSize,
+          lotSize: lot.stepSize,
         });
+
+        if (result.length >= 50) break;
+      }
+      return result;
     } catch {
       return [];
     }
@@ -318,33 +353,33 @@ export class DeltaExchange implements IExchangeAdapter {
 
   async fetchTicker(symbol: string): Promise<MarketTicker | null> {
     try {
-      if (!/^[A-Za-z0-9]+$/.test(symbol)) {
-        return null;
-      }
+      const resolved = SymbolResolver.resolve(symbol);
       const [response, lot] = await Promise.all([
-        fetch(`${this.getRestUrl()}/v2/tickers/${encodeURIComponent(symbol.toUpperCase())}USD`),
-        this.getSymbolMetadata(symbol),
+        fetch(`${this.getRestUrl()}/v2/tickers/${encodeURIComponent(resolved.symbol)}`),
+        this.getSymbolMetadata(resolved.symbol),
       ]);
-      if (!response.ok) return null;
+      if (!response.ok || !lot) return null;
       const data = await response.json() as any;
       const item = data?.result;
       if (!item || !item.symbol) return null;
 
-      const lotResolved = lot ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+      const price = parseFloat(item.last_price || item.close || 0);
+      const volume24h = parseFloat(item.volume || 0);
+
       return {
-        symbol: item.symbol.replace(/USDT$|USDC$|USD$/, ""),
-        price: parseFloat(item.last_price || item.close || 0),
-        volume24h: parseFloat(item.volume || 0),
-        quoteVolume24h: parseFloat(item.volume || 0) * parseFloat(item.last_price || item.close || 0),
+        symbol: lot.baseAsset,
+        price,
+        volume24h,
+        quoteVolume24h: volume24h * price,
         priceChange24h: parseFloat(item.change || 0),
         priceChangePercent24h: parseFloat(item.change_percent || 0),
         highPrice24h: parseFloat(item.high || 0),
         lowPrice24h: parseFloat(item.low || 0),
-        minNotional: lotResolved.minQty * (parseFloat(item.last_price || item.close || 0) || 1),
-        minOrderQty: lotResolved.minQty,
-        maxOrderQty: lotResolved.maxQty,
-        tickSize: lotResolved.tickSize,
-        lotSize: lotResolved.lotSize,
+        minNotional: lot.minNotional,
+        minOrderQty: lot.minQty,
+        maxOrderQty: lot.maxQty,
+        tickSize: lot.tickSize,
+        lotSize: lot.stepSize,
       };
     } catch {
       return null;
@@ -676,7 +711,7 @@ export class DeltaExchange implements IExchangeAdapter {
       const prehash = "GET" + timestamp + requestPath;
       const signature = await hmacSha256(prehash, cleanSecret);
 
-      const targetUrls = [this.getRestUrl(), this.getFallbackRestUrl()];
+      const targetUrls = [this.getRestUrl()];
       let response: Response | null = null;
       let bodyText = "";
 

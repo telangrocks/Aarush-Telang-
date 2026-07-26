@@ -3,6 +3,7 @@ import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion, 
 import { type Kline } from './exchanges/types';
 import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
+import { TradeValidator } from './validation/TradeValidator';
 import { sendTradeNotification } from './handlers/notifications';
 import { StrategyOrchestrator, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe } from './engine';
 import { EngineAPIService } from './api/engine';
@@ -384,13 +385,17 @@ export function evaluateStrategy(
     const stopLoss = ez.side === 'BUY' ? entry - (atrMultiplier * 1.0) : entry + (atrMultiplier * 1.0);
     const takeProfit = ez.side === 'BUY' ? entry + (atrMultiplier * 2.0) : entry - (atrMultiplier * 2.0);
     
-    // Risk-based position sizing
+    // Risk-based position sizing without silent auto-bumping
     const slDistancePct = (atrMultiplier * 1.0) / entry;
     const calculatedPositionSize = slDistancePct > 0 ? riskAmount / slDistancePct : riskAmount * 10;
-    const positionSize = Math.max(calculatedPositionSize, minNotional);
-    
-    const estimatedPnl = Math.abs((takeProfit - entry) / entry) * positionSize;
-    opportunity = { symbol: ticker.symbol, entryPrice: entry, stopLoss, takeProfit, estimatedPnl, positionSize, side: ez.side };
+    const positionSize = calculatedPositionSize;
+
+    if (minNotional > 0 && positionSize < minNotional) {
+      opportunity = null;
+    } else {
+      const estimatedPnl = Math.abs((takeProfit - entry) / entry) * positionSize;
+      opportunity = { symbol: ticker.symbol, entryPrice: entry, stopLoss, takeProfit, estimatedPnl, positionSize, side: ez.side };
+    }
   }
 
   return { checkpoints, total, passed, progress, confidence, conditionsMet, opportunity };
@@ -656,17 +661,32 @@ export class TradingBot {
                 }
 
                 const refPrice = limitPrice || currentPrice;
-                const rawQty = target.positionSize > 0 && refPrice > 0
-                  ? target.positionSize / refPrice
-                  : undefined;
-                  
-                if (target.positionSize < (ticker?.minNotional || 0)) {
-                  throw new Error(`Order size ${target.positionSize} is below exchange minimum notional of ${ticker?.minNotional}`);
+                const rulesRes = TradeValidator.validate({
+                  symbol: orderSymbol,
+                  entryPrice: refPrice,
+                  tradeValueUsdt: target.positionSize
+                }, ticker ? {
+                  schemaVersion: "2.0",
+                  symbol: ticker.symbol,
+                  exchange: userKeys.exchange_name || "binance",
+                  baseAsset: ticker.symbol,
+                  quoteAsset: "USDT",
+                  minNotional: ticker.minNotional,
+                  minQty: ticker.minOrderQty,
+                  maxQty: ticker.maxOrderQty,
+                  stepSize: ticker.lotSize,
+                  tickSize: ticker.tickSize,
+                  minPrice: 0,
+                  maxPrice: 999999999,
+                  contractSize: 1,
+                  lastUpdated: Date.now()
+                } : null);
+
+                if (!rulesRes.isValid) {
+                  throw new Error(rulesRes.errorMessage || `Order validation failed: ${rulesRes.errorCode}`);
                 }
-                
-                const qty = rawQty != null && ticker
-                  ? normalizeQuantity(rawQty, ticker.lotSize, ticker.minOrderQty, ticker.maxOrderQty)
-                  : rawQty;
+
+                const qty = rulesRes.quantizedQuantity;
                   
                 orderResult = await adapter.placeOrder(
                   orderSymbol,

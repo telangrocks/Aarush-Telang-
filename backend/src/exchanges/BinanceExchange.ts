@@ -3,6 +3,7 @@ import { ExchangeConfig, ExchangeEnvironment, ExchangeRegion, SymbolMetadata } f
 import { classifyExchangeResponse, classifyException, classifyByBody, type ClassifiedError } from "./errors";
 import { CircuitBreaker } from "./CircuitBreaker";
 import { cleanCredential } from "../crypto";
+import { SymbolResolver } from "../utils/SymbolResolver";
 
 async function hmacSha256(message: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -97,35 +98,62 @@ export class BinanceExchange implements IExchangeAdapter {
     const response = await this.fetchWithRetry(`${this.getRestUrl()}/api/v3/exchangeInfo`);
     const data = await response.json() as any;
     const map = new Map<string, SymbolMetadata>();
-    for (const symbol of data.symbols ?? []) {
-      const filters = symbol.filters ?? [];
+
+    for (const symObj of data.symbols ?? []) {
+      if (symObj.status !== "TRADING") continue;
+      const filters = symObj.filters ?? [];
       const lotFilter = filters.find((f: any) => f.filterType === "LOT_SIZE");
       const priceFilter = filters.find((f: any) => f.filterType === "PRICE_FILTER");
       const notionalFilter = filters.find((f: any) => f.filterType === "NOTIONAL" || f.filterType === "MIN_NOTIONAL");
-      if (lotFilter && symbol.status === "TRADING") {
-        const parsedMinNotional = notionalFilter ? parseFloat(notionalFilter.minNotional || notionalFilter.minVal || "5.0") : 5.0;
-        map.set(symbol.symbol, {
-          minQty: parseFloat(lotFilter.minQty || "0.001"),
-          maxQty: parseFloat(lotFilter.maxQty || "999999999"),
-          tickSize: parseFloat(priceFilter?.tickSize || "0.01"),
-          lotSize: parseFloat(lotFilter.stepSize || "1"),
-          minNotional: parsedMinNotional > 0 ? parsedMinNotional : 5.0,
-        });
-      }
+
+      if (!lotFilter || !priceFilter) continue;
+
+      const minQty = parseFloat(lotFilter.minQty);
+      const maxQty = parseFloat(lotFilter.maxQty);
+      const stepSize = parseFloat(lotFilter.stepSize);
+      const minPrice = parseFloat(priceFilter.minPrice || "0");
+      const maxPrice = parseFloat(priceFilter.maxPrice || "999999999");
+      const tickSize = parseFloat(priceFilter.tickSize);
+
+      const rawNotionalStr = notionalFilter?.minNotional ?? notionalFilter?.notional ?? notionalFilter?.minVal;
+      const parsedNotional = rawNotionalStr ? parseFloat(rawNotionalStr) : undefined;
+      const minNotional = (parsedNotional && !isNaN(parsedNotional) && parsedNotional > 0)
+        ? parsedNotional
+        : minQty * (minPrice > 0 ? minPrice : 1.0);
+
+      if (isNaN(minQty) || isNaN(maxQty) || isNaN(stepSize) || isNaN(tickSize)) continue;
+
+      const resolved = SymbolResolver.resolve(symObj.symbol);
+      map.set(resolved.symbol, {
+        schemaVersion: "2.0",
+        symbol: resolved.symbol,
+        exchange: "binance",
+        baseAsset: resolved.baseAsset,
+        quoteAsset: resolved.quoteAsset,
+        minNotional,
+        minQty,
+        maxQty,
+        stepSize,
+        tickSize,
+        minPrice,
+        maxPrice,
+        contractSize: 1.0,
+        lastUpdated: Date.now(),
+      });
     }
     console.log(`[Binance] Metadata successfully loaded: ${map.size} symbols.`);
     return map;
   }
 
   private async getSymbolMetadata(symbol: string): Promise<SymbolMetadata | null> {
-    const fullSymbol = `${symbol.toUpperCase()}USDT`;
+    const key = SymbolResolver.toCacheKey(symbol);
     const now = Date.now();
     const expiryLimit = 1800000; // 30 minutes
     const hasCache = this.metadataCache !== null;
     const isExpired = now - this.lastCacheFetch > expiryLimit;
 
     // Hit vs Miss metrics tracking
-    if (hasCache && this.metadataCache!.has(fullSymbol)) {
+    if (hasCache && this.metadataCache!.has(key)) {
       this.cacheMetrics.hits++;
     } else {
       this.cacheMetrics.misses++;
@@ -151,7 +179,7 @@ export class BinanceExchange implements IExchangeAdapter {
           }
         })();
       }
-      return this.metadataCache!.get(fullSymbol) ?? null;
+      return this.metadataCache!.get(key) ?? null;
     }
 
     // 2. Cold start / empty cache logic
@@ -179,7 +207,7 @@ export class BinanceExchange implements IExchangeAdapter {
       }
     }
 
-    return this.metadataCache?.get(fullSymbol) ?? null;
+    return this.metadataCache?.get(key) ?? null;
   }
 
   getName() {
@@ -291,27 +319,38 @@ export class BinanceExchange implements IExchangeAdapter {
       }
 
       const tickers = await tickersResponse.json() as any[];
-      return tickers
-        .filter((item: any) => item.symbol.endsWith("USDT") || item.symbol.endsWith("BUSD"))
-        .slice(0, 50)
-        .map((item: any) => {
-          const lot = this.metadataCache?.get(item.symbol) ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
-          return {
-            symbol: item.symbol.replace(/USDT|BUSD$/, ""),
-            price: parseFloat(item.lastPrice),
-            volume24h: parseFloat(item.volume),
-            quoteVolume24h: parseFloat(item.quoteVolume || item.volume * item.lastPrice || 0),
-            priceChange24h: parseFloat(item.priceChange),
-            priceChangePercent24h: parseFloat(item.priceChangePercent),
-            highPrice24h: parseFloat(item.highPrice),
-            lowPrice24h: parseFloat(item.lowPrice),
-            minNotional: lot.minNotional ?? (lot.minQty * (parseFloat(item.lastPrice) || 1)),
-            minOrderQty: lot.minQty,
-            maxOrderQty: lot.maxQty,
-            tickSize: lot.tickSize,
-            lotSize: lot.lotSize,
-          };
+      const result: MarketTicker[] = [];
+
+      for (const item of tickers) {
+        if (!item.symbol.endsWith("USDT") && !item.symbol.endsWith("BUSD")) continue;
+        const key = SymbolResolver.toCacheKey(item.symbol);
+        const lot = this.metadataCache?.get(key);
+        if (!lot) continue; // Skip items without valid exchange rules metadata
+
+        const price = parseFloat(item.lastPrice || 0);
+        const volume24h = parseFloat(item.volume || 0);
+        const quoteVolume24h = parseFloat(item.quoteVolume || (volume24h * price) || 0);
+
+        result.push({
+          symbol: lot.baseAsset,
+          price,
+          volume24h,
+          quoteVolume24h,
+          priceChange24h: parseFloat(item.priceChange || 0),
+          priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
+          highPrice24h: parseFloat(item.highPrice || 0),
+          lowPrice24h: parseFloat(item.lowPrice || 0),
+          minNotional: lot.minNotional,
+          minOrderQty: lot.minQty,
+          maxOrderQty: lot.maxQty,
+          tickSize: lot.tickSize,
+          lotSize: lot.stepSize,
         });
+
+        if (result.length >= 50) break;
+      }
+
+      return result;
     } catch {
       return [];
     }
@@ -319,32 +358,33 @@ export class BinanceExchange implements IExchangeAdapter {
 
   async fetchTicker(symbol: string): Promise<MarketTicker | null> {
     try {
-      if (!/^[A-Za-z0-9]+$/.test(symbol)) {
-        return null;
-      }
+      const resolved = SymbolResolver.resolve(symbol);
       const [response, lot] = await Promise.all([
-        fetch(`${this.getRestUrl()}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol.toUpperCase())}USDT`),
-        this.getSymbolMetadata(symbol),
+        fetch(`${this.getRestUrl()}/api/v3/ticker/24hr?symbol=${encodeURIComponent(resolved.symbol)}`),
+        this.getSymbolMetadata(resolved.symbol),
       ]);
-      if (!response.ok) return null;
+      if (!response.ok || !lot) return null;
       const item = (await response.json()) as any;
       if (!item || !item.symbol) return null;
 
-      const lotResolved = lot ?? { minQty: 0.001, maxQty: 999999999, tickSize: 0.01, lotSize: 1 };
+      const price = parseFloat(item.lastPrice || 0);
+      const volume24h = parseFloat(item.volume || 0);
+      const quoteVolume24h = parseFloat(item.quoteVolume || (volume24h * price) || 0);
+
       return {
-        symbol: item.symbol.replace(/USDT|BUSD$/, ""),
-        price: parseFloat(item.lastPrice || 0),
-        volume24h: parseFloat(item.volume || 0),
-        quoteVolume24h: parseFloat(item.quoteVolume || (item.volume * item.lastPrice) || 0),
+        symbol: lot.baseAsset,
+        price,
+        volume24h,
+        quoteVolume24h,
         priceChange24h: parseFloat(item.priceChange || 0),
         priceChangePercent24h: parseFloat(item.priceChangePercent || 0),
         highPrice24h: parseFloat(item.highPrice || 0),
         lowPrice24h: parseFloat(item.lowPrice || 0),
-        minNotional: lotResolved.minNotional ?? (lotResolved.minQty * (parseFloat(item.lastPrice || 0) || 1)),
-        minOrderQty: lotResolved.minQty,
-        maxOrderQty: lotResolved.maxQty,
-        tickSize: lotResolved.tickSize,
-        lotSize: lotResolved.lotSize,
+        minNotional: lot.minNotional,
+        minOrderQty: lot.minQty,
+        maxOrderQty: lot.maxQty,
+        tickSize: lot.tickSize,
+        lotSize: lot.stepSize,
       };
     } catch {
       return null;

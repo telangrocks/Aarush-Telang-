@@ -160,7 +160,7 @@ class MainActivity : FragmentActivity() {
                                 coinName = "Bitcoin",
                                 notations = 100,
                                 currentMarketPrice = 50000.0,
-                                minNotional = 10.0,
+                                minNotional = 0.0,
                                 coinColor = Color(0xFFF7931A),
                             )
                             TradeSetupScreen(
@@ -187,7 +187,7 @@ class MainActivity : FragmentActivity() {
                                 coinName = "Bitcoin",
                                 notations = 100,
                                 currentMarketPrice = 50000.0,
-                                minNotional = 10.0,
+                                minNotional = 0.0,
                                 coinColor = Color(0xFFF7931A),
                             )
                             StrategySelectionScreen(
@@ -214,7 +214,7 @@ class MainActivity : FragmentActivity() {
                                 coinName = "Bitcoin",
                                 notations = 100,
                                 currentMarketPrice = 50000.0,
-                                minNotional = 10.0,
+                                minNotional = 0.0,
                                 coinColor = Color(0xFFF7931A),
                             )
                             val strategy = config?.strategyId ?: "scalping"

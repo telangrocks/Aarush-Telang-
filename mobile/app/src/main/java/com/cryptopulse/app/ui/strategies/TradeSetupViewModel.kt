@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.cryptopulse.app.data.repository.StrategyRepository
 import com.cryptopulse.app.data.repository.TradeSessionRepository
 import com.cryptopulse.app.domain.models.DynamicFieldModel
+import com.cryptopulse.app.domain.models.SymbolTradingRules
 import com.cryptopulse.app.domain.models.TradeSetupConfig
 import com.cryptopulse.app.domain.models.toDynamicFieldModel
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -156,27 +157,67 @@ class TradeSetupViewModel @Inject constructor(
 
     fun setMinNotional(minNotional: Double) {
         _uiState.update { currentState ->
-            val entryErr = validateEntryPrice(currentState.entryPrice, minNotional, currentState.tradeValueUsdt)
-            val tradeErr = validateTradeValueUsdt(currentState.tradeValueUsdt, minNotional)
+            val rules = SymbolTradingRules(
+                symbol = "SYMBOL",
+                exchange = "exchange",
+                baseAsset = "BASE",
+                quoteAsset = "USDT",
+                minNotional = minNotional,
+                minQty = 0.00001,
+                maxQty = 1000000.0,
+                stepSize = 0.00001,
+                tickSize = 0.01,
+                minPrice = 0.01,
+                maxPrice = 1000000.0
+            )
+            val valRes = performTradeValidation(currentState.entryPrice, currentState.tradeValueUsdt, rules)
             currentState.copy(
                 minNotional = minNotional,
-                entryPriceError = entryErr,
-                tradeValueUsdtError = tradeErr
+                entryPriceError = if (currentState.entryPrice.isNotBlank() && !valRes.isValid) valRes.errorMessage else null,
+                tradeValueUsdtError = if (currentState.tradeValueUsdt.isNotBlank() && !valRes.isValid) valRes.errorMessage else null
             )
         }
     }
 
     fun updateEntryPrice(value: String) {
         _uiState.update { currentState ->
-            val error = validateEntryPrice(value, currentState.minNotional, currentState.tradeValueUsdt)
-            currentState.copy(entryPrice = value, entryPriceError = error)
+            val rules = SymbolTradingRules(
+                symbol = "SYMBOL",
+                exchange = "exchange",
+                baseAsset = "BASE",
+                quoteAsset = "USDT",
+                minNotional = currentState.minNotional,
+                minQty = 0.00001,
+                maxQty = 1000000.0,
+                stepSize = 0.00001,
+                tickSize = 0.01,
+                minPrice = 0.01,
+                maxPrice = 1000000.0
+            )
+            val valRes = performTradeValidation(value, currentState.tradeValueUsdt, rules)
+            val err = if (value.isBlank()) "Entry price is required." else if (!valRes.isValid) valRes.errorMessage else null
+            currentState.copy(entryPrice = value, entryPriceError = err)
         }
     }
 
     fun updateTradeValueUsdt(value: String) {
         _uiState.update { currentState ->
-            val tradeErr = validateTradeValueUsdt(value, currentState.minNotional)
-            val entryErr = validateEntryPrice(currentState.entryPrice, currentState.minNotional, value)
+            val rules = SymbolTradingRules(
+                symbol = "SYMBOL",
+                exchange = "exchange",
+                baseAsset = "BASE",
+                quoteAsset = "USDT",
+                minNotional = currentState.minNotional,
+                minQty = 0.00001,
+                maxQty = 1000000.0,
+                stepSize = 0.00001,
+                tickSize = 0.01,
+                minPrice = 0.01,
+                maxPrice = 1000000.0
+            )
+            val valRes = performTradeValidation(currentState.entryPrice, value, rules)
+            val tradeErr = if (value.isNotBlank() && !valRes.isValid) valRes.errorMessage else null
+            val entryErr = if (currentState.entryPrice.isNotBlank() && !valRes.isValid) valRes.errorMessage else null
             currentState.copy(
                 tradeValueUsdt = value,
                 tradeValueUsdtError = tradeErr,
@@ -185,35 +226,21 @@ class TradeSetupViewModel @Inject constructor(
         }
     }
 
-    private fun validateEntryPrice(
+    private fun performTradeValidation(
         entryPriceStr: String,
-        minNotional: Double,
-        tradeValueStr: String
-    ): String? {
-        if (entryPriceStr.isBlank()) return "Entry price is required."
-        val price = entryPriceStr.toDoubleOrNull() ?: return "Must be a valid number."
-        if (price <= 0.0) return "Entry price must be greater than 0."
-
-        if (minNotional > 0.0 && tradeValueStr.isNotBlank()) {
-            val tradeVal = tradeValueStr.toDoubleOrNull()
-            if (tradeVal != null && tradeVal < minNotional) {
-                return "Order value ($${"%.2f".format(tradeVal)} USDT) is below minimum notional requirement of $${"%.2f".format(minNotional)} USDT."
-            }
-        }
-        return null
-    }
-
-    private fun validateTradeValueUsdt(
         tradeValueStr: String,
-        minNotional: Double
-    ): String? {
-        if (tradeValueStr.isBlank()) return null
-        val doubleVal = tradeValueStr.toDoubleOrNull() ?: return "Must be a valid number."
-        if (doubleVal <= 0.0) return "Trade amount must be greater than 0."
-        if (minNotional > 0.0 && doubleVal < minNotional) {
-            return "Order value ($${"%.2f".format(doubleVal)} USDT) is below minimum notional requirement of $${"%.2f".format(minNotional)} USDT."
-        }
-        return null
+        rules: SymbolTradingRules
+    ): com.cryptopulse.app.domain.validation.TradeValidationResult {
+        val price = entryPriceStr.toDoubleOrNull() ?: 0.0
+        val tradeVal = tradeValueStr.toDoubleOrNull()
+        return com.cryptopulse.app.domain.validation.TradeValidator.validate(
+            params = com.cryptopulse.app.domain.validation.TradeValidationParams(
+                symbol = rules.symbol,
+                entryPrice = price,
+                tradeValueUsdt = tradeVal
+            ),
+            rules = rules
+        )
     }
 
     private fun validateField(key: String, value: String, fields: List<DynamicFieldModel>): String? {
@@ -259,14 +286,29 @@ class TradeSetupViewModel @Inject constructor(
         val newErrors = currentState.formErrors.toMutableMap()
         val finalErrors = mutableMapOf<String, String>()
 
-        val entryPriceError = validateEntryPrice(currentState.entryPrice, currentState.minNotional, currentState.tradeValueUsdt)
+        val rules = SymbolTradingRules(
+            symbol = symbol,
+            exchange = "exchange",
+            baseAsset = symbol,
+            quoteAsset = "USDT",
+            minNotional = currentState.minNotional,
+            minQty = 0.00001,
+            maxQty = 1000000.0,
+            stepSize = 0.00001,
+            tickSize = 0.01,
+            minPrice = 0.01,
+            maxPrice = 1000000.0
+        )
+        val valRes = performTradeValidation(currentState.entryPrice, currentState.tradeValueUsdt, rules)
+        val entryPriceError = if (currentState.entryPrice.isBlank()) "Entry price is required." else if (!valRes.isValid) valRes.errorMessage else null
+        val tradeValueUsdtError = if (currentState.tradeValueUsdt.isNotBlank() && !valRes.isValid) valRes.errorMessage else null
+
         newErrors["entryPrice"] = entryPriceError
         if (entryPriceError != null) {
             hasErrors = true
             finalErrors["entryPrice"] = entryPriceError
         }
 
-        val tradeValueUsdtError = validateTradeValueUsdt(currentState.tradeValueUsdt, currentState.minNotional)
         newErrors["tradeValueUsdt"] = tradeValueUsdtError
         if (tradeValueUsdtError != null) {
             hasErrors = true

@@ -2,12 +2,47 @@ export type ExchangeName = "binance" | "delta" | "bybit";
 
 export type ExchangeEnvironment = "mainnet" | "testnet";
 
-export interface SymbolMetadata {
+export enum ValidationErrorReason {
+  EXCHANGE_METADATA_UNAVAILABLE = "EXCHANGE_METADATA_UNAVAILABLE",
+  INVALID_INPUT_PARAMETERS = "INVALID_INPUT_PARAMETERS",
+  PRICE_BELOW_MINIMUM = "PRICE_BELOW_MINIMUM",
+  PRICE_ABOVE_MAXIMUM = "PRICE_ABOVE_MAXIMUM",
+  INVALID_TICK_SIZE = "INVALID_TICK_SIZE",
+  MIN_QTY_FAILED = "MIN_QTY_FAILED",
+  MAX_QTY_FAILED = "MAX_QTY_FAILED",
+  INVALID_STEP_SIZE = "INVALID_STEP_SIZE",
+  MIN_NOTIONAL_FAILED = "MIN_NOTIONAL_FAILED",
+  MAX_POSITION_FAILED = "MAX_POSITION_FAILED",
+  LEVERAGE_LIMIT_FAILED = "LEVERAGE_LIMIT_FAILED",
+  EXCHANGE_RULES_UPDATED = "EXCHANGE_RULES_UPDATED",
+}
+
+export interface ExchangeFilterConstraint {
+  filterType: string;
+  parameters: Record<string, number | string | boolean>;
+}
+
+export interface SymbolTradingRules {
+  schemaVersion: "2.0";
+  symbol: string;
+  exchange: string;
+  baseAsset: string;
+  quoteAsset: string;
+  minNotional: number;
   minQty: number;
   maxQty: number;
+  stepSize: number;
   tickSize: number;
-  lotSize: number;
-  minNotional?: number;
+  minPrice: number;
+  maxPrice: number;
+  contractSize: number;
+  maxLeverage?: number;
+  maxPosition?: number;
+  additionalFilters?: ExchangeFilterConstraint[];
+  lastUpdated: number;
+}
+
+export interface SymbolMetadata extends SymbolTradingRules {
   id?: string | number;
 }
 
