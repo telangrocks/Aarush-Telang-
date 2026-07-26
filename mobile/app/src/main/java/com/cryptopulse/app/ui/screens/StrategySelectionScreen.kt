@@ -89,8 +89,24 @@ fun StrategySelectionScreen(
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 18.sp,
                     letterSpacing = 1.5.sp,
-                    modifier = Modifier.padding(bottom = 12.dp)
+                    modifier = Modifier.padding(bottom = 8.dp)
                 )
+
+                if (activationError != null) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = LossRed.copy(alpha = 0.15f)),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, LossRed),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                    ) {
+                        Text(
+                            text = activationError,
+                            color = LossRed,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(10.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
 
                 when (val state = uiState) {
                     is StrategySelectionState.Loading -> {
