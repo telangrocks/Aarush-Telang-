@@ -73,9 +73,39 @@ class TradeSetupViewModelTest {
         )
     )
 
+    private fun createMockExchangeService(): com.cryptopulse.app.data.api.ExchangeService {
+        return object : com.cryptopulse.app.data.api.ExchangeService {
+            override suspend fun validate(request: com.cryptopulse.app.data.api.ValidateExchangeRequest): retrofit2.Response<com.cryptopulse.app.data.api.ValidationResponse> {
+                return retrofit2.Response.success(com.cryptopulse.app.data.api.ValidationResponse(success = true, message = "Valid"))
+            }
+
+            override suspend fun connect(request: com.cryptopulse.app.data.api.ConnectExchangeRequest): retrofit2.Response<com.cryptopulse.app.data.api.ConnectExchangeResponse> {
+                return retrofit2.Response.success(com.cryptopulse.app.data.api.ConnectExchangeResponse(success = true, message = "Connected", exchangeName = "binance"))
+            }
+
+            override suspend fun getStatus(): retrofit2.Response<com.cryptopulse.app.data.api.ExchangeStatusResponse> {
+                return retrofit2.Response.success(com.cryptopulse.app.data.api.ExchangeStatusResponse(isConnected = true, exchangeName = "binance", environment = "mainnet"))
+            }
+
+            override suspend fun getBalance(): retrofit2.Response<com.cryptopulse.app.data.api.ExchangeBalanceResponse> {
+                return retrofit2.Response.success(
+                    com.cryptopulse.app.data.api.ExchangeBalanceResponse(
+                        success = true,
+                        exchange = "binance",
+                        environment = "mainnet",
+                        primaryAsset = "USDT",
+                        balances = listOf(
+                            com.cryptopulse.app.data.api.BalanceItemData(asset = "USDT", free = 1000.0, locked = 0.0, total = 1000.0)
+                        )
+                    )
+                )
+            }
+        }
+    }
+
     @Test
     fun `loadStrategySchema populates default values successfully`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         
         testDispatcher.scheduler.advanceUntilIdle()
 
@@ -93,7 +123,7 @@ class TradeSetupViewModelTest {
 
     @Test
     fun `updateFieldValue incremental validation fails on max limit`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.updateFieldValue("leverage", "150") // max is 100
@@ -105,7 +135,7 @@ class TradeSetupViewModelTest {
 
     @Test
     fun `updateFieldValue incremental validation fails on invalid enum`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.updateFieldValue("mode", "SuperAggressive")
@@ -117,7 +147,7 @@ class TradeSetupViewModelTest {
     
     @Test
     fun `updateFieldValue clears error when valid`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.updateFieldValue("leverage", "150") 
@@ -130,7 +160,7 @@ class TradeSetupViewModelTest {
 
     @Test
     fun `buildConfig returns Success when all fields valid`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.setMinNotional(10.0)
@@ -150,7 +180,7 @@ class TradeSetupViewModelTest {
 
     @Test
     fun `buildConfig returns ValidationFailed when entry price is invalid`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.updateEntryPrice("-10")
@@ -164,7 +194,7 @@ class TradeSetupViewModelTest {
 
     @Test
     fun `buildConfig returns ValidationFailed when order value is below minNotional`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.setMinNotional(10.0)
@@ -179,7 +209,7 @@ class TradeSetupViewModelTest {
 
     @Test
     fun `buildConfig returns ValidationFailed when a required field is empty`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"))
+        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.updateFieldValue("leverage", "")
