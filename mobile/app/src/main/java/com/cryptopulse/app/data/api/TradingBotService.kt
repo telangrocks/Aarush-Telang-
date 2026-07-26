@@ -15,6 +15,13 @@ data class ActivateBotRequest(
     val config: Map<String, Any>? = null
 )
 
+data class ActivateBotResponse(
+    val success: Boolean,
+    val message: String,
+    val code: String? = null,
+    val hint: String? = null
+)
+
 data class BotStatusResponse(
     val isActive: Boolean,
     val coinId: String?,
@@ -149,10 +156,10 @@ data class PositionResponse(
 
 interface TradingBotService {
     @POST("/api/trading-bot/activate")
-    suspend fun activate(@Body request: ActivateBotRequest): Response<Map<String, Any>>
+    suspend fun activate(@Body request: ActivateBotRequest): Response<ActivateBotResponse>
 
     @POST("/api/trading-bot/deactivate")
-    suspend fun deactivate(): Response<Map<String, Any>>
+    suspend fun deactivate(): Response<ActivateBotResponse>
 
     @GET("/api/trading-bot/status")
     suspend fun getStatus(): Response<BotStatusResponse>
