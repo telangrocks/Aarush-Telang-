@@ -1,6 +1,6 @@
 import { Env } from './index';
 import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion, MarketTicker, normalizeQuantity, IExchangeAdapter } from './exchanges';
-import { type Kline } from './exchanges/types';
+import { type Kline, BotState, type AnalysisSnapshot } from './exchanges/types';
 import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
 import { TradeValidator } from './validation/TradeValidator';

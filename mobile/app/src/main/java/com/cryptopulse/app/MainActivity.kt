@@ -169,10 +169,53 @@ class MainActivity : FragmentActivity() {
                                 onProceedToConfirm = {
                                     val result = tradeSetupViewModel.buildConfig(candidate.symbol)
                                     if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) {
-                                        navController.navigate("technical_analysis")
+                                        navController.navigate("bot_activation")
                                     }
                                 },
                                 viewModel = tradeSetupViewModel,
+                            )
+                        }
+
+                        composable("bot_activation") {
+                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
+                            val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
+                            val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
+                            val config by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
+                            val isActivating by technicalAnalysisViewModel.isActivating.collectAsState()
+                            val activationError by technicalAnalysisViewModel.activationError.collectAsState()
+
+                            val candidate = selectedCandidate ?: MarketCandidate(
+                                rank = 1,
+                                symbol = "BTC",
+                                pairName = "BTC/USDT",
+                                coinName = "Bitcoin",
+                                notations = 100,
+                                currentMarketPrice = 50000.0,
+                                minNotional = 0.0,
+                                coinColor = Color(0xFFF7931A),
+                            )
+                            val strategy = config?.strategyId ?: "scalping"
+
+                            BotActivationScreen(
+                                candidate = candidate,
+                                strategy = strategy,
+                                config = config,
+                                onBack = { navController.popBackStack() },
+                                onActivateConfirmed = {
+                                    technicalAnalysisViewModel.activateBot(
+                                        symbol = candidate.symbol,
+                                        strategy = strategy,
+                                        config = config,
+                                        onSuccess = {
+                                            com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
+                                            navController.navigate("technical_analysis") {
+                                                popUpTo("bot_activation") { inclusive = true }
+                                            }
+                                        }
+                                    )
+                                },
+                                isActivating = isActivating,
+                                activationError = activationError
                             )
                         }
 
@@ -206,7 +249,8 @@ class MainActivity : FragmentActivity() {
                             val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
                             val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
                             val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                            val config by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
+                            val analysisState by technicalAnalysisViewModel.analysisState.collectAsState()
+
                             val candidate = selectedCandidate ?: MarketCandidate(
                                 rank = 1,
                                 symbol = "BTC",
@@ -217,7 +261,6 @@ class MainActivity : FragmentActivity() {
                                 minNotional = 0.0,
                                 coinColor = Color(0xFFF7931A),
                             )
-                            val strategy = config?.strategyId ?: "scalping"
 
                             LaunchedEffect(Unit) {
                                 AlertBus.alerts.collect { alert ->
@@ -228,31 +271,16 @@ class MainActivity : FragmentActivity() {
 
                             TechnicalAnalysisScreen(
                                 candidate = candidate,
-                                strategy = strategy,
-                                onBack = { navController.popBackStack() },
-                                onBotActivated = {
-                                    navController.navigate("live_analysis") {
-                                        popUpTo("technical_analysis") { inclusive = false }
-                                    }
-                                },
-                                viewModel = viewModel,
-                                technicalAnalysisViewModel = technicalAnalysisViewModel
-                            )
-                        }
-                        composable("live_analysis") {
-                            val viewModel = hiltViewModel<LiveAnalysisViewModel>(LocalContext.current as ComponentActivity)
-                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            LiveAnalysisScreen(
+                                analysisState = analysisState,
                                 onBack = { navController.popBackStack() },
                                 onStopBot = {
-                                    navController.navigate("positions") {
-                                        popUpTo("live_analysis") { inclusive = true }
+                                    technicalAnalysisViewModel.stopBot {
+                                        com.cryptopulse.app.service.BackgroundMonitoringService.stopService(applicationContext)
+                                        navController.navigate("positions") {
+                                            popUpTo("technical_analysis") { inclusive = true }
+                                        }
                                     }
-                                },
-                                onOpportunity = { alert ->
-                                    exchangeViewModel.setPendingBotAlert(alert)
-                                    navController.navigate("trade_alert")
-                                },
+                                }
                             )
                         }
                         composable("trade_alert") {

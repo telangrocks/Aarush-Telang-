@@ -46,6 +46,73 @@ export interface SymbolMetadata extends SymbolTradingRules {
   id?: string | number;
 }
 
+export enum BotState {
+  NOT_STARTED = "NOT_STARTED",
+  ACTIVATING = "ACTIVATING",
+  INITIALISING_MARKET_DATA = "INITIALISING_MARKET_DATA",
+  LOADING_STRATEGY = "LOADING_STRATEGY",
+  LOADING_INDICATORS = "LOADING_INDICATORS",
+  ANALYSING = "ANALYSING",
+  WAITING_FOR_SIGNAL = "WAITING_FOR_SIGNAL",
+  SIGNAL_GENERATED = "SIGNAL_GENERATED",
+  TRADE_PENDING = "TRADE_PENDING",
+  TRADE_EXECUTED = "TRADE_EXECUTED",
+  MONITORING_POSITION = "MONITORING_POSITION",
+  STOPPING = "STOPPING",
+  STOPPED = "STOPPED",
+}
+
+export interface AnalysisSnapshot {
+  schemaVersion: "2.0";
+  sessionId: string;
+  botState: BotState;
+  symbol: string;
+  exchange: string;
+  strategy: string;
+  timeframeStatus: Record<string, { interval: string; isLoaded: boolean; candleCount: number }>;
+  indicators: {
+    rsi: number;
+    macd: { macd: number; signal: number; histogram: number };
+    ema20: number;
+    ema50: number;
+    sma200: number;
+    atr: number;
+  };
+  checkpoints: Array<{
+    id: string;
+    name: string;
+    description: string;
+    isMet: boolean;
+    value: string;
+    target: string;
+  }>;
+  confidence: number;
+  decisionPipeline: {
+    confluenceScore: number;
+    alignment: "LONG" | "SHORT" | "NONE";
+    primarySignal: "BUY" | "SELL" | "HOLD";
+  };
+  runtimeMetrics: {
+    cycleNumber: number;
+    uptimeSeconds: number;
+    lastCompletedCycleMs: number;
+    analysisDurationMs: number;
+    exchangeLatencyMs: number;
+    lastSuccessfulUpdate: string;
+  };
+  engineHealth: {
+    status: "HEALTHY" | "DEGRADED" | "CRITICAL";
+    activeSubscriptionsCount: number;
+    errorsCount: number;
+  };
+  connectionHealth: {
+    transportType: "POLLING" | "WEBSOCKET" | "SSE";
+    isConnected: boolean;
+    reconnectCount: number;
+  };
+  timestamp: string;
+}
+
 /**
  * Regional endpoint family. Delta Exchange operates separate, geo-fenced
  * deployments: the global `api.delta.exchange` (CloudFront-fronted) rejects

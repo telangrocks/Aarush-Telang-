@@ -3,11 +3,13 @@ package com.cryptopulse.app.ui.strategies
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cryptopulse.app.data.api.ActivateBotRequest
-import com.cryptopulse.app.data.api.TechnicalAnalysisRequest
-import com.cryptopulse.app.data.api.TechnicalAnalysisService
 import com.cryptopulse.app.data.api.TradingBotService
 import com.cryptopulse.app.data.repository.TradeSessionRepository
+import com.cryptopulse.app.data.transport.ITransportAdapter
+import com.cryptopulse.app.data.transport.PollingTransportAdapter
+import com.cryptopulse.app.domain.models.AnalysisSnapshot
 import com.cryptopulse.app.domain.models.TradeSetupConfig
+import com.cryptopulse.app.ui.screens.MarketCandidate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,55 +20,95 @@ import javax.inject.Inject
 @HiltViewModel
 class TechnicalAnalysisViewModel @Inject constructor(
     private val sessionRepository: TradeSessionRepository,
-    private val technicalAnalysisService: TechnicalAnalysisService,
     private val tradingBotService: TradingBotService
 ) : ViewModel() {
-    
+
+    private val transportAdapter: ITransportAdapter = PollingTransportAdapter(tradingBotService, pollIntervalMs = 3000L)
+
     val tradeSetupConfig: StateFlow<TradeSetupConfig?> = sessionRepository.tradeSetupConfig
+    val analysisState: StateFlow<AnalysisSnapshot?> = transportAdapter.analysisState
+    val isConnected: StateFlow<Boolean> = transportAdapter.isConnected
 
-    private val _analysisStatus = MutableStateFlow<String>("Idle")
-    val analysisStatus = _analysisStatus.asStateFlow()
+    private val _isActivating = MutableStateFlow(false)
+    val isActivating: StateFlow<Boolean> = _isActivating.asStateFlow()
 
-    fun runAnalysis() {
-        val config = tradeSetupConfig.value ?: return
+    private val _activationError = MutableStateFlow<String?>(null)
+    val activationError: StateFlow<String?> = _activationError.asStateFlow()
+
+    init {
+        transportAdapter.startObserving()
+    }
+
+    fun activateBot(
+        symbol: String,
+        strategy: String,
+        config: TradeSetupConfig?,
+        onSuccess: () -> Unit
+    ) {
+        _isActivating.value = true
+        _activationError.value = null
+
         viewModelScope.launch {
             try {
-                _analysisStatus.value = "Running Analysis..."
-                val response = technicalAnalysisService.getAnalysis(
-                    TechnicalAnalysisRequest(
-                        symbol = config.symbol,
-                        strategy = config.strategyId,
-                        config = config.parameters
+                val response = tradingBotService.activate(
+                    ActivateBotRequest(
+                        coinId = symbol,
+                        strategy = strategy,
+                        targetEntryPrice = config?.entryPrice?.takeIf { it > 0.0 },
+                        positionSize = config?.tradeValueUsdt?.takeIf { it > 0.0 },
+                        config = config?.parameters
                     )
                 )
-                val body = response.body()
-                val confidence = (body?.signals?.get("confidence") as? Number)?.toInt() ?: 0
-                _analysisStatus.value = "Analysis Complete. Confidence: $confidence"
+
+                if (response.isSuccessful && response.body()?.success == true) {
+                    _isActivating.value = false
+                    transportAdapter.startObserving()
+                    onSuccess()
+                } else {
+                    _isActivating.value = false
+                    _activationError.value = response.body()?.message ?: "Failed to activate trading bot."
+                }
             } catch (e: Exception) {
-                _analysisStatus.value = "Analysis Failed: ${e.message}"
+                _isActivating.value = false
+                _activationError.value = e.message ?: "Network error activating bot."
             }
         }
     }
 
-    fun startBot() {
-        val config = tradeSetupConfig.value ?: return
+    fun stopBot(onSuccess: () -> Unit) {
         viewModelScope.launch {
             try {
-                _analysisStatus.value = "Activating Bot..."
-                val response = tradingBotService.activate(
-                    ActivateBotRequest(
-                        coinId = config.symbol,
-                        strategy = config.strategyId,
-                        positionSize = if (config.tradeValueUsdt > 0.0) config.tradeValueUsdt else null,
-                        targetEntryPrice = if (config.entryPrice > 0.0) config.entryPrice else null,
-                        config = config.parameters
-                    )
-                )
-                val success = response.body()?.get("success") as? Boolean ?: false
-                _analysisStatus.value = if (success) "Bot Activated!" else "Bot Activation Failed"
+                tradingBotService.deactivate()
+                transportAdapter.stopObserving()
+                onSuccess()
             } catch (e: Exception) {
-                _analysisStatus.value = "Activation Failed: ${e.message}"
+                transportAdapter.stopObserving()
+                onSuccess()
             }
         }
+    }
+
+    fun checkAndRestoreActiveSession(onSessionRestored: (coinId: String, strategy: String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val response = tradingBotService.getStatus()
+                if (response.isSuccessful && response.body() != null) {
+                    val status = response.body()!!
+                    if (status.isActive && !status.coinId.isNull meOrBlank() && !status.strategy.isNullOrBlank()) {
+                        transportAdapter.startObserving()
+                        onSessionRestored(status.coinId, status.strategy)
+                    }
+                }
+            } catch (e: Exception) {
+                // Silently fail if not active
+            }
+        }
+    }
+
+    private fun String?.isNullMeOrBlank(): Boolean = this == null || this.isBlank()
+
+    override fun onCleared() {
+        super.onCleared()
+        transportAdapter.stopObserving()
     }
 }
