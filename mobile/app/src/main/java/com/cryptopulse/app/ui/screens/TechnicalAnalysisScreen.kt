@@ -242,3 +242,21 @@ fun TechnicalAnalysisScreen(
         }
     }
 }
+
+@Composable
+private fun AnalysisBadge(title: String, value: String, accentColor: Color) {
+    Surface(
+        color = NavyCard,
+        shape = RoundedCornerShape(8.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, NavyBorder)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(title, color = TextSecondary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(2.dp))
+            Text(value, color = accentColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}

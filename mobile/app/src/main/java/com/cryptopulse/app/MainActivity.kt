@@ -44,8 +44,7 @@ import com.cryptopulse.app.ui.screens.TradeAlertScreen
 import com.cryptopulse.app.ui.screens.PositionsScreen
 import com.cryptopulse.app.ui.screens.StrategySelectionScreen
 import com.cryptopulse.app.ui.screens.TechnicalAnalysisScreen
-import com.cryptopulse.app.ui.screens.LiveAnalysisScreen
-import com.cryptopulse.app.ui.screens.LiveAnalysisViewModel
+import com.cryptopulse.app.ui.screens.BotActivationScreen
 import com.cryptopulse.app.service.BackgroundMonitoringService
 import com.cryptopulse.app.service.AlertBus
 import com.cryptopulse.app.ui.theme.CryptoPulseTheme

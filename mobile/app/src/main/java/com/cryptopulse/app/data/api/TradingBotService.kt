@@ -151,11 +151,14 @@ interface TradingBotService {
     @POST("/api/trading-bot/activate")
     suspend fun activate(@Body request: ActivateBotRequest): Response<Map<String, Any>>
 
+    @POST("/api/trading-bot/deactivate")
+    suspend fun deactivate(): Response<Map<String, Any>>
+
     @GET("/api/trading-bot/status")
     suspend fun getStatus(): Response<BotStatusResponse>
 
     @GET("/api/trading-bot/analysis-status")
-    suspend fun getAnalysisStatus(): Response<AnalysisStatusResponse>
+    suspend fun getAnalysisStatus(): Response<com.cryptopulse.app.domain.models.AnalysisSnapshot>
 
     @POST("/api/trading-bot/execute-trade")
     suspend fun executeTrade(): Response<Map<String, Any>>
