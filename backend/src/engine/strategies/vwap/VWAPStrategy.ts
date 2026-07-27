@@ -182,7 +182,9 @@ export class VWAPStrategy implements IStrategy {
           ...baseSignal,
           type: finalSignalType,
           reasoning
-        }
+        },
+        indicatorSnapshot,
+        conditionResult
       }
     };
   }

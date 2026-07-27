@@ -189,7 +189,9 @@ export class MeanReversionStrategy implements IStrategy {
           ...baseSignal,
           type: finalSignalType,
           reasoning
-        }
+        },
+        indicatorSnapshot,
+        conditionResult
       }
     };
   }

@@ -97,8 +97,11 @@ fun TechnicalAnalysisScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(4.dp))
+                val rawState = analysisState?.engineStatus?.state ?: "ANALYSING"
+                val displayState = if (rawState == "WAITING") "ACTIVE" else rawState
+
                 Text(
-                    text = "${candidate.pairName} • Live Engine State: ${analysisState?.engineStatus?.state ?: "ANALYSING"}",
+                    text = "${candidate.pairName} • Live Engine State: $displayState",
                     color = TextSecondary,
                     fontSize = 12.sp,
                     textAlign = TextAlign.Center,
@@ -147,7 +150,8 @@ fun TechnicalAnalysisScreen(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Box(modifier = Modifier.size(8.dp).background(ProfitGreen, RoundedCornerShape(4.dp)))
                                         Spacer(Modifier.width(6.dp))
-                                        Text(state.engineStatus?.state ?: "UNKNOWN", color = ProfitGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        val engineStateDisplay = if (state.engineStatus?.state == "WAITING") "ACTIVE" else (state.engineStatus?.state ?: "UNKNOWN")
+                                        Text(engineStateDisplay, color = ProfitGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
                                 }
                                 Text("$confidence%", color = CyanPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp)
@@ -243,7 +247,10 @@ fun TechnicalAnalysisScreen(
                             Spacer(Modifier.height(4.dp))
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Last Evaluation", color = TextSecondary, fontSize = 12.sp)
-                                Text("${state.engineStatus?.lastEvaluationTimestamp ?: "N/A"}", color = TextPrimary, fontSize = 12.sp)
+                                val formattedTime = state.engineStatus?.lastEvaluationTimestamp?.let {
+                                    java.text.SimpleDateFormat("dd MMM, HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(it))
+                                } ?: "N/A"
+                                Text(formattedTime, color = TextPrimary, fontSize = 12.sp)
                             }
                         }
                     }
