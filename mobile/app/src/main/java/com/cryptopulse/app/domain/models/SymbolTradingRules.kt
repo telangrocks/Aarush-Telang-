@@ -19,7 +19,6 @@ data class SymbolTradingRules(
     val minPrice: Double,
     val maxPrice: Double,
     val contractSize: Double = 1.0,
-    val maxLeverage: Int? = null,
     val maxPosition: Double? = null,
     val additionalFilters: List<ExchangeFilterConstraint> = emptyList(),
     val lastUpdated: Long = System.currentTimeMillis()

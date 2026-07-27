@@ -1,4 +1,4 @@
-export type ExchangeName = "binance" | "delta" | "bybit";
+export type ExchangeName = "binance";
 
 export type ExchangeEnvironment = "mainnet" | "testnet";
 
@@ -114,10 +114,6 @@ export interface AnalysisSnapshot {
 }
 
 /**
- * Regional endpoint family. Delta Exchange operates separate, geo-fenced
- * deployments: the global `api.delta.exchange` (CloudFront-fronted) rejects
- * Indian traffic with a 403, while Indian accounts must use the dedicated
- * `api.india.delta.exchange` domain. Defaults to the safest value per
  * exchange in the adapter config.
  */
 export type ExchangeRegion = "global" | "india";
@@ -216,21 +212,7 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
       india: "https://testnet.binance.vision",
     },
   },
-  {
-    // Delta Exchange India accounts MUST use the India domain. The global
-    // api.delta.exchange is geo-blocked (CloudFront 403) for Indian users.
-    name: "delta",
-    displayName: "Delta Exchange",
-    defaultRegion: "india",
-    regionUrls: {
-      global: "https://api.delta.exchange",
-      india: "https://api.india.delta.exchange",
-    },
-    regionTestnetUrls: {
-      global: "https://api-testnet.delta.exchange",
-      india: "https://cdn-ind.testnet.deltaex.org",
-    },
-  },
+
   {
     name: "bybit",
     displayName: "Bybit",

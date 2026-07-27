@@ -23,22 +23,7 @@ export interface OrderResult {
   status?: 'pending' | 'open' | 'partially_filled' | 'filled' | 'cancelled' | 'rejected' | 'expired';
 }
 
-export interface PositionResult {
-  symbol: string;
-  size: number;
-  entry_price: number;
-  unrealized_pnl: number;
-  margin?: number;
-  side: 'BUY' | 'SELL';
-}
 
-export interface PositionsResponse {
-  success: boolean;
-  message: string;
-  result: PositionResult[];
-  code?: string;
-  friendlyMessage?: string;
-}
 
 export interface BalanceItem {
   asset: string;
@@ -90,7 +75,7 @@ export interface IExchangeAdapter {
   ): Promise<OrderResult>;
   cancelOrder?(orderId: string, symbol: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }>;
   fetchOrder?(orderId: string, apiKey: string, apiSecret: string): Promise<OrderResult>;
-  fetchPositions?(apiKey: string, apiSecret: string): Promise<PositionsResponse>;
+
   fetchBalances?(apiKey: string, apiSecret: string): Promise<BalanceResponse>;
   setEnvironment?(environment: ExchangeEnvironment): void;
   setRegion?(region: ExchangeRegion): void;

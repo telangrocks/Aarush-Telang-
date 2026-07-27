@@ -61,7 +61,7 @@ describe('StrategyRegistry', () => {
     ];
 
     for (const { alias, expectedId } of aliases) {
-      const strategy = registry.createStrategy(alias, { leverage: '25', risk_level: 'High' });
+      const strategy = registry.createStrategy(alias, { risk_level: 'High' });
       expect(strategy).toBeDefined();
       expect(strategy?.manifest.id).toBe(expectedId);
     }

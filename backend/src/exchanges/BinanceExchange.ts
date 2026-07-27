@@ -660,58 +660,6 @@ export class BinanceExchange implements IExchangeAdapter {
     }
   }
 
-  async fetchPositions(apiKey: string, apiSecret: string): Promise<{ success: boolean; result: any[]; message: string; code?: string }> {
-    const breakerState = this.breaker.check();
-    if (!breakerState.allowed) {
-      return { success: false, result: [], message: `Circuit breaker is OPEN. Fast-failing request.` };
-    }
-
-    try {
-      const timestamp = Date.now();
-      const params = new URLSearchParams({
-        timestamp: timestamp.toString(),
-      });
-      
-      const signature = await hmacSha256(params.toString(), apiSecret);
-      const url = `${this.getRestUrl()}/api/v3/account?${params.toString()}&signature=${signature}`;
-
-      const response = await fetch(url, {
-        headers: {
-          'X-MBX-APIKEY': apiKey,
-        },
-      });
-
-      const data = await response.json() as any;
-      if (!response.ok) {
-        this.breaker.recordFailure();
-        return { success: false, message: data.msg || "Failed to fetch account", code: "UNKNOWN_EXCHANGE_ERROR", result: [] };
-      }
-
-      // Binance Spot doesn't have "positions" in the derivative sense, just balances.
-      // We will map balances > 0 to simulate positions for the UI.
-      const positions: any[] = [];
-      const balances = data.balances || [];
-      for (const b of balances) {
-        const free = parseFloat(b.free);
-        const locked = parseFloat(b.locked);
-        const total = free + locked;
-        if (total > 0 && b.asset !== "USDT") {
-          positions.push({
-            symbol: `${b.asset}USDT`,
-            size: total,
-            entry_price: 0, // Spot doesn't track entry price intrinsically like Futures
-            side: "BUY"
-          });
-        }
-      }
-
-      this.breaker.recordSuccess();
-      return { success: true, result: positions, message: 'Success' };
-    } catch (e: any) {
-      this.breaker.recordFailure();
-      return { success: false, result: [], message: e.message || 'Unknown error' };
-    }
-  }
 
   async fetchBalances(apiKey: string, apiSecret: string): Promise<BalanceResponse> {
     const breakerState = this.breaker.check();

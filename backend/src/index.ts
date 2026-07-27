@@ -45,7 +45,7 @@ import {
   handleAcknowledgeAlert,
 } from "./handlers/exchange";
 import { handleRegisterFcmToken } from "./handlers/notifications";
-import { handleGetPositions, handleClosePosition } from "./handlers/positions";
+
 import { isTokenRevoked } from "./handlers/auth";
 import { chatWithKimiK3 } from "./services/kimi";
 
@@ -336,8 +336,7 @@ api.post("/trading-bot/stop-trade", handleStopTradingBot);
 api.get("/trading-bot/alerts", handleGetBotAlerts);
 api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
 
-api.get("/positions", handleGetPositions);
-api.post("/positions/:id/close", handleClosePosition);
+
 
 api.post("/fcm/register", handleRegisterFcmToken);
 api.delete("/fcm/register", handleDeleteFcmToken);

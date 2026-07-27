@@ -1,19 +1,14 @@
 import { IExchangeAdapter } from "./BaseExchange";
 import { ExchangeName, ExchangeEnvironment, ExchangeRegion } from "./types";
 import { BinanceExchange } from "./BinanceExchange";
-import { DeltaExchange } from "./DeltaExchange";
-import { BybitExchange } from "./BybitExchange";
 
 const adapterConstructors: Record<ExchangeName, new () => IExchangeAdapter> = {
   binance: BinanceExchange,
-  delta: DeltaExchange,
-  bybit: BybitExchange,
 };
 
 /**
  * Normalize an untrusted region value into a valid ExchangeRegion.
- * Falls back to the adapter's configured defaultRegion (Delta defaults to
- * "india" so Indian accounts are routed to the India domain by default).
+ * Falls back to the adapter's configured defaultRegion.
  */
 export function normalizeRegion(value: unknown, defaultRegion: ExchangeRegion): ExchangeRegion {
   return value === "global" || value === "india" ? value : defaultRegion;

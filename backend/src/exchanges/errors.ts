@@ -9,7 +9,7 @@
  *   - `technicalDetail`: raw detail logged server-side only (never sent to app)
  *
  * The classification inspects HTTP status, response body text, and exception
- * types across Binance, Delta Exchange and Bybit.
+ * types across Binance.
  */
 
 export type ExchangeErrorCode =
@@ -184,12 +184,9 @@ export function classifyExchangeResponse(
 ): ClassifiedError {
   const lower = (bodyText || "").toLowerCase();
   const technicalDetail = `exchange=${exchangeName} status=${status} body=${bodyText.slice(0, 500)}`;
-
-  // For credential/permission errors Binance/Bybit/Delta return a structured
   // {code,...} / {retCode,...} body. Resolve it precisely FIRST before text matching!
   const structured =
     classifyBinanceCode(bodyText, technicalDetail) ??
-    classifyBybitCode(bodyText, technicalDetail) ??
     classifyDeltaCode(bodyText, technicalDetail);
   if (structured) return structured;
 
@@ -287,84 +284,10 @@ export function classifyBinanceCode(
   return null;
 }
 
-export function classifyBybitCode(
-  bodyText: string,
-  technicalDetail: string,
-): ClassifiedError | null {
-  let retCode: number | undefined;
-  try {
-    const raw = bodyText.includes("{") ? bodyText.slice(bodyText.indexOf("{"), bodyText.lastIndexOf("}") + 1) : bodyText;
-    const parsed = JSON.parse(raw) as { retCode?: number };
-    if (typeof parsed.retCode === "number") retCode = parsed.retCode;
-  } catch {
-    const match = bodyText.match(/"retCode"\s*:\s*(-?\d+)/) || bodyText.match(/retCode=(-?\d+)/);
-    if (match) retCode = parseInt(match[1], 10);
-  }
-  if (retCode === undefined) return null;
-
-  // Reference: https://bybit-exchange.github.io/docs/v5/errors
-  const byCode: Record<number, ExchangeErrorCode> = {
-    10001: "UNKNOWN_EXCHANGE_ERROR", // parameter error (generic) - keep generic
-    10003: "INVALID_API_KEY", // API key is invalid
-    10004: "INVALID_API_KEY", // invalid api key (variants)
-    10005: "INSUFFICIENT_PERMISSIONS", // permission denied / api key not authorized
-    10006: "INSUFFICIENT_PERMISSIONS", // insufficient permission
-    10009: "TIMESTAMP_OUT_OF_SYNC", // api timestamp expired
-    10010: "INVALID_SIGNATURE", // invalid sign / signature
-    10012: "INVALID_SIGNATURE", // invalid parameter (incl. sign-related)
-    10013: "IP_NOT_WHITELISTED", // ip not allowed
-    10018: "API_RATE_LIMIT_REACHED", // too many visits / request frequency
-    10029: "API_RATE_LIMIT_REACHED", // frequency limit reached
-    160003: "FUTURES_TRADING_NOT_ENABLED", // contract trading not enabled variants
-    130021: "FUTURES_TRADING_NOT_ENABLED",
-    110007: "SPOT_TRADING_NOT_ENABLED", // spot trading not enabled variants
-    110009: "SPOT_TRADING_NOT_ENABLED",
-  };
-
-  const mapped = byCode[retCode];
-  if (mapped) return mk(mapped, technicalDetail, `bybit retCode ${retCode}`);
-  return null;
-}
-
-export function classifyDeltaCode(
-  bodyText: string,
-  technicalDetail: string,
-): ClassifiedError | null {
-  let errCode: string | undefined;
-  try {
-    const raw = bodyText.includes("{") ? bodyText.slice(bodyText.indexOf("{"), bodyText.lastIndexOf("}") + 1) : bodyText;
-    const parsed = JSON.parse(raw) as { error?: { code?: string } };
-    if (parsed?.error?.code) {
-      errCode = parsed.error.code.toLowerCase();
-    }
-  } catch {
-    const match = bodyText.match(/"code"\s*:\s*"([^"]+)"/);
-    if (match) errCode = match[1].toLowerCase();
-  }
-  if (!errCode) return null;
-
-  const byCode: Record<string, ExchangeErrorCode> = {
-    "invalid_api_key": "INVALID_API_KEY",
-    "api_key_invalid": "INVALID_API_KEY",
-    "signature_invalid": "INVALID_SIGNATURE",
-    "signatureexpired": "INVALID_SIGNATURE",
-    "timestamp_invalid": "TIMESTAMP_OUT_OF_SYNC",
-    "timestamp_expired": "TIMESTAMP_OUT_OF_SYNC",
-    "unauthorized": "INSUFFICIENT_PERMISSIONS",
-    "insufficient_permissions": "INSUFFICIENT_PERMISSIONS",
-    "rate_limit_exceeded": "API_RATE_LIMIT_REACHED",
-    "maintenance": "EXCHANGE_UNDER_MAINTENANCE",
-    "ip_restricted": "IP_NOT_WHITELISTED",
-  };
-
-  const mapped = byCode[errCode];
-  if (mapped) return mk(mapped, technicalDetail, `delta code ${errCode}`);
-  return null;
-}
 
 /**
  * Classify based on the human-readable error text returned by the exchange.
- * Covers Binance, Delta Exchange and Bybit message conventions.
+ * Covers Binance message conventions.
  */
 export function classifyByBodyText(
   lower: string,
@@ -373,12 +296,8 @@ export function classifyByBodyText(
 ): ClassifiedError {
   // Prefer the exchange's structured numeric error code when present — it is
   // the most accurate signal and avoids ambiguous text matching. Binance uses
-  // {code}, Bybit uses {retCode}.
   const bodyRaw = technicalDetail.split("body=")[1] ?? "";
-  const structured =
-    classifyBinanceCode(bodyRaw, technicalDetail) ??
-    classifyBybitCode(bodyRaw, technicalDetail) ??
-    classifyDeltaCode(bodyRaw, technicalDetail);
+  const structured = classifyBinanceCode(bodyRaw, technicalDetail);
   if (structured) return structured;
   // IP allow-list / restriction
   if (
@@ -397,7 +316,6 @@ export function classifyByBodyText(
   if (lower.includes("passphrase") || lower.includes("password") || lower.includes("invalid passphrase")) {
     return mk("INVALID_PASSPHRASE", technicalDetail, lower);
   }
-  // Explicit API-key invalid (Bybit: "API key is invalid", Delta: similar)
   if (lower.includes("api key") && (lower.includes("invalid") || lower.includes("not valid") || lower.includes("not found") || lower.includes("incorrect"))) {
     return mk("INVALID_API_KEY", technicalDetail, lower);
   }

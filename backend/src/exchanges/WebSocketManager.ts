@@ -65,14 +65,7 @@ export class WebSocketManager {
     this.eventListeners = this.eventListeners.filter(l => l !== listener);
   }
 
-  public getPingPayload(exchange: ExchangeName): string | null {
-    if (exchange === "bybit") {
-      return JSON.stringify({ op: "ping" });
-    }
-    if (exchange === "delta") {
-      return JSON.stringify({ type: "ping" });
-    }
-    return null;
+  public getPingPayload(exchange: ExchangeName): string | null {    return null;
   }
 
   public emitEvent(event: ExchangeEvent) {
@@ -140,23 +133,7 @@ export class WebSocketManager {
         ? "wss://testnet.binance.vision/ws"
         : "wss://stream.binance.com:9443/ws";
       return listenKey ? `${baseUrl}/${listenKey}` : baseUrl;
-    }
-    if (exchange === "bybit") {
-      return environment === "testnet"
-        ? "wss://stream-testnet.bybit.com/v5/private"
-        : "wss://stream.bybit.com/v5/private";
-    }
-    if (exchange === "delta") {
-      if (environment === "testnet") {
-        return region === "india"
-          ? "wss://socket-ind.testnet.deltaex.org"
-          : "wss://socket-testnet.delta.exchange";
-      }
-      return region === "india"
-        ? "wss://socket.india.delta.exchange"
-        : "wss://socket.delta.exchange";
-    }
-    throw new Error(`Unsupported exchange: ${exchange}`);
+    }    throw new Error(`Unsupported exchange: ${exchange}`);
   }
 
   // Event Ingestion Normalizers
@@ -190,70 +167,6 @@ export class WebSocketManager {
       filledQuantity: execQty,
       averageFillPrice: avgPrice,
       eventTime: parseInt(data.T || Date.now().toString()),
-    };
-  }
-
-  public normalizeBybitOrderEvent(data: any): ExchangeEvent | null {
-    if (!data || !Array.isArray(data.data)) return null;
-    const item = data.data[0];
-    if (!item) return null;
-
-    const statusMap: Record<string, any> = {
-      'New': 'open',
-      'PartiallyFilled': 'partially_filled',
-      'Filled': 'filled',
-      'Cancelled': 'cancelled',
-      'Rejected': 'rejected',
-    };
-
-    return {
-      eventId: `${item.orderId}_${item.orderStatus}_${item.updatedTime}`,
-      clientOrderId: item.orderLinkId,
-      exchangeOrderId: item.orderId,
-      symbol: item.symbol?.replace("USDT", "") || "",
-      exchange: "bybit",
-      side: item.side === "Buy" ? "BUY" : "SELL",
-      status: statusMap[item.orderStatus] || 'pending',
-      price: parseFloat(item.price || '0'),
-      quantity: parseFloat(item.qty || '0'),
-      filledQuantity: parseFloat(item.cumExecQty || '0'),
-      averageFillPrice: parseFloat(item.avgPrice || '0'),
-      eventTime: parseInt(item.updatedTime || Date.now().toString()),
-    };
-  }
-
-  public normalizeDeltaOrderEvent(data: any): ExchangeEvent | null {
-    if (!data || data.type !== 'orders') return null;
-    const item = data.payload || data;
-
-    const statusMap: Record<string, any> = {
-      'open': 'open',
-      'pending': 'pending',
-      'closed': 'filled',
-      'cancelled': 'cancelled',
-      'rejected': 'rejected',
-    };
-
-    let status = statusMap[item.state] || 'pending';
-    const filledQty = parseFloat(item.filled_quantity || '0');
-    const totalQty = parseFloat(item.size || '0');
-    if (status === 'open' && filledQty > 0 && filledQty < totalQty) {
-      status = 'partially_filled';
-    }
-
-    return {
-      eventId: `${item.id}_${item.state}_${item.updated_at || Date.now()}`,
-      clientOrderId: item.client_order_id,
-      exchangeOrderId: item.id?.toString(),
-      symbol: item.symbol?.replace("USD", "").replace("USDT", "") || "",
-      exchange: "delta",
-      side: item.side === "buy" ? "BUY" : "SELL",
-      status: status,
-      price: parseFloat(item.limit_price || item.avg_fill_price || '0'),
-      quantity: totalQty,
-      filledQuantity: filledQty,
-      averageFillPrice: parseFloat(item.avg_fill_price || '0'),
-      eventTime: Date.parse(item.updated_at || new Date().toISOString()),
     };
   }
 }

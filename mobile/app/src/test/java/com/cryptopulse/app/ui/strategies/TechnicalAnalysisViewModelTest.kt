@@ -82,14 +82,6 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun acknowledgeAlert(request: Map<String, String>): Response<Map<String, Any>> {
                 return Response.success(emptyMap())
             }
-
-            override suspend fun getPositions(): Response<List<PositionResponse>> {
-                return Response.success(emptyList())
-            }
-
-            override suspend fun closePosition(positionId: String): Response<Map<String, Any>> {
-                return Response.success(mapOf("success" to true))
-            }
         }
     }
 

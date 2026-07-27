@@ -6,7 +6,6 @@ export interface TradeValidationParams {
   entryPrice: number;
   tradeValueUsdt?: number;
   quantity?: number;
-  leverage?: number;
   stopLoss?: number;
   takeProfit?: number;
 }

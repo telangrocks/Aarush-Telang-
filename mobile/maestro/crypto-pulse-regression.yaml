@@ -58,7 +58,7 @@ flows:
       - tapOn:
           id: "com.cryptopulse:id/exchange_dropdown"
         optional: true
-      - tapOn: "Bybit"
+      - tapOn: "Binance"
         optional: true
       - tapOn:
           id: "com.cryptopulse:id/api_key_input"
@@ -246,7 +246,7 @@ flows:
       - tapOn:
           id: "com.cryptopulse:id/exchange_dropdown"
         optional: true
-      - tapOn: "Bybit"
+      - tapOn: "Binance"
         optional: true
       - tapOn:
           id: "com.cryptopulse:id/api_key_input"

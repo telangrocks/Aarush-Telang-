@@ -6,7 +6,7 @@ describe('RiskEngine', () => {
   it('should calculate risk correctly for low volatility / standard risk', () => {
     const config: RiskParameters = {
       accountRiskPercent: 1, // 1% risk
-      maxExposureLimit: 10, // 10% max position size
+      maxExposureLimit: 10, // 10% max order size
       atrStopLossMultiplier: 1.5,
       riskRewardRatio: 2.0
     };
@@ -30,9 +30,9 @@ describe('RiskEngine', () => {
 
     // Risk Amount = 1% of $10,000 = $100
     // Stop Loss Percent = 3 / 100 = 0.03 (3%)
-    // Position Size = $100 / 0.03 = $3,333.33
+    // Order Size = $100 / 0.03 = $3,333.33
     // Max Exposure = 10% of $10,000 = $1,000
-    // Since $3,333.33 > $1,000, position size is capped at $1,000
+    // Since $3,333.33 > $1,000, order size is capped at $1,000
     expect(assessment.positionSizeRecommendation).toBe(1000);
     expect(assessment.maximumExposure).toBe(1000);
     expect(assessment.riskClassification).toBe('EXTREME'); // Capped by exposure
@@ -41,7 +41,7 @@ describe('RiskEngine', () => {
   it('should calculate risk correctly for high volatility and extreme risk', () => {
     const config: RiskParameters = {
       accountRiskPercent: 5, // 5% risk
-      maxExposureLimit: 50, // 50% max position size
+      maxExposureLimit: 50, // 50% max order size
       atrStopLossMultiplier: 2.0,
       riskRewardRatio: 1.5
     };
@@ -65,7 +65,7 @@ describe('RiskEngine', () => {
 
     // Risk Amount = 5% of $100k = $5000
     // Stop Loss Percent = 5000 / 50000 = 0.10 (10%)
-    // Position Size = 5000 / 0.10 = 50000
+    // Order Size = 5000 / 0.10 = 50000
     // Max Exposure = 50% of $100k = 50000
     expect(assessment.positionSizeRecommendation).toBe(50000);
     expect(assessment.riskClassification).toBe('EXTREME'); 
@@ -93,7 +93,7 @@ describe('RiskEngine', () => {
     // Risk Amount = 0.5% of 10000 = 50
     // Stop Loss = 5 * 2.0 = 10
     // Stop Loss Percent = 10 / 100 = 0.10
-    // Position size = 50 / 0.10 = 500
+    // Order size = 50 / 0.10 = 500
     // Max exposure = 10% of 10000 = 1000
     // 500 < 1000 * 0.9 (900), so not EXTREME
     // Risk% is 0.5, which is < 2, so LOW

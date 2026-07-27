@@ -18,13 +18,6 @@ function applyConfigOverrides<T extends Record<string, any>>(defaultConfig: T, o
   }
   const merged = JSON.parse(JSON.stringify(defaultConfig));
   
-  if (overrides.leverage) {
-    const lev = Number(overrides.leverage);
-    if (!isNaN(lev) && lev > 0) {
-      merged.riskParameters = merged.riskParameters || {};
-      merged.riskParameters.maxExposureLimit = lev;
-    }
-  }
   if (overrides.risk_level || overrides.riskLevel) {
     const risk = String(overrides.risk_level || overrides.riskLevel).toUpperCase();
     if (['LOW', 'MEDIUM', 'HIGH'].includes(risk)) {

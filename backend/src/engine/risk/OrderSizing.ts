@@ -1,14 +1,14 @@
 import { RiskParameters } from './RiskParameters';
 
-export class PositionSizing {
+export class OrderSizing {
   /**
-   * Calculates position size based on account risk and stop loss distance.
+   * Calculates order size based on account risk and stop loss distance.
    * 
    * @param accountBalance The total account balance in quote currency.
    * @param stopLossDistance The absolute price distance from entry to stop loss.
    * @param currentPrice The current price of the asset.
    * @param config The risk configuration parameters.
-   * @returns The allowed position size in quote currency.
+   * @returns The allowed order size in quote currency.
    */
   public static calculateSize(
     accountBalance: number,
@@ -26,7 +26,7 @@ export class PositionSizing {
     // Stop loss percentage
     const stopLossPercent = stopLossDistance / currentPrice;
 
-    // Position size in quote currency to risk exactly 'riskAmount'
+    // Order size in quote currency to risk exactly 'riskAmount'
     const positionSize = riskAmount / stopLossPercent;
 
     // Ensure we don't exceed max exposure limits

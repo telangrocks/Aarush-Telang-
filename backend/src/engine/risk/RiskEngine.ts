@@ -2,7 +2,7 @@ import { RiskParameters } from './RiskParameters';
 import { RiskAssessment, RiskClassification } from './RiskAssessment';
 import { StopLossCalculator } from './StopLossCalculator';
 import { TakeProfitCalculator } from './TakeProfitCalculator';
-import { PositionSizing } from './PositionSizing';
+import { OrderSizing } from './OrderSizing';
 
 export interface RiskContext {
   timestamp: number;
@@ -31,14 +31,14 @@ export class RiskEngine {
     const takeProfitDistance = TakeProfitCalculator.calculateDistance(stopLossDistance, this.config);
     explanation.push(`Take Profit distance calculated at ${takeProfitDistance.toFixed(2)} (R:R ratio: ${this.config.riskRewardRatio}).`);
 
-    // Calculate Position Size
-    const positionSize = PositionSizing.calculateSize(
+    // Calculate Order Size
+    const positionSize = OrderSizing.calculateSize(
       context.accountBalance,
       stopLossDistance,
       context.currentPrice,
       this.config
     );
-    explanation.push(`Position size recommended at ${positionSize.toFixed(2)} (Risk: ${this.config.accountRiskPercent}% of balance).`);
+    explanation.push(`Order size recommended at ${positionSize.toFixed(2)} (Risk: ${this.config.accountRiskPercent}% of balance).`);
 
     // Assess risk classification based on exposure and volatility
     const maxAllowedExposure = context.accountBalance * (this.config.maxExposureLimit / 100);

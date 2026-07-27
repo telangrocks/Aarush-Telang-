@@ -115,44 +115,7 @@ data class BotAlert(
     }
 }
 
-data class PositionResponse(
-    val id: String,
-    @SerializedName("user_id") val userId: String,
-    val symbol: String,
-    val side: String,
-    @SerializedName("entry_price") val entryPrice: Double,
-    val quantity: Double,
-    @SerializedName("stop_loss") val stopLoss: Double,
-    @SerializedName("take_profit") val takeProfit: Double,
-    val status: String,
-    val exchange: String,
-    val environment: String,
-    val strategy: String?,
-    @SerializedName("order_id") val orderId: String?,
-    @SerializedName("order_type") val orderType: String? = "MARKET",
-    @SerializedName("limit_price") val limitPrice: Double? = null,
-    @SerializedName("entry_exchange_order_id") val entryExchangeOrderId: String? = null,
-    @SerializedName("tp_exchange_order_id") val tpExchangeOrderId: String? = null,
-    @SerializedName("sl_exchange_order_id") val slExchangeOrderId: String? = null,
-    @SerializedName("oco_group_id") val ocoGroupId: String? = null,
-    @SerializedName("protection_mode") val protectionMode: String? = "ATTACHED_TPSL",
-    @SerializedName("entry_status") val entryStatus: String? = "FILLED",
-    @SerializedName("filled_quantity") val filledQuantity: Double? = null,
-    @SerializedName("average_fill_price") val averageFillPrice: Double? = null,
-    @SerializedName("entry_submitted_at") val entrySubmittedAt: String? = null,
-    @SerializedName("entry_filled_at") val entryFilledAt: String? = null,
-    @SerializedName("last_health_check_at") val lastHealthCheckAt: String? = null,
-    @SerializedName("retry_count") val retryCount: Int? = 0,
-    @SerializedName("entry_at") val entryAt: String?,
-    @SerializedName("closed_at") val closedAt: String?,
-    @SerializedName("close_price") val closePrice: Double?,
-    @SerializedName("realized_pnl") val realizedPnl: Double?,
-    @SerializedName("close_reason") val closeReason: String?,
-    @SerializedName("created_at") val createdAt: String?,
-    @SerializedName("updated_at") val updatedAt: String?,
-    @SerializedName("current_price") val currentPrice: Double?,
-    @SerializedName("live_pnl") val livePnl: Double?,
-)
+
 
 interface TradingBotService {
     @POST("/api/trading-bot/activate")
@@ -179,9 +142,5 @@ interface TradingBotService {
     @POST("/api/trading-bot/alerts/acknowledge")
     suspend fun acknowledgeAlert(@Body request: Map<String, String>): Response<Map<String, Any>>
 
-    @GET("/api/positions")
-    suspend fun getPositions(): Response<List<PositionResponse>>
 
-    @POST("/api/positions/{id}/close")
-    suspend fun closePosition(@Path("id") positionId: String): Response<Map<String, Any>>
 }

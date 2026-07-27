@@ -85,33 +85,4 @@ describe('WebSocketManager & EventDeduplicator', () => {
     expect(normalized?.status).toBe('filled');
     expect(normalized?.exchangeOrderId).toBe('4293153');
     expect(normalized?.clientOrderId).toBe('my_client_id');
-  });
-
-  it('should normalize Bybit order event correctly', () => {
-    const mgr = new WebSocketManager();
-    const rawReport = {
-      topic: 'order',
-      data: [
-        {
-          symbol: 'SOLUSDT',
-          orderId: 'bybit_ord_123',
-          orderLinkId: 'cli_bybit_1',
-          side: 'Buy',
-          orderStatus: 'Filled',
-          price: '77.5',
-          qty: '1',
-          cumExecQty: '1',
-          avgPrice: '77.5',
-          updatedTime: '1690000000000',
-        }
-      ]
-    };
-
-    const normalized = mgr.normalizeBybitOrderEvent(rawReport);
-    expect(normalized).not.toBeNull();
-    expect(normalized?.symbol).toBe('SOL');
-    expect(normalized?.exchange).toBe('bybit');
-    expect(normalized?.status).toBe('filled');
-    expect(normalized?.exchangeOrderId).toBe('bybit_ord_123');
-  });
-});
+  });});

@@ -18,7 +18,6 @@ function normalizeEnvironment(value: unknown): ExchangeEnvironment {
 
 /**
  * Normalize an untrusted region value into a valid ExchangeRegion, defaulting
- * to "india" so Delta Exchange India accounts reach the India domain even if
  * no region was previously persisted.
  */
 function normalizeRegion(value: unknown): ExchangeRegion {
@@ -1211,15 +1210,6 @@ export class TradingBot {
 
       const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
       
-      // Feature 7: Automatic Synchronization of Open Positions
-      let exchangePositions: any[] = [];
-      if (adapter.fetchPositions) {
-        const posRes = await adapter.fetchPositions(userKeys.exchange_api_key, decryptedSecret);
-        if (posRes.success) {
-          exchangePositions = posRes.result;
-        }
-      }
-
       for (const position of results as any[]) {
         try {
           const ticker = await adapter.fetchTicker(position.symbol);
@@ -1228,17 +1218,6 @@ export class TradingBot {
           const currentPrice = ticker.price;
           let closeReason: string | null = null;
 
-          // Check if position was closed externally on the exchange
-          let isExternallyClosed = false;
-          if (exchangePositions.length > 0) {
-             const activeOnExchange = exchangePositions.find(p => p.symbol.includes(position.symbol) && p.size > 0);
-             if (!activeOnExchange) {
-               isExternallyClosed = true;
-               closeReason = 'closed_externally';
-             }
-          }
-
-          if (!isExternallyClosed) {
             if (position.side === 'BUY') {
               if (currentPrice <= position.stop_loss) {
                 closeReason = 'stop_loss';
@@ -1252,7 +1231,6 @@ export class TradingBot {
                 closeReason = 'take_profit';
               }
             }
-          }
 
           if (closeReason) {
             const priceDiff = position.side === 'BUY'

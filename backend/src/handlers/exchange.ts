@@ -225,7 +225,7 @@ export async function handleGetExchangeBalances(
         success: false,
         code: "NO_EXCHANGE_CONNECTED",
         message: "No exchange account is connected.",
-        hint: "Connect your Binance, Bybit, or Delta Exchange account in settings.",
+        hint: "Connect your Binance account in settings.",
       });
     }
 

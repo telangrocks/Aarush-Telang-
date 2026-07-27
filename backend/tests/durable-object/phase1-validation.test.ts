@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { getExchangeAdapter, normalizeQuantity } from "../../src/exchanges";
 import { TradingBot } from "../../src/trading-bot";
-import { DeltaExchange } from "./exchanges/DeltaExchange";
 import { Env } from "../../src/index";
 
 describe("Phase 1 Production Readiness Validation", () => {
@@ -21,7 +20,7 @@ describe("Phase 1 Production Readiness Validation", () => {
         prepare: vi.fn().mockReturnValue({
           bind: vi.fn().mockReturnValue({
             first: vi.fn().mockResolvedValue({
-              exchange_name: "delta",
+              exchange_name: "binance",
               exchange_environment: "testnet",
               exchange_region: "india",
               exchange_api_key: "key",
@@ -134,7 +133,7 @@ describe("Phase 1 Production Readiness Validation", () => {
 
   describe("4. Retry Policies & Exponential Backoff (fetchWithRetry)", () => {
     it("should retry on 429/500 errors and succeed", async () => {
-      const adapter = getExchangeAdapter("delta", "testnet", "india") as DeltaExchange;
+      const adapter = getExchangeAdapter("binance", "testnet", "global") as any;
       
       mockFetch
         .mockResolvedValueOnce({ ok: false, status: 429 }) // 1st try fails
@@ -187,7 +186,7 @@ describe("Phase 1 Production Readiness Validation", () => {
 
   describe("7. Idempotent Order Execution (clientOrderId)", () => {
     it("should pass clientOrderId to exchange placeOrder", async () => {
-      const adapter = getExchangeAdapter("delta", "testnet", "india") as DeltaExchange;
+      const adapter = getExchangeAdapter("binance", "testnet", "global") as any;
       
       mockFetch
         .mockResolvedValueOnce({ ok: true, json: async () => ({ success: true, result: [] }) }) // Leverage

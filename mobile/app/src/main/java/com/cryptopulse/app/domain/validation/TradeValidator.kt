@@ -9,7 +9,6 @@ data class TradeValidationParams(
     val entryPrice: Double,
     val tradeValueUsdt: Double? = null,
     val quantity: Double? = null,
-    val leverage: Int? = null,
     val stopLoss: Double? = null,
     val takeProfit: Double? = null
 )
@@ -148,22 +147,12 @@ object TradeValidator {
             )
         }
 
-        // 8. Position & Leverage Limits
-        if (rules.maxLeverage != null && params.leverage != null && params.leverage > rules.maxLeverage) {
-            return TradeValidationResult(
-                isValid = false,
-                errorCode = ValidationErrorReason.LEVERAGE_LIMIT_FAILED,
-                errorMessage = "Requested leverage (${params.leverage}x) exceeds exchange maximum leverage (${rules.maxLeverage}x).",
-                quantizedQuantity = roundedQtyBD.toDouble(),
-                postRoundingNotional = postRoundingNotionalBD.toDouble()
-            )
-        }
-
+        // 8. Order Limits
         if (rules.maxPosition != null && postRoundingNotionalBD > BigDecimal.valueOf(rules.maxPosition)) {
             return TradeValidationResult(
                 isValid = false,
                 errorCode = ValidationErrorReason.MAX_POSITION_FAILED,
-                errorMessage = "Order value ($${"%.2f".format(postRoundingNotionalBD.toDouble())} USDT) exceeds exchange position limit ($${rules.maxPosition} USDT).",
+                errorMessage = "Order value ($${"%.2f".format(postRoundingNotionalBD.toDouble())} USDT) exceeds exchange order limit ($${rules.maxPosition} USDT).",
                 quantizedQuantity = roundedQtyBD.toDouble(),
                 postRoundingNotional = postRoundingNotionalBD.toDouble()
             )

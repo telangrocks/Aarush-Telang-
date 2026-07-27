@@ -66,7 +66,7 @@ class TradeSetupViewModelTest {
         riskLevel = RiskLevel.LOW,
         schemaVersion = 1,
         requiredParameters = listOf(
-            StrategyParameterSchema("leverage", "Leverage", ParameterType.INT, "10", true, 1.0, 100.0, null),
+            StrategyParameterSchema("stopLoss", "stopLoss", ParameterType.INT, "5.0", true, 1.0, 100.0, null),
             StrategyParameterSchema("risk", "Risk", ParameterType.DOUBLE, "1.5", true, 0.1, 5.0, null),
             StrategyParameterSchema("mode", "Mode", ParameterType.ENUM, "Safe", true, null, null, listOf("Safe", "Aggressive")),
             StrategyParameterSchema("trailing_stop", "TS", ParameterType.BOOLEAN, "false", false, null, null, null)
@@ -113,7 +113,7 @@ class TradeSetupViewModelTest {
         assertEquals(false, state.isLoading)
         assertEquals(null, state.error)
         assertEquals(4, state.fields.size)
-        assertEquals("10", state.formValues["leverage"])
+        assertEquals("5.0", state.formValues["stopLoss"])
         assertEquals("1.5", state.formValues["risk"])
         assertEquals("Safe", state.formValues["mode"])
         assertEquals("false", state.formValues["trailing_stop"])
@@ -126,11 +126,11 @@ class TradeSetupViewModelTest {
         val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
-        viewModel.updateFieldValue("leverage", "150") // max is 100
+        viewModel.updateFieldValue("stopLoss", "150") // max is 100
         
         val state = viewModel.uiState.value
-        assertEquals("150", state.formValues["leverage"])
-        assertEquals("Max is 100.0", state.formErrors["leverage"])
+        assertEquals("150", state.formValues["stopLoss"])
+        assertEquals("Max is 100.0", state.formErrors["stopLoss"])
     }
 
     @Test
@@ -150,12 +150,12 @@ class TradeSetupViewModelTest {
         val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
-        viewModel.updateFieldValue("leverage", "150") 
-        viewModel.updateFieldValue("leverage", "50") 
+        viewModel.updateFieldValue("stopLoss", "150") 
+        viewModel.updateFieldValue("stopLoss", "50") 
         
         val state = viewModel.uiState.value
-        assertEquals("50", state.formValues["leverage"])
-        assertEquals(null, state.formErrors["leverage"])
+        assertEquals("50", state.formValues["stopLoss"])
+        assertEquals(null, state.formErrors["stopLoss"])
     }
 
     @Test
@@ -164,7 +164,7 @@ class TradeSetupViewModelTest {
         testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.setMinNotional(10.0)
-        viewModel.updateFieldValue("leverage", "20")
+        viewModel.updateFieldValue("stopLoss", "20")
         viewModel.updateEntryPrice("50000.0")
 
         val result = viewModel.buildConfig("BTC")
@@ -174,7 +174,7 @@ class TradeSetupViewModelTest {
         assertEquals("BTC", config.symbol)
         assertEquals(50000.0, config.entryPrice, 0.001)
         assertEquals(0.0, config.tradeValueUsdt, 0.001)
-        assertEquals("20", config.parameters["leverage"])
+        assertEquals("20", config.parameters["stopLoss"])
     }
 
     @Test
@@ -182,7 +182,7 @@ class TradeSetupViewModelTest {
         val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
-        viewModel.updateEntryPrice("-10")
+        viewModel.updateEntryPrice("-5.0")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
@@ -196,16 +196,16 @@ class TradeSetupViewModelTest {
         val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeService())
         testDispatcher.scheduler.advanceUntilIdle()
 
-        viewModel.updateFieldValue("leverage", "")
+        viewModel.updateFieldValue("stopLoss", "")
         viewModel.updateEntryPrice("")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
         val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
-        assertEquals("This field is required.", errors["leverage"])
+        assertEquals("This field is required.", errors["stopLoss"])
         assertEquals("Entry price is required.", errors["entryPrice"])
         
-        assertEquals("This field is required.", viewModel.uiState.value.formErrors["leverage"])
+        assertEquals("This field is required.", viewModel.uiState.value.formErrors["stopLoss"])
         assertEquals("Entry price is required.", viewModel.uiState.value.entryPriceError)
     }
 }

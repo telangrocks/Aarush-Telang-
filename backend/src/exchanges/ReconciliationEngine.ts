@@ -1,4 +1,4 @@
-import { IExchangeAdapter, PositionResult } from './BaseExchange';
+import { IExchangeAdapter, MarketTicker } from "./BaseExchange";
 import { Env } from '../index';
 import { decrypt } from '../crypto';
 
@@ -80,17 +80,6 @@ export class ReconciliationEngine {
     const nowIso = new Date().toISOString();
     const apiSecret = await this.getDecryptedSecret();
 
-    // 1. Fetch current exchange state
-    let exchangePositions: PositionResult[] = [];
-    if (this.adapter.fetchPositions && apiSecret) {
-      const posRes = await this.adapter.fetchPositions(this.userKeys.exchange_api_key, apiSecret);
-      if (posRes.success) {
-        exchangePositions = posRes.result;
-      } else {
-        console.error("Reconciliation failed to fetch positions:", posRes.message);
-        return;
-      }
-    }
 
     // 2. Fetch known PENDING_ENTRY and OPEN positions from D1
     const { results } = await this.env.DB.prepare(
@@ -154,33 +143,6 @@ export class ReconciliationEngine {
 
     const transactions = await this.getTransactions();
 
-    // 4. Identify Orphaned Positions
-    for (const exPos of exchangePositions) {
-      if (exPos.size > 0) {
-        const isKnown = knownPositions.find(p => exPos.symbol.includes(p.symbol) && (
-            (exPos.side as any === 'long' && p.side === 'BUY') || 
-            (exPos.side as any === 'short' && p.side === 'SELL') ||
-            (exPos.side as any === 'both')
-        ));
-
-        if (!isKnown) {
-          const txId = `pos_${exPos.symbol}`;
-          if (!transactions.has(txId)) {
-            transactions.set(txId, {
-              id: txId,
-              type: 'POSITION',
-              symbol: exPos.symbol,
-              status: 'RECOVERY_PENDING',
-              attempts: 0,
-              lastAttemptAt: 0,
-              firstDetectedAt: Date.now(),
-              data: exPos
-            });
-            await this.logDecision('ORPHANED_POSITION_DETECTED', { symbol: exPos.symbol, size: exPos.size, entry_price: exPos.entry_price });
-          }
-        }
-      }
-    }
 
     // 5. Process all pending recovery transactions
     for (const tx of transactions.values()) {
@@ -188,7 +150,7 @@ export class ReconciliationEngine {
     }
       
     const summary = {
-      positionsScanned: exchangePositions.length,
+      positionsScanned: 0,
       knownPositionsReconciled: knownPositions.length,
       orphanedPositionsFound: transactions.size,
       executionTimeMs: Date.now() - sweepStartTime,
@@ -293,7 +255,7 @@ export class ReconciliationEngine {
     }
   }
 
-  private async validatePositionConfidence(exPos: PositionResult): Promise<boolean> {
+  private async validatePositionConfidence(exPos: any): Promise<boolean> {
     // strict validation rules
     if (!exPos || exPos.size <= 0) return false;
     const fillPx = exPos.entry_price || 0;

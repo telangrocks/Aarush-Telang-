@@ -101,8 +101,6 @@ class ExchangeViewModel @Inject constructor(
     private val _lastTrade = MutableStateFlow<TradeSetupState?>(null)
     val lastTrade: StateFlow<TradeSetupState?> = _lastTrade
 
-    private val _positions = MutableStateFlow<List<com.cryptopulse.app.data.api.PositionResponse>>(emptyList())
-    val positions: StateFlow<List<com.cryptopulse.app.data.api.PositionResponse>> = _positions
 
     // ── User-facing error state for previously silent-failure paths ──────────
     private val _candidatesError = MutableStateFlow<String?>(null)
@@ -117,39 +115,19 @@ class ExchangeViewModel @Inject constructor(
     private val _botError = MutableStateFlow<String?>(null)
     val botError: StateFlow<String?> = _botError
 
+    private val _balances = MutableStateFlow<List<com.cryptopulse.app.data.api.BalanceItemData>>(emptyList())
+    val balances: StateFlow<List<com.cryptopulse.app.data.api.BalanceItemData>> = _balances
+
+    private val _balancesError = MutableStateFlow<String?>(null)
+    val balancesError: StateFlow<String?> = _balancesError
+
     fun clearCandidatesError() { _candidatesError.value = null }
     fun clearAnalysisError() { _analysisError.value = null }
     fun clearTradeError() { _tradeError.value = null }
     fun clearBotError() { _botError.value = null }
+    fun clearBalancesError() { _balancesError.value = null }
 
-    fun fetchPositions() {
-        viewModelScope.launch {
-            try {
-                val token = tokenManager.getToken()
-                if (token != null) {
-                    val response = tradingBotService.getPositions()
-                    if (response.isSuccessful && response.body() != null) {
-                        _positions.value = response.body()!!
-                    }
-                }
-            } catch (e: Exception) {
-                // Silently fail
-            }
-        }
-    }
 
-    fun closePosition(positionId: String) {
-        viewModelScope.launch {
-            try {
-                val token = tokenManager.getToken()
-                if (token != null) {
-                    tradingBotService.closePosition(positionId)
-                }
-            } catch (e: Exception) {
-                // Silently fail
-            }
-        }
-    }
 
     fun onExchangeSelected(exchange: String) {
         _formState.value = _formState.value.copy(selectedExchange = exchange)
@@ -350,8 +328,7 @@ class ExchangeViewModel @Inject constructor(
         _ticker.value = null
         _klines.value = emptyList()
         _pendingAlert.value = null
-        _lastTrade.value = null
-        _positions.value = emptyList()
+
         _candidatesError.value = null
         _analysisError.value = null
         _tradeError.value = null
@@ -437,16 +414,36 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun fetchKlines(interval: String = "1h", limit: Int = 100) {
-        val candidate = _selectedCandidate.value ?: return
-
         viewModelScope.launch {
             try {
-                val response = klineService.getKlines(candidate.symbol, interval, limit)
-                if (response.isSuccessful && response.body() != null) {
-                    _klines.value = response.body()!!
+                val symbol = _selectedCandidate.value?.symbol ?: return@launch
+                val result = klineService.getKlines(symbol, interval, limit)
+                if (result.isSuccessful && result.body() != null) {
+                    _klines.value = result.body()!!
                 }
             } catch (e: Exception) {
-                // Silently fail
+                // Ignore silent failures for klines update loop
+            }
+        }
+    }
+
+    fun fetchBalances() {
+        viewModelScope.launch {
+            try {
+                val response = exchangeService.getBalance()
+                if (response.isSuccessful) {
+                    val body = response.body()
+                    if (body != null && body.success) {
+                        _balances.value = body.balances ?: emptyList()
+                        _balancesError.value = null
+                    } else {
+                        _balancesError.value = body?.message ?: "Failed to fetch balances"
+                    }
+                } else {
+                    _balancesError.value = "Server error: ${response.code()}"
+                }
+            } catch (e: Exception) {
+                _balancesError.value = "Network error: ${e.message}"
             }
         }
     }

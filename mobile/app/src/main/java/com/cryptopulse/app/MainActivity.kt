@@ -41,7 +41,7 @@ import com.cryptopulse.app.ui.screens.MarketCandidatesScreen
 import com.cryptopulse.app.ui.screens.TradeSetupScreen
 import com.cryptopulse.app.ui.screens.UserOnboardingScreen
 import com.cryptopulse.app.ui.screens.TradeAlertScreen
-import com.cryptopulse.app.ui.screens.PositionsScreen
+import com.cryptopulse.app.ui.screens.PortfolioScreen
 import com.cryptopulse.app.ui.screens.StrategySelectionScreen
 import com.cryptopulse.app.ui.screens.TechnicalAnalysisScreen
 import com.cryptopulse.app.service.BackgroundMonitoringService
@@ -291,7 +291,7 @@ class MainActivity : FragmentActivity() {
                             TradeAlertScreen(
                                 onBack = { navController.popBackStack() },
                                 onTradeExecuted = {
-                                    navController.navigate("positions") {
+                                    navController.navigate("portfolio") {
                                         popUpTo("technical_analysis") { inclusive = false }
                                     }
                                 },
@@ -305,8 +305,8 @@ class MainActivity : FragmentActivity() {
                             )
                         }
 
-                        composable("positions") {
-                            PositionsScreen(
+                        composable("portfolio") {
+                            PortfolioScreen(
                                 onBack = { navController.popBackStack() }
                             )
                         }
