@@ -186,8 +186,8 @@ export function classifyExchangeResponse(
   const technicalDetail = `exchange=${exchangeName} status=${status} body=${bodyText.slice(0, 500)}`;
   // {code,...} / {retCode,...} body. Resolve it precisely FIRST before text matching!
   const structured =
-    classifyBinanceCode(bodyText, technicalDetail) ??
-    classifyDeltaCode(bodyText, technicalDetail);
+    classifyBinanceCode(bodyText, technicalDetail) 
+    
   if (structured) return structured;
 
   // ---- Network / CloudFront / IP restrictions ----

@@ -2,6 +2,5 @@ export { type IExchangeAdapter, type ValidationResult, type MarketTicker, normal
 export { type ExchangeConfig, type ExchangeName, type ExchangeEnvironment, type ExchangeRegion } from "./types";
 export { BinanceExchange } from "./BinanceExchange";
 
-export { BybitExchange } from "./BybitExchange";
 export { getExchangeAdapter, getSupportedExchangeNames } from "./ExchangeFactory";
 export { SUPPORTED_EXCHANGES } from "./types";

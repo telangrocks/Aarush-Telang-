@@ -93,6 +93,11 @@ export class BinanceExchange implements IExchangeAdapter {
     throw new Error("Fetch failed after retries");
   }
 
+  private maskString(str: string): string {
+    if (!str || str.length < 8) return "***";
+    return str.substring(0, 4) + "***" + str.substring(str.length - 4);
+  }
+
   private async fetchExchangeMetadata(): Promise<Map<string, SymbolMetadata>> {
     this.cacheMetrics.refreshes++;
     const response = await this.fetchWithRetry(`${this.getRestUrl()}/api/v3/exchangeInfo`);
@@ -690,13 +695,7 @@ export class BinanceExchange implements IExchangeAdapter {
       let data = (await response.json()) as any;
 
       if (!response.ok || (data.code && data.code !== 0)) {
-        const futuresResponse = await fetch(`${this.getFuturesRestUrl()}/fapi/v2/account?${query}&signature=${signature}`, {
-          headers: { 'X-MBX-APIKEY': cleanKey },
-        });
-        if (futuresResponse.ok) {
-          response = futuresResponse;
-          data = (await futuresResponse.json()) as any;
-        }
+
       }
 
       if (!response.ok) {

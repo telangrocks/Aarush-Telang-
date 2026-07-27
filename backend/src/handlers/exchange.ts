@@ -82,6 +82,7 @@ export async function handleValidateExchange(
 
     const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment), region);
     const result = await adapter.validateCredentials(cleanApiKey, cleanApiSecret);
+    console.log(`[exchange-auth] validation result for ${exchangeName}:`, JSON.stringify(result));
 
     return c.json(shapeValidation(result, exchangeName, (d) => console.error(d)));
   } catch (e: unknown) {
@@ -128,6 +129,7 @@ export async function handleConnectExchange(
     const resolvedEnvironment = normalizeEnvironment(environment);
     const adapter = getExchangeAdapter(exchangeName, resolvedEnvironment, region);
     const validation = await adapter.validateCredentials(cleanApiKey, cleanApiSecret);
+    console.log(`[exchange-auth] connect validation result for ${exchangeName}:`, JSON.stringify(validation));
     if (!validation.success) {
       c.status(401);
       return c.json(shapeValidation(validation, exchangeName, (d) => console.error(d)));

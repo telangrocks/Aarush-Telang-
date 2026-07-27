@@ -212,18 +212,4 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
       india: "https://testnet.binance.vision",
     },
   },
-
-  {
-    name: "bybit",
-    displayName: "Bybit",
-    defaultRegion: "global",
-    regionUrls: {
-      global: "https://api.bybit.com",
-      india: "https://api.bybit.com",
-    },
-    regionTestnetUrls: {
-      global: "https://api-testnet.bybit.com",
-      india: "https://api-testnet.bybit.com",
-    },
-  },
 ];

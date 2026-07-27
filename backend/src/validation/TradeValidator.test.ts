@@ -62,10 +62,4 @@ describe("TradeValidator TypeScript Unit Tests", () => {
     expect(res.isValid).toBe(true);
     expect(res.quantizedQuantity).toBeCloseTo(0.00032, 6);
   });
-
-  it("should fail validation when requested leverage exceeds maxLeverage", () => {
-    const res = TradeValidator.validate({ symbol: "BTCUSDT", entryPrice: 50000, tradeValueUsdt: 100, leverage: 150 }, mockBtcRules);
-    expect(res.isValid).toBe(false);
-    expect(res.errorCode).toBe(ValidationErrorReason.LEVERAGE_LIMIT_FAILED);
-  });
 });

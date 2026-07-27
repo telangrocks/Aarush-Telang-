@@ -155,17 +155,7 @@ export class TradeValidator {
       };
     }
 
-    // 8. Position & Leverage Limits (where applicable)
-    if (rules.maxLeverage && params.leverage && params.leverage > rules.maxLeverage) {
-      return {
-        isValid: false,
-        errorCode: ValidationErrorReason.LEVERAGE_LIMIT_FAILED,
-        errorMessage: `Requested leverage (${params.leverage}x) exceeds exchange maximum leverage (${rules.maxLeverage}x).`,
-        quantizedQuantity: roundedQtyBN.toNumber(),
-        postRoundingNotional: postRoundingNotionalBN.toNumber(),
-        metrics: { durationMs: performance.now() - startTime, stepReached: 8 },
-      };
-    }
+      // 8. Spot-only (Leverage removed)
 
     if (rules.maxPosition && postRoundingNotionalBN.isGreaterThan(rules.maxPosition)) {
       return {
