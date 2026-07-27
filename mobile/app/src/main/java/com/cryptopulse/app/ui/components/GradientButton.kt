@@ -8,6 +8,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
@@ -40,12 +41,14 @@ fun GradientButton(
     enabled: Boolean = true,
     testTag: String? = null,
 ) {
-    val gradient = Brush.horizontalGradient(
-        colors = if (enabled)
-            listOf(GradientStart, GradientEnd)
-        else
-            listOf(Color(0xFF2A3040), Color(0xFF2A3040))
-    )
+    val gradient = remember(enabled) {
+        Brush.horizontalGradient(
+            colors = if (enabled)
+                listOf(GradientStart, GradientEnd)
+            else
+                listOf(Color(0xFF2A3040), Color(0xFF2A3040))
+        )
+    }
 
     Button(
         onClick = onClick,

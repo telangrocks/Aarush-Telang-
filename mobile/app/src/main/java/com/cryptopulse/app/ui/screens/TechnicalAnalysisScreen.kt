@@ -21,7 +21,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cryptopulse.app.domain.models.AnalysisSnapshot
-import com.cryptopulse.app.domain.models.BotState
 import com.cryptopulse.app.ui.components.CoinInfoCard
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
@@ -37,7 +36,7 @@ fun TechnicalAnalysisScreen(
     onBack: () -> Unit,
     onExecuteMockTrade: (Map<String, Any>) -> Unit
 ) {
-    val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
+    val bgGradient = remember { Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020))) }
 
     Box(
         modifier = Modifier
@@ -99,7 +98,7 @@ fun TechnicalAnalysisScreen(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "${candidate.pairName} • Live Engine State: ${analysisState?.botState ?: BotState.ANALYSING}",
+                    text = "${candidate.pairName} • Live Engine State: ${analysisState?.engineStatus?.state ?: "ANALYSING"}",
                     color = TextSecondary,
                     fontSize = 12.sp,
                     textAlign = TextAlign.Center,
@@ -127,11 +126,12 @@ fun TechnicalAnalysisScreen(
                     }
                 } else {
                     val state = analysisState
-                    val trend = state.decisionPipeline.alignment
-                    val signal = state.decisionPipeline.primarySignal
-                    val confidence = state.confidence
-                    val checkpoints = state.checkpoints
-                    val metrics = state.runtimeMetrics
+                    val trend = state.tradingSignal?.entryContext ?: "NONE"
+                    val signal = state.tradingSignal?.type ?: "HOLD"
+                    val confidence = state.marketAnalysis?.confidenceScore ?: 0
+                    val checkpoints = state.marketAnalysis?.conditionSummary ?: emptyList()
+                    val indicators = state.marketAnalysis?.indicatorSummary ?: emptyList()
+                    val engineHealth = state.engineStatus?.health ?: "UNKNOWN"
 
                     // Card 1: Live Engine Decision Pipeline & Confidence
                     GlowCard {
@@ -147,7 +147,7 @@ fun TechnicalAnalysisScreen(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Box(modifier = Modifier.size(8.dp).background(ProfitGreen, RoundedCornerShape(4.dp)))
                                         Spacer(Modifier.width(6.dp))
-                                        Text(state.botState.name, color = ProfitGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        Text(state.engineStatus?.state ?: "UNKNOWN", color = ProfitGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     }
                                 }
                                 Text("$confidence%", color = CyanPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp)
@@ -170,7 +170,7 @@ fun TechnicalAnalysisScreen(
                             ) {
                                 AnalysisBadge("ALIGNMENT", trend, if (trend == "LONG") ProfitGreen else if (trend == "SHORT") LossRed else TextSecondary)
                                 AnalysisBadge("SIGNAL", signal, if (signal == "BUY") ProfitGreen else if (signal == "SELL") LossRed else TextPrimary)
-                                AnalysisBadge("CONFLUENCE", "${state.decisionPipeline.confluenceScore.toInt()}%", CyanPrimary)
+                                AnalysisBadge("CONFIDENCE", "${confidence}%", CyanPrimary)
                             }
                         }
                     }
@@ -182,24 +182,16 @@ fun TechnicalAnalysisScreen(
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Text("LIVE TECHNICAL INDICATORS", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             Spacer(Modifier.height(10.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("RSI (14)", color = TextSecondary, fontSize = 12.sp)
-                                Text("%.2f".format(state.indicators.rsi), color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("MACD / Signal", color = TextSecondary, fontSize = 12.sp)
-                                Text("%.2f / %.2f".format(state.indicators.macd.macd, state.indicators.macd.signal), color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("EMA 20 / EMA 50", color = TextSecondary, fontSize = 12.sp)
-                                Text("$${"%.2f".format(state.indicators.ema20)} / $${"%.2f".format(state.indicators.ema50)}", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("ATR (14)", color = TextSecondary, fontSize = 12.sp)
-                                Text("$${"%.2f".format(state.indicators.atr)}", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                            if (indicators.isEmpty()) {
+                                Text("No indicators available.", color = TextSecondary, fontSize = 12.sp)
+                            } else {
+                                indicators.forEach { indicator ->
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text(indicator.name, color = TextSecondary, fontSize = 12.sp)
+                                        Text(indicator.value, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                }
                             }
                         }
                     }
@@ -219,16 +211,18 @@ fun TechnicalAnalysisScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                            val isMet = checkpoint.status == "PASSED"
                                             Icon(
-                                                if (checkpoint.isMet) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                                                if (isMet) Icons.Default.CheckCircle else Icons.Default.Cancel,
                                                 contentDescription = null,
-                                                tint = if (checkpoint.isMet) ProfitGreen else TextMuted,
+                                                tint = if (isMet) ProfitGreen else TextMuted,
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Spacer(Modifier.width(8.dp))
                                             Text(checkpoint.name, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                                         }
-                                        Text(checkpoint.value, color = if (checkpoint.isMet) ProfitGreen else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        val isMet = checkpoint.status == "PASSED"
+                                        Text(checkpoint.currentValue, color = if (isMet) ProfitGreen else TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -243,18 +237,13 @@ fun TechnicalAnalysisScreen(
                             Text("ENGINE RUNTIME DIAGNOSTICS", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             Spacer(Modifier.height(8.dp))
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Analysis Cycles", color = TextSecondary, fontSize = 12.sp)
-                                Text("#${metrics.cycleNumber}", color = TextPrimary, fontSize = 12.sp)
+                                Text("Engine Health", color = TextSecondary, fontSize = 12.sp)
+                                Text(engineHealth, color = if (engineHealth == "OK") ProfitGreen else LossRed, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                             Spacer(Modifier.height(4.dp))
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Uptime", color = TextSecondary, fontSize = 12.sp)
-                                Text("${metrics.uptimeSeconds}s", color = TextPrimary, fontSize = 12.sp)
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Exchange Latency", color = TextSecondary, fontSize = 12.sp)
-                                Text("${metrics.exchangeLatencyMs}ms", color = TextPrimary, fontSize = 12.sp)
+                                Text("Last Evaluation", color = TextSecondary, fontSize = 12.sp)
+                                Text("${state.engineStatus?.lastEvaluationTimestamp ?: "N/A"}", color = TextPrimary, fontSize = 12.sp)
                             }
                         }
                     }

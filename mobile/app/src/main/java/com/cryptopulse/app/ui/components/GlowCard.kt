@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -33,12 +34,14 @@ fun GlowCard(
     cornerRadius: Dp = 14.dp,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val glowBrush = Brush.verticalGradient(
-        colors = listOf(
-            borderColor.copy(alpha = 0.6f),
-            borderColor.copy(alpha = 0.25f),
+    val glowBrush = remember(borderColor) {
+        Brush.verticalGradient(
+            colors = listOf(
+                borderColor.copy(alpha = 0.6f),
+                borderColor.copy(alpha = 0.25f),
+            )
         )
-    )
+    }
 
     Surface(
         color = NavyCard,
