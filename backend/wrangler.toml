@@ -1,6 +1,10 @@
 name = "crypto-pulse-backend"
 main = "src/index.ts"
-compatibility_date = "2024-05-29"
+# 2024-09-23: first date where bare `crypto` (without `node:` prefix) resolves
+# to the Node.js built-in in the Workers runtime. Required by ccxt's rsa.js.
+compatibility_date = "2024-09-23"
+# Enable Node.js built-ins (crypto, stream, etc.) required by CCXT and bignumber.js.
+compatibility_flags = ["nodejs_compat"]
 # Pin the account so Wrangler does not call /memberships to auto-discover it.
 # Narrowly scoped API tokens cannot list memberships, which otherwise fails
 # `wrangler deploy` with "Authentication error [code: 10000]".
@@ -28,6 +32,15 @@ bindings = [{ name = "TRADING_BOTS", class_name = "TradingBot" }]
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["TradingBot"]
+
+# ─── Bundle notes ────────────────────────────────────────────────────────────
+# nodejs_compat (above) resolves crypto/stream/etc. Node built-in resolution.
+# The aliases below stub out ccxt's dydx-v4-client sub-dependency which
+# references protobufjs/minimal.js — a CommonJS path esbuild cannot resolve
+# in the Workers ESM bundle. We never use dydx exchanges so an empty stub is safe.
+[alias]
+  "protobufjs/minimal" = "./src/stubs/protobufjs-minimal.js"
+  "protobufjs/minimal.js" = "./src/stubs/protobufjs-minimal.js"
 
 # Deployed via GitHub Actions (deploy.yml). RESEND_API_KEY is set from the
 # repo secret during the push-to-main deploy step.
