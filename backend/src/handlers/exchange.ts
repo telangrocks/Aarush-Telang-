@@ -1,81 +1,232 @@
-  c: Context<{ Bindings: Env }>,
-): Promise<Response> {
-  try {
-    const payload = c.get("jwtPayload") as { sub: string };
-    const userId = payload.sub;
+import { Context } from "hono";
+import { Env } from "../index";
+import { encrypt, decrypt, cleanCredential } from "../crypto";
+import { ExchangeManager, ExchangeName, ExchangeEnvironment, ExchangeRegion } from "../exchanges";
+import { FRIENDLY_MESSAGES, classifyException, classifyByBodyText, type ExchangeErrorCode } from "../exchanges/errors";
+import {
+  computeEMA,
+  computeIndicators,
+  evaluateStrategy,
+  calculateAtr,
+  toMetrics,
+  type IndicatorSet,
+  type StrategyEvaluation,
+  type Metrics,
+} from "../trading-bot";
+import { type Kline } from "../exchanges/types";
+import { analyzeMarket } from "../market-analysis";
 
-    const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key FROM users WHERE id = ?",
-    )
-      .bind(userId)
-      .first<{
-        exchange_name: string | null;
-        exchange_environment: string | null;
-        exchange_region: string | null;
-        exchange_api_key: string | null;
-      }>();
-
-    const isConnected = user?.exchange_name !== null && user?.exchange_api_key !== null;
-
-    return c.json({
-      isConnected,
-      exchangeName: user?.exchange_name ?? null,
-      environment: user?.exchange_environment ?? null,
-      region: user?.exchange_region ?? null,
-    });
-  } catch (e: unknown) {
-    const error = e as Error;
-    c.status(500);
-    return c.json({ isConnected: false, exchangeName: null, environment: null, message: error.message || "Failed to get exchange status" });
-  }
+/**
+ * Normalize an untrusted environment value into a valid ExchangeEnvironment.
+ * Anything other than the explicit string "testnet" falls back to "mainnet".
+ */
+function normalizeEnvironment(value: unknown): ExchangeEnvironment {
+  return value === "testnet" ? "testnet" : "mainnet";
 }
 
-export async function handleGetExchangeBalances(
+/**
+ * Normalize an untrusted region value into a valid ExchangeRegion.
+ */
+function normalizeRegion(value: unknown): ExchangeRegion | undefined {
+  return value === "global" || value === "india" ? value : undefined;
+}
+
+/**
+ * Shape an adapter ValidationResult into the response the app consumes.
+ */
+function shapeValidation(
+  result: { success: boolean; message: string; code?: string; friendlyMessage?: string; hint?: string },
+  exchangeName: string,
+  logTechnical: (detail: string) => void,
+) {
+  if (result.success) {
+    return { success: true as const, message: "Credentials verified. You're all set." };
+  }
+
+  logTechnical(`[exchange-auth] ${exchangeName}: ${result.message}`);
+
+  let code = (result.code as ExchangeErrorCode);
+  let friendlyMessage = result.friendlyMessage;
+  let hint = result.hint;
+
+  if (!code || code === "UNKNOWN_EXCHANGE_ERROR") {
+    const classified = classifyByBodyText(result.message || "", `exchange=${exchangeName} msg=${result.message}`, exchangeName);
+    code = classified.code;
+    friendlyMessage = friendlyMessage || classified.friendlyMessage;
+    hint = hint || classified.hint;
+  }
+
+  const info = FRIENDLY_MESSAGES[code] ?? FRIENDLY_MESSAGES.UNKNOWN_EXCHANGE_ERROR;
+  return {
+    success: false as const,
+    code,
+    message: friendlyMessage || info.friendlyMessage,
+    hint: hint || info.hint,
+  };
+}
+
+export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
+  let exchangeNameForLog = "unknown";
   try {
-    const payload = c.get("jwtPayload") as { sub: string };
-    const userId = payload.sub;
+    const { exchangeName, apiKey, apiSecret, apiPassphrase, environment, region } = await c.req.json<{
+      exchangeName: ExchangeName;
+      apiKey: string;
+      apiSecret: string;
+      apiPassphrase?: string;
+      environment?: ExchangeEnvironment;
+      region?: ExchangeRegion;
+    }>();
+    if (exchangeName) exchangeNameForLog = exchangeName;
 
-    const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted FROM users WHERE id = ?",
-    )
-      .bind(userId)
-      .first<{
-        exchange_name: string | null;
-        exchange_environment: string | null;
-        exchange_region: string | null;
-        exchange_api_key: string | null;
-        exchange_api_secret_iv: string | null;
-        exchange_api_secret_encrypted: string | null;
-        exchange_api_passphrase_iv: string | null;
-        exchange_api_passphrase_encrypted: string | null;
-      }>();
+    const cleanApiKey = cleanCredential(apiKey);
+    const cleanApiSecret = cleanCredential(apiSecret);
+    const cleanApiPassphrase = cleanCredential(apiPassphrase);
 
-    if (!user?.exchange_name || !user?.exchange_api_key || !user?.exchange_api_secret_encrypted || !user?.exchange_api_secret_iv) {
+    if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
+      c.status(400);
       return c.json({
         success: false,
-        code: "NO_EXCHANGE_CONNECTED",
-        message: "No exchange account is connected.",
-        hint: "Connect your Binance account in settings.",
+        code: "MISSING_REQUIRED_CREDENTIALS" as ExchangeErrorCode,
+        message: FRIENDLY_MESSAGES.MISSING_REQUIRED_CREDENTIALS.friendlyMessage,
+        hint: FRIENDLY_MESSAGES.MISSING_REQUIRED_CREDENTIALS.hint,
       });
     }
 
-    const decryptedSecret = await decrypt(
-      { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted },
-      c.env.ENCRYPTION_KEY,
-    );
+    try {
+      const provider = await ExchangeManager.getProvider(exchangeName as ExchangeName, {
+        environment: normalizeEnvironment(environment),
+        apiKey: cleanApiKey,
+        secret: cleanApiSecret,
+        password: cleanApiPassphrase
+      });
+      await provider.fetchBalance();
+      console.log(`[exchange-auth] validation successful for ${exchangeName}`);
+      return c.json({ success: true, message: "Credentials verified. You're all set." });
+    } catch (valErr: unknown) {
+      const classified = classifyException(valErr, exchangeName);
+      console.error(`[exchange-auth] validation failed for ${exchangeName} (${classified.technicalDetail}):`, valErr);
+      c.status(400);
+      return c.json({
+        success: false,
+        code: classified.code,
+        message: classified.friendlyMessage,
+        hint: classified.hint,
+      });
+    }
+  } catch (e: unknown) {
+    const classified = classifyException(e, exchangeNameForLog);
+    console.error(`[exchange-auth] validate outer exception (${classified.technicalDetail}):`, e);
+    c.status(400);
+    return c.json({
+      success: false,
+      code: classified.code,
+      message: classified.friendlyMessage,
+      hint: classified.hint,
+    });
+  }
+}
 
-    let decryptedPassphrase = undefined;
-    if (user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
-      decryptedPassphrase = await decrypt(
-        { iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted },
-        c.env.ENCRYPTION_KEY,
-      );
+export async function handleConnectExchange(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  let exchangeNameForLog = "unknown";
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const { exchangeName, apiKey, apiSecret, apiPassphrase, environment, region } = await c.req.json<{
+      exchangeName: ExchangeName;
+      apiKey: string;
+      apiSecret: string;
+      apiPassphrase?: string;
+      environment?: ExchangeEnvironment;
+      region?: ExchangeRegion;
+    }>();
+    if (exchangeName) exchangeNameForLog = exchangeName;
+
+    const cleanApiKey = cleanCredential(apiKey);
+    const cleanApiSecret = cleanCredential(apiSecret);
+    const cleanApiPassphrase = cleanCredential(apiPassphrase);
+
+    if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "MISSING_REQUIRED_CREDENTIALS" as ExchangeErrorCode,
+        message: FRIENDLY_MESSAGES.MISSING_REQUIRED_CREDENTIALS.friendlyMessage,
+        hint: FRIENDLY_MESSAGES.MISSING_REQUIRED_CREDENTIALS.hint,
+      });
     }
 
-    const environment = normalizeEnvironment(user.exchange_environment);
-    const region = normalizeRegion(user.exchange_region);
+    const resolvedEnvironment = normalizeEnvironment(environment);
+
+    try {
+      const provider = await ExchangeManager.getProvider(exchangeName as ExchangeName, {
+        environment: resolvedEnvironment,
+        apiKey: cleanApiKey,
+        secret: cleanApiSecret,
+        password: cleanApiPassphrase
+      });
+      await provider.fetchBalance();
+      console.log(`[exchange-auth] connect validation successful for ${exchangeName}`);
+    } catch (valErr: unknown) {
+      const classified = classifyException(valErr, exchangeName);
+      console.error(`[exchange-auth] connect validation failed for ${exchangeName} (${classified.technicalDetail}):`, valErr);
+      c.status(401);
+      return c.json({
+        success: false,
+        code: classified.code,
+        message: classified.friendlyMessage,
+        hint: classified.hint,
+      });
+    }
+
+    const encryptedSecret = await encrypt(cleanApiSecret, c.env.ENCRYPTION_KEY);
+    
+    let encryptedPassphraseIv = null;
+    let encryptedPassphrase = null;
+    if (cleanApiPassphrase) {
+      const encryptedPhraseObj = await encrypt(cleanApiPassphrase, c.env.ENCRYPTION_KEY);
+      encryptedPassphraseIv = encryptedPhraseObj.iv;
+      encryptedPassphrase = encryptedPhraseObj.encrypted;
+    }
+
+    const resolvedRegion = region === "india" ? "india" : "global";
+
+    await c.env.DB.prepare(
+      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ? WHERE id = ?`,
+    )
+      .bind(exchangeName, resolvedEnvironment, resolvedRegion, cleanApiKey, encryptedSecret.iv, encryptedSecret.encrypted, encryptedPassphraseIv, encryptedPassphrase, userId)
+      .run();
+
+    // Reset bot state and clear instrument locking upon exchange connection/reconnection
+    try {
+      if (c.env.TRADING_BOTS && typeof c.env.TRADING_BOTS.idFromName === "function") {
+        const botId = c.env.TRADING_BOTS.idFromName(userId);
+        const bot = c.env.TRADING_BOTS.get(botId);
+        await bot.fetch(new Request("http://bot/deactivate", { method: "POST" }));
+      }
+    } catch (err) {
+      console.warn(`[exchange-auth] Failed to reset bot state on reconnection:`, err);
+    }
+
+    return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: resolvedEnvironment, region: resolvedRegion });
+  } catch (e: unknown) {
+    const classified = classifyException(e, exchangeNameForLog);
+    console.error(`[exchange-auth] connect outer exception (${classified.technicalDetail}):`, e);
+    c.status(500);
+    return c.json({
+      success: false,
+      code: classified.code,
+      message: classified.friendlyMessage,
+      hint: classified.hint,
+    });
+  }
+}
+
+export async function handleGetExchangeStatus(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   try {
@@ -160,6 +311,24 @@ export async function handleGetExchangeBalances(
       secret: decryptedSecret,
       password: decryptedPassphrase,
     });
+    const balanceRes = await adapter.fetchBalance();
+    return c.json(balanceRes);
+  } catch (e: unknown) {
+    const classified = classifyException(e, "exchange-balance");
+    console.error(`[exchange-balance] exception (${classified.technicalDetail}):`, e);
+    c.status(400);
+    return c.json({
+      success: false,
+      code: classified.code,
+      message: classified.friendlyMessage,
+      hint: classified.hint,
+    });
+  }
+}
+
+export async function handleGetPersonalizedMarketCandidates(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
   try {
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
@@ -442,14 +611,14 @@ export async function handleActivateTradingBot(
     const data = await response.json<{ success: boolean; message: string; code?: string; hint?: string }>();
     return c.json(data);
   } catch (e: unknown) {
-    const error = e as Error;
-    console.error(`[trading-bot] activate exception: ${error?.stack || error?.message || e}`);
+    const classified = classifyException(e, "trading-bot-activate");
+    console.error(`[trading-bot] activate exception (${classified.technicalDetail}):`, e);
     c.status(500);
     return c.json({
       success: false,
-      code: "UNKNOWN_EXCHANGE_ERROR" as ExchangeErrorCode,
-      message: "We couldn't start the trading bot right now.",
-      hint: "Please try again in a moment. If this keeps happening, check your exchange connection.",
+      code: classified.code,
+      message: classified.friendlyMessage,
+      hint: classified.hint,
     });
   }
 }
