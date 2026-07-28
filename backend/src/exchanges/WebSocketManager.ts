@@ -65,7 +65,7 @@ export class WebSocketManager {
     this.eventListeners = this.eventListeners.filter(l => l !== listener);
   }
 
-  public getPingPayload(exchange: ExchangeName): string | null {    return null;
+  public getPingPayload(_exchange: ExchangeName): string | null {    return null;
   }
 
   public emitEvent(event: ExchangeEvent) {
@@ -125,7 +125,7 @@ export class WebSocketManager {
   public getWebSocketUrl(
     exchange: ExchangeName,
     environment: ExchangeEnvironment = "mainnet",
-    region: "global" | "india" = "global",
+    _region: "global" | "india" = "global",
     listenKey?: string
   ): string {
     if (exchange === "binance") {

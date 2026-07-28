@@ -16,7 +16,7 @@ export class SymbolResolver {
       throw new Error("Invalid symbol input: must be a non-empty string.");
     }
 
-    let cleaned = inputSymbol.trim().toUpperCase().replace(/[\/\s\-_]/g, "");
+    const cleaned = inputSymbol.trim().toUpperCase().replace(/[/\s_-]/g, "");
 
     // If cleaned string ends with any known quote currency
     for (const quote of this.KNOWN_QUOTES) {

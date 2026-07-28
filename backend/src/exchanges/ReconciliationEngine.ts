@@ -1,4 +1,4 @@
-import { IExchangeAdapter, MarketTicker } from "./BaseExchange";
+import { IExchangeAdapter } from "./BaseExchange";
 import { Env } from '../index';
 import { decrypt } from '../crypto';
 

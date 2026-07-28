@@ -10,7 +10,7 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
-    "types": ["@cloudflare/workers-types", "vitest/globals"],
+    "types": ["node", "@cloudflare/workers-types", "vitest/globals"]
   },
-  "include": ["src/**/*", "vitest.config.ts"],
+  "include": ["src/**/*", "vitest.config.ts"]
 }

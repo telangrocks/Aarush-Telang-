@@ -35,6 +35,9 @@ export type ExchangeErrorCode =
   | "INSUFFICIENT_PERMISSIONS"
   | "INVALID_API_VERSION"
   | "MISSING_REQUIRED_CREDENTIALS"
+  | "BINANCE_WAF_BLOCKED"
+  | "BINANCE_NETWORK_BLOCKED"
+  | "UPSTREAM_PROVIDER_BLOCKED"
   | "UNKNOWN_EXCHANGE_ERROR";
 
 export interface ExchangeErrorInfo {
@@ -68,6 +71,21 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
     code: "IP_NOT_WHITELISTED",
     friendlyMessage: "Your exchange account restricts API access to specific IP addresses.",
     hint: "Add Crypto Pulse's server IP to your exchange API whitelist, or turn off IP restrictions for this key.",
+  },
+  BINANCE_WAF_BLOCKED: {
+    code: "BINANCE_WAF_BLOCKED",
+    friendlyMessage: "Crypto Pulse is temporarily unable to reach Binance. This is a server-side connectivity issue, not a problem with your API keys.",
+    hint: "Binance's firewall is currently blocking our servers. Our team is actively monitoring this.",
+  },
+  BINANCE_NETWORK_BLOCKED: {
+    code: "BINANCE_NETWORK_BLOCKED",
+    friendlyMessage: "Crypto Pulse is temporarily unable to reach Binance due to a network restriction.",
+    hint: "This is a server-side connectivity issue. Please try again later.",
+  },
+  UPSTREAM_PROVIDER_BLOCKED: {
+    code: "UPSTREAM_PROVIDER_BLOCKED",
+    friendlyMessage: "An upstream provider is blocking our connection to the exchange.",
+    hint: "This is a server-side issue, not a problem with your API keys.",
   },
   FUTURES_TRADING_NOT_ENABLED: {
     code: "FUTURES_TRADING_NOT_ENABLED",
@@ -191,7 +209,10 @@ export function classifyExchangeResponse(
   if (structured) return structured;
 
   // ---- Network / CloudFront / IP restrictions ----
-  if (status === 403 && (lower.includes("ip_restricted") || lower.includes("ip whitelist") || lower.includes("request blocked"))) {
+  if (status === 403 && (lower.includes("request blocked") || lower.includes("cloudflare") || lower.includes("asn"))) {
+    return mk("BINANCE_WAF_BLOCKED", technicalDetail, lower);
+  }
+  if (status === 403 && (lower.includes("ip_restricted") || lower.includes("ip whitelist"))) {
     return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
   }
   if (status === 401 || status === 403) {
@@ -441,8 +462,8 @@ export function classifyException(error: unknown, exchangeName: string): Classif
     return mk("EXCHANGE_NOT_REACHABLE", technicalDetail, lower);
   }
   // Cloudflare HTML error bodies sometimes surface as thrown errors
-  if (lower.includes("403") || lower.includes("request blocked") || lower.includes("forbidden")) {
-    return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
+  if (lower.includes("403") || lower.includes("request blocked") || lower.includes("forbidden") || lower.includes("cloudflare") || lower.includes("asn")) {
+    return mk("BINANCE_WAF_BLOCKED", technicalDetail, lower);
   }
 
   return mk("UNKNOWN_EXCHANGE_ERROR", technicalDetail, lower);

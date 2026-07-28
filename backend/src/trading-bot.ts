@@ -1,6 +1,6 @@
 import { Env } from './index';
-import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion, MarketTicker, normalizeQuantity, IExchangeAdapter } from './exchanges';
-import { type Kline, BotState } from './exchanges/types';
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion, MarketTicker, IExchangeAdapter } from './exchanges';
+import { type Kline } from './exchanges/types';
 import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
 import { TradeValidator } from './validation/TradeValidator';
@@ -1203,10 +1203,6 @@ export class TradingBot {
 
       if (!userKeys?.exchange_name || !userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) return;
 
-      const decryptedSecret = await decrypt(
-        { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted },
-        this.env.ENCRYPTION_KEY,
-      );
 
       const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
       
