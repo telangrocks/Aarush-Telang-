@@ -29,13 +29,10 @@ async function testRequest(testName, baseUrl, endpoint, apiKey, apiSecret) {
     }
 }
 
-const key = "bc0Pl4acHDlW9QVnnIPucuFlnb1zZOwh3Q2DNaELX0d5xV9y22ECxPQYjENsp7hZ";
-const secret = "1vZKvoLrsdeBMlgiWoJTNYlpUACZZK6oLXiYLnOLjkACidQLzzPPqsmoBFCzqsfj";
+const key = "o1lGAij4iQDD2PDsOvCeBExnpTWXMDyAiboPAScolnw0feUD5dWOITa8GzyXAJe7";
+const secret = "so9UBSv1Fcn89F1gY43U62p6NlzmaingQdnMpeLaGehq7xZrc5Fa78tEL7H28nzV";
 
 async function run() {
-    await testRequest("Mainnet Spot", "https://api.binance.com", "/api/v3/account", key, secret);
-    await testRequest("Mainnet Futures", "https://fapi.binance.com", "/fapi/v2/account", key, secret);
-    await testRequest("Testnet Spot", "https://testnet.binance.vision", "/api/v3/account", key, secret);
-    await testRequest("Testnet Futures", "https://testnet.binancefuture.com", "/fapi/v2/account", key, secret);
+    await testRequest("Testnet Spot (Old Key)", "https://testnet.binance.vision", "/api/v3/account", key, secret);
 }
 run();

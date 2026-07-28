@@ -50,11 +50,14 @@ export async function analyzeMarket(
   const MIN_VOLUME_USDT = 500_000;
   const MAX_DECLINE_PERCENT = -50;
   
-  // Filter out weak/illiquid/declining coins
+  const STABLECOINS = ["USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP"];
+  
+  // Filter out weak/illiquid/declining coins, and stablecoins
   const filtered = tickers.filter(
     (ticker) =>
       (ticker.quoteVolume24h || ticker.volume24h || 0) >= MIN_VOLUME_USDT &&
-      ticker.priceChangePercent24h >= MAX_DECLINE_PERCENT,
+      ticker.priceChangePercent24h >= MAX_DECLINE_PERCENT &&
+      !STABLECOINS.includes(ticker.symbol) // symbol here is baseAsset because of how fetchMarketData maps it
   );
 
   if (!filtered.length) return [];
@@ -75,8 +78,8 @@ export async function analyzeMarket(
     top15.map(async (candidate) => {
       try {
         const [klines1h, klines15m] = await Promise.all([
-          adapter.fetchKlines(candidate.symbol, "1h", 30),
-          adapter.fetchKlines(candidate.symbol, "15m", 30),
+          adapter.fetchKlines(candidate.symbol, "1h", 500),
+          adapter.fetchKlines(candidate.symbol, "15m", 500),
         ]);
 
         if (klines1h.length < 20 || klines15m.length < 20) {
