@@ -51,8 +51,8 @@ export class KuCoinExchange implements IExchangeAdapter {
     displayName: "KuCoin",
     defaultRegion: "global",
     regionUrls: {
-      global: "https://api.kucoin.com",
-      india: "https://api.kucoin.com",
+      global: "https://openapi-v2.kucoin.com",
+      india: "https://openapi-v2.kucoin.com",
     },
     regionTestnetUrls: {
       global: "https://openapi-sandbox.kucoin.com",
