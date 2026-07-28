@@ -7,6 +7,7 @@ export class MarketDataEngine {
 
   /**
    * Orchestrates the collection and normalization of market data across multiple timeframes.
+   * All ticker fields are read from the NormalizedDomain Ticker model — not CCXT objects.
    */
   public async getSnapshot(symbol: string, timeframes: Timeframe[]): Promise<MarketSnapshot> {
     if (!timeframes || timeframes.length === 0) {
@@ -21,15 +22,15 @@ export class MarketDataEngine {
     const snapshot: MarketSnapshot = {
       symbol: ticker.symbol,
       timestamp: Date.now(),
-      currentPrice: ticker.price,
-      volume24h: ticker.volume24h,
-      quoteVolume24h: ticker.quoteVolume24h,
+      currentPrice: ticker.last.toNumber(),
+      volume24h: ticker.volume.toNumber(),
+      quoteVolume24h: ticker.quoteVolume.toNumber(),
       candles: {} as MarketSnapshot['candles'],
       metadata: {
-        priceChange24h: ticker.priceChange24h,
-        priceChangePercent24h: ticker.priceChangePercent24h,
-        highPrice24h: ticker.highPrice24h,
-        lowPrice24h: ticker.lowPrice24h
+        priceChange24h: 0,          // Not yet available in NormalizedDomain Ticker
+        priceChangePercent24h: 0,   // Not yet available in NormalizedDomain Ticker
+        highPrice24h: ticker.high.toNumber(),
+        lowPrice24h: ticker.low.toNumber(),
       }
     };
 

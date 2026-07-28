@@ -1,4 +1,4 @@
-import { IExchangeAdapter } from "./BaseExchange";
+import { IExchangeProvider } from "./IExchangeProvider";
 import { Env } from '../index';
 import { decrypt } from '../crypto';
 
@@ -17,14 +17,14 @@ export class ReconciliationEngine {
   private stateStorage: DurableObjectStorage;
   private env: Env;
   private userId: string;
-  private adapter: IExchangeAdapter;
+  private adapter: IExchangeProvider;
   private userKeys: any;
 
   // Limits
   private readonly MAX_ATTEMPTS = 5;
   private readonly RECOVERY_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour timeout for stuck recoveries
 
-  constructor(stateStorage: DurableObjectStorage, env: Env, userId: string, adapter: IExchangeAdapter, userKeys: any) {
+  constructor(stateStorage: DurableObjectStorage, env: Env, userId: string, adapter: IExchangeProvider, userKeys: any) {
     this.stateStorage = stateStorage;
     this.env = env;
     this.userId = userId;
@@ -110,15 +110,15 @@ export class ReconciliationEngine {
       try {
         const orderIdToQuery = pos.entry_exchange_order_id || pos.order_id;
         if (orderIdToQuery && this.adapter.fetchOrder && apiSecret) {
-          const ordStatus = await this.adapter.fetchOrder(orderIdToQuery, this.userKeys.exchange_api_key, apiSecret, apiPassphrase);
+          const ordStatus: any = await this.adapter.fetchOrder(orderIdToQuery, pos.symbol || "UNKNOWN");
           
           if (ordStatus.success) {
             // Update D1 entry order status and fill data
-            if (pos.status === 'PENDING_ENTRY' && ordStatus.status === 'filled') {
+            if (pos.status === 'PENDING_ENTRY' && (ordStatus.status === 'closed' || ordStatus.status === 'filled')) {
               await this.env.DB.prepare(
                 `UPDATE trade_positions SET status = 'OPEN', entry_status = 'FILLED', filled_quantity = ?, average_fill_price = ?, entry_filled_at = ?, updated_at = ? WHERE id = ?`
               )
-                .bind(ordStatus.filledQuantity || pos.quantity, ordStatus.averageFillPrice || pos.entry_price, nowIso, nowIso, pos.id)
+                .bind(ordStatus.filled || ordStatus.filledQuantity || pos.quantity, ordStatus.average || ordStatus.averageFillPrice || pos.entry_price, nowIso, nowIso, pos.id)
                 .run();
               await this.logDecision('PENDING_ENTRY_FILLED', { symbol: pos.symbol, positionId: pos.id, orderId: orderIdToQuery });
             }
@@ -128,7 +128,7 @@ export class ReconciliationEngine {
               await this.env.DB.prepare(
                 `UPDATE trade_positions SET tp_exchange_order_id = COALESCE(?, tp_exchange_order_id), sl_exchange_order_id = COALESCE(?, sl_exchange_order_id), oco_group_id = COALESCE(?, oco_group_id), updated_at = ? WHERE id = ?`
               )
-                .bind(ordStatus.tpOrderId || null, ordStatus.slOrderId || null, ordStatus.ocoGroupId || null, nowIso, pos.id)
+                .bind(ordStatus.info?.tpOrderId || ordStatus.tpOrderId || null, ordStatus.info?.slOrderId || ordStatus.slOrderId || null, ordStatus.info?.ocoGroupId || ordStatus.ocoGroupId || null, nowIso, pos.id)
                 .run();
             }
           }

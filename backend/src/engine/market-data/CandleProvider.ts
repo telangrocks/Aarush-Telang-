@@ -1,9 +1,10 @@
 import { Timeframe } from './Timeframe';
 import { NormalizedCandle } from './MarketSnapshot';
-import { MarketTicker } from '../../exchanges/types';
+import { Ticker } from '../../exchanges/models/NormalizedDomain';
 
 /**
  * Exchange-agnostic abstraction for retrieving market data.
+ * Uses internal normalized domain models — no CCXT types cross this boundary.
  */
 export interface ICandleProvider {
   /**
@@ -13,6 +14,7 @@ export interface ICandleProvider {
 
   /**
    * Fetch the latest market ticker for a given symbol.
+   * Returns the normalized Ticker from the application domain — not a CCXT object.
    */
-  fetchTicker(symbol: string): Promise<MarketTicker | null>;
+  fetchTicker(symbol: string): Promise<Ticker | null>;
 }

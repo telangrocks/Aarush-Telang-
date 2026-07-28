@@ -13,6 +13,7 @@
     "test:watch": "vitest src",
     "test:coverage": "vitest run src --coverage",
     "test:smoke": "node scripts/smoke-test.js",
+    "test:ccxt": "tsx scripts/test-ccxt-connectivity.ts",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
     "format": "prettier --write .",
@@ -26,6 +27,7 @@
   "dependencies": {
     "@hono/node-server": "^1.11.1",
     "bignumber.js": "^11.1.5",
+    "ccxt": "4.5.69",
     "dotenv": "^16.4.5",
     "hono": "^4.4.12"
   },

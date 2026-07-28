@@ -1,7 +1,7 @@
 import { Context } from "hono";
 import { Env } from "../index";
 import { encrypt, decrypt, cleanCredential } from "../crypto";
-import { ExchangeManager, ExchangeName, ExchangeEnvironment, ExchangeRegion } from "../exchanges";
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion } from "../exchanges";
 import { FRIENDLY_MESSAGES, type ExchangeErrorCode } from "../exchanges/errors";
 import {
   computeEMA,
@@ -82,14 +82,8 @@ export async function handleValidateExchange(
       });
     }
 
-    const provider = await ExchangeManager.getProvider(exchangeName as ExchangeName, {
-      environment: normalizeEnvironment(environment),
-      apiKey: cleanApiKey,
-      secret: cleanApiSecret,
-      password: cleanApiPassphrase
-    });
-    let result = { success: true, message: 'OK' };
-    try { await provider.fetchBalance(); } catch (e: any) { result = { success: false, message: e.message }; }
+    const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment), region);
+    const result = await adapter.validateCredentials(cleanApiKey, cleanApiSecret, cleanApiPassphrase);
     console.log(`[exchange-auth] validation result for ${exchangeName}:`, JSON.stringify(result));
 
     return c.json(shapeValidation(result, exchangeName, (d) => console.error(d)));
@@ -137,14 +131,8 @@ export async function handleConnectExchange(
     }
 
     const resolvedEnvironment = normalizeEnvironment(environment);
-    const provider = await ExchangeManager.getProvider(exchangeName as ExchangeName, {
-      environment: resolvedEnvironment,
-      apiKey: cleanApiKey,
-      secret: cleanApiSecret,
-      password: cleanApiPassphrase
-    });
-    let validation = { success: true, message: 'OK' };
-    try { await provider.fetchBalance(); } catch (e: any) { validation = { success: false, message: e.message }; }
+    const adapter = getExchangeAdapter(exchangeName, resolvedEnvironment, region);
+    const validation = await adapter.validateCredentials(cleanApiKey, cleanApiSecret, cleanApiPassphrase);
     console.log(`[exchange-auth] connect validation result for ${exchangeName}:`, JSON.stringify(validation));
     if (!validation.success) {
       c.status(401);
@@ -161,7 +149,7 @@ export async function handleConnectExchange(
       encryptedPassphrase = encryptedPhraseObj.encrypted;
     }
 
-    const resolvedRegion = region === "india" ? "india" : "global";
+    const resolvedRegion = adapter?.config?.defaultRegion || (region === "india" ? "india" : "global");
 
     await c.env.DB.prepare(
       `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ? WHERE id = ?`,
@@ -273,13 +261,20 @@ export async function handleGetExchangeBalances(
 
     const environment = normalizeEnvironment(user.exchange_environment);
     const region = normalizeRegion(user.exchange_region);
-    const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment,
-      apiKey: user.exchange_api_key ?? undefined,
-      secret: decryptedSecret,
-      password: decryptedPassphrase,
-    });
-    const balanceRes = await adapter.fetchBalance();
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, environment, region);
+
+    if (!adapter.fetchBalances) {
+      return c.json({
+        success: false,
+        exchange: user.exchange_name,
+        environment,
+        primaryAsset: "USDT",
+        code: "EXCHANGE_UNAVAILABLE",
+        message: `Exchange adapter for ${user.exchange_name} does not support fetching balances.`,
+      });
+    }
+
+    const balanceRes = await adapter.fetchBalances(user.exchange_api_key, decryptedSecret, decryptedPassphrase);
     return c.json(balanceRes);
   } catch (e: unknown) {
     const error = e as Error;
@@ -318,18 +313,15 @@ export async function handleGetPersonalizedMarketCandidates(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment)
-    });
-    const markets = await adapter.fetchMarkets();
-    const tickers = markets;
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
+    const tickers = await adapter.fetchMarketData();
 
     if (!tickers.length) {
       c.status(500);
       return c.json({ error: "Failed to fetch market data from exchange" });
     }
 
-    const candidates = await analyzeMarket(tickers as any, adapter as any);
+    const candidates = await analyzeMarket(tickers, adapter);
 
     return c.json(candidates);
   } catch (e: unknown) {
@@ -384,9 +376,7 @@ export async function handleGetTicker(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment)
-    });
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
     const ticker = await adapter.fetchTicker(symbol);
 
     if (!ticker) {
@@ -396,18 +386,18 @@ export async function handleGetTicker(
 
     return c.json({
       symbol: ticker.symbol,
-      price: ticker.last.toNumber(),
-      volume24h: ticker.volume.toNumber(),
-      quoteVolume24h: ticker.quoteVolume.toNumber(),
-      priceChange24h: 0,
-      priceChangePercent24h: 0,
-      highPrice24h: ticker.high.toNumber(),
-      lowPrice24h: ticker.low.toNumber(),
-      minNotional: 0,
-      minOrderQty: 0,
-      maxOrderQty: 0,
-      tickSize: 0,
-      lotSize: 0,
+      price: ticker.price,
+      volume24h: ticker.volume24h,
+      quoteVolume24h: ticker.quoteVolume24h,
+      priceChange24h: ticker.priceChange24h,
+      priceChangePercent24h: ticker.priceChangePercent24h,
+      highPrice24h: ticker.highPrice24h,
+      lowPrice24h: ticker.lowPrice24h,
+      minNotional: ticker.minNotional,
+      minOrderQty: ticker.minOrderQty,
+      maxOrderQty: ticker.maxOrderQty,
+      tickSize: ticker.tickSize,
+      lotSize: ticker.lotSize,
       timestamp: new Date().toISOString(),
     });
   } catch (e: unknown) {
@@ -444,9 +434,7 @@ export async function handleGetKlines(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment)
-    });
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
     const klines = await adapter.fetchKlines(symbol, interval, limit);
 
     return c.json(klines);
@@ -493,9 +481,7 @@ export async function handleGetTechnicalAnalysis(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment)
-    });
+    const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
     const ticker = await adapter.fetchTicker(symbol);
 
     if (!ticker) {
@@ -503,11 +489,11 @@ export async function handleGetTechnicalAnalysis(
       return c.json({ error: `Symbol '${symbol}' is not available on your connected exchange.` });
     }
 
-    const price = ticker.last.toNumber() || 0;
-    const change24h = 0; // 24h percentage not yet in NormalizedDomain Ticker
-    const volume = ticker.volume.toNumber() || 0;
-    const high24h = ticker.high.toNumber() || price * 1.02;
-    const low24h = ticker.low.toNumber() || price * 0.98;
+    const price = ticker.price || 0;
+    const change24h = ticker.priceChangePercent24h || 0;
+    const volume = ticker.volume24h || 0;
+    const high24h = ticker.highPrice24h || price * 1.02;
+    const low24h = ticker.lowPrice24h || price * 0.98;
 
     const klines = await adapter.fetchKlines(symbol, "1h", 100);
     const closes = klines.map((k: Kline) => k.close);
@@ -516,7 +502,7 @@ export async function handleGetTechnicalAnalysis(
     const indicators: IndicatorSet = computeIndicators(closes);
     const atr = calculateAtr(highs, lows, closes, 14);
     const metrics: Metrics = toMetrics(ticker);
-    const evaluation: StrategyEvaluation = evaluateStrategy(ticker, indicators, strategy, atr, 10.0, 10);
+    const evaluation: StrategyEvaluation = evaluateStrategy(ticker, indicators, strategy, atr, 10.0, ticker.minNotional || 10);
 
     const signals = {
       trend: metrics.change24h > 0 ? "BULLISH" : metrics.change24h < 0 ? "BEARISH" : "NEUTRAL",

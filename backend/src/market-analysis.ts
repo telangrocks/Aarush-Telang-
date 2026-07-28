@@ -1,6 +1,6 @@
-import { type MarketTicker, type IExchangeAdapter } from "./exchanges";
+import { type IExchangeProvider } from "./exchanges";
 
-export interface AnalysisCandidate extends MarketTicker {
+export interface AnalysisCandidate {
   score: number;
   rank: number;
   recommendedTimeframe: string;
@@ -42,8 +42,8 @@ function calculateRSI(closes: number[], period = 14): number {
 }
 
 export async function analyzeMarket(
-  tickers: MarketTicker[],
-  adapter: IExchangeAdapter,
+  tickers: any[],
+  adapter: IExchangeProvider,
 ): Promise<AnalysisCandidate[]> {
   if (!tickers.length) return [];
 
@@ -155,7 +155,7 @@ export async function analyzeMarket(
   }));
 }
 
-function calculateScore(ticker: MarketTicker): number {
+function calculateScore(ticker: any): number {
   const volume = ticker.quoteVolume24h || ticker.volume24h || 0;
   const volumeScore = Math.min(Math.log10(volume + 1) * 5, 30);
 

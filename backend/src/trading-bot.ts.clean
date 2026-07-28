@@ -1,8 +1,5 @@
 import { Env } from './index';
-import { ExchangeManager, ExchangeName, ExchangeEnvironment, ExchangeRegion, IExchangeProvider } from './exchanges';
-import { Ticker } from './exchanges/models/NormalizedDomain';
-import BigNumber from 'bignumber.js';
-
+import { getExchangeAdapter, ExchangeName, ExchangeEnvironment, ExchangeRegion, MarketTicker, IExchangeAdapter } from './exchanges';
 import { type Kline } from './exchanges/types';
 import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
@@ -318,7 +315,7 @@ export function computeIndicators(closes: number[]): IndicatorSet {
   return { rsi, macd, macdSignal, macdHistogram };
 }
 
-export function toMetrics(ticker: any): Metrics {
+export function toMetrics(ticker: MarketTicker): Metrics {
   const price = ticker.price;
   const change24h = ticker.priceChangePercent24h;
   const volume = ticker.quoteVolume24h || ticker.volume24h || 0;
@@ -336,7 +333,7 @@ export function toMetrics(ticker: any): Metrics {
  * drives both the UI progress bar and the backend trade detection.
  */
 export function evaluateStrategy(
-  ticker: Ticker,
+  ticker: MarketTicker,
   ind: IndicatorSet,
   strategyKey: string | null,
   atr: number,
@@ -410,7 +407,7 @@ export function evaluateStrategy(
  * and the legacy ExchangeAdapters.
  */
 class AdapterCandleProvider implements ICandleProvider {
-  constructor(private adapter: IExchangeProvider) {}
+  constructor(private adapter: IExchangeAdapter) {}
 
   async fetchCandles(symbol: string, timeframe: Timeframe, limit: number = 100): Promise<NormalizedCandle[]> {
     // We map internal timeframes (1m, 3m, 5m, 15m, 30m, 1h, 4h) directly 
@@ -427,7 +424,7 @@ class AdapterCandleProvider implements ICandleProvider {
     }));
   }
 
-  async fetchTicker(symbol: string): Promise<Ticker | null> {
+  async fetchTicker(symbol: string): Promise<MarketTicker | null> {
     return this.adapter.fetchTicker(symbol);
   }
 }
@@ -499,7 +496,7 @@ export class TradingBot {
         
         const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
         if (user?.exchange_name) {
-          const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment) });
+          const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
           const provider = new AdapterCandleProvider(adapter);
           const dataEngine = new MarketDataEngine(provider);
           this.orchestrator.setMarketDataEngine(dataEngine);
@@ -636,7 +633,7 @@ export class TradingBot {
               );
             }
 
-            const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, { environment: normalizeEnvironment(userKeys.exchange_environment) });
+            const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
             const coinId = (await this.state.storage.get('coinId')) as string;
 
             const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
@@ -658,11 +655,12 @@ export class TradingBot {
             let limitPrice: number | undefined = undefined;
 
             try {
-              if (adapter) {
+              if (adapter.placeOrder) {
                 const ticker = await adapter.fetchTicker(orderSymbol);
-                const currentPrice = ticker?.last?.toNumber() || target.signalPrice || target.entryPrice;
+                const currentPrice = ticker?.price || target.signalPrice || target.entryPrice;
                 const targetPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
                 
+                // Hybrid Order Selection: If target price differs by > 0.05% from current live price, use LIMIT order
                 const deltaPercent = currentPrice > 0 ? (Math.abs(targetPrice - currentPrice) / currentPrice) : 0;
                 if (target.targetEntryPrice && deltaPercent > 0.0005) {
                   orderType = 'LIMIT';
@@ -680,11 +678,11 @@ export class TradingBot {
                   exchange: userKeys.exchange_name || "binance",
                   baseAsset: ticker.symbol,
                   quoteAsset: "USDT",
-                  minNotional: 0,
-                  minQty: 0,
-                  maxQty: 999999,
-                  stepSize: 0,
-                  tickSize: 0,
+                  minNotional: ticker.minNotional,
+                  minQty: ticker.minOrderQty,
+                  maxQty: ticker.maxOrderQty,
+                  stepSize: ticker.lotSize,
+                  tickSize: ticker.tickSize,
                   minPrice: 0,
                   maxPrice: 999999999,
                   contractSize: 1,
@@ -695,36 +693,45 @@ export class TradingBot {
                   throw new Error(rulesRes.errorMessage || `Order validation failed: ${rulesRes.errorCode}`);
                 }
 
-                const qty = rulesRes.quantizedQuantity ?? 0;
-                
-                // Re-fetch provider with full keys for write
-                const writeProvider = await ExchangeManager.getProvider(userKeys.exchange_name, {
-                   environment: normalizeEnvironment(userKeys.exchange_environment),
-                   apiKey: userKeys.exchange_api_key,
-                   secret: decryptedSecret,
-                   password: decryptedPassphrase
-                });
+                const qty = rulesRes.quantizedQuantity;
+                  
+                orderResult = await adapter.placeOrder(
+                  orderSymbol,
+                  side,
+                  userKeys.exchange_api_key,
+                  decryptedSecret,
+                  qty,
+                  clientOrderId,
+                  orderType,
+                  limitPrice,
+                  target.stopLoss,
+                  target.takeProfit,
+                  decryptedPassphrase
+                );
 
-                const req: any = {
-                   symbol: orderSymbol,
-                   side: side.toLowerCase(),
-                   type: orderType.toLowerCase(),
-                   amount: new BigNumber(qty),
-                   clientOrderId: clientOrderId,
-                   params: {}
-                };
-                if (limitPrice) req.price = new BigNumber(limitPrice);
-                if (target.stopLoss) req.params.stopLossPrice = target.stopLoss;
-                if (target.takeProfit) req.params.takeProfitPrice = target.takeProfit;
+                // Binance Post-Fill Native OCO Creation
+                if (orderResult.success && userKeys.exchange_name === 'binance' && adapter.placeOcoOrder && orderResult.status === 'filled') {
+                  const ocoSide = side === 'BUY' ? 'SELL' : 'BUY';
+                  const ocoResult = await adapter.placeOcoOrder(
+                    orderSymbol,
+                    ocoSide,
+                    userKeys.exchange_api_key,
+                    decryptedSecret,
+                    orderResult.quantity || qty || 0.001,
+                    target.takeProfit,
+                    target.stopLoss,
+                    `oco_${clientOrderId}`,
+                    decryptedPassphrase
+                  ).catch((err: any) => ({ success: false, message: err.message }));
 
-                const rawOrder = await ExchangeManager.executeIdempotentOrder(writeProvider, req);
-                orderResult = {
-                   success: true,
-                   orderId: rawOrder.id,
-                   price: rawOrder.average?.toNumber() || rawOrder.price?.toNumber(),
-                   quantity: rawOrder.filled?.toNumber() || rawOrder.amount.toNumber(),
-                   status: rawOrder.status === 'open' ? 'open' : 'filled'
-                };
+                  if (ocoResult.success && 'ocoGroupId' in ocoResult) {
+                    const res = orderResult as any;
+                    res.ocoGroupId = (ocoResult as any).ocoGroupId;
+                    res.tpOrderId = (ocoResult as any).tpOrderId;
+                    res.slOrderId = (ocoResult as any).slOrderId;
+                    res.protectionMode = 'NATIVE_OCO';
+                  }
+                }
               }
             } catch (e: any) {
               orderResult = { success: false, message: e.message || 'Trade execution failed' };
@@ -738,7 +745,7 @@ export class TradingBot {
               let averageFillPrice = orderResult.price;
               if (!averageFillPrice || averageFillPrice <= 0) {
                 const fallbackTicker = await adapter.fetchTicker(orderSymbol).catch(() => null);
-                averageFillPrice = fallbackTicker?.last?.toNumber() || refPrice;
+                averageFillPrice = fallbackTicker?.price || refPrice;
               }
 
               await this.logAuditEvent(userId, 'TRADE_FILLED', { symbol: orderSymbol, side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, strategy: target.strategy });
@@ -870,10 +877,10 @@ export class TradingBot {
         const user = userId
           ? await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>()
           : null;
-        const adapter = user?.exchange_name ? await ExchangeManager.getProvider(user.exchange_name, { environment: normalizeEnvironment(user.exchange_environment) }) : null;
+        const adapter = user?.exchange_name ? getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region)) : null;
 
         const ticker = adapter ? await adapter.fetchTicker(coinId).catch(() => null) : null;
-        const currentPrice = ticker?.last?.toNumber() || 0.0725;
+        const currentPrice = ticker?.price || 0.0725;
         const positionSizeUsdt = ((await this.state.storage.get('positionSize')) as number) || 100;
         const quantity = parseFloat((positionSizeUsdt / currentPrice).toFixed(4));
         const stopLoss = parseFloat((currentPrice * 0.985).toFixed(5));
@@ -927,7 +934,7 @@ export class TradingBot {
           if (userId) {
             const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
             if (user?.exchange_name) {
-              const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment) });
+              const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
               if ((adapter as any).cacheMetrics) {
                 adapterMetrics = { ... (adapter as any).cacheMetrics };
                 if (typeof adapterMetrics.circuitBreakerStatus === 'function') {
@@ -1044,12 +1051,10 @@ export class TradingBot {
              const userKeys = await this.env.DB.prepare('SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
              if (userKeys?.exchange_name && userKeys.exchange_api_secret_encrypted) {
                const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted }, this.env.ENCRYPTION_KEY);
-               // Reconciliation makes authenticated calls (fetchOrder) — pass full credentials
-               const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, {
-                 environment: normalizeEnvironment(userKeys.exchange_environment),
-                 apiKey: userKeys.exchange_api_key,
-                 secret: decryptedSecret,
-               });
+               const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
+               
+               // Override secret for engine calls
+               userKeys.exchange_api_secret_encrypted = decryptedSecret;
                
                const reconciliationEngine = new ReconciliationEngine(this.state.storage, this.env, userId, adapter, userKeys);
                await reconciliationEngine.runReconciliationSweep();
@@ -1069,7 +1074,7 @@ export class TradingBot {
         if (coinId && userId) {
             const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
             if (user?.exchange_name) {
-              const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment) });
+              const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region));
               const provider = new AdapterCandleProvider(adapter);
               const dataEngine = new MarketDataEngine(provider);
               this.orchestrator.setMarketDataEngine(dataEngine);
@@ -1094,8 +1099,8 @@ export class TradingBot {
                 const recentAlert = alerts.find(a => a.symbol === coinId && a.status === 'pending' && a.strategy === `${strategy}_NEW`);
                 if (!recentAlert) {
                   // Fetch live market price at the exact moment of signal generation
-                  const ticker = user?.exchange_name ? await (await ExchangeManager.getProvider(user.exchange_name, { environment: normalizeEnvironment(user.exchange_environment) })).fetchTicker(coinId).catch(() => null) : null;
-                  const price = ticker?.last?.toNumber() || 0;
+                  const ticker = user?.exchange_name ? await getExchangeAdapter(user.exchange_name as ExchangeName, normalizeEnvironment(user.exchange_environment), normalizeRegion(user.exchange_region)).fetchTicker(coinId).catch(() => null) : null;
+                  const price = ticker?.price || 0;
                   
                   const storedPositionSize = (await this.state.storage.get('positionSize')) as number | undefined;
                   const calculatedSize = sig.riskAssessment?.positionSizeRecommendation;
@@ -1209,14 +1214,14 @@ export class TradingBot {
       if (!userKeys?.exchange_name || !userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) return;
 
 
-      const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, { environment: normalizeEnvironment(userKeys.exchange_environment) });
+      const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
       
       for (const position of results as any[]) {
         try {
           const ticker = await adapter.fetchTicker(position.symbol);
           if (!ticker) continue;
 
-          const currentPrice = ticker.last.toNumber();
+          const currentPrice = ticker.price;
           let closeReason: string | null = null;
 
             if (position.side === 'BUY') {
