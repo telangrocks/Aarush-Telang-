@@ -228,6 +228,41 @@ fun ConnectExchangeScreen(
                                 modifier = Modifier.padding(start = 4.dp),
                             )
                         }
+
+                        if (formState.selectedExchange.equals("kucoin", ignoreCase = true)) {
+                            Spacer(Modifier.height(12.dp))
+
+                            AuthFieldLabel("API PASSPHRASE")
+                            Spacer(Modifier.height(4.dp))
+                            var apiPassphraseVisible by remember { mutableStateOf(false) }
+                            DarkTextField(
+                                value = formState.apiPassphrase,
+                                onValueChange = viewModel::onApiPassphraseChanged,
+                                placeholder = "Enter your API Passphrase",
+                                visualTransformation = if (apiPassphraseVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                isError = formState.apiPassphraseError != null,
+                                testTag = "api_passphrase_input",
+                                trailingIcon = {
+                                    IconButton(onClick = { apiPassphraseVisible = !apiPassphraseVisible }) {
+                                        Icon(
+                                            imageVector = if (apiPassphraseVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                            contentDescription = if (apiPassphraseVisible) "Hide API Passphrase" else "Show API Passphrase",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                },
+                            )
+                            if (formState.apiPassphraseError != null) {
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = formState.apiPassphraseError!!,
+                                    color = LossRed,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(start = 4.dp),
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -263,6 +298,7 @@ private fun ExchangeDropdown(
 ) {
     val exchanges = listOf(
         "binance" to "Binance",
+        "kucoin" to "KuCoin",
     )
     var expanded by remember { mutableStateOf(false) }
 

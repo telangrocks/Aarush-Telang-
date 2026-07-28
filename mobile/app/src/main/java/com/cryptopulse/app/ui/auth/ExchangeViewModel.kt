@@ -39,8 +39,10 @@ data class ExchangeFormState(
     val environment: String = "testnet",
     val apiKey: String = "",
     val apiSecret: String = "",
+    val apiPassphrase: String = "",
     val apiKeyError: String? = null,
     val apiSecretError: String? = null,
+    val apiPassphraseError: String? = null,
     val isLoading: Boolean = false,
     val validationMessage: String? = null,
 )
@@ -153,6 +155,14 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
+    fun onApiPassphraseChanged(passphrase: String) {
+        val sanitized = passphrase.trim()
+        _formState.value = _formState.value.copy(apiPassphrase = sanitized, apiPassphraseError = null)
+        if (_uiState.value is ExchangeUiState.Error) {
+            _uiState.value = ExchangeUiState.Idle
+        }
+    }
+
     private fun getUserFriendlyErrorMessage(
         response: retrofit2.Response<*>? = null,
         exception: Exception? = null
@@ -232,6 +242,7 @@ class ExchangeViewModel @Inject constructor(
         val state = _formState.value
         var apiKeyError: String? = null
         var apiSecretError: String? = null
+        var apiPassphraseError: String? = null
 
         if (state.apiKey.isBlank()) {
             apiKeyError = "API Key is required"
@@ -239,11 +250,15 @@ class ExchangeViewModel @Inject constructor(
         if (state.apiSecret.isBlank()) {
             apiSecretError = "API Secret is required"
         }
+        if (state.selectedExchange.equals("kucoin", ignoreCase = true) && state.apiPassphrase.isBlank()) {
+            apiPassphraseError = "API Passphrase is required for KuCoin"
+        }
 
-        if (apiKeyError != null || apiSecretError != null) {
+        if (apiKeyError != null || apiSecretError != null || apiPassphraseError != null) {
             _formState.value = state.copy(
                 apiKeyError = apiKeyError,
                 apiSecretError = apiSecretError,
+                apiPassphraseError = apiPassphraseError,
             )
             return
         }
@@ -257,6 +272,7 @@ class ExchangeViewModel @Inject constructor(
                     exchangeName = state.selectedExchange,
                     apiKey = state.apiKey,
                     apiSecret = state.apiSecret,
+                    apiPassphrase = state.apiPassphrase.takeIf { it.isNotBlank() },
                     environment = state.environment,
                 )
                 val validationResponse = exchangeService.validate(validationRequest)
@@ -274,6 +290,7 @@ class ExchangeViewModel @Inject constructor(
                     exchangeName = state.selectedExchange,
                     apiKey = state.apiKey,
                     apiSecret = state.apiSecret,
+                    apiPassphrase = state.apiPassphrase.takeIf { it.isNotBlank() },
                     environment = state.environment,
                 )
                 val connectResponse = exchangeService.connect(connectRequest)

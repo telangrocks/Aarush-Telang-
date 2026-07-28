@@ -9,6 +9,7 @@ data class ValidateExchangeRequest(
     val exchangeName: String,
     val apiKey: String,
     val apiSecret: String,
+    val apiPassphrase: String? = null,
     val environment: String = "mainnet",
 )
 
@@ -23,6 +24,7 @@ data class ConnectExchangeRequest(
     val exchangeName: String,
     val apiKey: String,
     val apiSecret: String,
+    val apiPassphrase: String? = null,
     val environment: String = "mainnet",
 )
 
