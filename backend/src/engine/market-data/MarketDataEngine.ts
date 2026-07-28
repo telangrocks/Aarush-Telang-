@@ -19,18 +19,20 @@ export class MarketDataEngine {
       throw new Error(`Failed to fetch market ticker for symbol: ${symbol}`);
     }
 
+    const toNum = (v: any) => (v && typeof v.toNumber === 'function' ? v.toNumber() : typeof v === 'number' ? v : 0);
+
     const snapshot: MarketSnapshot = {
       symbol: ticker.symbol,
       timestamp: Date.now(),
-      currentPrice: ticker.last.toNumber(),
-      volume24h: ticker.volume.toNumber(),
-      quoteVolume24h: ticker.quoteVolume.toNumber(),
+      currentPrice: toNum(ticker.last ?? (ticker as any).price),
+      volume24h: toNum(ticker.volume ?? (ticker as any).volume24h),
+      quoteVolume24h: toNum(ticker.quoteVolume ?? (ticker as any).quoteVolume24h),
       candles: {} as MarketSnapshot['candles'],
       metadata: {
-        priceChange24h: 0,          // Not yet available in NormalizedDomain Ticker
-        priceChangePercent24h: 0,   // Not yet available in NormalizedDomain Ticker
-        highPrice24h: ticker.high.toNumber(),
-        lowPrice24h: ticker.low.toNumber(),
+        priceChange24h: toNum((ticker as any).priceChange24h ?? 0),
+        priceChangePercent24h: toNum((ticker as any).priceChangePercent24h ?? 0),
+        highPrice24h: toNum(ticker.high ?? (ticker as any).highPrice24h),
+        lowPrice24h: toNum(ticker.low ?? (ticker as any).lowPrice24h),
       }
     };
 

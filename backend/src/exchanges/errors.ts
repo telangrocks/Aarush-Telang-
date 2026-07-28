@@ -295,6 +295,7 @@ export function classifyBinanceCode(
   }
 
   const byCode: Record<number, ExchangeErrorCode> = {
+    "-2008": "INVALID_API_KEY", // Invalid Api-Key ID (e.g. testnet key used on mainnet)
     "-2014": "INVALID_API_KEY", // API-key format invalid
     "-2016": "INVALID_API_SECRET", // Invalid API secret / IP or permissions
     "-1022": "INVALID_SIGNATURE", // Invalid signature
@@ -485,11 +486,31 @@ function mk(
  * Classify a thrown exception (network failure, timeout, JSON parse, etc.).
  */
 export function classifyException(error: unknown, exchangeName: string): ClassifiedError {
+  const errObj = error as any;
   const message = error instanceof Error ? error.message : String(error ?? "unknown error");
-  const lower = message.toLowerCase();
+  const origMsg = errObj?.originalExchangeErrorMessage || "";
+  const fullText = `${message} ${origMsg}`.trim();
+  const lower = fullText.toLowerCase();
   const technicalDetail = `exchange=${exchangeName} exception=${message.slice(0, 500)}`;
 
-  // Fetch timeout (Cloudflare Workers AbortError / TimeoutError)
+  // 1. Structured code matching (Binance numeric codes like -2015, KuCoin string codes like 400100)
+  const structured =
+    classifyBinanceCode(fullText, technicalDetail) ||
+    classifyKuCoinCode(fullText, technicalDetail);
+  if (structured) return structured;
+
+  // 2. Text matching per exchange body conventions
+  const byText = classifyByBodyText(lower, technicalDetail, exchangeName);
+  if (byText && byText.code !== "UNKNOWN_EXCHANGE_ERROR") {
+    return byText;
+  }
+
+  // 3. Mapped internal code from UnifiedError
+  if (errObj?.mappedInternalErrorCode && FRIENDLY_MESSAGES[errObj.mappedInternalErrorCode as ExchangeErrorCode]) {
+    return mk(errObj.mappedInternalErrorCode as ExchangeErrorCode, technicalDetail, lower);
+  }
+
+  // 4. Fetch timeout (Cloudflare Workers AbortError / TimeoutError)
   if (
     error instanceof Error &&
     (error.name === "AbortError" || error.name === "TimeoutError" || lower.includes("timeout") || lower.includes("timed out"))
