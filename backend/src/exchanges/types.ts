@@ -1,4 +1,4 @@
-export type ExchangeName = "binance";
+export type ExchangeName = "binance" | "kucoin";
 
 export type ExchangeEnvironment = "mainnet" | "testnet";
 
@@ -210,6 +210,19 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
     regionTestnetUrls: {
       global: "https://testnet.binance.vision",
       india: "https://testnet.binance.vision",
+    },
+  },
+  {
+    name: "kucoin",
+    displayName: "KuCoin",
+    defaultRegion: "global",
+    regionUrls: {
+      global: "https://api.kucoin.com",
+      india: "https://api.kucoin.com",
+    },
+    regionTestnetUrls: {
+      global: "https://openapi-sandbox.kucoin.com",
+      india: "https://openapi-sandbox.kucoin.com",
     },
   },
 ];

@@ -47,7 +47,7 @@ export interface BalanceResponse {
 export interface IExchangeAdapter {
   readonly config: ExchangeConfig;
   getName(): string;
-  validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult>;
+  validateCredentials(apiKey: string, apiSecret: string, apiPassphrase?: string): Promise<ValidationResult>;
   fetchMarketData(): Promise<MarketTicker[]>;
   fetchTicker(symbol: string): Promise<MarketTicker | null>;
   fetchKlines(symbol: string, interval: string, limit: number): Promise<Kline[]>;
@@ -61,7 +61,8 @@ export interface IExchangeAdapter {
     orderType?: 'MARKET' | 'LIMIT',
     price?: number,
     stopLoss?: number,
-    takeProfit?: number
+    takeProfit?: number,
+    apiPassphrase?: string
   ): Promise<OrderResult>;
   placeOcoOrder?(
     symbol: string,
@@ -71,12 +72,13 @@ export interface IExchangeAdapter {
     quantity: number,
     takeProfitPrice: number,
     stopLossPrice: number,
-    clientOrderId?: string
+    clientOrderId?: string,
+    apiPassphrase?: string
   ): Promise<OrderResult>;
-  cancelOrder?(orderId: string, symbol: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }>;
-  fetchOrder?(orderId: string, apiKey: string, apiSecret: string): Promise<OrderResult>;
+  cancelOrder?(orderId: string, symbol: string, apiKey: string, apiSecret: string, apiPassphrase?: string): Promise<{ success: boolean; message: string }>;
+  fetchOrder?(orderId: string, apiKey: string, apiSecret: string, apiPassphrase?: string): Promise<OrderResult>;
 
-  fetchBalances?(apiKey: string, apiSecret: string): Promise<BalanceResponse>;
+  fetchBalances?(apiKey: string, apiSecret: string, apiPassphrase?: string): Promise<BalanceResponse>;
   setEnvironment?(environment: ExchangeEnvironment): void;
   setRegion?(region: ExchangeRegion): void;
   getRestUrl(): string;

@@ -59,16 +59,18 @@ export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   try {
-    const { exchangeName, apiKey, apiSecret, environment, region } = await c.req.json<{
+    const { exchangeName, apiKey, apiSecret, apiPassphrase, environment, region } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
+      apiPassphrase?: string;
       environment?: ExchangeEnvironment;
       region?: ExchangeRegion;
     }>();
 
     const cleanApiKey = cleanCredential(apiKey);
     const cleanApiSecret = cleanCredential(apiSecret);
+    const cleanApiPassphrase = cleanCredential(apiPassphrase);
 
     if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
       c.status(400);
@@ -81,7 +83,7 @@ export async function handleValidateExchange(
     }
 
     const adapter = getExchangeAdapter(exchangeName, normalizeEnvironment(environment), region);
-    const result = await adapter.validateCredentials(cleanApiKey, cleanApiSecret);
+    const result = await adapter.validateCredentials(cleanApiKey, cleanApiSecret, cleanApiPassphrase);
     console.log(`[exchange-auth] validation result for ${exchangeName}:`, JSON.stringify(result));
 
     return c.json(shapeValidation(result, exchangeName, (d) => console.error(d)));
@@ -105,16 +107,18 @@ export async function handleConnectExchange(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
-    const { exchangeName, apiKey, apiSecret, environment, region } = await c.req.json<{
+    const { exchangeName, apiKey, apiSecret, apiPassphrase, environment, region } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
+      apiPassphrase?: string;
       environment?: ExchangeEnvironment;
       region?: ExchangeRegion;
     }>();
 
     const cleanApiKey = cleanCredential(apiKey);
     const cleanApiSecret = cleanCredential(apiSecret);
+    const cleanApiPassphrase = cleanCredential(apiPassphrase);
 
     if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
       c.status(400);
@@ -128,7 +132,7 @@ export async function handleConnectExchange(
 
     const resolvedEnvironment = normalizeEnvironment(environment);
     const adapter = getExchangeAdapter(exchangeName, resolvedEnvironment, region);
-    const validation = await adapter.validateCredentials(cleanApiKey, cleanApiSecret);
+    const validation = await adapter.validateCredentials(cleanApiKey, cleanApiSecret, cleanApiPassphrase);
     console.log(`[exchange-auth] connect validation result for ${exchangeName}:`, JSON.stringify(validation));
     if (!validation.success) {
       c.status(401);
@@ -136,12 +140,21 @@ export async function handleConnectExchange(
     }
 
     const encryptedSecret = await encrypt(cleanApiSecret, c.env.ENCRYPTION_KEY);
+    
+    let encryptedPassphraseIv = null;
+    let encryptedPassphrase = null;
+    if (cleanApiPassphrase) {
+      const encryptedPhraseObj = await encrypt(cleanApiPassphrase, c.env.ENCRYPTION_KEY);
+      encryptedPassphraseIv = encryptedPhraseObj.iv;
+      encryptedPassphrase = encryptedPhraseObj.encrypted;
+    }
+
     const resolvedRegion = adapter?.config?.defaultRegion || (region === "india" ? "india" : "global");
 
     await c.env.DB.prepare(
-      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?`,
+      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ? WHERE id = ?`,
     )
-      .bind(exchangeName, resolvedEnvironment, resolvedRegion, cleanApiKey, encryptedSecret.iv, encryptedSecret.encrypted, userId)
+      .bind(exchangeName, resolvedEnvironment, resolvedRegion, cleanApiKey, encryptedSecret.iv, encryptedSecret.encrypted, encryptedPassphraseIv, encryptedPassphrase, userId)
       .run();
 
     // Reset bot state and clear instrument locking upon exchange connection/reconnection
@@ -210,7 +223,7 @@ export async function handleGetExchangeBalances(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
@@ -220,6 +233,8 @@ export async function handleGetExchangeBalances(
         exchange_api_key: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
+        exchange_api_passphrase_iv: string | null;
+        exchange_api_passphrase_encrypted: string | null;
       }>();
 
     if (!user?.exchange_name || !user?.exchange_api_key || !user?.exchange_api_secret_encrypted || !user?.exchange_api_secret_iv) {
@@ -236,6 +251,14 @@ export async function handleGetExchangeBalances(
       c.env.ENCRYPTION_KEY,
     );
 
+    let decryptedPassphrase = undefined;
+    if (user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
+      decryptedPassphrase = await decrypt(
+        { iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted },
+        c.env.ENCRYPTION_KEY,
+      );
+    }
+
     const environment = normalizeEnvironment(user.exchange_environment);
     const region = normalizeRegion(user.exchange_region);
     const adapter = getExchangeAdapter(user.exchange_name as ExchangeName, environment, region);
@@ -251,7 +274,7 @@ export async function handleGetExchangeBalances(
       });
     }
 
-    const balanceRes = await adapter.fetchBalances(user.exchange_api_key, decryptedSecret);
+    const balanceRes = await adapter.fetchBalances(user.exchange_api_key, decryptedSecret, decryptedPassphrase);
     return c.json(balanceRes);
   } catch (e: unknown) {
     const error = e as Error;

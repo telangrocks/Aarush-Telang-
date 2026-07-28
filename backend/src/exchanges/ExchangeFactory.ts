@@ -2,8 +2,11 @@ import { IExchangeAdapter } from "./BaseExchange";
 import { ExchangeName, ExchangeEnvironment, ExchangeRegion } from "./types";
 import { BinanceExchange } from "./BinanceExchange";
 
+import { KuCoinExchange } from "./KuCoinExchange";
+
 const adapterConstructors: Record<ExchangeName, new () => IExchangeAdapter> = {
   binance: BinanceExchange,
+  kucoin: KuCoinExchange,
 };
 
 /**

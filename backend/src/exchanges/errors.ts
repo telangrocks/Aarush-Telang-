@@ -38,6 +38,7 @@ export type ExchangeErrorCode =
   | "BINANCE_WAF_BLOCKED"
   | "BINANCE_NETWORK_BLOCKED"
   | "UPSTREAM_PROVIDER_BLOCKED"
+  | "INSUFFICIENT_BALANCE"
   | "UNKNOWN_EXCHANGE_ERROR";
 
 export interface ExchangeErrorInfo {
@@ -96,6 +97,11 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
     code: "SPOT_TRADING_NOT_ENABLED",
     friendlyMessage: "Spot trading is not enabled on this API key.",
     hint: "Go to your exchange API settings and check the 'Enable Spot Trading' permission.",
+  },
+  INSUFFICIENT_BALANCE: {
+    code: "INSUFFICIENT_BALANCE",
+    friendlyMessage: "Insufficient balance to perform this operation.",
+    hint: "Check your exchange wallet balance and try again.",
   },
   PERMISSION_DENIED: {
     code: "PERMISSION_DENIED",
@@ -204,8 +210,8 @@ export function classifyExchangeResponse(
   const technicalDetail = `exchange=${exchangeName} status=${status} body=${bodyText.slice(0, 500)}`;
   // {code,...} / {retCode,...} body. Resolve it precisely FIRST before text matching!
   const structured =
-    classifyBinanceCode(bodyText, technicalDetail) 
-    
+    classifyBinanceCode(bodyText, technicalDetail) ||
+    classifyKuCoinCode(bodyText, technicalDetail);
   if (structured) return structured;
 
   // ---- Network / CloudFront / IP restrictions ----
@@ -232,6 +238,9 @@ export function classifyExchangeResponse(
   }
   if (status === 418 || status === 503 || status === 502 || status === 504) {
     return mk("SERVICE_TEMPORARILY_UNAVAILABLE", technicalDetail, lower);
+  }
+  if (status === 451) {
+    return mk("REGION_NOT_SUPPORTED", technicalDetail, lower);
   }
   if (status >= 500) {
     return mk("SERVICE_TEMPORARILY_UNAVAILABLE", technicalDetail, lower);
@@ -305,6 +314,47 @@ export function classifyBinanceCode(
   return null;
 }
 
+/**
+ * Map KuCoin's specific string error `code` values to user-facing error codes.
+ * Returns null when the code is not one we recognise or body has no code.
+ */
+export function classifyKuCoinCode(
+  bodyText: string,
+  technicalDetail: string,
+): ClassifiedError | null {
+  let code: string | undefined;
+  try {
+    const raw = bodyText.includes("{") ? bodyText.slice(bodyText.indexOf("{"), bodyText.lastIndexOf("}") + 1) : bodyText;
+    const parsed = JSON.parse(raw) as { code?: string };
+    if (typeof parsed.code === "string") code = parsed.code;
+  } catch {
+    const match = bodyText.match(/"code"\s*:\s*"(\d+)"/) || bodyText.match(/code="(\d+)"/);
+    if (match) code = match[1];
+  }
+  if (!code) return null;
+
+  // KuCoin successful code is "200000". This method is only called if a request fails or doesn't have 200000.
+  
+  const byCode: Record<string, ExchangeErrorCode> = {
+    "400100": "INVALID_SIGNATURE",
+    "400001": "INVALID_API_KEY",
+    "400003": "IP_NOT_WHITELISTED",
+    "400004": "INVALID_PASSPHRASE",
+    "400005": "INVALID_SIGNATURE", // Invalid timestamp
+    "400006": "INVALID_API_KEY", // Invalid API version
+    "400007": "INVALID_SIGNATURE", // Invalid API signature
+    "411100": "ACCOUNT_RESTRICTED", // Account frozen
+    "200004": "INSUFFICIENT_BALANCE", // Insufficient funds
+    "429000": "API_RATE_LIMIT_REACHED",
+    "500000": "SERVICE_TEMPORARILY_UNAVAILABLE",
+    "260100": "INSUFFICIENT_BALANCE",
+  };
+
+  const mapped = byCode[code];
+  if (mapped) return mk(mapped, technicalDetail, `kucoin code ${code}`);
+  return null;
+}
+
 
 /**
  * Classify based on the human-readable error text returned by the exchange.
@@ -360,14 +410,17 @@ export function classifyByBodyText(
     return mk("INVALID_API_VERSION", technicalDetail, lower);
   }
   // Region
-  if (lower.includes("region") || lower.includes("country") || lower.includes("not supported in this region") || lower.includes("geo-block")) {
+  if (lower.includes("region") || lower.includes("country") || lower.includes("not supported in this region") || lower.includes("geo-block") || lower.includes("service restricted") || lower.includes("restricted territory") || lower.includes("restricted location")) {
     return mk("REGION_NOT_SUPPORTED", technicalDetail, lower);
   }
   // Account status
   if (lower.includes("suspended") || lower.includes("suspend")) {
     return mk("ACCOUNT_SUSPENDED", technicalDetail, lower);
   }
-  if (lower.includes("restricted") || lower.includes("restrict") || lower.includes("frozen")) {
+  if (lower.includes("account has restrictions") || lower.includes("restricted") || lower.includes("restrict") || lower.includes("frozen")) {
+    if (lower.includes("ip")) {
+      return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
+    }
     return mk("ACCOUNT_RESTRICTED", technicalDetail, lower);
   }
   // Testnet vs live mismatch

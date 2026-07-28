@@ -243,7 +243,7 @@ export class BinanceExchange implements IExchangeAdapter {
     return "https://fapi.binance.com";
   }
 
-  async validateCredentials(apiKey: string, apiSecret: string): Promise<ValidationResult> {
+  async validateCredentials(apiKey: string, apiSecret: string, _apiPassphrase?: string): Promise<ValidationResult> {
     try {
       const cleanKey = cleanCredential(apiKey);
       const cleanSecret = cleanCredential(apiSecret);
@@ -430,7 +430,8 @@ export class BinanceExchange implements IExchangeAdapter {
     orderType?: 'MARKET' | 'LIMIT',
     price?: number,
     _stopLoss?: number,
-    _takeProfit?: number
+    _takeProfit?: number,
+    _apiPassphrase?: string
   ): Promise<OrderResult> {
     const breakerState = this.breaker.check();
     if (!breakerState.allowed) {
@@ -511,7 +512,8 @@ export class BinanceExchange implements IExchangeAdapter {
     quantity: number,
     takeProfitPrice: number,
     stopLossPrice: number,
-    clientOrderId?: string
+    clientOrderId?: string,
+    _apiPassphrase?: string
   ): Promise<OrderResult> {
     const breakerState = this.breaker.check();
     if (!breakerState.allowed) {
@@ -581,7 +583,7 @@ export class BinanceExchange implements IExchangeAdapter {
     }
   }
 
-  async cancelOrder(orderId: string, symbol: string, apiKey: string, apiSecret: string): Promise<{ success: boolean; message: string }> {
+  async cancelOrder(orderId: string, symbol: string, apiKey: string, apiSecret: string, _apiPassphrase?: string): Promise<{ success: boolean; message: string }> {
     try {
       const timestamp = Date.now();
       const fullSymbol = `${symbol.toUpperCase()}USDT`;
@@ -612,7 +614,7 @@ export class BinanceExchange implements IExchangeAdapter {
     }
   }
 
-  async fetchOrder(orderId: string, apiKey: string, apiSecret: string, symbol?: string): Promise<OrderResult> {
+  async fetchOrder(orderId: string, apiKey: string, apiSecret: string, _apiPassphrase?: string, symbol?: string): Promise<OrderResult> {
     try {
       const timestamp = Date.now();
       const params = new URLSearchParams({
@@ -666,7 +668,7 @@ export class BinanceExchange implements IExchangeAdapter {
   }
 
 
-  async fetchBalances(apiKey: string, apiSecret: string): Promise<BalanceResponse> {
+  async fetchBalances(apiKey: string, apiSecret: string, _apiPassphrase?: string): Promise<BalanceResponse> {
     const breakerState = this.breaker.check();
     if (!breakerState.allowed) {
       return {

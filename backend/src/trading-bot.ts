@@ -613,8 +613,8 @@ export class TradingBot {
             }
 
             const userKeys = await this.env.DB.prepare(
-              'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
-            ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
+              'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
+            ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_api_passphrase_iv: string | null; exchange_api_passphrase_encrypted: string | null; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
 
             if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
               return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
@@ -624,6 +624,14 @@ export class TradingBot {
               { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted },
               this.env.ENCRYPTION_KEY,
             );
+
+            let decryptedPassphrase = undefined;
+            if (userKeys.exchange_api_passphrase_iv && userKeys.exchange_api_passphrase_encrypted) {
+              decryptedPassphrase = await decrypt(
+                { iv: userKeys.exchange_api_passphrase_iv, encrypted: userKeys.exchange_api_passphrase_encrypted },
+                this.env.ENCRYPTION_KEY,
+              );
+            }
 
             const adapter = getExchangeAdapter(userKeys.exchange_name as ExchangeName, normalizeEnvironment(userKeys.exchange_environment), normalizeRegion(userKeys.exchange_region));
             const coinId = (await this.state.storage.get('coinId')) as string;
@@ -697,7 +705,8 @@ export class TradingBot {
                   orderType,
                   limitPrice,
                   target.stopLoss,
-                  target.takeProfit
+                  target.takeProfit,
+                  decryptedPassphrase
                 );
 
                 // Binance Post-Fill Native OCO Creation
@@ -711,7 +720,8 @@ export class TradingBot {
                     orderResult.quantity || qty || 0.001,
                     target.takeProfit,
                     target.stopLoss,
-                    `oco_${clientOrderId}`
+                    `oco_${clientOrderId}`,
+                    decryptedPassphrase
                   ).catch((err: any) => ({ success: false, message: err.message }));
 
                   if (ocoResult.success && 'ocoGroupId' in ocoResult) {
