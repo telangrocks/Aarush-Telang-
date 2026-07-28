@@ -411,17 +411,7 @@ app.post("/api/confirm-pin-reset", handleConfirmPinReset);
 
 app.route("/api", api);
 
-import { serve } from '@hono/node-server';
-import 'dotenv/config';
-
-const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-
-console.log(`Starting CryptoPulse backend on port ${port}...`);
-
-serve({
-  fetch: app.fetch,
-  port
-});
+export default app;
 
 // Generic error handler
 app.onError((err, c) => {

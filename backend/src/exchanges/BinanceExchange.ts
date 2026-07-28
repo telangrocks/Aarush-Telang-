@@ -688,13 +688,21 @@ export class BinanceExchange implements IExchangeAdapter {
       const query = `recvWindow=${recvWindow}&timestamp=${timestamp}`;
       const signature = await hmacSha256(query, cleanSecret);
 
-      const response = await fetch(`${this.getRestUrl()}/api/v3/account?${query}&signature=${signature}`, {
+      let response = await fetch(`${this.getRestUrl()}/api/v3/account?${query}&signature=${signature}`, {
         headers: { 'X-MBX-APIKEY': cleanKey },
       });
 
-      const data = (await response.json()) as any;
+      let data = (await response.json()) as any;
 
-
+      if (!response.ok || (data.code && data.code !== 0)) {
+        const futuresResponse = await fetch(`${this.getFuturesRestUrl()}/fapi/v2/account?${query}&signature=${signature}`, {
+          headers: { 'X-MBX-APIKEY': cleanKey },
+        });
+        if (futuresResponse.ok) {
+          response = futuresResponse;
+          data = await response.json();
+        }
+      }
 
       if (!response.ok) {
         this.breaker.recordFailure();
