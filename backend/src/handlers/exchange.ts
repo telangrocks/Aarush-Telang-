@@ -21,7 +21,13 @@ import { analyzeMarket } from "../market-analysis";
  * Anything other than the explicit string "testnet" falls back to "mainnet".
  */
 function normalizeEnvironment(value: unknown): ExchangeEnvironment {
-  return value === "testnet" ? "testnet" : "mainnet";
+  if (typeof value === "string") {
+    const lower = value.toLowerCase();
+    if (lower === "testnet" || lower === "testing" || lower === "sandbox") {
+      return "testnet";
+    }
+  }
+  return "mainnet";
 }
 
 /**
@@ -113,6 +119,8 @@ export async function handleValidateExchange(
         code: classified.code,
         message: classified.friendlyMessage,
         hint: classified.hint,
+        detail: classified.technicalDetail,
+        rawError: valErr instanceof Error ? valErr.message : String(valErr),
       });
     }
   } catch (e: unknown) {
@@ -124,6 +132,8 @@ export async function handleValidateExchange(
       code: classified.code,
       message: classified.friendlyMessage,
       hint: classified.hint,
+      detail: classified.technicalDetail,
+      rawError: e instanceof Error ? `${e.message} | ${e.stack}` : String(e),
     });
   }
 }
