@@ -199,16 +199,6 @@ fun MarketCandidatesScreen(
                 }
 
                 item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("#", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, modifier = Modifier.width(28.dp))
-                        Text("COIN / PAIR", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, modifier = Modifier.weight(1f))
-                        Text("MIN. TRADABLE PRICE", color = TextMuted, fontSize = 11.sp, letterSpacing = 0.5.sp, textAlign = TextAlign.End)
-                    }
                     Divider(color = NavyBorder, thickness = 1.dp, modifier = Modifier.padding(vertical = 4.dp))
                 }
 
@@ -254,16 +244,16 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .testTag("candidate_item")
-            .padding(vertical = 12.dp, horizontal = 4.dp),
+            .padding(vertical = 16.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RankBadge(rank = candidate.rank)
 
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(12.dp))
 
         Box(
             modifier = Modifier
-                .size(38.dp)
+                .size(42.dp)
                 .background(candidate.coinColor.copy(alpha = 0.18f), CircleShape)
                 .border(1.5.dp, candidate.coinColor.copy(alpha = 0.5f), CircleShape),
             contentAlignment = Alignment.Center,
@@ -272,78 +262,99 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                 text = candidate.symbol.take(2),
                 color = candidate.coinColor,
                 fontWeight = FontWeight.ExtraBold,
-                fontSize = 12.sp,
+                fontSize = 14.sp,
             )
         }
 
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(14.dp))
 
         Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = candidate.coinName,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "/USDT",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(bottom = 1.dp)
+                    )
+                }
+
                 Text(
-                    text = candidate.pairName,
+                    text = "$${formatCryptoPrice(candidate.currentMarketPrice)}",
                     color = TextPrimary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
+                    fontSize = 15.sp,
                 )
-                if (candidate.tradeSide.isNotBlank()) {
-                    Spacer(Modifier.width(8.dp))
-                    val sideColor = if (candidate.tradeSide.equals("BUY", ignoreCase = true)) ProfitGreen else LossRed
-                    Box(
-                        modifier = Modifier
-                            .background(sideColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-                            .border(0.5.dp, sideColor.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = candidate.tradeSide.uppercase(),
-                            color = sideColor,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (candidate.tradeSide.isNotBlank()) {
+                        val sideColor = if (candidate.tradeSide.equals("BUY", ignoreCase = true)) ProfitGreen else LossRed
+                        Box(
+                            modifier = Modifier
+                                .background(sideColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                .border(0.5.dp, sideColor.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = candidate.tradeSide.uppercase(),
+                                color = sideColor,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                    if (candidate.recommendedTimeframe.isNotBlank()) {
+                        Spacer(Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(NavyBorder.copy(alpha = 0.3f), RoundedCornerShape(4.dp))
+                                .border(0.5.dp, NavyBorder.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = candidate.recommendedTimeframe,
+                                color = TextSecondary,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
                     }
                 }
-                if (candidate.recommendedTimeframe.isNotBlank()) {
-                    Spacer(Modifier.width(6.dp))
-                    Box(
-                        modifier = Modifier
-                            .background(NavyBorder.copy(alpha = 0.3f), RoundedCornerShape(4.dp))
-                            .border(0.5.dp, NavyBorder.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = candidate.recommendedTimeframe,
-                            color = TextSecondary,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "24h Vol: $${String.format(Locale.US, "%.1fM", candidate.quoteVolume24h / 1_000_000.0)}",
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = "Min: $${formatCryptoPrice(candidate.minNotional)}",
+                        color = CyanPrimary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
-            Text(
-                text = "Price: $${String.format("%.2f", candidate.currentMarketPrice)}",
-                color = TextSecondary,
-                fontSize = 11.sp,
-            )
-            Text(
-                text = "24h Vol: $${String.format("%.1fM", candidate.quoteVolume24h / 1_000_000.0)}",
-                color = TextSecondary,
-                fontSize = 11.sp,
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .border(1.dp, CyanPrimary, RoundedCornerShape(6.dp))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-        ) {
-            Text(
-                text = "$${String.format("%.2f", candidate.minNotional)} USDT",
-                color = CyanPrimary,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.3.sp,
-            )
         }
     }
 }
@@ -401,6 +412,14 @@ private fun getCurrentTime(): String =
 
 private fun getCurrentDate(): String =
     SimpleDateFormat("d MMM yyyy", Locale.getDefault()).format(Date())
+
+private fun formatCryptoPrice(price: Double): String {
+    return when {
+        price >= 1.0 -> String.format(Locale.US, "%.2f", price)
+        price >= 0.01 -> String.format(Locale.US, "%.4f", price)
+        else -> String.format(Locale.US, "%.8f", price).trimEnd('0').removeSuffix(".")
+    }
+}
 
 // ─── Mapper from DTO to screen model ──────────────────────────────────────────
 fun List<MarketCandidateDto>.toScreenCandidates(): List<MarketCandidate> {
