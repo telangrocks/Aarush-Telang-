@@ -184,7 +184,7 @@ export async function handleConnectExchange(
     } catch (valErr: unknown) {
       const classified = classifyException(valErr, exchangeName);
       console.error(`[exchange-auth] connect validation failed for ${exchangeName} (${classified.technicalDetail}):`, valErr);
-      c.status(401);
+      c.status(400);
       return c.json({
         success: false,
         code: classified.code,
