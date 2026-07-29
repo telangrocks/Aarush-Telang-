@@ -67,7 +67,14 @@ jobs:
           working-directory: mobile
           script: |
             echo "=================================================="
-            echo "1. BUILD APK & TEST APK"
+            echo "1. VERIFY GRADLE WRAPPER PERMISSIONS & VERSION"
+            echo "=================================================="
+            chmod +x ./gradlew
+            ls -la ./gradlew
+            ./gradlew --version
+
+            echo "=================================================="
+            echo "2. BUILD APK & TEST APK"
             echo "=================================================="
             ./gradlew assembleDebug assembleDebugAndroidTest
 
