@@ -226,7 +226,7 @@ export async function handleConnectExchange(
   } catch (e: unknown) {
     const classified = classifyException(e, exchangeNameForLog);
     console.error(`[exchange-auth] connect outer exception (${classified.technicalDetail}):`, e);
-    c.status(500);
+    c.status(400);
     return c.json({
       success: false,
       code: classified.code,

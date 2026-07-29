@@ -142,7 +142,7 @@ export class CcxtProvider implements IExchangeProvider {
         this.exchange.markets = { 'BTC/USDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
         this.exchange.markets_by_id = { 'BTCUSDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
         this.exchange.urls.api = {
-          public: 'https://testnet.binance.vision/api/v3',
+          public: 'https://api.binance.com/api/v3',
           private: 'https://testnet.binance.vision/api/v3',
           sapi: 'https://testnet.binance.vision/api/v3',
           wapi: 'https://testnet.binance.vision/api/v3',
@@ -311,7 +311,7 @@ export class CcxtProvider implements IExchangeProvider {
     try {
       const ticker = await this.exchange!.fetchTicker(cleanSymbol);
       return {
-        symbol: ticker.symbol || '',
+        symbol: ticker.symbol || cleanSymbol,
         timestamp: ticker.timestamp ?? Date.now(),
         last: new BigNumber(ticker.last ?? 0),
         bid: new BigNumber(ticker.bid ?? 0),
@@ -322,6 +322,26 @@ export class CcxtProvider implements IExchangeProvider {
         quoteVolume: new BigNumber(ticker.quoteVolume ?? 0),
       };
     } catch (e: any) {
+      if (this.exchangeId === 'binance') {
+        try {
+          const rawPair = cleanSymbol.replace('/', '');
+          const res = await globalThis.fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${rawPair}`);
+          if (res.ok) {
+            const data: any = await res.json();
+            return {
+              symbol: cleanSymbol,
+              timestamp: Date.now(),
+              last: new BigNumber(data.lastPrice || 0),
+              bid: new BigNumber(data.bidPrice || 0),
+              ask: new BigNumber(data.askPrice || 0),
+              high: new BigNumber(data.highPrice || 0),
+              low: new BigNumber(data.lowPrice || 0),
+              volume: new BigNumber(data.volume || 0),
+              quoteVolume: new BigNumber(data.quoteVolume || 0),
+            };
+          }
+        } catch (_) {}
+      }
       throw this.mapError(e, 'fetchTicker');
     }
   }
@@ -340,6 +360,23 @@ export class CcxtProvider implements IExchangeProvider {
         volume: k[5],
       }));
     } catch (e: any) {
+      if (this.exchangeId === 'binance') {
+        try {
+          const rawPair = cleanSymbol.replace('/', '');
+          const res = await globalThis.fetch(`https://api.binance.com/api/v3/klines?symbol=${rawPair}&interval=${interval}&limit=${limit}`);
+          if (res.ok) {
+            const data: any[] = await res.json();
+            return data.map(k => ({
+              openTime: k[0],
+              open: parseFloat(k[1]),
+              high: parseFloat(k[2]),
+              low: parseFloat(k[3]),
+              close: parseFloat(k[4]),
+              volume: parseFloat(k[5]),
+            }));
+          }
+        } catch (_) {}
+      }
       throw this.mapError(e, 'fetchKlines');
     }
   }
