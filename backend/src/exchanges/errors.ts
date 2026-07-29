@@ -493,21 +493,26 @@ export function classifyException(error: unknown, exchangeName: string): Classif
   const lower = fullText.toLowerCase();
   const technicalDetail = `exchange=${exchangeName} exception=${message.slice(0, 500)}`;
 
-  // 1. Structured code matching (Binance numeric codes like -2015, KuCoin string codes like 400100)
+  // Guard against internal SQLite / D1 database errors
+  if (lower.includes("no such column") || lower.includes("d1_error") || lower.includes("sqlite") || lower.includes("table users")) {
+    return mk("UNKNOWN_EXCHANGE_ERROR", technicalDetail, lower);
+  }
+
+  // 1. Mapped internal code from UnifiedError (from CCXT Provider / UnifiedError)
+  if (errObj?.mappedInternalErrorCode && FRIENDLY_MESSAGES[errObj.mappedInternalErrorCode as ExchangeErrorCode]) {
+    return mk(errObj.mappedInternalErrorCode as ExchangeErrorCode, technicalDetail, lower);
+  }
+
+  // 2. Structured code matching (Binance numeric codes like -2015, KuCoin string codes like 400100)
   const structured =
     classifyBinanceCode(fullText, technicalDetail) ||
     classifyKuCoinCode(fullText, technicalDetail);
   if (structured) return structured;
 
-  // 2. Text matching per exchange body conventions
+  // 3. Text matching per exchange body conventions
   const byText = classifyByBodyText(lower, technicalDetail, exchangeName);
   if (byText && byText.code !== "UNKNOWN_EXCHANGE_ERROR") {
     return byText;
-  }
-
-  // 3. Mapped internal code from UnifiedError
-  if (errObj?.mappedInternalErrorCode && FRIENDLY_MESSAGES[errObj.mappedInternalErrorCode as ExchangeErrorCode]) {
-    return mk(errObj.mappedInternalErrorCode as ExchangeErrorCode, technicalDetail, lower);
   }
 
   // 4. Fetch timeout (Cloudflare Workers AbortError / TimeoutError)

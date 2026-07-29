@@ -1,4 +1,4 @@
-export type ExchangeName = "binance" | "kucoin";
+export type ExchangeName = "binance" | "kucoin" | "delta";
 
 export type ExchangeEnvironment = "mainnet" | "testnet";
 
@@ -223,6 +223,19 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
     regionTestnetUrls: {
       global: "https://openapi-sandbox.kucoin.com",
       india: "https://openapi-sandbox.kucoin.com",
+    },
+  },
+  {
+    name: "delta",
+    displayName: "Delta Exchange",
+    defaultRegion: "global",
+    regionUrls: {
+      global: "https://api.delta.exchange",
+      india: "https://api.delta.exchange",
+    },
+    regionTestnetUrls: {
+      global: "https://testnet-api.delta.exchange",
+      india: "https://testnet-api.delta.exchange",
     },
   },
 ];
