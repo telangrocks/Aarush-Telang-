@@ -260,7 +260,7 @@ class AndroidUiValidationTestSuite {
         Log.i(TAG, "Executing Phase 10: Testnet Order Execution & Order ID Capture")
         composeRule.waitForIdle()
 
-        val executeBtn = composeRule.onNodeWithText("EXECUTE TRADE SETUP").or(composeRule.onNodeWithText("SUBMIT ORDER")), useUnmergedTree = true
+        val executeBtn = composeRule.onNode(hasText("EXECUTE TRADE SETUP").or(hasText("SUBMIT ORDER")), useUnmergedTree = true)
         if (executeBtn.isDisplayed()) {
             executeBtn.performClick()
             composeRule.waitForIdle()
@@ -275,7 +275,7 @@ class AndroidUiValidationTestSuite {
         Log.i(TAG, "Executing Phase 11: Trade History & Status Verification")
         composeRule.waitForIdle()
 
-        val historyTab = composeRule.onNodeWithText("PORTFOLIO").or(composeRule.onNodeWithText("HISTORY")), useUnmergedTree = true
+        val historyTab = composeRule.onNode(hasText("PORTFOLIO").or(hasText("HISTORY")), useUnmergedTree = true)
         if (historyTab.isDisplayed()) {
             historyTab.performClick()
             composeRule.waitForIdle()
@@ -290,7 +290,7 @@ class AndroidUiValidationTestSuite {
         Log.i(TAG, "Executing Phase 12: Settings, Session Persistence & Logout")
         composeRule.waitForIdle()
 
-        val logoutBtn = composeRule.onNodeWithText("LOGOUT").or(composeRule.onNodeWithText("SIGN OUT")), useUnmergedTree = true
+        val logoutBtn = composeRule.onNode(hasText("LOGOUT").or(hasText("SIGN OUT")), useUnmergedTree = true)
         if (logoutBtn.isDisplayed()) {
             logoutBtn.performClick()
             composeRule.waitForIdle()

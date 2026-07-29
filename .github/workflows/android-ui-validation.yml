@@ -18,8 +18,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  compile-android-test-source:
+    name: Compile Android Test Source (Fast Gate < 1m)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Make Gradle Wrapper Executable
+        run: |
+          chmod +x ./gradlew
+
+      - name: Compile App & Test APKs
+        run: |
+          ./gradlew assembleDebug assembleDebugAndroidTest
+
   android-emulator-boot-and-test:
     name: Android Emulator Boot & Minimal Test Validation
+    needs: compile-android-test-source
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
