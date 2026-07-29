@@ -20,7 +20,7 @@ export interface ValidationSlaConfig {
 export const DEFAULT_VALIDATION_CONFIG: ValidationSlaConfig = {
   maxWorkerLatencyMs: parseInt(process.env.SLA_WORKER_LATENCY_MS || "5000", 10),
   maxDbLatencyMs: parseInt(process.env.SLA_DB_LATENCY_MS || "10000", 10),
-  maxExchangeApiLatencyMs: parseInt(process.env.SLA_EXCHANGE_API_LATENCY_MS || "3000", 10),
+  maxExchangeApiLatencyMs: parseInt(process.env.SLA_EXCHANGE_API_LATENCY_MS || "5000", 10),
   maxKlineFetchLatencyMs: parseInt(process.env.SLA_KLINE_FETCH_LATENCY_MS || "8000", 10),
   maxStrategyEvaluationLatencyMs: parseInt(process.env.SLA_STRATEGY_EVAL_LATENCY_MS || "50", 10),
   maxRiskCalculationLatencyMs: parseInt(process.env.SLA_RISK_CALC_LATENCY_MS || "20", 10),

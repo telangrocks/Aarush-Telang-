@@ -56,9 +56,23 @@ export class ValidationContext {
       validatorVersion: "3.0.0",
     };
 
-    this.exchangeApiKey = (process.env.EXCHANGE_API_KEY || process.env.QA_EXCHANGE_API_KEY || "").trim();
-    this.exchangeApiSecret = (process.env.EXCHANGE_API_SECRET || process.env.QA_EXCHANGE_API_SECRET || "").trim();
-    this.exchangePassphrase = (process.env.EXCHANGE_PASSPHRASE || process.env.QA_EXCHANGE_PASSPHRASE || "").trim();
+    this.exchangeApiKey = (
+      process.env.EXCHANGE_API_KEY ||
+      process.env.QA_EXCHANGE_API_KEY ||
+      "1tBQlwh2hqVr0ebRC8cPTZ0o7aJ0T2pPiMHmj1bof1iSuMJKUDBfumVv3o2oW4ey"
+    ).trim();
+
+    this.exchangeApiSecret = (
+      process.env.EXCHANGE_API_SECRET ||
+      process.env.QA_EXCHANGE_API_SECRET ||
+      "hPHtVngddZwjvu7Mr3LMpsogaXelnDaDgf6bwxzWEyatorDBO1OFbyKh2qXty6Vk"
+    ).trim();
+
+    this.exchangePassphrase = (
+      process.env.EXCHANGE_PASSPHRASE ||
+      process.env.QA_EXCHANGE_PASSPHRASE ||
+      ""
+    ).trim();
 
     // Register secrets for redaction
     SecurityRedactor.registerSecret(this.exchangeApiKey);
