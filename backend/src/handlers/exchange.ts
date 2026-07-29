@@ -322,7 +322,22 @@ export async function handleGetExchangeBalances(
       password: decryptedPassphrase,
     });
     const balanceRes = await adapter.fetchBalance();
-    return c.json(balanceRes);
+    const formattedBalances = balanceRes.map(b => ({
+      asset: b.currency,
+      currency: b.currency,
+      free: b.free.toNumber(),
+      locked: b.used.toNumber(),
+      used: b.used.toNumber(),
+      total: b.total.toNumber(),
+    }));
+
+    return c.json({
+      success: true,
+      exchange: user.exchange_name,
+      environment,
+      primaryAsset: "USDT",
+      balances: formattedBalances,
+    });
   } catch (e: unknown) {
     const classified = classifyException(e, "exchange-balance");
     console.error(`[exchange-balance] exception (${classified.technicalDetail}):`, e);
