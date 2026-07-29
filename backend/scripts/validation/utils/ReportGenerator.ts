@@ -155,8 +155,10 @@ export class ReportGenerator {
 
     for (const p of report.phases) {
       const pIcon = p.status === "PASS" ? "✅" : p.status === "FAIL" ? "❌" : "⚠️";
-      const passCount = p.assertions.filter(a => a.passed).length;
-      md += `| **Phase ${p.phaseId}** | ${p.phaseName} | ${pIcon} ${p.status} | \`${p.metrics.durationMs.toFixed(0)}ms\` | ${passCount}/${p.assertions.length} Passed |\n`;
+      const assertionsList = Array.isArray(p.assertions) ? p.assertions : [];
+      const passCount = assertionsList.filter(a => a.passed).length;
+      const durationStr = p.metrics?.durationMs !== undefined ? `${p.metrics.durationMs.toFixed(0)}ms` : "0ms";
+      md += `| **Phase ${p.phaseId}** | ${p.phaseName} | ${pIcon} ${p.status} | \`${durationStr}\` | ${passCount}/${assertionsList.length} Passed |\n`;
     }
 
     if (report.blockingIssues.length > 0) {
