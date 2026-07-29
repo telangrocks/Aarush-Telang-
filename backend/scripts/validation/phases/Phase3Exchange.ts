@@ -5,7 +5,6 @@
 import { ValidationPhase, PhaseResult, ValidationLevel } from "../models/ValidationPhase";
 import { ValidationContext } from "../models/ValidationContext";
 import { ProviderFactory } from "../../../src/exchanges/ProviderFactory";
-import { SUPPORTED_EXCHANGES } from "../config/ExchangeRegistry";
 
 export class Phase3Exchange implements ValidationPhase {
   public readonly phaseId = 3;
@@ -77,6 +76,7 @@ export class Phase3Exchange implements ValidationPhase {
         await provider.connect({
           apiKey: isAuthenticatedLevel ? context.exchangeApiKey : undefined,
           secret: isAuthenticatedLevel ? context.exchangeApiSecret : undefined,
+          password: isAuthenticatedLevel ? context.exchangePassphrase : undefined,
           passphrase: isAuthenticatedLevel ? context.exchangePassphrase : undefined,
           environment: context.level === "level2_testnet" ? "testnet" : "mainnet",
         });

@@ -33,9 +33,10 @@ export class CcxtProvider implements IExchangeProvider {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       },
     };
+    const pwd = config.password || config.passphrase;
     if (config.apiKey) exchangeOptions.apiKey = config.apiKey;
     if (config.secret) exchangeOptions.secret = config.secret;
-    if (config.password) exchangeOptions.password = config.password;
+    if (pwd) exchangeOptions.password = pwd;
     
     if (this.exchangeId === 'kucoin') {
       exchangeOptions.options = {
@@ -74,7 +75,7 @@ export class CcxtProvider implements IExchangeProvider {
       const origFetch = this.exchange.fetch.bind(this.exchange);
       const kuSecret = config.secret || this.exchange.secret || '';
       const kuApiKey = config.apiKey || this.exchange.apiKey || '';
-      const kuPassword = config.password || this.exchange.password || '';
+      const kuPassword = config.password || config.passphrase || this.exchange.password || '';
 
       this.exchange.fetch = async (url: string, method = 'GET', headers: any = {}, body?: any) => {
         if (typeof url === 'string' && url.includes('/api/v1/accounts')) {

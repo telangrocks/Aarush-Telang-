@@ -2,6 +2,7 @@ export interface ProviderConfig {
   apiKey?: string;
   secret?: string;
   password?: string;
+  passphrase?: string;
   environment: 'Production' | 'Testing' | 'mainnet' | 'testnet';
 }
 
