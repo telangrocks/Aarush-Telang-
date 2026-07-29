@@ -175,15 +175,21 @@ export class CcxtProvider implements IExchangeProvider {
 
     if (this.exchangeId === 'binance') {
       (this.exchange as any).fetchCapitalConfig = async () => [];
+      (this.exchange as any).publicGetExchangeInfo = async () => ({ symbols: [] });
+      (this.exchange as any).publicGetApiV3ExchangeInfo = async () => ({ symbols: [] });
+    } else if (this.exchangeId === 'kucoin') {
+      (this.exchange as any).publicGetSymbols = async () => ({ code: '200000', data: [] });
+      (this.exchange as any).publicGetApiV1Symbols = async () => ({ code: '200000', data: [] });
     }
 
-    // Instrument CCXT instance to log outbound requests and prove loadMarkets override execution
+    // Double-shield fetch handler: Short-circuit any outbound fetch attempt to exchangeInfo or symbols
     const origCcxtFetch = this.exchange.fetch.bind(this.exchange);
     this.exchange.fetch = async (url: string, method = 'GET', headers: any = {}, body?: any) => {
-      console.log(`[CCXT OUTBOUND FETCH] ${method} ${url}`);
       if (typeof url === 'string' && (url.includes('exchangeInfo') || url.includes('symbols'))) {
-        console.error(`[CRITICAL ALERT - DISALLOWED ENDPOINT DETECTED] ${method} ${url}`);
+        console.warn(`[SHORT-CIRCUITED HEAVY ENDPOINT] ${method} ${url}`);
+        return new Response(JSON.stringify({ symbols: [], code: '200000', data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
+      console.log(`[CCXT OUTBOUND FETCH] ${method} ${url}`);
       return origCcxtFetch(url, method, headers, body);
     };
 
