@@ -1062,14 +1062,19 @@ export class TradingBot {
          try {
            const userId = await this.state.storage.get('userId') as string;
            if (userId) {
-             const userKeys = await this.env.DB.prepare('SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
+             const userKeys = await this.env.DB.prepare('SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_api_passphrase_iv: string | null; exchange_api_passphrase_encrypted: string | null; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
              if (userKeys?.exchange_name && userKeys.exchange_api_secret_encrypted) {
                const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted }, this.env.ENCRYPTION_KEY);
+               let decryptedPassphrase = undefined;
+               if (userKeys.exchange_api_passphrase_iv && userKeys.exchange_api_passphrase_encrypted) {
+                 decryptedPassphrase = await decrypt({ iv: userKeys.exchange_api_passphrase_iv, encrypted: userKeys.exchange_api_passphrase_encrypted }, this.env.ENCRYPTION_KEY);
+               }
                // Reconciliation makes authenticated calls (fetchOrder) — pass full credentials
                const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, {
                  environment: normalizeEnvironment(userKeys.exchange_environment),
                  apiKey: userKeys.exchange_api_key,
                  secret: decryptedSecret,
+                 password: decryptedPassphrase,
                });
                
                const reconciliationEngine = new ReconciliationEngine(this.state.storage, this.env, userId, adapter, userKeys);
