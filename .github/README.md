@@ -126,10 +126,11 @@ ENCRYPTION_KEY                 # Encryption key for sensitive data
 RESEND_API_KEY                 # Email service API key
 ALLOWED_ORIGINS                # CORS allowed origins
 FCM_SERVER_KEY                 # Firebase Cloud Messaging server key
-QA_EXCHANGE_NAME               # QA exchange name
-QA_EXCHANGE_API_KEY            # QA exchange API key
-QA_EXCHANGE_API_SECRET         # QA exchange API secret
-QA_EXCHANGE_ENVIRONMENT        # QA exchange environment
+BINANCE_TESTNET_API_KEY        # Binance Testnet API key (Level 2 validation)
+BINANCE_TESTNET_API_SECRET     # Binance Testnet API secret (Level 2 validation)
+KUCOIN_MAINNET_API_KEY         # KuCoin Mainnet API key (Level 3 production smoke)
+KUCOIN_MAINNET_API_SECRET      # KuCoin Mainnet API secret (Level 3 production smoke)
+KUCOIN_MAINNET_API_PASSPHRASE  # KuCoin Mainnet API passphrase (Level 3 production smoke)
 ```
 
 ### **2. Cloudflare Configuration**

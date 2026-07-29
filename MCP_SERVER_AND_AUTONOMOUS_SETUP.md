@@ -132,7 +132,8 @@ project-root/
 Ensure these are loaded in the environment or configured in GitHub secrets:
 *   `GITHUB_PERSONAL_ACCESS_TOKEN`: Personal Access Token used for Git automation.
 *   `WORKER_URL`: Base URL of the deployed Cloudflare Worker API.
-*   `QA_EXCHANGE_API_KEY` / `QA_EXCHANGE_API_SECRET`: Optional credentials for verifying live exchange endpoints in tests.
+*   `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET`: Binance Testnet credentials for Level 2 authenticated validation.
+*   `KUCOIN_MAINNET_API_KEY` / `KUCOIN_MAINNET_API_SECRET` / `KUCOIN_MAINNET_API_PASSPHRASE`: KuCoin Mainnet credentials for Level 3 production smoke validation (read-only, no orders).
 *   `CLOUDFLARE_API_TOKEN`: Used by Wrangler for headless CLI deployments.
 
 ---
