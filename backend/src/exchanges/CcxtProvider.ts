@@ -177,8 +177,51 @@ export class CcxtProvider implements IExchangeProvider {
       (this.exchange as any).fetchCapitalConfig = async () => [];
     }
 
-    // Bypass heavy loadMarkets() call (exchangeInfo / symbols 12MB JSON payloads) on Cloudflare Workers edge nodes.
-    // Dynamic symbol resolution (ensureMarket) handles symbol metadata on-the-fly without downloading 12MB exchange catalogs.
+    // Override loadMarkets & fetchMarkets on CCXT instance to prevent CCXT internal helper methods (fetchOHLCV, etc.) from ever calling /exchangeInfo or /symbols
+    this.exchange.loadMarkets = async () => {
+      return this.exchange!.markets || {};
+    };
+    (this.exchange as any).fetchMarkets = async () => [];
+
+    const topPairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT'];
+    const isKucoin = this.exchangeId === 'kucoin';
+    const marketsObj: any = {};
+    const marketsByIdObj: any = {};
+    for (const sym of topPairs) {
+      const [base, quote] = sym.split('/');
+      const id = isKucoin ? `${base}-${quote}` : `${base}${quote}`;
+      const mData = {
+        id,
+        symbol: sym,
+        base,
+        quote,
+        settle: quote,
+        baseId: base,
+        quoteId: quote,
+        settleId: quote,
+        type: 'spot',
+        spot: true,
+        margin: false,
+        swap: false,
+        future: false,
+        option: false,
+        active: true,
+        contract: false,
+        precision: { price: 8, amount: 8, cost: 8 },
+        limits: {
+          amount: { min: 0.0001, max: 999999 },
+          price: { min: 0.0001, max: 999999 },
+          cost: { min: 5, max: 9999999 },
+        },
+        info: {}
+      };
+      marketsObj[sym] = mData;
+      marketsByIdObj[id] = mData;
+    }
+    this.exchange.markets = marketsObj;
+    this.exchange.markets_by_id = marketsByIdObj;
+    (this.exchange as any).symbols = topPairs;
+    (this.exchange as any).ids = Object.keys(marketsByIdObj);
     this.marketsCached = true;
 
     // Authenticated connectivity check — only run when credentials are present.
@@ -210,32 +253,25 @@ export class CcxtProvider implements IExchangeProvider {
 
   public async fetchMarkets(): Promise<Market[]> {
     this.ensureConnected();
-    const markets = await this.exchange!.fetchMarkets();
-    return markets.filter(m => !!m).map(m => ({
-      id: m.id || '',
-      symbol: m.symbol || '',
-      base: m.base || '',
-      quote: m.quote || '',
-      active: m.active ?? true,
-      precision: {
-        price: this.exchange!.safeNumber(m.precision, 'price', 8) || 8,
-        amount: this.exchange!.safeNumber(m.precision, 'amount', 8) || 8,
-      },
-      limits: {
-        amount: {
-          min: new BigNumber(m.limits?.amount?.min ?? 0),
-          max: m.limits?.amount?.max ? new BigNumber(m.limits.amount.max) : undefined,
-        },
-        price: {
-          min: new BigNumber(m.limits?.price?.min ?? 0),
-          max: m.limits?.price?.max ? new BigNumber(m.limits.price.max) : undefined,
-        },
-        cost: {
-          min: new BigNumber(m.limits?.cost?.min ?? 0),
-          max: m.limits?.cost?.max ? new BigNumber(m.limits.cost.max) : undefined,
+    const topSymbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT'];
+    const isKucoin = (this.exchangeId || '').toLowerCase().includes('kucoin');
+    return topSymbols.map(sym => {
+      const [base, quote] = sym.split('/');
+      const rawId = isKucoin ? sym.replace('/', '-') : sym.replace('/', '');
+      return {
+        id: rawId,
+        symbol: sym,
+        base,
+        quote,
+        active: true,
+        precision: { price: 8, amount: 8 },
+        limits: {
+          amount: { min: new BigNumber(0.0001) },
+          price: { min: new BigNumber(0.0001) },
+          cost: { min: new BigNumber(5) },
         }
-      }
-    }));
+      };
+    });
   }
 
   public async fetchBalance(): Promise<Balance[]> {
