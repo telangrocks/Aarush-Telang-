@@ -4,7 +4,7 @@
 
 export type ValidationLevel = "level1_public" | "level2_testnet" | "level3_prod_smoke";
 
-export type FailureCategory = "APPLICATION_DEFECT" | "INFRASTRUCTURE_DEFECT" | "THIRD_PARTY_SERVICE_FAILURE";
+export type FailureCategory = "APPLICATION_DEFECT" | "INFRASTRUCTURE_DEFECT" | "THIRD_PARTY_SERVICE_FAILURE" | "ENVIRONMENT_RESTRICTION";
 
 export interface PhaseMetrics {
   durationMs: number;

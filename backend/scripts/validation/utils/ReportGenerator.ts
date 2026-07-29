@@ -42,16 +42,25 @@ export class ReportGenerator {
 
     let hasApplicationDefects = false;
     let hasInfrastructureDefects = false;
+    let hasEnvironmentRestrictions = false;
     const blockingIssues: string[] = [];
+    const environmentRestrictions: string[] = [];
 
     for (const res of phaseResults) {
-      totalDurationMs += res.metrics.durationMs || 0;
+      totalDurationMs += res.metrics?.durationMs || 0;
       if (res.status === "PASS") passedPhases++;
       else if (res.status === "FAIL") {
         failedPhases++;
-        for (const ass of res.assertions) {
+        const assertionsList = Array.isArray(res.assertions) ? res.assertions : [];
+        for (const ass of assertionsList) {
           if (!ass.passed) {
-            blockingIssues.push(`Phase ${res.phaseId} [${res.phaseName}] — ${ass.name}: ${ass.details}`);
+            const issueStr = `Phase ${res.phaseId} [${res.phaseName}] — ${ass.name}: ${ass.details}`;
+            if (ass.failureCategory === "ENVIRONMENT_RESTRICTION") {
+              hasEnvironmentRestrictions = true;
+              environmentRestrictions.push(issueStr);
+            } else {
+              blockingIssues.push(issueStr);
+            }
             if (ass.failureCategory === "APPLICATION_DEFECT") hasApplicationDefects = true;
             if (ass.failureCategory === "INFRASTRUCTURE_DEFECT") hasInfrastructureDefects = true;
           }
@@ -80,9 +89,10 @@ export class ReportGenerator {
         totalDurationMs: Math.round(totalDurationMs),
         hasApplicationDefects,
         hasInfrastructureDefects,
-      },
+        hasEnvironmentRestrictions,
+      } as any,
       phases: SecurityRedactor.sanitizeObject(phaseResults),
-      blockingIssues,
+      blockingIssues: [...blockingIssues, ...environmentRestrictions],
     };
 
     // 1. validation-report.json
@@ -162,9 +172,22 @@ export class ReportGenerator {
     }
 
     if (report.blockingIssues.length > 0) {
-      md += `\n### 🚨 Blocking Issues (${report.blockingIssues.length})\n\n`;
-      for (const issue of report.blockingIssues) {
-        md += `- ❌ ${issue}\n`;
+      const envRestr = report.blockingIssues.filter(i => i.includes("ENVIRONMENT RESTRICTION"));
+      const appDefects = report.blockingIssues.filter(i => !i.includes("ENVIRONMENT RESTRICTION"));
+
+      if (appDefects.length > 0) {
+        md += `\n### 🚨 Application / Infrastructure Defects (${appDefects.length})\n\n`;
+        for (const issue of appDefects) {
+          md += `- ❌ ${issue}\n`;
+        }
+      }
+
+      if (envRestr.length > 0) {
+        md += `\n### 🌐 External Environment Restrictions (${envRestr.length})\n\n`;
+        for (const issue of envRestr) {
+          md += `- 🌐 ${issue}\n`;
+        }
+        md += `\n> **Note:** Environment restrictions indicate cloud runner IP geoblocking (e.g. Binance HTTP 451 policy). Run the validation suite from a local developer workstation or unrestricted network location to achieve gate approval.\n`;
       }
     } else {
       md += `\n### ✨ Readiness Conclusion\n\n`;

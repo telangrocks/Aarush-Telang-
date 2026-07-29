@@ -133,18 +133,30 @@ export class Phase3Exchange implements ValidationPhase {
           });
         } catch (e: any) {
           status = "FAIL";
+          const msg = (e?.message || String(e)).toLowerCase();
+          const is451Restricted = msg.includes("451") || msg.includes("restricted location") || msg.includes("eligibility") || msg.includes("legal reasons") || e?.status === 451;
+          const failureCategory: "ENVIRONMENT_RESTRICTION" | "THIRD_PARTY_SERVICE_FAILURE" = is451Restricted ? "ENVIRONMENT_RESTRICTION" : "THIRD_PARTY_SERVICE_FAILURE";
+
           const rawErrorDetails = {
             errorName: e?.name || "ExchangeAuthError",
             errorMessage: e?.message || String(e),
             ccxtCode: e?.code,
-            stack: e?.stack,
+            httpStatus: e?.status || (is451Restricted ? 451 : undefined),
+            isEnvironmentRestriction: is451Restricted,
+            targetEndpoint: "https://testnet.binance.vision/api/v3/account",
+            recommendation: is451Restricted ? "Execute validation suite from a local developer workstation or unrestricted network location to bypass runner IP geoblocking." : undefined,
           };
+
+          const detailsStr = is451Restricted
+            ? `ENVIRONMENT RESTRICTION DETECTED (HTTP 451): Binance API returned 'Service unavailable from a restricted location' from current runner IP location. Deployment blocked due to runner environment geoblocking, NOT an application defect.`
+            : `Raw Exchange Auth Failure: ${e.message}`;
+
           assertions.push({
             name: "Authenticated Balance & Permission Check",
             passed: false,
-            details: `Raw Exchange Auth Failure: ${e.message}`,
+            details: detailsStr,
             empiricalData: rawErrorDetails,
-            failureCategory: "THIRD_PARTY_SERVICE_FAILURE",
+            failureCategory,
           });
 
           context.recordEvidence({

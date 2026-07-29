@@ -141,11 +141,12 @@ export class CcxtProvider implements IExchangeProvider {
         (this.exchange as any).fetchCapitalConfig = async () => [];
         this.exchange.markets = { 'BTC/USDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
         this.exchange.markets_by_id = { 'BTCUSDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
+        const testnetHost = (process.env.BINANCE_TESTNET_URL || process.env.EXCHANGE_BASE_URL || 'https://testnet.binance.vision').replace(/\/$/, '');
         this.exchange.urls.api = {
           public: 'https://api.binance.com/api/v3',
-          private: 'https://testnet.binance.vision/api/v3',
-          sapi: 'https://testnet.binance.vision/api/v3',
-          wapi: 'https://testnet.binance.vision/api/v3',
+          private: `${testnetHost}/api/v3`,
+          sapi: `${testnetHost}/api/v3`,
+          wapi: `${testnetHost}/api/v3`,
           fapi: 'https://testnet.binancefuture.com/fapi/v1',
         };
 
@@ -162,7 +163,7 @@ export class CcxtProvider implements IExchangeProvider {
             const key = await globalThis.crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
             const sigBuf = await globalThis.crypto.subtle.sign('HMAC', key, msgData);
             const sig = Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-            const cleanUrl = 'https://testnet.binance.vision/api/v3/account?' + query + '&signature=' + sig;
+            const cleanUrl = `${testnetHost}/api/v3/account?` + query + '&signature=' + sig;
             return globalThis.fetch(cleanUrl, { method: 'GET', headers: { 'X-MBX-APIKEY': apiKeyVal } });
           }
           return origFetch(url, method, headers, body);
