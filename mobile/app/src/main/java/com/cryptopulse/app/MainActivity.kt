@@ -124,7 +124,7 @@ class MainActivity : FragmentActivity() {
                                 viewModel = viewModel,
                                 onAuthSuccess = {
                                     navController.navigate("connect_exchange") {
-                                        popUpTo("onboarding") { inclusive = true }
+                                        popUpTo("auth") { inclusive = true }
                                     }
                                 }
                             )

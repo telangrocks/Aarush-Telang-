@@ -66,6 +66,9 @@ fun MarketCandidatesScreen(
 
     var currentTime by remember { mutableStateOf(getCurrentTime()) }
     LaunchedEffect(Unit) {
+        if (candidates.isEmpty()) {
+            viewModel.fetchMarketCandidates()
+        }
         while (true) {
             kotlinx.coroutines.delay(60_000)
             currentTime = getCurrentTime()

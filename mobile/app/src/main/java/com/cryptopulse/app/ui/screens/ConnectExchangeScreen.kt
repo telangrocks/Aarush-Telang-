@@ -57,7 +57,7 @@ fun ConnectExchangeScreen(
     LaunchedEffect(uiState, readyForCandidates, candidates) {
         if (uiState is ExchangeUiState.Connected || readyForCandidates) {
             navController.navigate("market_candidates") {
-                popUpTo("onboarding") { inclusive = true }
+                popUpTo("connect_exchange") { inclusive = true }
             }
         }
     }
@@ -66,7 +66,7 @@ fun ConnectExchangeScreen(
         val (isConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
         if (isConnected) {
             navController.navigate("market_candidates") {
-                popUpTo("onboarding") { inclusive = true }
+                popUpTo("connect_exchange") { inclusive = true }
             }
         }
     }
