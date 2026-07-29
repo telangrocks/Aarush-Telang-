@@ -177,17 +177,9 @@ export class CcxtProvider implements IExchangeProvider {
       (this.exchange as any).fetchCapitalConfig = async () => [];
     }
 
-    // Load markets & cache (public — no credentials required)
-    try {
-      if (this.exchangeId === 'kucoin' || this.exchangeId === 'delta' || (this.exchangeId === 'binance' && (config.environment === 'Testing' || config.environment === 'testnet'))) {
-        this.marketsCached = true;
-      } else {
-        await this.exchange.loadMarkets();
-        this.marketsCached = true;
-      }
-    } catch (e: any) {
-      throw this.mapError(e, 'loadMarkets');
-    }
+    // Bypass heavy loadMarkets() call (exchangeInfo / symbols 12MB JSON payloads) on Cloudflare Workers edge nodes.
+    // Dynamic symbol resolution (ensureMarket) handles symbol metadata on-the-fly without downloading 12MB exchange catalogs.
+    this.marketsCached = true;
 
     // Authenticated connectivity check — only run when credentials are present.
     // Public/read-only providers (ticker, klines, markets) do not require auth.
@@ -378,6 +370,48 @@ export class CcxtProvider implements IExchangeProvider {
   public async fetchKlines(symbol: string, interval: string, limit: number): Promise<any[]> {
     this.ensureConnected();
     const cleanSymbol = this.ensureMarket(symbol);
+
+    if (this.exchangeId === 'binance') {
+      try {
+        const rawPair = cleanSymbol.replace('/', '');
+        const res = await globalThis.fetch(`https://api.binance.com/api/v3/klines?symbol=${rawPair}&interval=${interval}&limit=${limit}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+        if (res.ok) {
+          const data: any[] = await res.json();
+          return data.map(k => ({
+            openTime: k[0],
+            open: parseFloat(k[1]),
+            high: parseFloat(k[2]),
+            low: parseFloat(k[3]),
+            close: parseFloat(k[4]),
+            volume: parseFloat(k[5]),
+          }));
+        }
+      } catch (_) {}
+    } else if (this.exchangeId === 'kucoin') {
+      try {
+        const rawPair = cleanSymbol.replace('/', '-');
+        const kcType = interval === '1m' ? '1min' : interval === '5m' ? '5min' : interval === '15m' ? '15min' : interval === '1h' ? '1hour' : '1min';
+        const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/candles?symbol=${rawPair}&type=${kcType}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+        if (res.ok) {
+          const json: any = await res.json();
+          if (json.code === '200000' && Array.isArray(json.data)) {
+            return json.data.slice(0, limit).map((k: any) => ({
+              openTime: parseInt(k[0]) * 1000,
+              open: parseFloat(k[1]),
+              close: parseFloat(k[2]),
+              high: parseFloat(k[3]),
+              low: parseFloat(k[4]),
+              volume: parseFloat(k[5]),
+            }));
+          }
+        }
+      } catch (_) {}
+    }
+
     try {
       const ohlcv = await this.exchange!.fetchOHLCV(cleanSymbol, interval, undefined, limit);
       return ohlcv.map(k => ({
@@ -389,25 +423,6 @@ export class CcxtProvider implements IExchangeProvider {
         volume: k[5],
       }));
     } catch (e: any) {
-      if (this.exchangeId === 'binance') {
-        try {
-          const rawPair = cleanSymbol.replace('/', '');
-          const res = await globalThis.fetch(`https://api.binance.com/api/v3/klines?symbol=${rawPair}&interval=${interval}&limit=${limit}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-          });
-          if (res.ok) {
-            const data: any[] = await res.json();
-            return data.map(k => ({
-              openTime: k[0],
-              open: parseFloat(k[1]),
-              high: parseFloat(k[2]),
-              low: parseFloat(k[3]),
-              close: parseFloat(k[4]),
-              volume: parseFloat(k[5]),
-            }));
-          }
-        } catch (_) {}
-      }
       throw this.mapError(e, 'fetchKlines');
     }
   }
