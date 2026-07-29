@@ -177,11 +177,24 @@ export class CcxtProvider implements IExchangeProvider {
       (this.exchange as any).fetchCapitalConfig = async () => [];
     }
 
-    // Override loadMarkets & fetchMarkets on CCXT instance to prevent CCXT internal helper methods (fetchOHLCV, etc.) from ever calling /exchangeInfo or /symbols
+    // Instrument CCXT instance to log outbound requests and prove loadMarkets override execution
+    const origCcxtFetch = this.exchange.fetch.bind(this.exchange);
+    this.exchange.fetch = async (url: string, method = 'GET', headers: any = {}, body?: any) => {
+      console.log(`[CCXT OUTBOUND FETCH] ${method} ${url}`);
+      if (typeof url === 'string' && (url.includes('exchangeInfo') || url.includes('symbols'))) {
+        console.error(`[CRITICAL ALERT - DISALLOWED ENDPOINT DETECTED] ${method} ${url}`);
+      }
+      return origCcxtFetch(url, method, headers, body);
+    };
+
     this.exchange.loadMarkets = async () => {
+      console.log(`[CUSTOM loadMarkets CALLED] Bypassing exchangeInfo/symbols fetch`);
       return this.exchange!.markets || {};
     };
-    (this.exchange as any).fetchMarkets = async () => [];
+    (this.exchange as any).fetchMarkets = async () => {
+      console.log(`[CUSTOM fetchMarkets CALLED] Returning static market list`);
+      return [];
+    };
 
     const topPairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT'];
     const isKucoin = this.exchangeId === 'kucoin';
