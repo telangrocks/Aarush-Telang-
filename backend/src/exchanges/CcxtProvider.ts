@@ -308,6 +308,55 @@ export class CcxtProvider implements IExchangeProvider {
   public async fetchTicker(symbol: string): Promise<Ticker> {
     this.ensureConnected();
     const cleanSymbol = this.ensureMarket(symbol);
+
+    if (this.exchangeId === 'binance') {
+      try {
+        const rawPair = cleanSymbol.replace('/', '');
+        const res = await globalThis.fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+        if (res.ok) {
+          const data: any = await res.json();
+          const px = new BigNumber(data.price || 0);
+          return {
+            symbol: cleanSymbol,
+            timestamp: Date.now(),
+            last: px,
+            bid: px,
+            ask: px,
+            high: px.multipliedBy(1.01),
+            low: px.multipliedBy(0.99),
+            volume: new BigNumber(1000),
+            quoteVolume: px.multipliedBy(1000),
+          };
+        }
+      } catch (_) {}
+    } else if (this.exchangeId === 'kucoin') {
+      try {
+        const rawPair = cleanSymbol.replace('/', '-');
+        const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawPair}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+        if (res.ok) {
+          const json: any = await res.json();
+          if (json.code === '200000' && json.data) {
+            const px = new BigNumber(json.data.price || json.data.bestBid || 0);
+            return {
+              symbol: cleanSymbol,
+              timestamp: json.data.time || Date.now(),
+              last: px,
+              bid: new BigNumber(json.data.bestBid || px.toString()),
+              ask: new BigNumber(json.data.bestAsk || px.toString()),
+              high: px.multipliedBy(1.01),
+              low: px.multipliedBy(0.99),
+              volume: new BigNumber(json.data.size || 1000),
+              quoteVolume: px.multipliedBy(1000),
+            };
+          }
+        }
+      } catch (_) {}
+    }
+
     try {
       const ticker = await this.exchange!.fetchTicker(cleanSymbol);
       return {
@@ -322,53 +371,6 @@ export class CcxtProvider implements IExchangeProvider {
         quoteVolume: new BigNumber(ticker.quoteVolume ?? 0),
       };
     } catch (e: any) {
-      if (this.exchangeId === 'binance') {
-        try {
-          const rawPair = cleanSymbol.replace('/', '');
-          const res = await globalThis.fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-          });
-          if (res.ok) {
-            const data: any = await res.json();
-            const px = new BigNumber(data.price || 0);
-            return {
-              symbol: cleanSymbol,
-              timestamp: Date.now(),
-              last: px,
-              bid: px,
-              ask: px,
-              high: px.multipliedBy(1.01),
-              low: px.multipliedBy(0.99),
-              volume: new BigNumber(1000),
-              quoteVolume: px.multipliedBy(1000),
-            };
-          }
-        } catch (_) {}
-      } else if (this.exchangeId === 'kucoin') {
-        try {
-          const rawPair = cleanSymbol.replace('/', '-');
-          const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawPair}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-          });
-          if (res.ok) {
-            const json: any = await res.json();
-            if (json.code === '200000' && json.data) {
-              const px = new BigNumber(json.data.price || 0);
-              return {
-                symbol: cleanSymbol,
-                timestamp: Date.now(),
-                last: px,
-                bid: new BigNumber(json.data.bestBid || px.toString()),
-                ask: new BigNumber(json.data.bestAsk || px.toString()),
-                high: px.multipliedBy(1.01),
-                low: px.multipliedBy(0.99),
-                volume: new BigNumber(json.data.size || 1000),
-                quoteVolume: px.multipliedBy(1000),
-              };
-            }
-          }
-        } catch (_) {}
-      }
       throw this.mapError(e, 'fetchTicker');
     }
   }
