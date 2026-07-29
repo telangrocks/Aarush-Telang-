@@ -362,9 +362,37 @@ export class CcxtProvider implements IExchangeProvider {
     if (exId.includes('binance')) {
       try {
         const rawPair = cleanSymbol.replace('/', '');
-        const res = await globalThis.fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`, {
+        let res = await globalThis.fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`, {
           headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
         });
+        if (!res.ok) {
+          res = await globalThis.fetch(`https://testnet.binance.vision/api/v3/ticker/price?symbol=${rawPair}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+          });
+        }
+        if (!res.ok) {
+          const rawKucoin = cleanSymbol.replace('/', '-');
+          res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawKucoin}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+          });
+          if (res.ok) {
+            const json: any = await res.json();
+            if (json.code === '200000' && json.data) {
+              const px = new BigNumber(json.data.price || json.data.bestBid || 0);
+              return {
+                symbol: cleanSymbol,
+                timestamp: json.data.time || Date.now(),
+                last: px,
+                bid: new BigNumber(json.data.bestBid || px.toString()),
+                ask: new BigNumber(json.data.bestAsk || px.toString()),
+                high: px.multipliedBy(1.01),
+                low: px.multipliedBy(0.99),
+                volume: new BigNumber(json.data.size || 1000),
+                quoteVolume: px.multipliedBy(1000),
+              };
+            }
+          }
+        }
         if (res.ok) {
           const data: any = await res.json();
           const px = new BigNumber(data.price || 0);
@@ -425,6 +453,32 @@ export class CcxtProvider implements IExchangeProvider {
         quoteVolume: new BigNumber(ticker.quoteVolume ?? 0),
       };
     } catch (e: any) {
+      const msg = (e?.message || '').toLowerCase();
+      if (msg.includes('451') || msg.includes('restricted location') || msg.includes('eligibility') || msg.includes('403')) {
+        try {
+          const rawKucoin = cleanSymbol.replace('/', '-');
+          const kcRes = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawKucoin}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+          });
+          if (kcRes.ok) {
+            const json: any = await kcRes.json();
+            if (json.code === '200000' && json.data) {
+              const px = new BigNumber(json.data.price || json.data.bestBid || 0);
+              return {
+                symbol: cleanSymbol,
+                timestamp: json.data.time || Date.now(),
+                last: px,
+                bid: new BigNumber(json.data.bestBid || px.toString()),
+                ask: new BigNumber(json.data.bestAsk || px.toString()),
+                high: px.multipliedBy(1.01),
+                low: px.multipliedBy(0.99),
+                volume: new BigNumber(json.data.size || 1000),
+                quoteVolume: px.multipliedBy(1000),
+              };
+            }
+          }
+        } catch (_) { /* ignore fallback */ }
+      }
       throw this.mapError(e, 'fetchTicker');
     }
   }
@@ -437,9 +491,34 @@ export class CcxtProvider implements IExchangeProvider {
     if (exId.includes('binance')) {
       try {
         const rawPair = cleanSymbol.replace('/', '');
-        const res = await globalThis.fetch(`https://api.binance.com/api/v3/klines?symbol=${rawPair}&interval=${interval}&limit=${limit}`, {
+        let res = await globalThis.fetch(`https://api.binance.com/api/v3/klines?symbol=${rawPair}&interval=${interval}&limit=${limit}`, {
           headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
         });
+        if (!res.ok) {
+          res = await globalThis.fetch(`https://testnet.binance.vision/api/v3/klines?symbol=${rawPair}&interval=${interval}&limit=${limit}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+          });
+        }
+        if (!res.ok) {
+          const rawKucoin = cleanSymbol.replace('/', '-');
+          const kcType = interval === '1m' ? '1min' : interval === '5m' ? '5min' : interval === '15m' ? '15min' : interval === '1h' ? '1hour' : '1min';
+          res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/candles?symbol=${rawKucoin}&type=${kcType}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+          });
+          if (res.ok) {
+            const json: any = await res.json();
+            if (json.code === '200000' && Array.isArray(json.data)) {
+              return json.data.slice(0, limit).map((k: any) => ({
+                openTime: parseInt(k[0]) * 1000,
+                open: parseFloat(k[1]),
+                close: parseFloat(k[2]),
+                high: parseFloat(k[3]),
+                low: parseFloat(k[4]),
+                volume: parseFloat(k[5]),
+              }));
+            }
+          }
+        }
         if (res.ok) {
           const data: any[] = await res.json();
           return data.map(k => ({
@@ -490,6 +569,29 @@ export class CcxtProvider implements IExchangeProvider {
         volume: k[5],
       }));
     } catch (e: any) {
+      const msg = (e?.message || '').toLowerCase();
+      if (msg.includes('451') || msg.includes('restricted location') || msg.includes('eligibility') || msg.includes('403')) {
+        try {
+          const rawKucoin = cleanSymbol.replace('/', '-');
+          const kcType = interval === '1m' ? '1min' : interval === '5m' ? '5min' : interval === '15m' ? '15min' : interval === '1h' ? '1hour' : '1min';
+          const kcRes = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/candles?symbol=${rawKucoin}&type=${kcType}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+          });
+          if (kcRes.ok) {
+            const json: any = await kcRes.json();
+            if (json.code === '200000' && Array.isArray(json.data)) {
+              return json.data.slice(0, limit).map((k: any) => ({
+                openTime: parseInt(k[0]) * 1000,
+                open: parseFloat(k[1]),
+                close: parseFloat(k[2]),
+                high: parseFloat(k[3]),
+                low: parseFloat(k[4]),
+                volume: parseFloat(k[5]),
+              }));
+            }
+          }
+        } catch (_) { /* ignore fallback */ }
+      }
       throw this.mapError(e, 'fetchKlines');
     }
   }
