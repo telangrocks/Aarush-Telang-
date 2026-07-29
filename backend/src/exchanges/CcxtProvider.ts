@@ -300,8 +300,9 @@ export class CcxtProvider implements IExchangeProvider {
   public async fetchTicker(symbol: string): Promise<Ticker> {
     this.ensureConnected();
     const cleanSymbol = this.ensureMarket(symbol);
+    const exId = (this.exchangeId || '').toLowerCase();
 
-    if (this.exchangeId === 'binance') {
+    if (exId.includes('binance')) {
       try {
         const rawPair = cleanSymbol.replace('/', '');
         const res = await globalThis.fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`, {
@@ -323,7 +324,7 @@ export class CcxtProvider implements IExchangeProvider {
           };
         }
       } catch (_) {}
-    } else if (this.exchangeId === 'kucoin') {
+    } else if (exId.includes('kucoin')) {
       try {
         const rawPair = cleanSymbol.replace('/', '-');
         const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawPair}`, {
@@ -370,8 +371,9 @@ export class CcxtProvider implements IExchangeProvider {
   public async fetchKlines(symbol: string, interval: string, limit: number): Promise<any[]> {
     this.ensureConnected();
     const cleanSymbol = this.ensureMarket(symbol);
+    const exId = (this.exchangeId || '').toLowerCase();
 
-    if (this.exchangeId === 'binance') {
+    if (exId.includes('binance')) {
       try {
         const rawPair = cleanSymbol.replace('/', '');
         const res = await globalThis.fetch(`https://api.binance.com/api/v3/klines?symbol=${rawPair}&interval=${interval}&limit=${limit}`, {
@@ -389,7 +391,7 @@ export class CcxtProvider implements IExchangeProvider {
           }));
         }
       } catch (_) {}
-    } else if (this.exchangeId === 'kucoin') {
+    } else if (exId.includes('kucoin')) {
       try {
         const rawPair = cleanSymbol.replace('/', '-');
         const kcType = interval === '1m' ? '1min' : interval === '5m' ? '5min' : interval === '15m' ? '15min' : interval === '1h' ? '1hour' : '1min';
