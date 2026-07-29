@@ -60,7 +60,6 @@ jobs:
           api-level: 34
           target: google_apis
           arch: x86_64
-          profile: Pixel_2
           ram-size: 4096MB
           heap-size: 512MB
           disable-animations: true
@@ -141,8 +140,8 @@ jobs:
           echo "" >> $SUMMARY_FILE
           echo "| Lifecycle Stage | Configuration / Command | Status |" >> $SUMMARY_FILE
           echo "|---|---|---|" >> $SUMMARY_FILE
-          echo "| **Configure Emulator** | API 34 (google_apis, x86_64, Pixel_2) | ✔ PASS |" >> $SUMMARY_FILE
-          echo "| **Create AVD** | Pixel_2 (RAM: 4096MB, Heap: 512MB) | ✔ PASS |" >> $SUMMARY_FILE
+          echo "| **Configure Emulator** | API 34 (google_apis, x86_64, avdmanager default device) | ✔ PASS |" >> $SUMMARY_FILE
+          echo "| **Create AVD** | Default Device Profile (RAM: 4096MB, Heap: 512MB) | ✔ PASS |" >> $SUMMARY_FILE
           echo "| **Launch Emulator** | `-no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot` | ✔ PASS |" >> $SUMMARY_FILE
           echo "| **Boot Completed** | `sys.boot_completed == 1` verified | ✔ PASS |" >> $SUMMARY_FILE
           echo "| **Install APK** | `adb install -r app-debug.apk` | ✔ PASS |" >> $SUMMARY_FILE
