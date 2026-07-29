@@ -1067,19 +1067,18 @@ export class TradingBot {
         const strategy = await this.state.storage.get('strategy') as string;
         
         if (coinId && userId) {
-            const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
-            if (user?.exchange_name) {
-              const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment) });
-              const provider = new AdapterCandleProvider(adapter);
-              const dataEngine = new MarketDataEngine(provider);
-              this.orchestrator.setMarketDataEngine(dataEngine);
-            }
+          const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
+          if (user?.exchange_name) {
+            const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment) });
+            const provider = new AdapterCandleProvider(adapter);
+            const dataEngine = new MarketDataEngine(provider);
+            this.orchestrator.setMarketDataEngine(dataEngine);
 
             const strategyConfig = await this.state.storage.get('strategyConfig');
             const results = await this.orchestrator.executeCycle(coinId, strategy, strategyConfig);
             const currentState = this.orchestrator.getCurrentState();
             await this.state.storage.put('engineState', currentState);
-            
+        
             // Phase 1: Android Contract Integration
             const primaryResult = results.length > 0 ? results[0] : undefined;
             const newAnalysis = this.engineApi.transform(currentState, coinId, primaryResult);
@@ -1094,7 +1093,7 @@ export class TradingBot {
                 const recentAlert = alerts.find(a => a.symbol === coinId && a.status === 'pending' && a.strategy === `${strategy}_NEW`);
                 if (!recentAlert) {
                   // Fetch live market price at the exact moment of signal generation
-                  const ticker = user?.exchange_name ? await (await ExchangeManager.getProvider(user.exchange_name, { environment: normalizeEnvironment(user.exchange_environment) })).fetchTicker(coinId).catch(() => null) : null;
+                  const ticker = await adapter.fetchTicker(coinId).catch(() => null);
                   const price = ticker?.last?.toNumber() || 0;
                   
                   const storedPositionSize = (await this.state.storage.get('positionSize')) as number | undefined;
@@ -1161,6 +1160,7 @@ export class TradingBot {
                 }
               }
             }
+          }
         }
       } catch (err) {
         console.error('Orchestrator cycle failed:', err);

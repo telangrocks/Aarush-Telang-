@@ -5,6 +5,7 @@ import { IExchangeProvider } from './IExchangeProvider';
 import { ProviderConfig } from './models/ConnectionConfig';
 import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade } from './models/NormalizedDomain';
 import { UnifiedError } from './models/UnifiedError';
+import { SymbolResolver } from '../utils/SymbolResolver';
 
 export class CcxtProvider implements IExchangeProvider {
   private exchangeId: string;
@@ -178,7 +179,7 @@ export class CcxtProvider implements IExchangeProvider {
 
     // Load markets & cache (public — no credentials required)
     try {
-      if (this.exchangeId === 'kucoin' || (this.exchangeId === 'binance' && (config.environment === 'Testing' || config.environment === 'testnet'))) {
+      if (this.exchangeId === 'kucoin' || this.exchangeId === 'delta' || (this.exchangeId === 'binance' && (config.environment === 'Testing' || config.environment === 'testnet'))) {
         this.marketsCached = true;
       } else {
         await this.exchange.loadMarkets();
@@ -266,10 +267,49 @@ export class CcxtProvider implements IExchangeProvider {
     }
   }
 
+  private toCcxtSymbol(symbol: string): string {
+    if (!symbol) return 'BTC/USDT';
+    if (symbol.includes('/')) return symbol.toUpperCase();
+    if (symbol.includes('-')) return symbol.replace('-', '/').toUpperCase();
+    const res = SymbolResolver.resolve(symbol);
+    return `${res.baseAsset}/${res.quoteAsset}`;
+  }
+
+  private ensureMarket(symbol: string): string {
+    const ccxtSymbol = this.toCcxtSymbol(symbol);
+    if (this.exchange) {
+      if (!this.exchange.markets) this.exchange.markets = {};
+      if (!this.exchange.markets_by_id) this.exchange.markets_by_id = {};
+      if (!this.exchange.markets[ccxtSymbol]) {
+        const [base, quote] = ccxtSymbol.split('/');
+        const rawId = `${base}${quote}`;
+        const marketObj = {
+          id: rawId,
+          symbol: ccxtSymbol,
+          base,
+          quote,
+          active: true,
+          spot: true,
+          precision: { price: 8, amount: 8 },
+          limits: {}
+        };
+        this.exchange.markets[ccxtSymbol] = marketObj as any;
+        this.exchange.markets_by_id[rawId] = marketObj as any;
+        if (Array.isArray((this.exchange as any).symbols)) {
+          if (!(this.exchange as any).symbols.includes(ccxtSymbol)) {
+            (this.exchange as any).symbols.push(ccxtSymbol);
+          }
+        }
+      }
+    }
+    return ccxtSymbol;
+  }
+
   public async fetchTicker(symbol: string): Promise<Ticker> {
     this.ensureConnected();
+    const cleanSymbol = this.ensureMarket(symbol);
     try {
-      const ticker = await this.exchange!.fetchTicker(symbol);
+      const ticker = await this.exchange!.fetchTicker(cleanSymbol);
       return {
         symbol: ticker.symbol || '',
         timestamp: ticker.timestamp ?? Date.now(),
@@ -288,8 +328,9 @@ export class CcxtProvider implements IExchangeProvider {
 
   public async fetchKlines(symbol: string, interval: string, limit: number): Promise<any[]> {
     this.ensureConnected();
+    const cleanSymbol = this.ensureMarket(symbol);
     try {
-      const ohlcv = await this.exchange!.fetchOHLCV(symbol, interval, undefined, limit);
+      const ohlcv = await this.exchange!.fetchOHLCV(cleanSymbol, interval, undefined, limit);
       return ohlcv.map(k => ({
         openTime: k[0],
         open: k[1],
@@ -325,9 +366,10 @@ export class CcxtProvider implements IExchangeProvider {
 
   public async createOrder(order: OrderRequest): Promise<Order> {
     this.ensureConnected();
+    const cleanSymbol = this.ensureMarket(order.symbol);
     try {
       const response = await this.exchange!.createOrder(
-        order.symbol,
+        cleanSymbol,
         order.type,
         order.side,
         order.amount.toNumber(),
@@ -346,8 +388,9 @@ export class CcxtProvider implements IExchangeProvider {
 
   public async cancelOrder(orderId: string, symbol: string): Promise<boolean> {
     this.ensureConnected();
+    const cleanSymbol = this.ensureMarket(symbol);
     try {
-      await this.exchange!.cancelOrder(orderId, symbol);
+      await this.exchange!.cancelOrder(orderId, cleanSymbol);
       return true;
     } catch (e: any) {
       throw this.mapError(e, 'cancelOrder');
@@ -356,8 +399,9 @@ export class CcxtProvider implements IExchangeProvider {
 
   public async fetchOrder(orderId: string, symbol: string): Promise<Order> {
     this.ensureConnected();
+    const cleanSymbol = this.ensureMarket(symbol);
     try {
-      const response = await this.exchange!.fetchOrder(orderId, symbol);
+      const response = await this.exchange!.fetchOrder(orderId, cleanSymbol);
       return this.mapOrder(response);
     } catch (e: any) {
       throw this.mapError(e, 'fetchOrder');
@@ -366,8 +410,9 @@ export class CcxtProvider implements IExchangeProvider {
 
   public async fetchOpenOrders(symbol?: string): Promise<Order[]> {
     this.ensureConnected();
+    const cleanSymbol = symbol ? this.ensureMarket(symbol) : undefined;
     try {
-      const response = await this.exchange!.fetchOpenOrders(symbol);
+      const response = await this.exchange!.fetchOpenOrders(cleanSymbol);
       return response.map(o => this.mapOrder(o));
     } catch (e: any) {
       throw this.mapError(e, 'fetchOpenOrders');
@@ -376,8 +421,9 @@ export class CcxtProvider implements IExchangeProvider {
 
   public async fetchClosedOrders(symbol?: string): Promise<Order[]> {
     this.ensureConnected();
+    const cleanSymbol = symbol ? this.ensureMarket(symbol) : undefined;
     try {
-      const response = await this.exchange!.fetchClosedOrders(symbol);
+      const response = await this.exchange!.fetchClosedOrders(cleanSymbol);
       return response.map(o => this.mapOrder(o));
     } catch (e: any) {
       throw this.mapError(e, 'fetchClosedOrders');
@@ -386,8 +432,9 @@ export class CcxtProvider implements IExchangeProvider {
 
   public async fetchMyTrades(symbol?: string): Promise<Trade[]> {
     this.ensureConnected();
+    const cleanSymbol = symbol ? this.ensureMarket(symbol) : undefined;
     try {
-      const trades = await this.exchange!.fetchMyTrades(symbol);
+      const trades = await this.exchange!.fetchMyTrades(cleanSymbol);
       return trades.map(t => ({
         id: t.id || '',
         orderId: t.order || '',
