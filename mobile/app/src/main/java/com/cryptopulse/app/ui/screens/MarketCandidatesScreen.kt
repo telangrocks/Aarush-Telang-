@@ -62,6 +62,7 @@ fun MarketCandidatesScreen(
     val candidates by viewModel.candidates.collectAsState(initial = emptyList())
     val candidatesLoading by viewModel.candidatesLoading.collectAsState(initial = false)
     val candidatesError by viewModel.candidatesError.collectAsState(initial = null)
+    val marketDataState by viewModel.marketDataState.collectAsState(initial = com.cryptopulse.app.ui.auth.MarketDataUiState.Idle)
     val mappedCandidates = remember(candidates) { candidates.toScreenCandidates() }
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
@@ -83,93 +84,197 @@ fun MarketCandidatesScreen(
             containerColor = Color.Transparent,
         ) { padding ->
 
-                if (candidatesError != null) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .testTag("market_candidates_error"),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.WifiOff,
-                                contentDescription = null,
-                                tint = LossRed,
-                                modifier = Modifier.size(40.dp)
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                candidatesError ?: "Failed to load market candidates.",
-                                color = TextSecondary,
-                                fontSize = 14.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 32.dp)
-                            )
-                            Spacer(Modifier.height(16.dp))
-                            GradientButton(
-                                text = "Retry",
-                                onClick = { viewModel.clearCandidatesError(); viewModel.fetchMarketCandidates() },
-                                leadingIcon = Icons.Default.Refresh,
-                                modifier = Modifier.fillMaxWidth(0.6f),
-                                testTag = "market_candidates_retry"
-                            )
+                when (val state = marketDataState) {
+                    is com.cryptopulse.app.ui.auth.MarketDataUiState.Error -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(padding)
+                                .testTag("market_candidates_error"),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Default.WifiOff,
+                                    contentDescription = null,
+                                    tint = LossRed,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    state.message,
+                                    color = TextSecondary,
+                                    fontSize = 14.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 32.dp)
+                                )
+                                state.hint?.let { hint ->
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        hint,
+                                        color = TextSecondary.copy(alpha = 0.7f),
+                                        fontSize = 12.sp,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 32.dp)
+                                    )
+                                }
+                                Spacer(Modifier.height(16.dp))
+                                GradientButton(
+                                    text = "Retry",
+                                    onClick = { viewModel.clearCandidatesError(); viewModel.fetchMarketCandidates() },
+                                    leadingIcon = Icons.Default.Refresh,
+                                    modifier = Modifier.fillMaxWidth(0.6f),
+                                    testTag = "market_candidates_retry"
+                                )
+                            }
                         }
+                        return@Scaffold
                     }
-                    return@Scaffold
-                }
 
-                if (candidatesLoading) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .testTag("market_candidates_loading"),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(color = CyanPrimary)
-                            Spacer(Modifier.height(16.dp))
-                            Text("Analyzing market data...", color = TextSecondary, fontSize = 14.sp)
+                    is com.cryptopulse.app.ui.auth.MarketDataUiState.Loading -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(padding)
+                                .testTag("market_candidates_loading"),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = CyanPrimary)
+                                Spacer(Modifier.height(16.dp))
+                                Text("Analyzing market data...", color = TextSecondary, fontSize = 14.sp)
+                            }
                         }
+                        return@Scaffold
                     }
-                    return@Scaffold
-                }
 
-                if (mappedCandidates.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding)
-                            .testTag("market_candidates_empty"),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.SearchOff,
-                                contentDescription = null,
-                                tint = TextSecondary,
-                                modifier = Modifier.size(40.dp)
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                "No market candidates found matching criteria.",
-                                color = TextSecondary,
-                                fontSize = 14.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 32.dp)
-                            )
-                            Spacer(Modifier.height(16.dp))
-                            GradientButton(
-                                text = "Rescan Market",
-                                onClick = { viewModel.fetchMarketCandidates() },
-                                leadingIcon = Icons.Default.Refresh,
-                                modifier = Modifier.fillMaxWidth(0.6f),
-                                testTag = "market_candidates_rescan"
-                            )
+                    is com.cryptopulse.app.ui.auth.MarketDataUiState.Empty -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(padding)
+                                .testTag("market_candidates_empty"),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Default.SearchOff,
+                                    contentDescription = null,
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    state.message,
+                                    color = TextSecondary,
+                                    fontSize = 14.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 32.dp)
+                                )
+                                Spacer(Modifier.height(16.dp))
+                                GradientButton(
+                                    text = "Rescan Market",
+                                    onClick = { viewModel.fetchMarketCandidates() },
+                                    leadingIcon = Icons.Default.Refresh,
+                                    modifier = Modifier.fillMaxWidth(0.6f),
+                                    testTag = "market_candidates_rescan"
+                                )
+                            }
+                        }
+                        return@Scaffold
+                    }
+
+                    else -> {
+                        // Fallback to legacy safety checks if marketDataState is Idle
+                        if (candidatesError != null) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(padding)
+                                    .testTag("market_candidates_error"),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        Icons.Default.WifiOff,
+                                        contentDescription = null,
+                                        tint = LossRed,
+                                        modifier = Modifier.size(40.dp)
+                                    )
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(
+                                        candidatesError ?: "Failed to load market candidates.",
+                                        color = TextSecondary,
+                                        fontSize = 14.sp,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 32.dp)
+                                    )
+                                    Spacer(Modifier.height(16.dp))
+                                    GradientButton(
+                                        text = "Retry",
+                                        onClick = { viewModel.clearCandidatesError(); viewModel.fetchMarketCandidates() },
+                                        leadingIcon = Icons.Default.Refresh,
+                                        modifier = Modifier.fillMaxWidth(0.6f),
+                                        testTag = "market_candidates_retry"
+                                    )
+                                }
+                            }
+                            return@Scaffold
+                        }
+
+                        if (candidatesLoading) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(padding)
+                                    .testTag("market_candidates_loading"),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    CircularProgressIndicator(color = CyanPrimary)
+                                    Spacer(Modifier.height(16.dp))
+                                    Text("Analyzing market data...", color = TextSecondary, fontSize = 14.sp)
+                                }
+                            }
+                            return@Scaffold
+                        }
+
+                        if (mappedCandidates.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(padding)
+                                    .testTag("market_candidates_empty"),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        Icons.Default.SearchOff,
+                                        contentDescription = null,
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(40.dp)
+                                    )
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(
+                                        "No market candidates found matching criteria.",
+                                        color = TextSecondary,
+                                        fontSize = 14.sp,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 32.dp)
+                                    )
+                                    Spacer(Modifier.height(16.dp))
+                                    GradientButton(
+                                        text = "Rescan Market",
+                                        onClick = { viewModel.fetchMarketCandidates() },
+                                        leadingIcon = Icons.Default.Refresh,
+                                        modifier = Modifier.fillMaxWidth(0.6f),
+                                        testTag = "market_candidates_rescan"
+                                    )
+                                }
+                            }
+                            return@Scaffold
                         }
                     }
-                    return@Scaffold
                 }
 
             LazyColumn(

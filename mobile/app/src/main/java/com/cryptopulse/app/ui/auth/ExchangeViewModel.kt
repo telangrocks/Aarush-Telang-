@@ -34,6 +34,14 @@ sealed class ExchangeUiState {
     data class Error(val message: String, val hint: String? = null) : ExchangeUiState()
 }
 
+sealed interface MarketDataUiState {
+    object Idle : MarketDataUiState
+    object Loading : MarketDataUiState
+    data class Success(val candidates: List<MarketCandidateDto>) : MarketDataUiState
+    data class Empty(val message: String) : MarketDataUiState
+    data class Error(val message: String, val hint: String? = null) : MarketDataUiState
+}
+
 data class ExchangeFormState(
     val selectedExchange: String = "binance",
     val environment: String = "testnet",
@@ -79,6 +87,9 @@ class ExchangeViewModel @Inject constructor(
 
     private val _candidatesLoading = MutableStateFlow(false)
     val candidatesLoading: StateFlow<Boolean> = _candidatesLoading
+
+    private val _marketDataState = MutableStateFlow<MarketDataUiState>(MarketDataUiState.Idle)
+    val marketDataState: StateFlow<MarketDataUiState> = _marketDataState
 
     private val _readyForCandidates = MutableStateFlow(false)
     val readyForCandidates: StateFlow<Boolean> = _readyForCandidates
@@ -322,6 +333,7 @@ class ExchangeViewModel @Inject constructor(
     fun fetchMarketCandidates() {
         _candidatesError.value = null
         _candidatesLoading.value = true
+        _marketDataState.value = MarketDataUiState.Loading
         viewModelScope.launch {
             try {
                 val response = marketService.getCandidates()
@@ -330,13 +342,21 @@ class ExchangeViewModel @Inject constructor(
                     _candidates.value = list
                     _readyForCandidates.value = true
                     if (list.isEmpty()) {
-                        _candidatesError.value = "No market candidates matching volume criteria found on exchange."
+                        val emptyMsg = "No market candidates matching volume criteria found on exchange."
+                        _candidatesError.value = emptyMsg
+                        _marketDataState.value = MarketDataUiState.Empty(emptyMsg)
+                    } else {
+                        _marketDataState.value = MarketDataUiState.Success(list)
                     }
                 } else {
-                    _candidatesError.value = getUserFriendlyErrorMessage(response = response).first
+                    val (errMsg, hintMsg) = getUserFriendlyErrorMessage(response = response)
+                    _candidatesError.value = errMsg
+                    _marketDataState.value = MarketDataUiState.Error(errMsg, hintMsg)
                 }
             } catch (e: Exception) {
-                _candidatesError.value = getUserFriendlyErrorMessage(exception = e).first
+                val (errMsg, hintMsg) = getUserFriendlyErrorMessage(exception = e)
+                _candidatesError.value = errMsg
+                _marketDataState.value = MarketDataUiState.Error(errMsg, hintMsg)
             } finally {
                 _candidatesLoading.value = false
             }

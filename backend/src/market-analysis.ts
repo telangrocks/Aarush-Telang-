@@ -45,12 +45,17 @@ export async function analyzeMarket(
   tickers: any[],
   adapter: IExchangeProvider,
 ): Promise<AnalysisCandidate[]> {
-  if (!tickers.length) return [];
+  const startTime = Date.now();
+  console.log(`[MARKET_ANALYSIS_START] Beginning market evaluation for ${tickers.length} input tickers.`);
+  if (!tickers.length) {
+    console.warn(`[MARKET_ANALYSIS_EMPTY] Input tickers array is empty. Returning 0 candidates.`);
+    return [];
+  }
 
   const MIN_VOLUME_USDT = 500_000;
   const MAX_DECLINE_PERCENT = -50;
   
-  const STABLECOINS = ["USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP"];
+  const STABLECOINS = ["USDT", "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP"];
   
   // Filter out weak/illiquid/declining coins, and stablecoins
   let filtered = tickers.filter(
@@ -61,10 +66,15 @@ export async function analyzeMarket(
   );
 
   if (!filtered.length) {
+    console.warn(`[MARKET_ANALYSIS_WARN] Primary volume filter yielded 0 candidates. Falling back to non-stablecoin tickers.`);
     filtered = tickers.filter((ticker) => !STABLECOINS.includes(ticker.symbol));
   }
 
-  if (!filtered.length) return [];
+  console.log(`[MARKET_ANALYSIS_FILTER] Filtered ${tickers.length} tickers down to ${filtered.length} eligible candidates.`);
+  if (!filtered.length) {
+    console.warn(`[MARKET_ANALYSIS_EMPTY] Zero candidates remaining after filtering. Returning 0 candidates.`);
+    return [];
+  }
 
   // Rank by 24h score first (Pass 1)
   const scored = filtered.map((ticker) => ({
@@ -73,6 +83,7 @@ export async function analyzeMarket(
   }));
 
   scored.sort((a, b) => b.score - a.score);
+  console.log(`[MARKET_ANALYSIS_SCORE] Scored ${scored.length} candidates. Top candidate: ${scored[0]?.symbol} (Score: ${scored[0]?.score}).`);
   
   // Take top 15 candidates for intraday analysis to stay within rate and CPU limits
   const top15 = scored.slice(0, 15);
@@ -152,11 +163,14 @@ export async function analyzeMarket(
     })
   );
 
-  // Return the Top 10 ranked candidates
-  return analyzed.slice(0, 10).map((item, index) => ({
+  const result = analyzed.slice(0, 10).map((item, index) => ({
     ...item,
     rank: index + 1,
   }));
+
+  const durationMs = Date.now() - startTime;
+  console.log(`[MARKET_ANALYSIS_COMPLETE] Generated ${result.length} shortlisted candidates in ${durationMs}ms.`);
+  return result;
 }
 
 function calculateScore(ticker: any): number {
