@@ -56,7 +56,7 @@ jobs:
           retention-days: 1
 
   android-emulator-boot-and-test:
-    name: Android Emulator Boot & Minimal Test Validation
+    name: 12-Phase Android UI Validation Journey
     needs: compile-android-test-source
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -129,10 +129,10 @@ jobs:
             adb shell am start -n com.cryptopulse/.app.MainActivity || true
 
             echo "=================================================="
-            echo "4. RUN MINIMAL INSTRUMENTED TEST"
+            echo "4. EXECUTE 12-PHASE ANDROID UI VALIDATION SUITE"
             echo "=================================================="
             TEST_STATUS=0
-            ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.cryptopulse.app.AndroidUiValidationTestSuite#phase01_appLaunchAndSplash || TEST_STATUS=$?
+            ./gradlew connectedDebugAndroidTest || TEST_STATUS=$?
 
             echo "=================================================="
             echo "5. EXTRACT JUNIT REPORTS"
