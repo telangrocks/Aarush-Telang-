@@ -67,48 +67,35 @@ jobs:
           working-directory: mobile
           script: |
             echo "=================================================="
-            echo "1. VERIFY EMULATOR BOOT COMPLETION"
-            echo "=================================================="
-            BOOT_COMPLETED=0
-            for i in {1..30}; do
-              BOOT_STATUS=$(adb shell getprop sys.boot_completed 2>&1 | tr -d '\r')
-              if [ "$BOOT_STATUS" = "1" ]; then
-                echo "✔ Boot completed! sys.boot_completed=1"
-                BOOT_COMPLETED=1
-                break
-              fi
-              echo "Waiting for emulator boot (status='$BOOT_STATUS', attempt $i/30)..."
-              sleep 5
-            done
-
-            if [ $BOOT_COMPLETED -ne 1 ]; then
-              echo "❌ ERROR: Emulator boot timed out."
-              exit 1
-            fi
-
-            echo "=================================================="
-            echo "2. BUILD APK & TEST APK"
+            echo "1. BUILD APK & TEST APK"
             echo "=================================================="
             ./gradlew assembleDebug assembleDebugAndroidTest
 
             echo "=================================================="
-            echo "3. INSTALL APK"
+            echo "2. INSTALL APK"
             echo "=================================================="
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 
             echo "=================================================="
-            echo "4. LAUNCH APPLICATION"
+            echo "3. LAUNCH APPLICATION"
             echo "=================================================="
             adb shell am start -n com.cryptopulse/.app.MainActivity || true
-            sleep 3
 
             echo "=================================================="
-            echo "5. RUN MINIMAL INSTRUMENTED TEST"
+            echo "4. RUN MINIMAL INSTRUMENTED TEST"
             echo "=================================================="
-            ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.cryptopulse.app.AndroidUiValidationTestSuite#phase01_appLaunchAndSplash
+            TEST_STATUS=0
+            ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.cryptopulse.app.AndroidUiValidationTestSuite#phase01_appLaunchAndSplash || TEST_STATUS=$?
 
-            echo "✔ Minimal UI Test Executed Successfully!"
+            echo "=================================================="
+            echo "5. EXTRACT JUNIT REPORTS"
+            echo "=================================================="
+            mkdir -p artifacts/reports
+            cp -r app/build/reports/androidTests/connected/* artifacts/reports/ || true
+            cp -r app/build/outputs/androidTest-results/connected/* artifacts/reports/ || true
+
+            exit $TEST_STATUS
 
       - name: Collect Emulator Diagnostics on Failure
         if: failure()
