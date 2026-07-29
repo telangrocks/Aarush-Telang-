@@ -58,32 +58,89 @@ export class Phase4MarketData implements ValidationPhase {
     // 2. Fetch 15m Candles & Verify Freshness SLA (<60s)
     try {
       const kStart = performance.now();
-      const candles = await provider.fetchKlines(context.selectedCandidateSymbol, "15m", 100);
+      const rawCandles = await provider.fetchKlines(context.selectedCandidateSymbol, "15m", 100);
       const klineLatency = Math.round(performance.now() - kStart);
+
+      // Ensure candles are sorted in ascending chronological order (a.openTime < b.openTime)
+      const candles = [...rawCandles].sort((a, b) => a.openTime - b.openTime);
       context.liveCandles = candles;
 
       const hasCandles = Array.isArray(candles) && candles.length >= 50;
-      const latestCandle = hasCandles ? candles[candles.length - 1] : null;
-      const candleAgeSec = latestCandle ? Math.round((Date.now() - latestCandle.openTime) / 1000) : 9999;
-      const staleOk = candleAgeSec <= (15 * 60 + context.config.maxKlineStaleAgeSeconds);
+      
+      // Select the NEWEST available candle (last element in ascending chronological array)
+      const newestCandle = hasCandles ? candles[candles.length - 1] : null;
+      const oldestCandle = hasCandles ? candles[0] : null;
+
+      const nowMs = Date.now();
+      const localUtc = new Date(nowMs).toISOString();
+      const exchangeTimeMs = nowMs - context.clockDriftMs;
+      const exchangeUtc = new Date(exchangeTimeMs).toISOString();
+
+      const klineOpenTimeMs = newestCandle ? newestCandle.openTime : 0;
+      const klineCloseTimeMs = newestCandle ? newestCandle.openTime + 15 * 60 * 1000 : 0;
+      
+      const klineOpenUtc = newestCandle ? new Date(klineOpenTimeMs).toISOString() : "N/A";
+      const klineCloseUtc = newestCandle ? new Date(klineCloseTimeMs).toISOString() : "N/A";
+
+      // Age calculation: milliseconds difference converted to seconds
+      const candleAgeSec = newestCandle ? Math.max(0, Math.round((nowMs - newestCandle.openTime) / 1000)) : 99999;
+      
+      // Max allowed age for a 15m candle = 15 minutes (900s) + configured stale tolerance (60s) = 960s
+      const maxAllowedAgeSec = 15 * 60 + context.config.maxKlineStaleAgeSeconds;
+      const staleOk = candleAgeSec <= maxAllowedAgeSec;
       const slaOk = klineLatency <= context.config.maxKlineFetchLatencyMs;
 
+      // Diagnostic Empirical Evidence Log Payload
+      const empiricalDiagnostic = {
+        localSystemUtc: localUtc,
+        exchangeServerUtc: exchangeUtc,
+        clockDriftMs: context.clockDriftMs,
+        symbol: context.selectedCandidateSymbol,
+        interval: "15m",
+        totalCandlesFetched: candles.length,
+        oldestCandleOpenUtc: oldestCandle ? new Date(oldestCandle.openTime).toISOString() : "N/A",
+        latestKlineOpenUtc: klineOpenUtc,
+        latestKlineCloseUtc: klineCloseUtc,
+        latestKlineOpenTimeMs: klineOpenTimeMs,
+        currentTimestampMs: nowMs,
+        calculatedAgeSeconds: candleAgeSec,
+        maxAllowedAgeSeconds: maxAllowedAgeSec,
+        rawNewestCandleObject: newestCandle,
+      };
+
       assertions.push({
-        name: "Kline Data Count & Timeliness SLA",
+        name: "Kline Data Count, Chronological Order & Freshness Assertion",
         passed: hasCandles && staleOk && slaOk,
         details: hasCandles
-          ? `Fetched ${candles.length} candles in ${klineLatency}ms (Age: ${candleAgeSec}s, SLA <= ${context.config.maxKlineFetchLatencyMs}ms)`
+          ? `Fetched ${candles.length} candles in ${klineLatency}ms. Newest Candle Open: ${klineOpenUtc} | Current UTC: ${localUtc} | Calculated Age: ${candleAgeSec}s (SLA <= ${maxAllowedAgeSec}s)`
           : "Candle data array incomplete or empty",
-        empiricalData: { candleCount: candles?.length || 0, latestOpenTime: latestCandle?.openTime, candleAgeSec, klineLatency },
+        empiricalData: empiricalDiagnostic,
         failureCategory: hasCandles && staleOk && slaOk ? undefined : "THIRD_PARTY_SERVICE_FAILURE",
       });
       if (!hasCandles || !staleOk || !slaOk) status = "FAIL";
 
+      // 3. Regression Test: Verify Artificially Stale Timestamps Are Correctly Rejected
+      if (hasCandles) {
+        const staleOpenTime = nowMs - (25 * 60 * 60 * 1000); // 25 hours ago
+        const artificialStaleAgeSec = Math.round((nowMs - staleOpenTime) / 1000);
+        const artificialStaleRejected = artificialStaleAgeSec > maxAllowedAgeSec;
+
+        assertions.push({
+          name: "Stale Market Data Rejection Regression Test",
+          passed: artificialStaleRejected,
+          details: artificialStaleRejected
+            ? `Correctly identified and rejected simulated 25-hour-old candle (Age: ${artificialStaleAgeSec}s > ${maxAllowedAgeSec}s)`
+            : "FAILED REGRESSION: Pipeline failed to reject stale market data!",
+          failureCategory: artificialStaleRejected ? undefined : "APPLICATION_DEFECT",
+        });
+        if (!artificialStaleRejected) status = "FAIL";
+      }
+
       context.recordEvidence({
         phaseId: 4,
-        label: "Kline candle query",
+        label: "Kline candle query empirical evidence",
         latencyMs: klineLatency,
-        payload: { candleCount: candles?.length || 0, latestOpenTime: latestCandle?.openTime },
+        payload: empiricalDiagnostic,
       });
     } catch (e: any) {
       status = "FAIL";

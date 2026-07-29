@@ -508,7 +508,7 @@ export class CcxtProvider implements IExchangeProvider {
           if (res.ok) {
             const json: any = await res.json();
             if (json.code === '200000' && Array.isArray(json.data)) {
-              return json.data.slice(0, limit).map((k: any) => ({
+              const mapped = json.data.slice(0, limit).map((k: any) => ({
                 openTime: parseInt(k[0]) * 1000,
                 open: parseFloat(k[1]),
                 close: parseFloat(k[2]),
@@ -516,12 +516,13 @@ export class CcxtProvider implements IExchangeProvider {
                 low: parseFloat(k[4]),
                 volume: parseFloat(k[5]),
               }));
+              return mapped.sort((a: any, b: any) => a.openTime - b.openTime);
             }
           }
         }
         if (res.ok) {
           const data: any[] = await res.json();
-          return data.map(k => ({
+          const mapped = data.map(k => ({
             openTime: k[0],
             open: parseFloat(k[1]),
             high: parseFloat(k[2]),
@@ -529,6 +530,7 @@ export class CcxtProvider implements IExchangeProvider {
             close: parseFloat(k[4]),
             volume: parseFloat(k[5]),
           }));
+          return mapped.sort((a, b) => a.openTime - b.openTime);
         }
       } catch (_) {
         // Fallback to standard fetchOHLCV
@@ -543,7 +545,7 @@ export class CcxtProvider implements IExchangeProvider {
         if (res.ok) {
           const json: any = await res.json();
           if (json.code === '200000' && Array.isArray(json.data)) {
-            return json.data.slice(0, limit).map((k: any) => ({
+            const mapped = json.data.slice(0, limit).map((k: any) => ({
               openTime: parseInt(k[0]) * 1000,
               open: parseFloat(k[1]),
               close: parseFloat(k[2]),
@@ -551,6 +553,7 @@ export class CcxtProvider implements IExchangeProvider {
               low: parseFloat(k[4]),
               volume: parseFloat(k[5]),
             }));
+            return mapped.sort((a: any, b: any) => a.openTime - b.openTime);
           }
         }
       } catch (_) {
@@ -560,7 +563,7 @@ export class CcxtProvider implements IExchangeProvider {
 
     try {
       const ohlcv = await this.exchange!.fetchOHLCV(cleanSymbol, interval, undefined, limit);
-      return ohlcv.map(k => ({
+      const mapped = ohlcv.map(k => ({
         openTime: k[0],
         open: k[1],
         high: k[2],
@@ -568,6 +571,7 @@ export class CcxtProvider implements IExchangeProvider {
         close: k[4],
         volume: k[5],
       }));
+      return mapped.sort((a, b) => (a.openTime || 0) - (b.openTime || 0));
     } catch (e: any) {
       const msg = (e?.message || '').toLowerCase();
       if (msg.includes('451') || msg.includes('restricted location') || msg.includes('eligibility') || msg.includes('403')) {
@@ -580,7 +584,7 @@ export class CcxtProvider implements IExchangeProvider {
           if (kcRes.ok) {
             const json: any = await kcRes.json();
             if (json.code === '200000' && Array.isArray(json.data)) {
-              return json.data.slice(0, limit).map((k: any) => ({
+              const mapped = json.data.slice(0, limit).map((k: any) => ({
                 openTime: parseInt(k[0]) * 1000,
                 open: parseFloat(k[1]),
                 close: parseFloat(k[2]),
@@ -588,6 +592,7 @@ export class CcxtProvider implements IExchangeProvider {
                 low: parseFloat(k[4]),
                 volume: parseFloat(k[5]),
               }));
+              return mapped.sort((a: any, b: any) => a.openTime - b.openTime);
             }
           }
         } catch (_) { /* ignore fallback */ }
