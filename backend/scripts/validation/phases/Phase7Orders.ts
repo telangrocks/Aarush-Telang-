@@ -37,7 +37,12 @@ export class Phase7Orders implements ValidationPhase {
     });
     if (!hasOrderFields) status = "FAIL";
 
-    // 2. Testnet Order Placement & Order ID Verification (Level 2 Sandbox Only)
+    // 2. Order Placement
+    // ┌─────────────────────────────────────────────────────────────────────┐
+    // │  LEVEL 2 TESTNET ONLY — Testnet sandbox orders are safe to place.  │
+    // │  LEVEL 3 PROD SMOKE — Strictly read-only. No orders, ever.         │
+    // │  Placing a live order during CI validation is a hard safety rule.  │
+    // └─────────────────────────────────────────────────────────────────────┘
     if (context.level === "level2_testnet") {
       try {
         const oStart = performance.now();
@@ -86,11 +91,22 @@ export class Phase7Orders implements ValidationPhase {
           failureCategory: "THIRD_PARTY_SERVICE_FAILURE",
         });
       }
+    } else if (context.level === "level3_prod_smoke") {
+      // Level 3 is a strictly non-destructive production smoke test.
+      // Order placement is permanently disabled at this level.
+      // Rationale: CI must never alter production account state.
+      assertions.push({
+        name: "Testnet Order Execution & Exchange Order ID",
+        passed: true,
+        details: `[SAFETY GATE] Order placement is intentionally disabled for Level 3 Production Smoke. ` +
+                 `This is a read-only validation — no market, limit, OCO, or stop orders are placed. ` +
+                 `Exchange: ${context.validationExchangeId} (${context.validationExchangeEnv}).`,
+      });
     } else {
       assertions.push({
         name: "Testnet Order Execution & Exchange Order ID",
         passed: true,
-        details: "Skipped in Public/Smoke mode (no order placement executed)",
+        details: "Skipped in Level 1 Public mode — no authenticated order placement.",
       });
     }
 

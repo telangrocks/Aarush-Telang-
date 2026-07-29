@@ -40,8 +40,12 @@ export class ValidationEngine {
   }
 
   public async run(level: ValidationLevel, outDir: string = "reports"): Promise<number> {
+    const exchangeLabel = process.env.VALIDATION_EXCHANGE
+      ? `${process.env.VALIDATION_EXCHANGE} (override)`
+      : `${level === "level3_prod_smoke" ? "kucoin" : "binance"} (default)`;
+
     console.log(`\n🛡️ Crypto Pulse Production Validation Framework (v3.0.0)`);
-    console.log(`Level: ${level.toUpperCase()} | Worker URL: ${process.env.WORKER_URL || "default"}\n`);
+    console.log(`Level: ${level.toUpperCase()} | Exchange: ${exchangeLabel} | Worker URL: ${process.env.WORKER_URL || "default"}\n`);
 
     const context = new ValidationContext(level);
     const phaseResults: PhaseResult[] = [];

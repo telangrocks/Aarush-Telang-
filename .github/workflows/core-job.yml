@@ -12,6 +12,15 @@ on:
           - level1_public
           - level2_testnet
           - level3_prod_smoke
+      exchange:
+        description: "Exchange (leave blank for level default: Level 1/2 → binance, Level 3 → kucoin)"
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - binance
+          - kucoin
   push:
     branches: [main]
     paths:
@@ -66,9 +75,21 @@ jobs:
       - name: Run Production Validation Pipeline
         env:
           WORKER_URL: "https://crypto-pulse-backend.telangrocks.workers.dev"
-          EXCHANGE_API_KEY: ${{ secrets.QA_EXCHANGE_API_KEY }}
-          EXCHANGE_API_SECRET: ${{ secrets.QA_EXCHANGE_API_SECRET }}
-          EXCHANGE_PASSPHRASE: ${{ secrets.QA_EXCHANGE_PASSPHRASE }}
+          # Exchange selection — optional override. When blank, ExchangeRegistry level defaults apply:
+          #   level1_public     → binance (mainnet, public endpoints only)
+          #   level2_testnet    → binance (testnet)
+          #   level3_prod_smoke → kucoin  (mainnet, read-only)
+          VALIDATION_EXCHANGE: ${{ inputs.exchange || '' }}
+          # ── Binance Testnet credentials (Level 2 / BINANCE_TESTNET_* prefix) ─────
+          BINANCE_TESTNET_API_KEY:    ${{ secrets.BINANCE_TESTNET_API_KEY }}
+          BINANCE_TESTNET_API_SECRET: ${{ secrets.BINANCE_TESTNET_API_SECRET }}
+          # ── KuCoin Mainnet credentials (Level 3 / KUCOIN_MAINNET_* prefix) ───────
+          KUCOIN_MAINNET_API_KEY:          ${{ secrets.KUCOIN_MAINNET_API_KEY }}
+          KUCOIN_MAINNET_API_SECRET:       ${{ secrets.KUCOIN_MAINNET_API_SECRET }}
+          KUCOIN_MAINNET_API_PASSPHRASE:   ${{ secrets.KUCOIN_MAINNET_API_PASSPHRASE }}
+          # ── Future exchanges: add secrets + input options; no engine code changes ─
+          # BYBIT_TESTNET_API_KEY:    ${{ secrets.BYBIT_TESTNET_API_KEY }}
+          # BYBIT_TESTNET_API_SECRET: ${{ secrets.BYBIT_TESTNET_API_SECRET }}
         run: |
           LEVEL="${{ inputs.level || 'level1_public' }}"
           npx tsx scripts/validation/runner.ts --level=$LEVEL --outDir=reports
@@ -79,3 +100,4 @@ jobs:
         with:
           name: validation-reports
           path: backend/reports/
+

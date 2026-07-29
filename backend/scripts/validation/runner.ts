@@ -22,6 +22,9 @@ async function main() {
       }
     } else if (arg.startsWith("--outDir=")) {
       outDir = arg.split("=")[1];
+    } else if (arg.startsWith("--exchange=")) {
+      // Inject into process.env so ValidationContext picks it up via resolveExchangeForContext()
+      process.env.VALIDATION_EXCHANGE = arg.split("=")[1].toLowerCase().trim();
     }
   }
 

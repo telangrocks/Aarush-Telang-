@@ -5,6 +5,7 @@
 import { ValidationPhase, PhaseResult, ValidationLevel } from "../models/ValidationPhase";
 import { ValidationContext } from "../models/ValidationContext";
 import { ProviderFactory } from "../../../src/exchanges/ProviderFactory";
+import { SUPPORTED_EXCHANGES } from "../config/ExchangeRegistry";
 
 export class Phase3Exchange implements ValidationPhase {
   public readonly phaseId = 3;
@@ -19,33 +20,42 @@ export class Phase3Exchange implements ValidationPhase {
     let apiLatency = 0;
 
     // 1. Diagnostic Environment Variable Presence Report
-    const keyPresence = context.exchangeApiKey ? `PRESENT (len: ${context.exchangeApiKey.length})` : "MISSING";
-    const secretPresence = context.exchangeApiSecret ? `PRESENT (len: ${context.exchangeApiSecret.length})` : "MISSING";
-    const passphrasePresence = context.exchangePassphrase ? `PRESENT (len: ${context.exchangePassphrase.length})` : "MISSING / OPTIONAL";
+    const keyPresence        = context.exchangeApiKey        ? `PRESENT (len: ${context.exchangeApiKey.length})`        : "MISSING";
+    const secretPresence     = context.exchangeApiSecret     ? `PRESENT (len: ${context.exchangeApiSecret.length})`     : "MISSING";
+    const passphrasePresence = context.exchangePassphrase    ? `PRESENT (len: ${context.exchangePassphrase.length})`    : "MISSING / OPTIONAL";
 
-    const envDiagnostic = {
-      EXCHANGE_API_KEY: keyPresence,
-      EXCHANGE_API_SECRET: secretPresence,
-      EXCHANGE_PASSPHRASE: passphrasePresence,
-      validationLevel: context.level,
+    // Build the exact env var names that were looked up from the registry
+    const prefix = context.resolvedExchange.secretPrefix ?? context.validationExchangeId.toUpperCase();
+    const envDiagnostic: Record<string, any> = {
+      resolvedExchange:    context.validationExchangeId,
+      resolvedEnvironment: context.validationExchangeEnv,
+      validationLevel:     context.level,
+      secretsLookedUp: {
+        [`${prefix}_API_KEY`]:        keyPresence,
+        [`${prefix}_API_SECRET`]:     secretPresence,
+        [`${prefix}_API_PASSPHRASE`]: passphrasePresence,
+      },
     };
 
     assertions.push({
       name: "Credential Pipeline Environment Diagnostic",
       passed: true,
-      details: `API Key: ${keyPresence} | API Secret: ${secretPresence} | Passphrase: ${passphrasePresence}`,
+      details: `Exchange: ${context.validationExchangeId} (${context.validationExchangeEnv}) | Key: ${keyPresence} | Secret: ${secretPresence} | Passphrase: ${passphrasePresence}`,
       empiricalData: envDiagnostic,
     });
 
-    // 2. Instantiation of Exchange Provider
+    // 2. Instantiation of Exchange Provider (exchange resolved by registry, never hardcoded)
     let provider: any = null;
+    const exchangeDisplay = `${context.resolvedExchange.displayName} (${context.validationExchangeId})`;
     try {
-      provider = ProviderFactory.create("binance");
+      provider = ProviderFactory.create(context.resolvedExchange.ccxtId);
       const instantiated = Boolean(provider);
       assertions.push({
         name: "Exchange Provider Instantiation",
         passed: instantiated,
-        details: instantiated ? "CcxtProvider instantiated for Binance" : "ProviderFactory returned null",
+        details: instantiated
+          ? `CcxtProvider instantiated for ${exchangeDisplay}`
+          : `ProviderFactory returned null for ${exchangeDisplay}`,
         failureCategory: instantiated ? undefined : "APPLICATION_DEFECT",
       });
       if (!instantiated) status = "FAIL";
@@ -54,7 +64,7 @@ export class Phase3Exchange implements ValidationPhase {
       assertions.push({
         name: "Exchange Provider Instantiation",
         passed: false,
-        details: `Instantiation exception: ${e.message}`,
+        details: `Instantiation exception for ${exchangeDisplay}: ${e.message}`,
         failureCategory: "APPLICATION_DEFECT",
       });
     }
@@ -86,7 +96,7 @@ export class Phase3Exchange implements ValidationPhase {
           phaseId: 3,
           label: "Exchange connect ping",
           latencyMs: apiLatency,
-          payload: { connected: true, exchangeId: "binance" },
+          payload: { connected: true, exchangeId: context.validationExchangeId, environment: context.validationExchangeEnv },
         });
       } catch (e: any) {
         status = "FAIL";
@@ -102,10 +112,14 @@ export class Phase3Exchange implements ValidationPhase {
     // 4. Authenticated Balances & Key Permissions Check (Level 2 / Level 3 only)
     if (context.level !== "level1_public") {
       if (!context.exchangeApiKey || !context.exchangeApiSecret) {
+        const missingVars = [
+          !context.exchangeApiKey    ? `${prefix}_API_KEY`    : null,
+          !context.exchangeApiSecret ? `${prefix}_API_SECRET` : null,
+        ].filter(Boolean).join(", ");
         assertions.push({
           name: "Authenticated Balance & Permission Check",
           passed: false,
-          details: `Missing required exchange credentials in environment (Key: ${keyPresence}, Secret: ${secretPresence}). Check GitHub Secrets -> Workflow Env mapping.`,
+          details: `Missing required GitHub Secrets: ${missingVars}. Ensure these are added in Settings → Secrets and variables → Actions.`,
           empiricalData: envDiagnostic,
           failureCategory: "INFRASTRUCTURE_DEFECT",
         });
@@ -171,7 +185,7 @@ export class Phase3Exchange implements ValidationPhase {
       assertions.push({
         name: "Authenticated Balance & Permission Check",
         passed: true,
-        details: `Skipped in Level 1 Public mode (Credentials Diagnostic: Key: ${keyPresence}, Secret: ${secretPresence})`,
+        details: `Skipped — Level 1 Public validation uses public endpoints only. No credentials required or used.`,
       });
     }
 
