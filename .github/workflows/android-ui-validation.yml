@@ -46,6 +46,15 @@ jobs:
         run: |
           ./gradlew assembleDebug assembleDebugAndroidTest
 
+      - name: Upload Prebuilt APK Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-apks
+          path: |
+            mobile/app/build/outputs/apk/debug/app-debug.apk
+            mobile/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          retention-days: 1
+
   android-emulator-boot-and-test:
     name: Android Emulator Boot & Minimal Test Validation
     needs: compile-android-test-source
@@ -68,6 +77,12 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
           cache: 'gradle'
+
+      - name: Download Prebuilt APK Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: prebuilt-apks
+          path: mobile/app/build/outputs/apk
 
       - name: Enable KVM Hardware Acceleration
         run: |
@@ -103,15 +118,10 @@ jobs:
             ./gradlew --version
 
             echo "=================================================="
-            echo "2. BUILD APK & TEST APK"
+            echo "2. INSTALL PREBUILT APKS"
             echo "=================================================="
-            ./gradlew assembleDebug assembleDebugAndroidTest
-
-            echo "=================================================="
-            echo "2. INSTALL APK"
-            echo "=================================================="
-            adb install -r app/build/outputs/apk/debug/app-debug.apk
-            adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            adb install -r app/build/outputs/apk/debug/app-debug.apk || adb install -r app/build/outputs/apk/app-debug.apk
+            adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk || adb install -r app/build/outputs/apk/app-debug-androidTest.apk
 
             echo "=================================================="
             echo "3. LAUNCH APPLICATION"
