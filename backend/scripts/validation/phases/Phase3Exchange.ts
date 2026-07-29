@@ -63,10 +63,11 @@ export class Phase3Exchange implements ValidationPhase {
     if (provider) {
       try {
         const pStart = performance.now();
+        const isAuthenticatedLevel = context.level === "level2_testnet" || context.level === "level3_prod_smoke";
         await provider.connect({
-          apiKey: context.exchangeApiKey,
-          secret: context.exchangeApiSecret,
-          passphrase: context.exchangePassphrase,
+          apiKey: isAuthenticatedLevel ? context.exchangeApiKey : undefined,
+          secret: isAuthenticatedLevel ? context.exchangeApiSecret : undefined,
+          passphrase: isAuthenticatedLevel ? context.exchangePassphrase : undefined,
           environment: context.level === "level2_testnet" ? "testnet" : "mainnet",
         });
         apiLatency = Math.round(performance.now() - pStart);

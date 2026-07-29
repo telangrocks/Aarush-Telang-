@@ -56,28 +56,36 @@ export class ValidationContext {
       validatorVersion: "3.0.0",
     };
 
-    this.exchangeApiKey = (
-      process.env.EXCHANGE_API_KEY ||
-      process.env.QA_EXCHANGE_API_KEY ||
-      "1tBQlwh2hqVr0ebRC8cPTZ0o7aJ0T2pPiMHmj1bof1iSuMJKUDBfumVv3o2oW4ey"
-    ).trim();
+    // Credentials are ONLY populated for Level 2 (Testnet) and Level 3 (Production Smoke).
+    // Level 1 Public validation must never receive API credentials — it is designed to
+    // operate exclusively against public, unauthenticated exchange endpoints.
+    const isAuthenticatedLevel = level === "level2_testnet" || level === "level3_prod_smoke";
 
-    this.exchangeApiSecret = (
-      process.env.EXCHANGE_API_SECRET ||
-      process.env.QA_EXCHANGE_API_SECRET ||
-      "hPHtVngddZwjvu7Mr3LMpsogaXelnDaDgf6bwxzWEyatorDBO1OFbyKh2qXty6Vk"
-    ).trim();
+    if (isAuthenticatedLevel) {
+      this.exchangeApiKey = (
+        process.env.EXCHANGE_API_KEY ||
+        process.env.QA_EXCHANGE_API_KEY ||
+        ""
+      ).trim();
 
-    this.exchangePassphrase = (
-      process.env.EXCHANGE_PASSPHRASE ||
-      process.env.QA_EXCHANGE_PASSPHRASE ||
-      ""
-    ).trim();
+      this.exchangeApiSecret = (
+        process.env.EXCHANGE_API_SECRET ||
+        process.env.QA_EXCHANGE_API_SECRET ||
+        ""
+      ).trim();
 
-    // Register secrets for redaction
-    SecurityRedactor.registerSecret(this.exchangeApiKey);
-    SecurityRedactor.registerSecret(this.exchangeApiSecret);
-    SecurityRedactor.registerSecret(this.exchangePassphrase);
+      this.exchangePassphrase = (
+        process.env.EXCHANGE_PASSPHRASE ||
+        process.env.QA_EXCHANGE_PASSPHRASE ||
+        ""
+      ).trim();
+    }
+    // For level1_public: exchangeApiKey, exchangeApiSecret, exchangePassphrase remain "" (default)
+
+    // Register non-empty secrets for redaction
+    if (this.exchangeApiKey) SecurityRedactor.registerSecret(this.exchangeApiKey);
+    if (this.exchangeApiSecret) SecurityRedactor.registerSecret(this.exchangeApiSecret);
+    if (this.exchangePassphrase) SecurityRedactor.registerSecret(this.exchangePassphrase);
     SecurityRedactor.registerSecret(process.env.QA_PASSWORD);
   }
 
