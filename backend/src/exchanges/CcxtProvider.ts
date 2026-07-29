@@ -141,7 +141,7 @@ export class CcxtProvider implements IExchangeProvider {
         (this.exchange as any).fetchCapitalConfig = async () => [];
         this.exchange.markets = { 'BTC/USDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
         this.exchange.markets_by_id = { 'BTCUSDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
-        const testnetHost = (process.env.BINANCE_TESTNET_URL || process.env.EXCHANGE_BASE_URL || 'https://testnet.binance.vision').replace(/\/$/, '');
+        const testnetHost = (process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '');
         this.exchange.urls.api = {
           public: 'https://api.binance.com/api/v3',
           private: `${testnetHost}/api/v3`,
