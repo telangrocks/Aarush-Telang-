@@ -13,7 +13,7 @@ function refactorTradingBot() {
   
   // 2. AdapterCandleProvider
   content = content.replace(
-    /class AdapterCandleProvider implements ICandleProvider \{\n  constructor\(private adapter: IExchangeAdapter\) \{\}\n\n  async fetchCandles\(symbol: string, timeframe: Timeframe, limit: number = 100\): Promise<NormalizedCandle\[\]> \{\n.*?\n    const klines = await this\.adapter\.fetchKlines\(symbol, timeframe, limit\);\n    return klines\.map\(\(k: Kline\) => \(\{\n      timestamp: k\.openTime,\n      open: k\.open,\n      high: k\.high,\n      low: k\.low,\n      close: k\.close,\n      volume: k\.volume\n    \}\)\);\n  \}\n\n  async fetchTicker\(symbol: string\): Promise<MarketTicker \| null> \{\n    return this\.adapter\.fetchTicker\(symbol\) as any;\n  \}\n\}/s,
+    /class AdapterCandleProvider implements ICandleProvider \{\n\s{2}constructor\(private adapter: IExchangeAdapter\) \{\}\n\n\s{2}async fetchCandles\(symbol: string, timeframe: Timeframe, limit: number = 100\): Promise<NormalizedCandle\[\]> \{\n.*?\n\s{4}const klines = await this\.adapter\.fetchKlines\(symbol, timeframe, limit\);\n\s{4}return klines\.map\(\(k: Kline\) => \(\{\n\s{6}timestamp: k\.openTime,\n\s{6}open: k\.open,\n\s{6}high: k\.high,\n\s{6}low: k\.low,\n\s{6}close: k\.close,\n\s{6}volume: k\.volume\n\s{4}\}\)\);\n\s{2}\}\n\n\s{2}async fetchTicker\(symbol: string\): Promise<MarketTicker \| null> \{\n\s{4}return this\.adapter\.fetchTicker\(symbol\) as any;\n\s{2}\}\n\}/s,
     `class AdapterCandleProvider implements ICandleProvider {
   constructor(private adapter: IExchangeProvider) {}
 

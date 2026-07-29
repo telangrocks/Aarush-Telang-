@@ -256,7 +256,9 @@ export class CcxtProvider implements IExchangeProvider {
               if (!this.exchange.options) this.exchange.options = {};
               this.exchange.options['timeDifference'] = diff;
             }
-          } catch (_) {}
+          } catch (_) {
+            // Ignore transient server time sync failure
+          }
         }
         await this.exchange.fetchBalance();
       } catch (e: any) {
@@ -378,7 +380,9 @@ export class CcxtProvider implements IExchangeProvider {
             quoteVolume: px.multipliedBy(1000),
           };
         }
-      } catch (_) {}
+      } catch (_) {
+        // Fallback to standard ticker fetch
+      }
     } else if (exId.includes('kucoin')) {
       try {
         const rawPair = cleanSymbol.replace('/', '-');
@@ -402,7 +406,9 @@ export class CcxtProvider implements IExchangeProvider {
             };
           }
         }
-      } catch (_) {}
+      } catch (_) {
+        // Fallback to standard ticker fetch
+      }
     }
 
     try {
@@ -445,7 +451,9 @@ export class CcxtProvider implements IExchangeProvider {
             volume: parseFloat(k[5]),
           }));
         }
-      } catch (_) {}
+      } catch (_) {
+        // Fallback to standard fetchOHLCV
+      }
     } else if (exId.includes('kucoin')) {
       try {
         const rawPair = cleanSymbol.replace('/', '-');
@@ -466,7 +474,9 @@ export class CcxtProvider implements IExchangeProvider {
             }));
           }
         }
-      } catch (_) {}
+      } catch (_) {
+        // Fallback to standard fetchOHLCV
+      }
     }
 
     try {
@@ -623,7 +633,7 @@ export class CcxtProvider implements IExchangeProvider {
     };
   }
 
-  private mapError(e: any, endpoint: string): UnifiedError {
+  private mapError(e: any, _endpoint: string): UnifiedError {
     const errorClass = e.constructor.name;
     let mappedCode = 'UNKNOWN_ERROR';
     

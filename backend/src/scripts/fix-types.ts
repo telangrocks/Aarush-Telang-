@@ -3,7 +3,7 @@ import * as path from 'path';
 
 function fixTypes() {
   // Fix ProviderConfig environment
-  let pPath = path.join(__dirname, '..', 'exchanges', 'models', 'ConnectionConfig.ts');
+  const pPath = path.join(__dirname, '..', 'exchanges', 'models', 'ConnectionConfig.ts');
   let pContent = fs.readFileSync(pPath, 'utf-8');
   pContent = pContent.replace(
     /environment: 'Production' \| 'Testing';/,
@@ -12,7 +12,7 @@ function fixTypes() {
   fs.writeFileSync(pPath, pContent, 'utf-8');
 
   // Fix IExchangeAdapter missing in trading-bot.ts
-  let botPath = path.join(__dirname, '..', 'trading-bot.ts');
+  const botPath = path.join(__dirname, '..', 'trading-bot.ts');
   let botContent = fs.readFileSync(botPath, 'utf-8');
   botContent = botContent.replace(/IExchangeAdapter/g, 'IExchangeProvider');
   botContent = botContent.replace(/ticker\?\.price/g, 'ticker?.last?.toNumber()');
@@ -39,7 +39,7 @@ function fixTypes() {
   fs.writeFileSync(botPath, botContent, 'utf-8');
 
   // Fix exchange.ts
-  let exPath = path.join(__dirname, '..', 'handlers', 'exchange.ts');
+  const exPath = path.join(__dirname, '..', 'handlers', 'exchange.ts');
   let exContent = fs.readFileSync(exPath, 'utf-8');
   
   // Any remaining getExchangeAdapter

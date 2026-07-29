@@ -1,5 +1,5 @@
 import { Env } from './index';
-import { ExchangeManager, ExchangeName, ExchangeEnvironment, ExchangeRegion, IExchangeProvider } from './exchanges';
+import { ExchangeManager, ExchangeName, ExchangeEnvironment, IExchangeProvider } from './exchanges';
 import { Ticker } from './exchanges/models/NormalizedDomain';
 import BigNumber from 'bignumber.js';
 
@@ -17,14 +17,6 @@ import { StrategyRegistry } from './engine/strategies/StrategyRegistry';
  */
 function normalizeEnvironment(value: unknown): ExchangeEnvironment {
   return value === 'testnet' ? 'testnet' : 'mainnet';
-}
-
-/**
- * Normalize an untrusted region value into a valid ExchangeRegion, defaulting
- * no region was previously persisted.
- */
-function normalizeRegion(value: unknown): ExchangeRegion {
-  return value === 'global' || value === 'india' ? value : 'india';
 }
 
 /**

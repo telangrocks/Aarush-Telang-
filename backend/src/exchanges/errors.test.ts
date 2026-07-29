@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyException, classifyBinanceCode, classifyKuCoinCode, classifyExchangeResponse } from "./errors";
+import { classifyException, classifyExchangeResponse } from "./errors";
 
 describe("Exchange Error Classifier", () => {
   it("classifies Binance API key / IP whitelist error (-2015) correctly", () => {

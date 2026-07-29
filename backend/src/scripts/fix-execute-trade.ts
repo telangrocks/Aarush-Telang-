@@ -1,4 +1,4 @@
-const fs = require('fs');
+import * as fs from 'fs';
 let content = fs.readFileSync('src/trading-bot.ts', 'utf-8');
 
 // Find the corrupt section and remove the alarm handler code that got spliced into execute-trade

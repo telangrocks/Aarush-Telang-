@@ -36,9 +36,6 @@ async function runTest(exchangeId: string, config: ProviderConfig, symbol: strin
   let currentStep = 'Instantiate';
   try {
     const provider = ProviderFactory.create(exchangeId);
-    
-    // Hack to get URLs to display them
-    const ccxtInstance = (provider as any).exchange || (provider as any).getCcxtInstance?.() || ((provider as any).exchange);
 
     currentStep = 'Connect & Authenticate';
     console.log(`[Connecting...]`);

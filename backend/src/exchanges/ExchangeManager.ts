@@ -1,7 +1,7 @@
 import { IExchangeProvider } from './IExchangeProvider';
 import { ProviderFactory } from './ProviderFactory';
 import { ProviderConfig } from './models/ConnectionConfig';
-import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade } from './models/NormalizedDomain';
+import { Order, OrderRequest } from './models/NormalizedDomain';
 // NOTE: crypto.randomUUID() is available as a Web Crypto API global in Cloudflare
 // Workers — no import needed. Importing 'crypto' from Node would require
 // nodejs_compat but adds unnecessary bundling complexity.

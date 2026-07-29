@@ -1,8 +1,8 @@
 import { Context } from "hono";
 import { Env } from "../index";
 import { encrypt, decrypt, cleanCredential } from "../crypto";
-import { ExchangeManager, ExchangeName, ExchangeEnvironment, ExchangeRegion } from "../exchanges";
-import { FRIENDLY_MESSAGES, classifyException, classifyByBodyText, type ExchangeErrorCode } from "../exchanges/errors";
+import { ExchangeManager, ExchangeName, ExchangeEnvironment, type ExchangeRegion } from "../exchanges";
+import { FRIENDLY_MESSAGES, classifyException, type ExchangeErrorCode } from "../exchanges/errors";
 import {
   computeEMA,
   computeIndicators,
@@ -30,53 +30,16 @@ function normalizeEnvironment(value: unknown): ExchangeEnvironment {
   return "mainnet";
 }
 
-/**
- * Normalize an untrusted region value into a valid ExchangeRegion.
- */
-function normalizeRegion(value: unknown): ExchangeRegion | undefined {
-  return value === "global" || value === "india" ? value : undefined;
-}
 
-/**
- * Shape an adapter ValidationResult into the response the app consumes.
- */
-function shapeValidation(
-  result: { success: boolean; message: string; code?: string; friendlyMessage?: string; hint?: string },
-  exchangeName: string,
-  logTechnical: (detail: string) => void,
-) {
-  if (result.success) {
-    return { success: true as const, message: "Credentials verified. You're all set." };
-  }
 
-  logTechnical(`[exchange-auth] ${exchangeName}: ${result.message}`);
 
-  let code = (result.code as ExchangeErrorCode);
-  let friendlyMessage = result.friendlyMessage;
-  let hint = result.hint;
-
-  if (!code || code === "UNKNOWN_EXCHANGE_ERROR") {
-    const classified = classifyByBodyText(result.message || "", `exchange=${exchangeName} msg=${result.message}`, exchangeName);
-    code = classified.code;
-    friendlyMessage = friendlyMessage || classified.friendlyMessage;
-    hint = hint || classified.hint;
-  }
-
-  const info = FRIENDLY_MESSAGES[code] ?? FRIENDLY_MESSAGES.UNKNOWN_EXCHANGE_ERROR;
-  return {
-    success: false as const,
-    code,
-    message: friendlyMessage || info.friendlyMessage,
-    hint: hint || info.hint,
-  };
-}
 
 export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   let exchangeNameForLog = "unknown";
   try {
-    const { exchangeName, apiKey, apiSecret, apiPassphrase, environment, region } = await c.req.json<{
+    const { exchangeName, apiKey, apiSecret, apiPassphrase, environment } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
@@ -314,7 +277,6 @@ export async function handleGetExchangeBalances(
     }
 
     const environment = normalizeEnvironment(user.exchange_environment);
-    const region = normalizeRegion(user.exchange_region);
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment,
       apiKey: user.exchange_api_key ?? undefined,

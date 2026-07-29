@@ -1,6 +1,5 @@
 import { ExchangeManager } from './ExchangeManager';
 import { ProviderConfig } from './models/ConnectionConfig';
-import { Market, Balance, Ticker } from './models/NormalizedDomain';
 
 export class ShadowIntegrator {
   public static async compareBalances(exchangeId: string, config: ProviderConfig, legacyBalances: any) {

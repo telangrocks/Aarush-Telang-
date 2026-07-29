@@ -1,4 +1,4 @@
-import { ProviderConfig, ExchangeCapabilities } from './models/ConnectionConfig';
+import { ProviderConfig } from './models/ConnectionConfig';
 import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade } from './models/NormalizedDomain';
 
 export interface IExchangeProvider {
