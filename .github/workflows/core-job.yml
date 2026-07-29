@@ -1,7 +1,17 @@
-name: Core Validation Workflow
+name: Production Validation Pipeline
 
 on:
   workflow_dispatch:
+    inputs:
+      level:
+        description: "Validation Level"
+        required: true
+        default: "level1_public"
+        type: choice
+        options:
+          - level1_public
+          - level2_testnet
+          - level3_prod_smoke
   push:
     branches: [main]
     paths:
@@ -22,8 +32,8 @@ permissions:
   actions: read
 
 jobs:
-  core-validation-pipeline:
-    name: End-to-End Core Validation (24 Steps)
+  production-validation:
+    name: Production Validation Framework (11 Phases)
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -53,5 +63,19 @@ jobs:
       - name: Build backend
         run: npm run build
 
-      - name: Run Core Validation Pipeline (24 Steps)
-        run: npx tsx scripts/core-validation.ts
+      - name: Run Production Validation Pipeline
+        env:
+          WORKER_URL: "https://crypto-pulse-backend.telangrocks.workers.dev"
+          EXCHANGE_API_KEY: ${{ secrets.QA_EXCHANGE_API_KEY }}
+          EXCHANGE_API_SECRET: ${{ secrets.QA_EXCHANGE_API_SECRET }}
+          EXCHANGE_PASSPHRASE: ${{ secrets.QA_EXCHANGE_PASSPHRASE }}
+        run: |
+          LEVEL="${{ inputs.level || 'level1_public' }}"
+          npx tsx scripts/validation/runner.ts --level=$LEVEL --outDir=reports
+
+      - name: Upload Validation Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-reports
+          path: backend/reports/

@@ -16,3 +16,4 @@ node_modules/
 qa-report.json
 qa-report.md
 trading-flow-validation-report.md
+reports/
