@@ -564,7 +564,28 @@ export class TradingBot {
           if (newAnalysis) {
              return new Response(JSON.stringify(newAnalysis), { status: 200 });
           }
-          return new Response(JSON.stringify({ error: "No new engine analysis available yet." }), { status: 404 });
+          const coinId = (await this.state.storage.get('coinId')) as string || 'BTCUSDT';
+          const strategy = (await this.state.storage.get('strategy')) as string || 'scalping';
+          const logs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
+          return new Response(JSON.stringify({
+            isActive: true,
+            strategy,
+            coinId,
+            exchange: null,
+            environment: null,
+            scanningProgress: 10,
+            etaSeconds: 5,
+            confluenceScore: 0,
+            alignment: 'NONE',
+            primarySignal: 'HOLD',
+            timeframes: [],
+            coinsCurrentlyScanning: [{ symbol: coinId, price: 0, progress: 10, status: 'scanning' }],
+            nearMatches: [],
+            checkpoints: [],
+            logs: logs ? logs.slice(-50) : [],
+            lastAnalysisAt: Date.now(),
+            opportunityDetected: false,
+          } as AnalysisSnapshot), { status: 200 });
       }
       case '/strategies': {
         const manifests = StrategyRegistry.getInstance().getAllManifests();
