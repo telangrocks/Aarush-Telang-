@@ -60,15 +60,13 @@ fun MarketCandidatesScreen(
     viewModel: com.cryptopulse.app.ui.auth.ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     val candidates by viewModel.candidates.collectAsState(initial = emptyList())
+    val candidatesLoading by viewModel.candidatesLoading.collectAsState(initial = false)
     val candidatesError by viewModel.candidatesError.collectAsState(initial = null)
     val mappedCandidates = remember(candidates) { candidates.toScreenCandidates() }
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
     var currentTime by remember { mutableStateOf(getCurrentTime()) }
     LaunchedEffect(Unit) {
-        if (candidates.isEmpty()) {
-            viewModel.fetchMarketCandidates()
-        }
         while (true) {
             kotlinx.coroutines.delay(60_000)
             currentTime = getCurrentTime()
@@ -121,7 +119,7 @@ fun MarketCandidatesScreen(
                     return@Scaffold
                 }
 
-                if (mappedCandidates.isEmpty()) {
+                if (candidatesLoading) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -133,6 +131,42 @@ fun MarketCandidatesScreen(
                             CircularProgressIndicator(color = CyanPrimary)
                             Spacer(Modifier.height(16.dp))
                             Text("Analyzing market data...", color = TextSecondary, fontSize = 14.sp)
+                        }
+                    }
+                    return@Scaffold
+                }
+
+                if (mappedCandidates.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding)
+                            .testTag("market_candidates_empty"),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Default.SearchOff,
+                                contentDescription = null,
+                                tint = TextSecondary,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "No market candidates found matching criteria.",
+                                color = TextSecondary,
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 32.dp)
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            GradientButton(
+                                text = "Rescan Market",
+                                onClick = { viewModel.fetchMarketCandidates() },
+                                leadingIcon = Icons.Default.Refresh,
+                                modifier = Modifier.fillMaxWidth(0.6f),
+                                testTag = "market_candidates_rescan"
+                            )
                         }
                     }
                     return@Scaffold

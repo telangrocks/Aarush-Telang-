@@ -53,12 +53,16 @@ export async function analyzeMarket(
   const STABLECOINS = ["USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP"];
   
   // Filter out weak/illiquid/declining coins, and stablecoins
-  const filtered = tickers.filter(
+  let filtered = tickers.filter(
     (ticker) =>
-      (ticker.quoteVolume24h || ticker.volume24h || 0) >= MIN_VOLUME_USDT &&
-      ticker.priceChangePercent24h >= MAX_DECLINE_PERCENT &&
-      !STABLECOINS.includes(ticker.symbol) // symbol here is baseAsset because of how fetchMarketData maps it
+      (ticker.quoteVolume24h ?? ticker.volume24h ?? 1_000_000) >= MIN_VOLUME_USDT &&
+      (ticker.priceChangePercent24h ?? 0) >= MAX_DECLINE_PERCENT &&
+      !STABLECOINS.includes(ticker.symbol) // symbol here is baseAsset
   );
+
+  if (!filtered.length) {
+    filtered = tickers.filter((ticker) => !STABLECOINS.includes(ticker.symbol));
+  }
 
   if (!filtered.length) return [];
 

@@ -77,6 +77,9 @@ class ExchangeViewModel @Inject constructor(
     private val _candidates = MutableStateFlow<List<MarketCandidateDto>>(emptyList())
     val candidates: StateFlow<List<MarketCandidateDto>> = _candidates
 
+    private val _candidatesLoading = MutableStateFlow(false)
+    val candidatesLoading: StateFlow<Boolean> = _candidatesLoading
+
     private val _readyForCandidates = MutableStateFlow(false)
     val readyForCandidates: StateFlow<Boolean> = _readyForCandidates
 
@@ -318,32 +321,26 @@ class ExchangeViewModel @Inject constructor(
 
     fun fetchMarketCandidates() {
         _candidatesError.value = null
+        _candidatesLoading.value = true
         viewModelScope.launch {
             try {
                 val response = marketService.getCandidates()
-                if (response.isSuccessful && !response.body().isNullOrEmpty()) {
-                    _candidates.value = response.body()!!
+                if (response.isSuccessful && response.body() != null) {
+                    val list = response.body()!!
+                    _candidates.value = list
                     _readyForCandidates.value = true
-                } else if (response.isSuccessful) {
-                    _candidates.value = getDefaultCandidates()
-                    _readyForCandidates.value = true
+                    if (list.isEmpty()) {
+                        _candidatesError.value = "No market candidates matching volume criteria found on exchange."
+                    }
                 } else {
                     _candidatesError.value = getUserFriendlyErrorMessage(response = response).first
                 }
             } catch (e: Exception) {
                 _candidatesError.value = getUserFriendlyErrorMessage(exception = e).first
+            } finally {
+                _candidatesLoading.value = false
             }
         }
-    }
-
-    private fun getDefaultCandidates(): List<MarketCandidateDto> {
-        return listOf(
-            MarketCandidateDto(rank = 1, symbol = "BTC", currentMarketPrice = 64000.0, minNotional = 10.0, score = 95.0, recommendedTimeframe = "15m", tradeSide = "BUY"),
-            MarketCandidateDto(rank = 2, symbol = "ETH", currentMarketPrice = 3400.0, minNotional = 10.0, score = 92.0, recommendedTimeframe = "15m", tradeSide = "BUY"),
-            MarketCandidateDto(rank = 3, symbol = "SOL", currentMarketPrice = 180.0, minNotional = 10.0, score = 88.0, recommendedTimeframe = "15m", tradeSide = "BUY"),
-            MarketCandidateDto(rank = 4, symbol = "BNB", currentMarketPrice = 580.0, minNotional = 10.0, score = 85.0, recommendedTimeframe = "15m", tradeSide = "BUY"),
-            MarketCandidateDto(rank = 5, symbol = "XRP", currentMarketPrice = 0.60, minNotional = 10.0, score = 82.0, recommendedTimeframe = "15m", tradeSide = "BUY"),
-        )
     }
 
     fun resetState() {
