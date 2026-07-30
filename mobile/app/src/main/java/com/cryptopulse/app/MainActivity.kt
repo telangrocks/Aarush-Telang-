@@ -100,6 +100,12 @@ class MainActivity : FragmentActivity() {
                         }
                     }
 
+                    LaunchedEffect(navController) {
+                        navController.addOnDestinationChangedListener { _, destination, _ ->
+                            android.util.Log.d("Navigation", "[DIAGNOSTIC] Destination = ${destination.route}")
+                        }
+                    }
+
                     CompositionLocalProvider(
                         LocalOnLogout provides if (token != null) performLogout else null
                     ) {

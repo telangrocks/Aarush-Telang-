@@ -41,6 +41,8 @@ import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.theme.*
 
+import android.util.Log
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectExchangeScreen(
@@ -48,14 +50,20 @@ fun ConnectExchangeScreen(
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
     exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager = com.cryptopulse.app.data.local.ExchangeConnectionManager(LocalContext.current.applicationContext),
 ) {
+    Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Screen ViewModel: ${System.identityHashCode(viewModel)}")
+
     val formState by viewModel.formState.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
     val candidates by viewModel.candidates.collectAsState()
     val readyForCandidates by viewModel.readyForCandidates.collectAsState()
     var apiSecretVisible by remember { mutableStateOf(false) }
 
+    Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Observed: uiState=$uiState ready=$readyForCandidates candidates=${candidates.size}")
+
     LaunchedEffect(uiState, readyForCandidates, candidates) {
+        Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] LaunchedEffect triggered: uiState=$uiState, readyForCandidates=$readyForCandidates, candidatesCount=${candidates.size}")
         if (uiState is ExchangeUiState.Connected || readyForCandidates) {
+            Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] NAVIGATING -> market_candidates")
             navController.navigate("market_candidates") {
                 popUpTo("connect_exchange") { inclusive = true }
             }
@@ -64,7 +72,9 @@ fun ConnectExchangeScreen(
 
     LaunchedEffect(Unit) {
         val (isConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
+        Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Initial connection check: isConnected=$isConnected")
         if (isConnected) {
+            Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] navigation call (existing connection): navController.navigate('market_candidates')")
             navController.navigate("market_candidates") {
                 popUpTo("connect_exchange") { inclusive = true }
             }

@@ -98,7 +98,18 @@ class ExchangeViewModel @Inject constructor(
     private val _selectedCandidate = MutableStateFlow<MarketCandidate?>(null)
     val selectedCandidate: StateFlow<MarketCandidate?> = _selectedCandidate
 
-
+    init {
+        Log.d("ExchangeViewModel", "[DIAGNOSTIC] ViewModel created: ${System.identityHashCode(this)}")
+        viewModelScope.launch {
+            uiState.collect { Log.d("ExchangeViewModel", "[DIAGNOSTIC] uiState changed: $it") }
+        }
+        viewModelScope.launch {
+            readyForCandidates.collect { Log.d("ExchangeViewModel", "[DIAGNOSTIC] readyForCandidates changed: $it") }
+        }
+        viewModelScope.launch {
+            candidates.collect { Log.d("ExchangeViewModel", "[DIAGNOSTIC] candidates changed, count: ${it.size}") }
+        }
+    }
 
     private val _technicalAnalysis = MutableStateFlow<TechnicalAnalysisResponse?>(null)
     val technicalAnalysis: StateFlow<TechnicalAnalysisResponse?> = _technicalAnalysis
@@ -310,11 +321,13 @@ class ExchangeViewModel @Inject constructor(
 
                 if (!validationResponse.isSuccessful || validationResponse.body()?.success != true) {
                     val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/validate", response = validationResponse)
+                    Log.e(TAG, "[DIAGNOSTIC] validate failed: message=$userMessage, hint=$hint")
                     _uiState.value = ExchangeUiState.Error(userMessage, hint)
                     _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
                     return@launch
                 }
 
+                Log.d(TAG, "[DIAGNOSTIC] validate success: status=${validationResponse.code()}, body=${validationResponse.body()}")
                 _formState.value = _formState.value.copy(validationMessage = "Credentials valid. Connecting...")
 
                 val connectRequest = ConnectExchangeRequest(
@@ -328,12 +341,16 @@ class ExchangeViewModel @Inject constructor(
 
                 if (!connectResponse.isSuccessful || connectResponse.body()?.success != true) {
                     val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/connect", response = connectResponse)
+                    Log.e(TAG, "[DIAGNOSTIC] connect failed: message=$userMessage, hint=$hint")
                     _uiState.value = ExchangeUiState.Error(userMessage, hint)
                     _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
                     return@launch
                 }
 
+                Log.d(TAG, "[DIAGNOSTIC] connect success: status=${connectResponse.code()}, body=${connectResponse.body()}")
                 _formState.value = _formState.value.copy(isLoading = false)
+                
+                Log.d(TAG, "[DIAGNOSTIC] state update: setting uiState = ExchangeUiState.Connected(${state.selectedExchange})")
                 _uiState.value = ExchangeUiState.Connected(state.selectedExchange)
 
                 exchangeConnectionManager.saveConnection(state.selectedExchange, state.environment)
@@ -341,6 +358,7 @@ class ExchangeViewModel @Inject constructor(
                 fetchMarketCandidates()
             } catch (e: Exception) {
                 val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/validate-or-connect", exception = e)
+                Log.e(TAG, "[DIAGNOSTIC] validate-or-connect exception: message=${e.message}", e)
                 _uiState.value = ExchangeUiState.Error(userMessage, hint)
                 _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
             }
@@ -348,6 +366,7 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun fetchMarketCandidates() {
+        Log.d(TAG, "[DIAGNOSTIC] fetchMarketCandidates invoked")
         _candidatesError.value = null
         _candidatesLoading.value = true
         _marketDataState.value = MarketDataUiState.Loading
@@ -356,6 +375,9 @@ class ExchangeViewModel @Inject constructor(
                 val response = marketService.getCandidates()
                 if (response.isSuccessful && response.body() != null) {
                     val list = response.body()!!
+                    Log.d(TAG, "[DIAGNOSTIC] candidates success: status=${response.code()}, count=${list.size}")
+                    
+                    Log.d(TAG, "[DIAGNOSTIC] state update: updating _candidates.value with ${list.size} items and setting readyForCandidates = true")
                     _candidates.value = list
                     _readyForCandidates.value = true
                     if (list.isEmpty()) {
@@ -367,11 +389,13 @@ class ExchangeViewModel @Inject constructor(
                     }
                 } else {
                     val (errMsg, hintMsg) = getUserFriendlyErrorMessage(endpointName = "/api/market/candidates", response = response)
+                    Log.e(TAG, "[DIAGNOSTIC] candidates failed: status=${response.code()}, message=$errMsg")
                     _candidatesError.value = errMsg
                     _marketDataState.value = MarketDataUiState.Error(errMsg, hintMsg)
                 }
             } catch (e: Exception) {
                 val (errMsg, hintMsg) = getUserFriendlyErrorMessage(endpointName = "/api/market/candidates", exception = e)
+                Log.e(TAG, "[DIAGNOSTIC] candidates exception: message=${e.message}", e)
                 _candidatesError.value = errMsg
                 _marketDataState.value = MarketDataUiState.Error(errMsg, hintMsg)
             } finally {

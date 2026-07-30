@@ -63,6 +63,10 @@ fun MarketCandidatesScreen(
     onBack: (() -> Unit)? = null,
     viewModel: com.cryptopulse.app.ui.auth.ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
+    LaunchedEffect(Unit) {
+        android.util.Log.d("MarketCandidatesScreen", "[DIAGNOSTIC] SCREEN CREATED")
+    }
+
     val candidates by viewModel.candidates.collectAsState(initial = emptyList())
     val candidatesLoading by viewModel.candidatesLoading.collectAsState(initial = false)
     val candidatesError by viewModel.candidatesError.collectAsState(initial = null)
