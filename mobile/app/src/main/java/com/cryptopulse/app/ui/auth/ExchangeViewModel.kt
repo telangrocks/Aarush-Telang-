@@ -179,23 +179,27 @@ class ExchangeViewModel @Inject constructor(
     }
 
     private suspend fun getUserFriendlyErrorMessage(
+        endpointName: String = "Exchange API",
         response: retrofit2.Response<*>? = null,
         exception: Exception? = null
     ): Pair<String, String?> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         var rawErrorBody: String? = null
+        var parsedMessage: String? = null
+        var parsedHint: String? = null
+
         if (response != null) {
             try {
                 if (!response.isSuccessful) {
                     rawErrorBody = response.errorBody()?.string()
-                    Log.e(TAG, "Exchange API HTTP error: ${response.code()} ${response.message()}")
+                    Log.e(TAG, "[DIAGNOSTIC] API Call Failed | Endpoint: $endpointName | HTTP Code: ${response.code()} | Message: ${response.message()} | Raw errorBody: $rawErrorBody")
                 } else {
-                    Log.d(TAG, "Exchange API response HTTP 200: body success=false")
+                    Log.d(TAG, "[DIAGNOSTIC] API Call HTTP 200 | Endpoint: $endpointName | Body success = false")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to read error body: ${e.message}")
+                Log.e(TAG, "[DIAGNOSTIC] Failed to read error body for Endpoint: $endpointName | Exception: ${e::class.java.name}: ${e.message}", e)
             }
         } else if (exception != null) {
-            Log.e(TAG, "Exchange API exception: ${exception::class.simpleName}: ${exception.message}", exception)
+            Log.e(TAG, "[DIAGNOSTIC] Retrofit Exception | Endpoint: $endpointName | Exception Class: ${exception::class.java.name} | Message: ${exception.message}", exception)
         }
 
         if (response != null && response.isSuccessful && response.body() != null) {
@@ -203,11 +207,17 @@ class ExchangeViewModel @Inject constructor(
             when (body) {
                 is ValidationResponse -> {
                     if (!body.success) {
+                        parsedMessage = body.message
+                        parsedHint = body.hint
+                        Log.e(TAG, "[DIAGNOSTIC] Parsed Response Error | Endpoint: $endpointName | Message: $parsedMessage | Hint: $parsedHint")
                         return@withContext body.message to body.hint
                     }
                 }
                 is com.cryptopulse.app.data.api.ConnectExchangeResponse -> {
                     if (!body.success) {
+                        parsedMessage = body.message
+                        parsedHint = body.hint
+                        Log.e(TAG, "[DIAGNOSTIC] Parsed Response Error | Endpoint: $endpointName | Message: $parsedMessage | Hint: $parsedHint")
                         return@withContext body.message to body.hint
                     }
                 }
@@ -221,15 +231,18 @@ class ExchangeViewModel @Inject constructor(
                 val msg = json.get("message")?.asString
                 val hint = json.get("hint")?.asString
                 if (!msg.isNullOrBlank()) {
+                    parsedMessage = msg
+                    parsedHint = hint
+                    Log.e(TAG, "[DIAGNOSTIC] Parsed Error JSON | Endpoint: $endpointName | Message: $parsedMessage | Hint: $parsedHint")
                     return@withContext msg to hint
                 }
             } catch (e: Exception) {
-                // Fallback to HTTP code mapping
+                Log.w(TAG, "[DIAGNOSTIC] Could not parse error body as JSON for Endpoint: $endpointName: ${e.message}")
             }
         }
 
         if (response != null && !response.isSuccessful) {
-            return@withContext when (response.code()) {
+            val userMsgPair = when (response.code()) {
                 400 -> "Invalid request. Please check your API key and secret." to null
                 401 -> "Authentication failed. Invalid API key or secret." to null
                 403 -> "Access forbidden. Check your IP whitelist or permissions." to null
@@ -238,15 +251,19 @@ class ExchangeViewModel @Inject constructor(
                 500, 502, 503, 504 -> "Exchange service unavailable. Please try again later." to null
                 else -> "Request failed. Please try again." to null
             }
+            Log.e(TAG, "[DIAGNOSTIC] Fallback HTTP Code Mapping | Endpoint: $endpointName | HTTP Code: ${response.code()} | User Message: ${userMsgPair.first}")
+            return@withContext userMsgPair
         }
 
         if (exception != null) {
-            return@withContext when (exception) {
+            val exMsgPair = when (exception) {
                 is SocketTimeoutException -> "Connection timeout. Please check your internet connection." to null
                 is UnknownHostException -> "No internet connection. Please check your network." to null
                 is IOException -> "Network error. Please check your internet connection." to null
                 else -> "An unexpected error occurred. Please try again." to null
             }
+            Log.e(TAG, "[DIAGNOSTIC] Fallback Exception Mapping | Endpoint: $endpointName | Exception Class: ${exception::class.java.name} | User Message: ${exMsgPair.first}")
+            return@withContext exMsgPair
         }
 
         "An unknown error occurred. Please try again." to null
@@ -292,7 +309,7 @@ class ExchangeViewModel @Inject constructor(
                 val validationResponse = exchangeService.validate(validationRequest)
 
                 if (!validationResponse.isSuccessful || validationResponse.body()?.success != true) {
-                    val (userMessage, hint) = getUserFriendlyErrorMessage(response = validationResponse)
+                    val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/validate", response = validationResponse)
                     _uiState.value = ExchangeUiState.Error(userMessage, hint)
                     _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
                     return@launch
@@ -310,7 +327,7 @@ class ExchangeViewModel @Inject constructor(
                 val connectResponse = exchangeService.connect(connectRequest)
 
                 if (!connectResponse.isSuccessful || connectResponse.body()?.success != true) {
-                    val (userMessage, hint) = getUserFriendlyErrorMessage(response = connectResponse)
+                    val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/connect", response = connectResponse)
                     _uiState.value = ExchangeUiState.Error(userMessage, hint)
                     _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
                     return@launch
@@ -323,7 +340,7 @@ class ExchangeViewModel @Inject constructor(
 
                 fetchMarketCandidates()
             } catch (e: Exception) {
-                val (userMessage, hint) = getUserFriendlyErrorMessage(exception = e)
+                val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/validate-or-connect", exception = e)
                 _uiState.value = ExchangeUiState.Error(userMessage, hint)
                 _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
             }
@@ -349,12 +366,12 @@ class ExchangeViewModel @Inject constructor(
                         _marketDataState.value = MarketDataUiState.Success(list)
                     }
                 } else {
-                    val (errMsg, hintMsg) = getUserFriendlyErrorMessage(response = response)
+                    val (errMsg, hintMsg) = getUserFriendlyErrorMessage(endpointName = "/api/market/candidates", response = response)
                     _candidatesError.value = errMsg
                     _marketDataState.value = MarketDataUiState.Error(errMsg, hintMsg)
                 }
             } catch (e: Exception) {
-                val (errMsg, hintMsg) = getUserFriendlyErrorMessage(exception = e)
+                val (errMsg, hintMsg) = getUserFriendlyErrorMessage(endpointName = "/api/market/candidates", exception = e)
                 _candidatesError.value = errMsg
                 _marketDataState.value = MarketDataUiState.Error(errMsg, hintMsg)
             } finally {
@@ -437,10 +454,10 @@ class ExchangeViewModel @Inject constructor(
                 if (response.isSuccessful && response.body() != null) {
                     _technicalAnalysis.value = response.body()
                 } else {
-                    _analysisError.value = getUserFriendlyErrorMessage(response = response).first
+                    _analysisError.value = getUserFriendlyErrorMessage(endpointName = "/api/market/technical-analysis", response = response).first
                 }
             } catch (e: Exception) {
-                _analysisError.value = getUserFriendlyErrorMessage(exception = e).first
+                _analysisError.value = getUserFriendlyErrorMessage(endpointName = "/api/market/technical-analysis", exception = e).first
             }
         }
     }
@@ -584,13 +601,13 @@ class ExchangeViewModel @Inject constructor(
                             _tradeError.value = friendlyMsg ?: message ?: "Trade execution failed."
                         }
                     } else {
-                        _tradeError.value = getUserFriendlyErrorMessage(response = response).first
+                        _tradeError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/execute-trade", response = response).first
                     }
                 } else {
                     _tradeError.value = "Your session has expired. Please sign in again."
                 }
             } catch (e: Exception) {
-                _tradeError.value = getUserFriendlyErrorMessage(exception = e).first
+                _tradeError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/execute-trade", exception = e).first
             }
         }
     }
@@ -611,11 +628,11 @@ class ExchangeViewModel @Inject constructor(
                         )
                     )
                     if (!response.isSuccessful) {
-                        _botError.value = getUserFriendlyErrorMessage(response = response).first
+                        _botError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/activate", response = response).first
                     }
                 }
             } catch (e: Exception) {
-                _botError.value = getUserFriendlyErrorMessage(exception = e).first
+                _botError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/activate", exception = e).first
             }
         }
     }

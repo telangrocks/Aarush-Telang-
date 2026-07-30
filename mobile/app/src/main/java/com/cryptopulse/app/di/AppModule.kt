@@ -21,6 +21,9 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.runBlocking
+import android.util.Log
+import com.cryptopulse.app.BuildConfig
+import okhttp3.logging.HttpLoggingInterceptor
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Response
@@ -50,11 +53,10 @@ object AppModule {
         private val authRepositoryLazy: Lazy<AuthRepository>
     ) : Interceptor {
         private var isRefreshing = false
-        private val MAX_REFRESH_ATTEMPTS = 1
 
         override fun intercept(chain: Interceptor.Chain): Response {
-            var token = tokenManager.tokenFlow.value
-            var requestBuilder = chain.request().newBuilder()
+            val token = tokenManager.tokenFlow.value
+            val requestBuilder = chain.request().newBuilder()
 
             if (!token.isNullOrEmpty()) {
                 requestBuilder.addHeader("Authorization", "Bearer $token")
@@ -67,26 +69,16 @@ object AppModule {
                     if (!isRefreshing) {
                         isRefreshing = true
                         try {
-                            var attempts = 0
-                            var refreshSuccess = false
-                            while (attempts < MAX_REFRESH_ATTEMPTS && !refreshSuccess) {
-                                attempts++
-                                val result = runBlocking { authRepositoryLazy.get().refreshToken() }
-                                if (result is AuthResult.Success) {
-                                    val newToken = tokenManager.tokenFlow.value
-                                    if (!newToken.isNullOrEmpty()) {
-                                        val newRequest = chain.request().newBuilder()
-                                            .removeHeader("Authorization")
-                                            .addHeader("Authorization", "Bearer $newToken")
-                                            .build()
-                                        val newResponse = chain.proceed(newRequest)
-                                        response.close()
-                                        response = newResponse
-                                        refreshSuccess = true
-                                    }
-                                }
-                                if (!refreshSuccess && attempts < MAX_REFRESH_ATTEMPTS) {
-                                    Thread.sleep(500)
+                            val result = runBlocking { authRepositoryLazy.get().refreshToken() }
+                            if (result is AuthResult.Success) {
+                                val newToken = tokenManager.tokenFlow.value
+                                if (!newToken.isNullOrEmpty()) {
+                                    val newRequest = chain.request().newBuilder()
+                                        .removeHeader("Authorization")
+                                        .addHeader("Authorization", "Bearer $newToken")
+                                        .build()
+                                    response.close()
+                                    response = chain.proceed(newRequest)
                                 }
                             }
                         } finally {
@@ -135,14 +127,24 @@ object AppModule {
         tokenManager: TokenManager,
         authRepository: Lazy<AuthRepository>
     ): OkHttpClient {
-        return OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .addInterceptor(AuthInterceptor(tokenManager, authRepository))
             .addInterceptor(RetryInterceptor())
-            .build()
+
+        if (BuildConfig.DEBUG) {
+            val loggingInterceptor = HttpLoggingInterceptor { message ->
+                Log.d("OkHttpDiagnostics", message)
+            }.apply {
+                level = HttpLoggingInterceptor.Level.BODY
+            }
+            builder.addInterceptor(loggingInterceptor)
+        }
+
+        return builder.build()
     }
 
     @Provides

@@ -16,7 +16,7 @@ export class ExchangeManager {
    * to reuse connections and market data caches across requests.
    */
   public static async getProvider(exchangeId: string, config: ProviderConfig): Promise<IExchangeProvider> {
-    const cacheKey = `${exchangeId}:${config.environment}:${config.apiKey}`;
+    const cacheKey = `${exchangeId}:${config.environment}:${config.apiKey}:${config.secret || ''}`;
     
     if (this.providerCache.has(cacheKey)) {
       return this.providerCache.get(cacheKey)!;
@@ -24,12 +24,32 @@ export class ExchangeManager {
 
     const provider = ProviderFactory.create(exchangeId);
     
-    // Automatic retry backoff for initial connections
+    try {
+      // Automatic retry backoff for initial connections
+      await this.withRetry(async () => {
+        await provider.connect(config);
+      }, 3);
+
+      this.providerCache.set(cacheKey, provider);
+      return provider;
+    } catch (error) {
+      try {
+        await provider.disconnect();
+      } catch (_) {}
+      this.providerCache.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  /**
+   * Creates a fresh, uncached Exchange Provider instance for validation flows.
+   * Credentials used during validation are never read from or saved to the cache.
+   */
+  public static async createUncachedProvider(exchangeId: string, config: ProviderConfig): Promise<IExchangeProvider> {
+    const provider = ProviderFactory.create(exchangeId);
     await this.withRetry(async () => {
       await provider.connect(config);
     }, 3);
-
-    this.providerCache.set(cacheKey, provider);
     return provider;
   }
 
@@ -37,7 +57,7 @@ export class ExchangeManager {
    * Disconnects and removes a provider from the active cache.
    */
   public static async disconnectProvider(exchangeId: string, config: ProviderConfig): Promise<void> {
-    const cacheKey = `${exchangeId}:${config.environment}:${config.apiKey}`;
+    const cacheKey = `${exchangeId}:${config.environment}:${config.apiKey}:${config.secret || ''}`;
     const provider = this.providerCache.get(cacheKey);
     
     if (provider) {

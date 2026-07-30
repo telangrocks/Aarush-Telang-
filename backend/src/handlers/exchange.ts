@@ -63,8 +63,9 @@ export async function handleValidateExchange(
       });
     }
 
+    let provider;
     try {
-      const provider = await ExchangeManager.getProvider(exchangeName as ExchangeName, {
+      provider = await ExchangeManager.createUncachedProvider(exchangeName as ExchangeName, {
         environment: normalizeEnvironment(environment),
         apiKey: cleanApiKey,
         secret: cleanApiSecret,
@@ -85,6 +86,14 @@ export async function handleValidateExchange(
         detail: classified.technicalDetail,
         rawError: valErr instanceof Error ? valErr.message : String(valErr),
       });
+    } finally {
+      if (provider) {
+        try {
+          await provider.disconnect();
+        } catch (_) {
+          // Ignore disconnect errors during validation cleanup
+        }
+      }
     }
   } catch (e: unknown) {
     const classified = classifyException(e, exchangeNameForLog);
