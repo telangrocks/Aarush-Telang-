@@ -81,3 +81,7 @@ pnpm-lock.yaml
 .dev.vars*
 !.dev.vars.example
 !.env.example
+
+# Local editor directory
+.kilo/
+
