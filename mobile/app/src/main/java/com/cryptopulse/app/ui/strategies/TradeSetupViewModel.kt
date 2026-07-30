@@ -72,6 +72,7 @@ class TradeSetupViewModel @Inject constructor(
             try {
                 val response = exchangeService.getBalance()
                 if (!response.isSuccessful) {
+                    response.errorBody()?.close()
                     _balanceState.value = BalanceUiState.Error("Failed to fetch exchange balance (${response.code()})")
                     return@launch
                 }

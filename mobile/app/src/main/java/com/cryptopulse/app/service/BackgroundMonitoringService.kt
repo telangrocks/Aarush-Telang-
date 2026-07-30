@@ -145,6 +145,7 @@ class BackgroundMonitoringService : Service() {
             try {
                 val response = tradingBotService.getAlerts()
                 if (response.code() == 401) {
+                    response.errorBody()?.close()
                     stopSelf()
                     return@withContext
                 }
@@ -162,7 +163,7 @@ class BackgroundMonitoringService : Service() {
                         // no-op
                     }
                 } else {
-                    // no-op
+                    response.errorBody()?.close()
                 }
             } catch (e: Exception) {
                 Log.e("BackgroundMonitoring", "Failed to poll alerts", e)

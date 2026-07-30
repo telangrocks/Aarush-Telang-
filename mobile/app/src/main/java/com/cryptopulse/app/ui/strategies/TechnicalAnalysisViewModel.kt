@@ -65,6 +65,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                     transportAdapter.startObserving()
                     onSuccess()
                 } else {
+                    response.errorBody()?.close()
                     _isActivating.value = false
                     _activationError.value = response.body()?.message ?: "Failed to activate trading bot."
                 }
@@ -98,6 +99,8 @@ class TechnicalAnalysisViewModel @Inject constructor(
                         transportAdapter.startObserving()
                         onSessionRestored(status.coinId, status.strategy)
                     }
+                } else {
+                    response.errorBody()?.close()
                 }
             } catch (e: Exception) {
                 // Silently fail if not active

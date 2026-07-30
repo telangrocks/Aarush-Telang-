@@ -36,6 +36,8 @@ class PollingTransportAdapter(
                     val response = tradingBotService.getAnalysisStatus()
                     if (response.isSuccessful && response.body() != null) {
                         _analysisState.value = response.body()
+                    } else {
+                        response.errorBody()?.close()
                     }
                 } catch (e: Exception) {
                     _isConnected.value = false

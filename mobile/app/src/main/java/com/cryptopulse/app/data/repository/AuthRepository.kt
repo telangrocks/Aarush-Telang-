@@ -24,6 +24,7 @@ class AuthRepository(
                     AuthResult.Error(body?.error ?: "Registration failed")
                 }
             } else {
+                response.errorBody()?.close()
                 AuthResult.Error(response.body()?.error ?: "Registration failed")
             }
         } catch (e: Exception) {
@@ -43,6 +44,7 @@ class AuthRepository(
                     AuthResult.Error(body?.error ?: "Login failed")
                 }
             } else {
+                response.errorBody()?.close()
                 AuthResult.Error(response.body()?.error ?: "Login failed")
             }
         } catch (e: Exception) {
@@ -67,6 +69,7 @@ class AuthRepository(
                     AuthResult.Error(body?.error ?: "Token refresh failed")
                 }
             } else {
+                response.errorBody()?.close()
                 tokenManager.clearTokens()
                 AuthResult.Error(response.body()?.error ?: "Token refresh failed")
             }
@@ -82,7 +85,7 @@ class AuthRepository(
             if (!token.isNullOrEmpty()) {
                 val response = api.logout()
                 if (!response.isSuccessful) {
-                    // Proceed with local cleanup even if server call fails
+                    response.errorBody()?.close()
                 }
             }
         } catch (e: Exception) {

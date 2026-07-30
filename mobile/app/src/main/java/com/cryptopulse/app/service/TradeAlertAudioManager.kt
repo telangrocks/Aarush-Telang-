@@ -80,8 +80,9 @@ class TradeAlertAudioManager(
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
-                setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-                afd.close()
+                afd.use { descriptor ->
+                    setDataSource(descriptor.fileDescriptor, descriptor.startOffset, descriptor.length)
+                }
                 isLooping = true
                 setVolume(0.0f, 0.0f)
                 prepare()

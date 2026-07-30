@@ -71,6 +71,7 @@ class FcmService : FirebaseMessagingService() {
                 if (response.isSuccessful) {
                     Log.d("FcmService", "FCM token registered with backend")
                 } else {
+                    response.errorBody()?.close()
                     Log.e("FcmService", "Failed to register FCM token: ${response.code()}")
                 }
             } catch (e: Exception) {

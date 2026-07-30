@@ -63,7 +63,6 @@ object AppModule {
             var response = chain.proceed(requestBuilder.build())
 
             if (response.code == 401 && !token.isNullOrEmpty()) {
-                response.close()
                 synchronized(this) {
                     if (!isRefreshing) {
                         isRefreshing = true
@@ -72,10 +71,6 @@ object AppModule {
                             var refreshSuccess = false
                             while (attempts < MAX_REFRESH_ATTEMPTS && !refreshSuccess) {
                                 attempts++
-                                // Interceptors run on OkHttp's blocking dispatcher, so we
-                                // synchronously wait for the suspend refresh to complete.
-                                // Resolve AuthRepository lazily to avoid a Hilt dependency
-                                // cycle (OkHttpClient -> AuthRepository -> Retrofit -> OkHttpClient).
                                 val result = runBlocking { authRepositoryLazy.get().refreshToken() }
                                 if (result is AuthResult.Success) {
                                     val newToken = tokenManager.tokenFlow.value
@@ -84,7 +79,9 @@ object AppModule {
                                             .removeHeader("Authorization")
                                             .addHeader("Authorization", "Bearer $newToken")
                                             .build()
-                                        response = chain.proceed(newRequest)
+                                        val newResponse = chain.proceed(newRequest)
+                                        response.close()
+                                        response = newResponse
                                         refreshSuccess = true
                                     }
                                 }

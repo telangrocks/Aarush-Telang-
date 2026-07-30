@@ -118,6 +118,8 @@ fun SplashScreen(
                                 } else {
                                     exchangeConnectionManager.clearConnection()
                                 }
+                            } else {
+                                response.errorBody()?.close()
                             }
                         } catch (e: Exception) {
                             // Ignore status sync errors to allow offline start with cached credentials
@@ -128,6 +130,8 @@ fun SplashScreen(
                             if (botStatusResponse.isSuccessful && botStatusResponse.body()?.isActive == true) {
                                 activeBotCoinId = botStatusResponse.body()?.coinId
                                 activeBotStrategy = botStatusResponse.body()?.strategy
+                            } else {
+                                botStatusResponse.errorBody()?.close()
                             }
                         } catch (e: Exception) {
                             // Ignore bot status errors
