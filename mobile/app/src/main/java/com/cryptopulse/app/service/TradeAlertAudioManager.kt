@@ -53,30 +53,53 @@ class TradeAlertAudioManager(
                 TradeAlertLogger.log("AUDIO_RESOURCE_NOT_FOUND", "Raw audio resource for $voicePack not found")
                 return
             }
-            mediaPlayer?.release()
 
-            mediaPlayer = MediaPlayer.create(context, resId).apply {
-                isLooping = true
+            fadeJob?.cancel()
+            val oldPlayer = mediaPlayer
+            mediaPlayer = null
+            if (oldPlayer != null) {
+                try {
+                    oldPlayer.setOnCompletionListener(null)
+                    oldPlayer.setOnErrorListener(null)
+                    if (oldPlayer.isPlaying) oldPlayer.stop()
+                    oldPlayer.release()
+                } catch (e: Exception) {
+                    TradeAlertLogger.error("AUDIO_CLEANUP_ERROR", e)
+                }
+            }
+
+            val afd = context.resources.openRawResourceFd(resId) ?: run {
+                TradeAlertLogger.log("AUDIO_RESOURCE_NOT_FOUND", "Raw audio resource descriptor for $voicePack was null")
+                return
+            }
+
+            val newPlayer = MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_ALARM)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
+                setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                afd.close()
+                isLooping = true
                 setVolume(0.0f, 0.0f)
+                prepare()
                 start()
             }
+            mediaPlayer = newPlayer
             isPlaying = true
             TradeAlertLogger.log("AUDIO_STARTED", "Custom female voice alert playing on loop")
 
             // 200ms Volume Fade-In
-            fadeJob?.cancel()
             fadeJob = scope.launch {
                 val steps = 10
                 val delayTime = 20L
                 for (i in 1..steps) {
                     val vol = i / steps.toFloat()
-                    mediaPlayer?.setVolume(vol, vol)
+                    try {
+                        newPlayer.setVolume(vol, vol)
+                    } catch (_: Exception) {}
                     delay(delayTime)
                 }
             }
@@ -102,25 +125,40 @@ class TradeAlertAudioManager(
         isPlaying = false
 
         fadeJob?.cancel()
+        val playerToStop = mediaPlayer
+        mediaPlayer = null
+
         fadeJob = scope.launch {
             try {
-                // 200ms Volume Fade-Out
-                val steps = 10
-                val delayTime = 20L
-                for (i in steps downTo 0) {
-                    val vol = i / steps.toFloat()
-                    mediaPlayer?.setVolume(vol, vol)
-                    delay(delayTime)
+                if (playerToStop != null) {
+                    // 200ms Volume Fade-Out
+                    val steps = 10
+                    val delayTime = 20L
+                    for (i in steps downTo 0) {
+                        val vol = i / steps.toFloat()
+                        try {
+                            playerToStop.setVolume(vol, vol)
+                        } catch (_: Exception) {}
+                        delay(delayTime)
+                    }
+                    playerToStop.setOnCompletionListener(null)
+                    playerToStop.setOnErrorListener(null)
+                    try {
+                        if (playerToStop.isPlaying) {
+                            playerToStop.stop()
+                        }
+                    } catch (_: Exception) {}
+                    playerToStop.release()
                 }
-                mediaPlayer?.stop()
-                mediaPlayer?.release()
-                mediaPlayer = null
                 abandonAudioFocus()
                 TradeAlertLogger.log("AUDIO_STOPPED", "Audio alert stopped and released with smooth fade-out")
             } catch (e: Exception) {
                 TradeAlertLogger.error("AUDIO_STOP_ERROR", e)
-                mediaPlayer?.release()
-                mediaPlayer = null
+                try {
+                    playerToStop?.setOnCompletionListener(null)
+                    playerToStop?.setOnErrorListener(null)
+                    playerToStop?.release()
+                } catch (_: Exception) {}
                 abandonAudioFocus()
             }
         }
