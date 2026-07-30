@@ -32,15 +32,18 @@ export class TradeValidator {
     rules: SymbolTradingRules | null
   ): TradeValidationResult {
     const startTime = performance.now();
+    console.log('[DIAGNOSTIC] Entry into TradeValidator.validate():', JSON.stringify({ params, rulesSummary: rules ? { symbol: rules.symbol, minNotional: rules.minNotional, minQty: rules.minQty, stepSize: rules.stepSize } : null }));
 
     // 1. Metadata Check
     if (!rules || !rules.symbol) {
-      return {
+      const res = {
         isValid: false,
         errorCode: ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE,
         errorMessage: `Exchange trading rules for '${params.symbol}' could not be loaded from exchange. Please try again.`,
         metrics: { durationMs: performance.now() - startTime, stepReached: 1 },
       };
+      console.log('[DIAGNOSTIC] Exit TradeValidator.validate() (Metadata failure):', JSON.stringify(res));
+      return res;
     }
 
     // 2. Input Parameter Validation
@@ -168,11 +171,13 @@ export class TradeValidator {
       };
     }
 
-    return {
+    const finalResult = {
       isValid: true,
       quantizedQuantity: roundedQtyBN.toNumber(),
       postRoundingNotional: postRoundingNotionalBN.toNumber(),
       metrics: { durationMs: performance.now() - startTime, stepReached: 8 },
     };
+    console.log('[DIAGNOSTIC] Exit TradeValidator.validate() (Success):', JSON.stringify(finalResult));
+    return finalResult;
   }
 }

@@ -83,6 +83,23 @@ export class ExchangeManager {
   }
 
   /**
+   * Safely executes an OCO order placement with strict idempotency enforcement.
+   */
+  public static async executeIdempotentOcoOrder(
+    provider: IExchangeProvider,
+    request: import('./models/NormalizedDomain').OcoOrderRequest
+  ): Promise<import('./models/NormalizedDomain').OcoOrderResponse> {
+    const idempotentRequest = { ...request };
+    if (!idempotentRequest.listClientOrderId) {
+      idempotentRequest.listClientOrderId = `oco_${crypto.randomUUID()}`;
+    }
+
+    return this.withRetry(async () => {
+      return provider.createOcoOrder(idempotentRequest);
+    }, 3);
+  }
+
+  /**
    * Generic retry wrapper with exponential backoff (250ms, 500ms, 1000ms).
    */
   private static async withRetry<T>(operation: () => Promise<T>, maxRetries: number = 3): Promise<T> {

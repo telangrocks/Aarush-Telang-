@@ -6,15 +6,30 @@ import { hashPassword } from "../../src/handlers/auth";
 
 declare const global: typeof globalThis;
 
-vi.mock("../../src/exchanges", () => ({
-  getExchangeAdapter: () => ({
-    validateCredentials: vi.fn().mockResolvedValue({ success: true, message: "OK" }),
-    fetchMarketData: vi.fn().mockResolvedValue([]),
-    fetchTicker: vi.fn().mockResolvedValue(null),
-  }),
-  ExchangeName: "binance",
-  SUPPORTED_EXCHANGES: [],
-}));
+vi.mock("../../src/exchanges", async (importOriginal) => {
+  const actual: any = await importOriginal();
+  return {
+    ...actual,
+    ExchangeManager: {
+      createUncachedProvider: vi.fn().mockResolvedValue({
+        connect: vi.fn().mockResolvedValue(undefined),
+        disconnect: vi.fn().mockResolvedValue(undefined),
+      }),
+      getProvider: vi.fn().mockResolvedValue({
+        fetchBalance: vi.fn().mockResolvedValue([]),
+        fetchMarkets: vi.fn().mockResolvedValue([]),
+        fetchTicker: vi.fn().mockResolvedValue({ last: { toNumber: () => 50000 }, volume: { toNumber: () => 1000000 }, quoteVolume: { toNumber: () => 1000000 }, high: { toNumber: () => 51000 }, low: { toNumber: () => 49000 }, limits: { cost: { min: { toNumber: () => 5 } } } })
+      })
+    },
+    getExchangeAdapter: () => ({
+      validateCredentials: vi.fn().mockResolvedValue({ success: true, message: "OK" }),
+      fetchMarketData: vi.fn().mockResolvedValue([]),
+      fetchTicker: vi.fn().mockResolvedValue(null),
+    }),
+    ExchangeName: "binance",
+    SUPPORTED_EXCHANGES: [],
+  };
+});
 
 beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
@@ -545,7 +560,7 @@ describe("App Endpoints", () => {
       const data = await res.json<{ success: boolean }>();
       expect(data.success).toBe(true);
       expect(mockEnv.DB?.prepare).toHaveBeenCalledWith(
-        "UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ? WHERE id = ?",
+        "UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ? WHERE id = ?",
       );
       expect(mockEnv.DB?.prepare("stmt").bind).toHaveBeenCalledWith(
         "binance",
@@ -554,7 +569,9 @@ describe("App Endpoints", () => {
         "test-api-key",
         expect.any(String),
         expect.any(String),
-        userId,
+        null,
+        null,
+        "user-123",
       );
     });
 

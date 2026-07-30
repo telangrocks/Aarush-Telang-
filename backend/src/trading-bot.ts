@@ -709,6 +709,7 @@ export class TradingBot {
                 }
 
                 const qty = rulesRes.quantizedQuantity ?? 0;
+                console.log('[DIAGNOSTIC] Final validated quantity:', qty);
                 
                 // Re-fetch provider with full keys for write
                 const writeProvider = await ExchangeManager.getProvider(userKeys.exchange_name, {
@@ -727,20 +728,70 @@ export class TradingBot {
                    params: {}
                 };
                 if (limitPrice) req.price = new BigNumber(limitPrice);
-                if (target.stopLoss) req.params.stopLossPrice = target.stopLoss;
-                if (target.takeProfit) req.params.takeProfitPrice = target.takeProfit;
+
+                console.log('[DIAGNOSTIC] Final entry order payload passed to ExchangeManager/CcxtProvider:', JSON.stringify({
+                  symbol: req.symbol,
+                  side: req.side,
+                  type: req.type,
+                  amount: req.amount?.toString(),
+                  price: req.price?.toString(),
+                  clientOrderId: req.clientOrderId
+                }));
 
                 const rawOrder = await ExchangeManager.executeIdempotentOrder(writeProvider, req);
+                console.log('[DIAGNOSTIC] Raw entry order response:', JSON.stringify(rawOrder));
+
+                const filledQty = rawOrder.filled?.toNumber() || (rawOrder.status === 'closed' || rawOrder.status === 'filled' ? rawOrder.amount.toNumber() : 0);
+                const orderStatus = rawOrder.status === 'open' ? 'open' : 'filled';
+
+                let ocoResult: any = null;
+                if (writeProvider.supportsOco() && target.takeProfit && target.stopLoss && filledQty > 0) {
+                  console.log(`[DIAGNOSTIC] Submitting post-fill Spot OCO protection for filledQty=${filledQty}...`);
+                  const ocoReq = {
+                    symbol: orderSymbol,
+                    side: (side.toUpperCase() === 'BUY' ? 'sell' : 'buy') as 'buy' | 'sell',
+                    amount: new BigNumber(filledQty),
+                    price: new BigNumber(target.takeProfit),
+                    stopPrice: new BigNumber(target.stopLoss),
+                    stopLimitPrice: new BigNumber(target.stopLoss * 0.999),
+                    listClientOrderId: `oco_${clientOrderId}`
+                  };
+                  try {
+                    ocoResult = await ExchangeManager.executeIdempotentOcoOrder(writeProvider, ocoReq);
+                    console.log('[DIAGNOSTIC] Post-fill Spot OCO success:', JSON.stringify(ocoResult));
+                  } catch (ocoErr: any) {
+                    console.error('[DIAGNOSTIC] Post-fill Spot OCO submission error (proceeding with entry position):', ocoErr?.message);
+                  }
+                }
+
                 orderResult = {
                    success: true,
                    orderId: rawOrder.id,
                    price: rawOrder.average?.toNumber() || rawOrder.price?.toNumber(),
-                   quantity: rawOrder.filled?.toNumber() || rawOrder.amount.toNumber(),
-                   status: rawOrder.status === 'open' ? 'open' : 'filled'
+                   quantity: filledQty > 0 ? filledQty : rawOrder.amount.toNumber(),
+                   status: orderStatus,
+                   ocoGroupId: ocoResult?.ocoGroupId || null,
+                   tpOrderId: ocoResult?.tpOrderId || null,
+                   slOrderId: ocoResult?.slOrderId || null,
+                   protectionMode: ocoResult ? 'NATIVE_OCO' : 'ATTACHED_TPSL'
                 };
               }
             } catch (e: any) {
-              orderResult = { success: false, message: e.message || 'Trade execution failed' };
+              console.error('[DIAGNOSTIC] Trade execution failed exception caught:', {
+                message: e.message,
+                name: e.name,
+                code: e.code,
+                status: e.status,
+                stack: e.stack,
+                rawError: e
+              });
+              orderResult = {
+                success: false,
+                code: "EXCHANGE_REJECTED",
+                exchangeCode: e.code || e.status || -1,
+                message: e.message || 'Trade execution failed',
+                details: e.details || String(e)
+              };
             }
 
             target.status = orderResult.success ? 'executed' : 'failed';

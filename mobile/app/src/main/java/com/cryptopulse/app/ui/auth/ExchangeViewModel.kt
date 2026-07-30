@@ -99,6 +99,7 @@ class ExchangeViewModel @Inject constructor(
     val selectedCandidate: StateFlow<MarketCandidate?> = _selectedCandidate
 
     init {
+        Log.d("VM_CHECK", "[DIAGNOSTIC] ExchangeViewModel hash=${System.identityHashCode(this)}")
         Log.d("ExchangeViewModel", "[DIAGNOSTIC] ViewModel created: ${System.identityHashCode(this)}")
         viewModelScope.launch {
             uiState.collect { Log.d("ExchangeViewModel", "[DIAGNOSTIC] uiState changed: $it") }
@@ -241,11 +242,20 @@ class ExchangeViewModel @Inject constructor(
                 val json = gson.fromJson(rawErrorBody, com.google.gson.JsonObject::class.java)
                 val msg = json.get("message")?.asString
                 val hint = json.get("hint")?.asString
+                val details = json.get("details")?.asString
+                val code = json.get("code")?.asString
+                val exchangeCode = json.get("exchangeCode")?.asInt
+                
                 if (!msg.isNullOrBlank()) {
                     parsedMessage = msg
-                    parsedHint = hint
+                    parsedHint = when {
+                        !details.isNullOrBlank() -> details
+                        !hint.isNullOrBlank() -> hint
+                        exchangeCode != null -> "Exchange Code: $exchangeCode"
+                        else -> null
+                    }
                     Log.e(TAG, "[DIAGNOSTIC] Parsed Error JSON | Endpoint: $endpointName | Message: $parsedMessage | Hint: $parsedHint")
-                    return@withContext msg to hint
+                    return@withContext msg to parsedHint
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "[DIAGNOSTIC] Could not parse error body as JSON for Endpoint: $endpointName: ${e.message}")

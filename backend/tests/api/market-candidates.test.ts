@@ -42,7 +42,7 @@ describe("Market Candidates Analysis Engine", () => {
     expect(result[1].symbol).toBe("ETH");
   });
 
-  it("should limit output to top 10 candidates", async () => {
+  it("should limit output to top 5 candidates", async () => {
     const inputTickers = Array.from({ length: 20 }, (_, i) => ({
       symbol: `COIN${i}`,
       quoteVolume24h: (20 - i) * 1_000_000,
@@ -50,8 +50,8 @@ describe("Market Candidates Analysis Engine", () => {
     }));
 
     const result = await analyzeMarket(inputTickers, mockAdapter);
-    expect(result.length).toBe(10);
+    expect(result.length).toBe(5);
     expect(result[0].rank).toBe(1);
-    expect(result[9].rank).toBe(10);
+    expect(result[4].rank).toBe(5);
   });
 });

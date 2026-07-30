@@ -50,6 +50,7 @@ fun ConnectExchangeScreen(
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
     exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager = com.cryptopulse.app.data.local.ExchangeConnectionManager(LocalContext.current.applicationContext),
 ) {
+    Log.d("VM_CHECK", "[DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=${System.identityHashCode(viewModel)}")
     Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Screen ViewModel: ${System.identityHashCode(viewModel)}")
 
     val formState by viewModel.formState.collectAsState()

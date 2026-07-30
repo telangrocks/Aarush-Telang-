@@ -63,6 +63,8 @@ fun MarketCandidatesScreen(
     onBack: (() -> Unit)? = null,
     viewModel: com.cryptopulse.app.ui.auth.ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
+    android.util.Log.d("VM_CHECK", "[DIAGNOSTIC] MarketCandidatesScreen ExchangeViewModel hash=${System.identityHashCode(viewModel)}")
+
     LaunchedEffect(Unit) {
         android.util.Log.d("MarketCandidatesScreen", "[DIAGNOSTIC] SCREEN CREATED")
     }
@@ -71,6 +73,9 @@ fun MarketCandidatesScreen(
     val candidatesLoading by viewModel.candidatesLoading.collectAsState(initial = false)
     val candidatesError by viewModel.candidatesError.collectAsState(initial = null)
     val marketDataState by viewModel.marketDataState.collectAsState(initial = com.cryptopulse.app.ui.auth.MarketDataUiState.Idle)
+    
+    android.util.Log.d("MarketCandidatesScreen", "[DIAGNOSTIC] Recomposed: VM hash=${System.identityHashCode(viewModel)}, candidatesCount=${candidates.size}, marketDataState=$marketDataState")
+
     val mappedCandidates = remember(candidates) { candidates.toScreenCandidates() }
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
@@ -353,11 +358,12 @@ fun MarketCandidatesScreen(
                 }
 
                 itemsIndexed(mappedCandidates, key = { _, candidate -> candidate.symbol }) { _, candidate ->
+                    android.util.Log.d("MarketCandidatesScreen", "[DIAGNOSTIC] Rendering item: symbol=${candidate.symbol}, pair=${candidate.pairName}, rank=${candidate.rank}, price=$${candidate.currentMarketPrice}")
                     CandidateRow(candidate = candidate, onClick = {
                         viewModel.selectCandidate(candidate)
                         onCandidateClick(candidate)
                     })
-                    Divider(color = NavyBorder.copy(alpha = 0.5f), thickness = 0.5.dp)
+                    HorizontalDivider(color = NavyBorder.copy(alpha = 0.5f), thickness = 0.5.dp)
                 }
 
                 item {

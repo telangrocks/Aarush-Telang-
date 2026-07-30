@@ -39,6 +39,8 @@ fun TradeSetupScreen(
     val uiState by viewModel.uiState.collectAsState()
     val balanceState by viewModel.balanceState.collectAsState()
 
+    android.util.Log.d("VM_CHECK", "[DIAGNOSTIC] TradeSetupScreen TradeSetupViewModel hash=${System.identityHashCode(viewModel)}, balanceState=$balanceState")
+
     LaunchedEffect(candidate) {
         viewModel.setMinNotional(candidate.minNotional)
     }

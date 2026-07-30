@@ -627,9 +627,30 @@ export class CcxtProvider implements IExchangeProvider {
     }
   }
 
+  public supportsOco(): boolean {
+    return this.exchangeId === 'binance' || (this.exchange != null && typeof (this.exchange as any).createOrderList === 'function');
+  }
+
   public async createOrder(order: OrderRequest): Promise<Order> {
     this.ensureConnected();
     const cleanSymbol = this.ensureMarket(order.symbol);
+    const params = {
+      clientOrderId: order.clientOrderId,
+      timeInForce: order.timeInForce,
+      ...order.params
+    };
+    delete params.stopLossPrice;
+    delete params.takeProfitPrice;
+
+    console.log('[DIAGNOSTIC] CcxtProvider.createOrder args:', JSON.stringify({
+      cleanSymbol,
+      type: order.type,
+      side: order.side,
+      amount: order.amount.toNumber(),
+      price: order.price ? order.price.toNumber() : undefined,
+      params
+    }));
+
     try {
       const response = await this.exchange!.createOrder(
         cleanSymbol,
@@ -637,15 +658,101 @@ export class CcxtProvider implements IExchangeProvider {
         order.side,
         order.amount.toNumber(),
         order.price ? order.price.toNumber() : undefined,
-        {
-          clientOrderId: order.clientOrderId,
-          timeInForce: order.timeInForce,
-          ...order.params
-        }
+        params
       );
+      console.log('[DIAGNOSTIC] CcxtProvider.createOrder raw response:', JSON.stringify(response));
       return this.mapOrder(response as CcxtOrder);
     } catch (e: any) {
+      console.error('[DIAGNOSTIC] CcxtProvider.createOrder exception caught:', {
+        message: e.message,
+        name: e.name,
+        constructor: e.constructor?.name,
+        stack: e.stack,
+        rawError: e
+      });
       throw this.mapError(e, 'createOrder');
+    }
+  }
+
+  public async createOcoOrder(order: import('./models/NormalizedDomain').OcoOrderRequest): Promise<import('./models/NormalizedDomain').OcoOrderResponse> {
+    this.ensureConnected();
+    const cleanSymbol = this.ensureMarket(order.symbol);
+    const sideUpper = order.side.toUpperCase();
+    const amountVal = order.amount.toNumber();
+    const priceVal = order.price.toNumber();
+    const stopPriceVal = order.stopPrice.toNumber();
+    const stopLimitPriceVal = order.stopLimitPrice ? order.stopLimitPrice.toNumber() : stopPriceVal;
+
+    console.log('[DIAGNOSTIC] CcxtProvider.createOcoOrder args:', JSON.stringify({
+      cleanSymbol,
+      sideUpper,
+      amountVal,
+      priceVal,
+      stopPriceVal,
+      stopLimitPriceVal,
+      listClientOrderId: order.listClientOrderId
+    }));
+
+    try {
+      let rawRes: any = null;
+      if (typeof (this.exchange as any).createOrderList === 'function') {
+        const orders = [
+          {
+            symbol: cleanSymbol,
+            type: 'LIMIT',
+            side: sideUpper,
+            amount: amountVal,
+            price: priceVal,
+          },
+          {
+            symbol: cleanSymbol,
+            type: 'STOP_LOSS_LIMIT',
+            side: sideUpper,
+            amount: amountVal,
+            price: stopLimitPriceVal,
+            stopPrice: stopPriceVal,
+          }
+        ];
+        rawRes = await (this.exchange as any).createOrderList(orders, cleanSymbol, {
+          listClientOrderId: order.listClientOrderId,
+          ...order.params
+        });
+      } else if (typeof (this.exchange as any).privatePostOrderOco === 'function') {
+        const symbolFormat = cleanSymbol.replace('/', '');
+        rawRes = await (this.exchange as any).privatePostOrderOco({
+          symbol: symbolFormat,
+          side: sideUpper,
+          quantity: amountVal,
+          price: priceVal,
+          stopPrice: stopPriceVal,
+          stopLimitPrice: stopLimitPriceVal,
+          stopLimitTimeInForce: 'GTC',
+          listClientOrderId: order.listClientOrderId,
+          ...order.params
+        });
+      } else {
+        throw new Error(`Exchange provider ${this.exchangeId} does not support native OCO orders.`);
+      }
+
+      console.log('[DIAGNOSTIC] CcxtProvider.createOcoOrder raw response:', JSON.stringify(rawRes));
+      const ordersList: Order[] = Array.isArray(rawRes?.orders) ? rawRes.orders.map((o: any) => this.mapOrder(o)) : [];
+      return {
+        ocoGroupId: String(rawRes?.orderListId || rawRes?.id || order.listClientOrderId || Date.now()),
+        symbol: cleanSymbol,
+        status: rawRes?.listOrderStatus || 'EXECUTING',
+        tpOrderId: ordersList[0]?.id || String(rawRes?.orderReports?.[0]?.orderId || ''),
+        slOrderId: ordersList[1]?.id || String(rawRes?.orderReports?.[1]?.orderId || ''),
+        orders: ordersList,
+        info: rawRes
+      };
+    } catch (e: any) {
+      console.error('[DIAGNOSTIC] CcxtProvider.createOcoOrder exception caught:', {
+        message: e.message,
+        name: e.name,
+        stack: e.stack,
+        rawError: e
+      });
+      throw this.mapError(e, 'createOcoOrder');
     }
   }
 

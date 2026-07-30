@@ -7,22 +7,24 @@ vi.mock("../../src/crypto", () => ({
 }));
 
 // Mock exchanges adapter
-vi.mock("../../src/exchanges", () => ({
-  getExchangeAdapter: vi.fn().mockReturnValue({
-    fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', price: 50100, lotSize: 0.001, tickSize: 0.01, minOrderQty: 0.001, maxOrderQty: 1000, minNotional: 10 }),
-    placeOrder: vi.fn().mockResolvedValue({ success: true, price: 50100, quantity: 0.02, orderId: 'ord-123' })
-  }),
-  normalizeEnvironment: vi.fn().mockReturnValue('testnet'),
-  normalizeRegion: vi.fn().mockReturnValue('global'),
-  // Pass-through implementation so normalizeQuantity does not throw inside the execute-trade handler
-  normalizeQuantity: vi.fn().mockImplementation((qty: number, lotSize: number, minQty: number, maxQty: number) => {
-    if (qty <= 0) return 0;
-    const safeStep = lotSize > 0 ? lotSize : 1;
-    const precision = safeStep < 1 ? Math.round(-Math.log10(safeStep)) : 0;
-    const rounded = parseFloat((Math.floor((qty / safeStep) + 1e-10) * safeStep).toFixed(precision));
-    return Math.max(Math.min(Math.max(rounded, minQty), maxQty), 0);
-  })
-}));
+vi.mock("../../src/exchanges", async (importOriginal) => {
+  const actual: any = await importOriginal();
+  return {
+    ...actual,
+    ExchangeManager: {
+      getProvider: vi.fn().mockResolvedValue({
+        fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', price: 50100, last: { toNumber: () => 50100 } }),
+        createOrder: vi.fn().mockResolvedValue({ id: 'ord-123', status: 'closed', filled: { toNumber: () => 0.02 }, amount: { toNumber: () => 0.02 }, average: { toNumber: () => 50100 } }),
+        supportsOco: vi.fn().mockReturnValue(false),
+        createOcoOrder: vi.fn()
+      }),
+      executeIdempotentOrder: vi.fn().mockResolvedValue({ id: 'ord-123', status: 'closed', filled: { toNumber: () => 0.02 }, amount: { toNumber: () => 0.02 }, average: { toNumber: () => 50100 } }),
+      executeIdempotentOcoOrder: vi.fn()
+    },
+    normalizeEnvironment: vi.fn().mockReturnValue('testnet'),
+    normalizeRegion: vi.fn().mockReturnValue('global'),
+  };
+});
 
 // Mock the StrategyOrchestrator prototype
 vi.mock("../../src/engine/orchestrator/StrategyOrchestrator", () => {

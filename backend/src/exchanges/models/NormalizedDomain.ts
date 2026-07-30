@@ -91,3 +91,25 @@ export interface OrderRequest {
   timeInForce?: 'GTC' | 'IOC' | 'FOK' | 'PO';
   params?: Record<string, any>;
 }
+
+export interface OcoOrderRequest {
+  symbol: string;
+  side: 'buy' | 'sell';
+  amount: BigNumber;
+  price: BigNumber;           // Take profit price
+  stopPrice: BigNumber;       // Stop loss trigger price
+  stopLimitPrice?: BigNumber; // Stop loss limit execution price (defaults to stopPrice)
+  clientOrderId?: string;
+  listClientOrderId?: string;
+  params?: Record<string, any>;
+}
+
+export interface OcoOrderResponse {
+  ocoGroupId: string;
+  symbol: string;
+  status: string;
+  tpOrderId?: string;
+  slOrderId?: string;
+  orders?: Order[];
+  info?: any;
+}
