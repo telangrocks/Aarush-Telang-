@@ -79,7 +79,10 @@ class TechnicalAnalysisViewModel @Inject constructor(
     fun stopBot(onSuccess: () -> Unit) {
         viewModelScope.launch {
             try {
-                tradingBotService.deactivate()
+                val res = tradingBotService.deactivate()
+                if (!res.isSuccessful) {
+                    res.errorBody()?.close()
+                }
                 transportAdapter.stopObserving()
                 onSuccess()
             } catch (e: Exception) {

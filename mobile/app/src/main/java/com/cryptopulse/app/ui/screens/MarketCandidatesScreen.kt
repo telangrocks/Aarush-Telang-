@@ -33,6 +33,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 // ─── Data model for the screen ────────────────────────────────────────────────
+@Immutable
 data class MarketCandidate(
     val rank: Int = 0,
     val symbol: String = "",
@@ -48,6 +49,9 @@ data class MarketCandidate(
     val score: Double = 0.0,
     val recommendedTimeframe: String = "",
     val tradeSide: String = "",
+    val formattedPrice: String = "",
+    val formattedMinNotional: String = "",
+    val formattedVolume: String = "",
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -344,7 +348,7 @@ fun MarketCandidatesScreen(
                     Divider(color = NavyBorder, thickness = 1.dp, modifier = Modifier.padding(vertical = 4.dp))
                 }
 
-                itemsIndexed(mappedCandidates) { _, candidate ->
+                itemsIndexed(mappedCandidates, key = { _, candidate -> candidate.symbol }) { _, candidate ->
                     CandidateRow(candidate = candidate, onClick = {
                         viewModel.selectCandidate(candidate)
                         onCandidateClick(candidate)
@@ -433,7 +437,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                 }
 
                 Text(
-                    text = "$${formatCryptoPrice(candidate.currentMarketPrice)}",
+                    text = "$${candidate.formattedPrice.ifEmpty { formatCryptoPrice(candidate.currentMarketPrice) }}",
                     color = TextPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp,
@@ -484,13 +488,13 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
 
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        text = "24h Vol: $${String.format(Locale.US, "%.1fM", candidate.quoteVolume24h / 1_000_000.0)}",
+                        text = "24h Vol: $${candidate.formattedVolume.ifEmpty { String.format(Locale.US, "%.1fM", candidate.quoteVolume24h / 1_000_000.0) }}",
                         color = TextSecondary,
                         fontSize = 11.sp,
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = "Min: $${formatCryptoPrice(candidate.minNotional)}",
+                        text = "Min: $${candidate.formattedMinNotional.ifEmpty { formatCryptoPrice(candidate.minNotional) }}",
                         color = CyanPrimary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold
@@ -601,6 +605,9 @@ fun List<MarketCandidateDto>.toScreenCandidates(): List<MarketCandidate> {
             score = dto.score,
             recommendedTimeframe = dto.recommendedTimeframe,
             tradeSide = dto.tradeSide,
+            formattedPrice = formatCryptoPrice(dto.currentMarketPrice),
+            formattedMinNotional = formatCryptoPrice(dto.minNotional),
+            formattedVolume = String.format(Locale.US, "%.1fM", dto.quoteVolume24h / 1_000_000.0),
         )
     }
 }

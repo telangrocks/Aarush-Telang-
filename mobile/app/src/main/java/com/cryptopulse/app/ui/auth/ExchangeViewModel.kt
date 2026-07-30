@@ -467,6 +467,8 @@ class ExchangeViewModel @Inject constructor(
                 val result = klineService.getKlines(symbol, interval, limit)
                 if (result.isSuccessful && result.body() != null) {
                     _klines.value = result.body()!!
+                } else {
+                    result.errorBody()?.close()
                 }
             } catch (e: Exception) {
                 // Ignore silent failures for klines update loop
@@ -487,6 +489,7 @@ class ExchangeViewModel @Inject constructor(
                         _balancesError.value = body?.message ?: "Failed to fetch balances"
                     }
                 } else {
+                    response.errorBody()?.close()
                     _balancesError.value = "Server error: ${response.code()}"
                 }
             } catch (e: Exception) {
@@ -520,7 +523,10 @@ class ExchangeViewModel @Inject constructor(
                 try {
                     val token = tokenManager.getToken()
                     if (token != null) {
-                        tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
+                        val res = tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
+                        if (!res.isSuccessful) {
+                            res.errorBody()?.close()
+                        }
                     }
                 } catch (e: Exception) {
                     // Silently fail
@@ -554,7 +560,10 @@ class ExchangeViewModel @Inject constructor(
                         if (success) {
                             val alertId = alert["id"] as? String
                             if (alertId != null) {
-                                tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
+                                val ackRes = tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
+                                if (!ackRes.isSuccessful) {
+                                    ackRes.errorBody()?.close()
+                                }
                             }
                             _pendingAlert.value = null
                             val entryPrice = (alert["entryPrice"] as? Double)

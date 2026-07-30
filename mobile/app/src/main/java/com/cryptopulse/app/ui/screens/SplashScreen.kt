@@ -92,11 +92,13 @@ fun SplashScreen(
                     val fragmentActivity = context as? FragmentActivity
                     if (fragmentActivity != null && biometricAuthManager.isBiometricEnrolled()) {
                         try {
-                            val authenticated = biometricAuthManager.authenticate(
-                                activity = fragmentActivity,
-                                title = "Biometric Authentication",
-                                subtitle = "Verify your identity to continue"
-                            )
+                            val authenticated = withContext(Dispatchers.Main) {
+                                biometricAuthManager.authenticate(
+                                    activity = fragmentActivity,
+                                    title = "Biometric Authentication",
+                                    subtitle = "Verify your identity to continue"
+                                )
+                            }
                             if (!authenticated) {
                                 tokenManager.clearTokens()
                                 token = null
