@@ -30,7 +30,7 @@
     "ccxt": "4.5.69",
     "dotenv": "^16.4.5",
     "hono": "^4.4.12",
-    "protobufjs": "^7.6.5"
+    "protobufjs": "^8.7.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260728.1",
