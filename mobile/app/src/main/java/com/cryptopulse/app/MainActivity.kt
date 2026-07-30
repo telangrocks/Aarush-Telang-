@@ -94,7 +94,7 @@ class MainActivity : FragmentActivity() {
                         }
                         exchangeViewModel.resetState()
                         navController.navigate("onboarding") {
-                            popUpTo("splash") { inclusive = true }
+                            popUpTo("onboarding") { inclusive = true }
                         }
                     }
 
@@ -124,7 +124,7 @@ class MainActivity : FragmentActivity() {
                                 viewModel = viewModel,
                                 onAuthSuccess = {
                                     navController.navigate("connect_exchange") {
-                                        popUpTo("auth") { inclusive = true }
+                                        popUpTo("onboarding") { inclusive = true }
                                     }
                                 }
                             )
