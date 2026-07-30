@@ -325,15 +325,29 @@ export async function handleGetExchangeBalances(
 export async function handleGetPersonalizedMarketCandidates(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
-  console.log("[MARKET_CANDIDATES] Processing GET /api/market/candidates");
+  let currentStage = "1. JWT verification";
+  console.log("[DIAGNOSTIC] Stage 0: Endpoint /api/market/candidates invoked");
+  
   try {
+    // Stage 1: JWT verified
+    currentStage = "1. JWT verification";
     const payload = c.get("jwtPayload") as { sub?: string } | undefined;
     if (!payload || !payload.sub) {
+      console.error("[DIAGNOSTIC] Stage 1 FAILED: Missing or invalid JWT payload sub");
       c.status(401);
-      return c.json({ success: false, error: "Unauthorized: Invalid or missing token" });
+      return c.json({
+        success: false,
+        stage: "1. JWT verification",
+        error: "Unauthorized: Invalid or missing token",
+        constructor: "UnauthorizedError",
+        stack: new Error("JWT payload sub missing").stack
+      });
     }
     const userId = payload.sub;
+    console.log(`[DIAGNOSTIC] Stage 1: JWT verified for userId=${userId}`);
 
+    // Stage 2: User loaded
+    currentStage = "2. User loaded";
     let user: any = null;
     try {
       user = await c.env.DB.prepare(
@@ -342,14 +356,47 @@ export async function handleGetPersonalizedMarketCandidates(
         .bind(userId)
         .first();
     } catch (dbErr: any) {
-      console.error("[MARKET_CANDIDATES] Database lookup failed:", dbErr?.message);
+      console.error("[DIAGNOSTIC] Stage 2 EXCEPTION: Database query failed:", dbErr?.message, dbErr?.stack);
+      c.status(500);
+      return c.json({
+        success: false,
+        stage: "2. User loaded",
+        error: dbErr?.message || String(dbErr),
+        constructor: dbErr?.constructor?.name || "DatabaseError",
+        stack: dbErr?.stack || String(dbErr)
+      });
     }
 
-    if (!user?.exchange_name) {
+    if (!user) {
+      console.error(`[DIAGNOSTIC] Stage 2 FAILED: User record not found in DB for id ${userId}`);
+      c.status(404);
+      return c.json({
+        success: false,
+        stage: "2. User loaded",
+        error: "User account not found",
+        constructor: "NotFoundError",
+        stack: new Error("User record not found").stack
+      });
+    }
+    console.log(`[DIAGNOSTIC] Stage 2: User loaded successfully for id=${userId}`);
+
+    // Stage 3: Exchange record loaded
+    currentStage = "3. Exchange record loaded";
+    if (!user.exchange_name) {
+      console.error("[DIAGNOSTIC] Stage 3 FAILED: User has no exchange_name configured");
       c.status(400);
-      return c.json({ success: false, error: "No exchange connected. Please connect an exchange first." });
+      return c.json({
+        success: false,
+        stage: "3. Exchange record loaded",
+        error: "No exchange connected. Please connect an exchange first.",
+        constructor: "ValidationError",
+        stack: new Error("No exchange connected").stack
+      });
     }
+    console.log(`[DIAGNOSTIC] Stage 3: Exchange record loaded: exchange_name=${user.exchange_name}, env=${user.exchange_environment}`);
 
+    // Stage 4: Secret decrypted
+    currentStage = "4. Secret decrypted";
     let cleanKey = user.exchange_api_key ? cleanCredential(user.exchange_api_key) : undefined;
     let cleanSecret: string | undefined = undefined;
     if (user.exchange_api_secret_encrypted && user.exchange_api_secret_iv && c.env.ENCRYPTION_KEY) {
@@ -359,27 +406,60 @@ export async function handleGetPersonalizedMarketCandidates(
           c.env.ENCRYPTION_KEY
         );
         cleanSecret = cleanCredential(decrypted);
+        console.log("[DIAGNOSTIC] Stage 4: Secret decrypted successfully");
       } catch (decErr: any) {
-        console.warn("[MARKET_CANDIDATES] Secret decryption failed, proceeding with public provider:", decErr?.message);
+        console.warn("[DIAGNOSTIC] Stage 4 EXCEPTION: Secret decryption failed, proceeding unauthenticated:", decErr?.message);
       }
+    } else {
+      console.log("[DIAGNOSTIC] Stage 4: Secret omitted/not configured");
     }
 
-    console.log(`[MARKET_CANDIDATES] Fetching provider for exchange ${user.exchange_name} (${user.exchange_environment || 'mainnet'})`);
-    const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment),
-      apiKey: cleanKey,
-      secret: cleanSecret
-    });
+    // Stage 5: CCXT client created
+    currentStage = "5. CCXT client created";
+    let adapter: any = null;
+    try {
+      adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
+        environment: normalizeEnvironment(user.exchange_environment),
+        apiKey: cleanKey,
+        secret: cleanSecret
+      });
+      console.log(`[DIAGNOSTIC] Stage 5: CCXT client created for provider=${user.exchange_name}`);
+    } catch (provErr: any) {
+      console.error("[DIAGNOSTIC] Stage 5 EXCEPTION: Provider creation failed:", provErr?.message, provErr?.stack);
+      c.status(500);
+      return c.json({
+        success: false,
+        stage: "5. CCXT client created",
+        error: provErr?.message || String(provErr),
+        constructor: provErr?.constructor?.name || "ProviderError",
+        stack: provErr?.stack || String(provErr)
+      });
+    }
 
+    // Stage 6: fetchBalance completed
+    currentStage = "6. fetchBalance completed";
+    try {
+      if (cleanKey && cleanSecret) {
+        await adapter.fetchBalance();
+        console.log("[DIAGNOSTIC] Stage 6: fetchBalance completed successfully");
+      } else {
+        console.log("[DIAGNOSTIC] Stage 6: fetchBalance skipped (no API credentials)");
+      }
+    } catch (balErr: any) {
+      console.warn("[DIAGNOSTIC] Stage 6 WARNING: fetchBalance threw exception, proceeding:", balErr?.message);
+    }
+
+    // Stage 7: fetchTickers completed
+    currentStage = "7. fetchTickers completed";
     let markets: any[] = [];
     try {
       markets = await adapter.fetchMarkets();
     } catch (mErr: any) {
-      console.error("[MARKET_CANDIDATES] fetchMarkets failed:", mErr?.message);
+      console.error("[DIAGNOSTIC] Stage 7 WARNING: fetchMarkets threw exception:", mErr?.message);
     }
 
     if (!markets || !markets.length) {
-      console.warn("[MARKET_CANDIDATES] fetchMarkets returned empty array. Using fallback top pairs.");
+      console.warn("[DIAGNOSTIC] Stage 7: fetchMarkets returned empty. Fallback to top pairs.");
       markets = [
         { id: "BTCUSDT", symbol: "BTC/USDT", base: "BTC", quote: "USDT" },
         { id: "ETHUSDT", symbol: "ETH/USDT", base: "ETH", quote: "USDT" },
@@ -387,7 +467,6 @@ export async function handleGetPersonalizedMarketCandidates(
       ];
     }
 
-    console.log(`[MARKET_CANDIDATES] Evaluating ${markets.length} market symbols...`);
     const tickers = await Promise.all(
       markets.map(async (m) => {
         try {
@@ -410,7 +489,7 @@ export async function handleGetPersonalizedMarketCandidates(
             minNotional: typeof m?.limits?.cost?.min?.toNumber === 'function' ? m.limits.cost.min.toNumber() : 5.0,
           };
         } catch (tErr: any) {
-          console.warn(`[MARKET_CANDIDATES] fetchTicker failed for ${m?.symbol}, using fallback ticker:`, tErr?.message);
+          console.warn(`[DIAGNOSTIC] Stage 7: fetchTicker failed for ${m?.symbol}:`, tErr?.message);
           const base = m?.base || (m?.symbol ? m.symbol.split('/')[0] : "BTC");
           return {
             symbol: base,
@@ -426,19 +505,43 @@ export async function handleGetPersonalizedMarketCandidates(
         }
       })
     );
+    console.log(`[DIAGNOSTIC] Stage 7: fetchTickers completed with ${tickers.length} tickers`);
 
-    console.log(`[MARKET_CANDIDATES] Running market analysis for ${tickers.length} tickers...`);
-    const candidates = await analyzeMarket(tickers as any, adapter as any);
+    // Stage 8: analyzeMarket entered
+    currentStage = "8. analyzeMarket entered";
+    console.log(`[DIAGNOSTIC] Stage 8: analyzeMarket entered with ${tickers.length} tickers`);
+    
+    // Stage 9: analyzeMarket exited
+    let candidates: any[] = [];
+    try {
+      candidates = await analyzeMarket(tickers as any, adapter as any);
+      console.log(`[DIAGNOSTIC] Stage 9: analyzeMarket exited with ${candidates.length} candidates`);
+    } catch (aErr: any) {
+      console.error("[DIAGNOSTIC] Stage 9 EXCEPTION: analyzeMarket failed:", aErr?.message, aErr?.stack);
+      c.status(500);
+      return c.json({
+        success: false,
+        stage: "9. analyzeMarket exited",
+        error: aErr?.message || String(aErr),
+        constructor: aErr?.constructor?.name || "AnalysisError",
+        stack: aErr?.stack || String(aErr)
+      });
+    }
+
+    // Stage 10: response serialized
+    currentStage = "10. response serialized";
+    console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully (${candidates.length} items)`);
     return c.json(candidates);
-  } catch (e: unknown) {
-    const error = e as Error;
-    console.error("[MARKET_CANDIDATES_FATAL_ERROR] Uncaught exception in handleGetPersonalizedMarketCandidates:", error);
+
+  } catch (fatalErr: any) {
+    console.error(`[DIAGNOSTIC] Stage '${currentStage}' FATAL UNCAUGHT EXCEPTION:`, fatalErr?.message, fatalErr?.stack);
     c.status(500);
     return c.json({
       success: false,
-      error: "Error processing market data",
-      message: error?.message || String(e),
-      detail: error?.stack || String(e)
+      stage: currentStage,
+      error: fatalErr?.message || String(fatalErr),
+      constructor: fatalErr?.constructor?.name || "FatalException",
+      stack: fatalErr?.stack || String(fatalErr)
     });
   }
 }
