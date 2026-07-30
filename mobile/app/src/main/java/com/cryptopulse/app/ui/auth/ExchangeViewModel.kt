@@ -1,5 +1,6 @@
 package com.cryptopulse.app.ui.auth
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.cryptopulse.app.data.api.ActivateBotRequest
@@ -186,16 +187,15 @@ class ExchangeViewModel @Inject constructor(
             try {
                 if (!response.isSuccessful) {
                     rawErrorBody = response.errorBody()?.string()
-                    println("Exchange API HTTP error: ${response.code()} ${response.message()} body: $rawErrorBody")
+                    Log.e(TAG, "Exchange API HTTP error: ${response.code()} ${response.message()}")
                 } else {
-                    println("Exchange API response HTTP 200: body success=false")
+                    Log.d(TAG, "Exchange API response HTTP 200: body success=false")
                 }
             } catch (e: Exception) {
-                println("Failed to read error body: ${e.message}")
+                Log.e(TAG, "Failed to read error body: ${e.message}")
             }
         } else if (exception != null) {
-            println("Exchange API exception: ${exception::class.simpleName}: ${exception.message}")
-            exception.printStackTrace()
+            Log.e(TAG, "Exchange API exception: ${exception::class.simpleName}: ${exception.message}", exception)
         }
 
         if (response != null && response.isSuccessful && response.body() != null) {
@@ -623,5 +623,9 @@ class ExchangeViewModel @Inject constructor(
                 // Silently fail
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "ExchangeViewModel"
     }
 }
