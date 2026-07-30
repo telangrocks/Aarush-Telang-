@@ -178,10 +178,10 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
-    private fun getUserFriendlyErrorMessage(
+    private suspend fun getUserFriendlyErrorMessage(
         response: retrofit2.Response<*>? = null,
         exception: Exception? = null
-    ): Pair<String, String?> {
+    ): Pair<String, String?> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         var rawErrorBody: String? = null
         if (response != null) {
             try {
@@ -203,12 +203,12 @@ class ExchangeViewModel @Inject constructor(
             when (body) {
                 is ValidationResponse -> {
                     if (!body.success) {
-                        return body.message to body.hint
+                        return@withContext body.message to body.hint
                     }
                 }
                 is com.cryptopulse.app.data.api.ConnectExchangeResponse -> {
                     if (!body.success) {
-                        return body.message to body.hint
+                        return@withContext body.message to body.hint
                     }
                 }
             }
@@ -221,7 +221,7 @@ class ExchangeViewModel @Inject constructor(
                 val msg = json.get("message")?.asString
                 val hint = json.get("hint")?.asString
                 if (!msg.isNullOrBlank()) {
-                    return msg to hint
+                    return@withContext msg to hint
                 }
             } catch (e: Exception) {
                 // Fallback to HTTP code mapping
@@ -229,7 +229,7 @@ class ExchangeViewModel @Inject constructor(
         }
 
         if (response != null && !response.isSuccessful) {
-            return when (response.code()) {
+            return@withContext when (response.code()) {
                 400 -> "Invalid request. Please check your API key and secret." to null
                 401 -> "Authentication failed. Invalid API key or secret." to null
                 403 -> "Access forbidden. Check your IP whitelist or permissions." to null
@@ -241,7 +241,7 @@ class ExchangeViewModel @Inject constructor(
         }
 
         if (exception != null) {
-            return when (exception) {
+            return@withContext when (exception) {
                 is SocketTimeoutException -> "Connection timeout. Please check your internet connection." to null
                 is UnknownHostException -> "No internet connection. Please check your network." to null
                 is IOException -> "Network error. Please check your internet connection." to null
@@ -249,7 +249,7 @@ class ExchangeViewModel @Inject constructor(
             }
         }
 
-        return "An unknown error occurred. Please try again." to null
+        "An unknown error occurred. Please try again." to null
     }
 
     fun validateAndConnect() {
