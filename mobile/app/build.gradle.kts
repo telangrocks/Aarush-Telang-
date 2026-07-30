@@ -3,15 +3,16 @@ plugins {
     alias(libs.plugins.kotlin.android)
     kotlin("kapt")
     alias(libs.plugins.hilt.android)
+    alias(libs.plugins.google.services)
 }
 
 
 android {
-    namespace = "com.cryptopulse"
+    namespace = "com.cryptopulse.app"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.cryptopulse"
+        applicationId = "com.cryptopulse.app"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
