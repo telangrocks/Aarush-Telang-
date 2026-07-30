@@ -155,6 +155,10 @@ export class CcxtProvider implements IExchangeProvider {
         const apiKeyVal = config.apiKey || this.exchange.apiKey || '';
         const origFetch = this.exchange.fetch.bind(this.exchange);
         this.exchange.fetch = async (url: string, method = 'GET', headers: any = {}, body?: any) => {
+          if (typeof url === 'string' && (url.includes('/sapi/') || url.includes('/wapi/') || url.includes('/fapi/') || url.includes('/capital/config/getall'))) {
+            console.warn(`[SHORT-CIRCUITED UNSUPPORTED TESTNET ENDPOINT] ${method} ${url}`);
+            return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
           if (typeof url === 'string' && url.includes('/api/v3/account')) {
             const ts = Date.now();
             const query = 'timestamp=' + ts + '&recvWindow=10000';

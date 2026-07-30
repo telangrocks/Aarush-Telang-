@@ -302,6 +302,8 @@ export function classifyBinanceCode(
     "-1021": "TIMESTAMP_OUT_OF_SYNC", // Timestamp for this request was outside of the recvWindow
     "-1003": "API_RATE_LIMIT_REACHED", // Too much request weight used
     "-1007": "NETWORK_TIMEOUT", // Timeout waiting for response
+    "-1101": "UNKNOWN_EXCHANGE_ERROR", // Unknown endpoint / Too many parameters
+    "1101": "UNKNOWN_EXCHANGE_ERROR",
     "-1102": "INVALID_SIGNATURE", // Malformed/empty mandatory parameter
     "-1121": "INVALID_SIGNATURE", // Invalid symbol
     "-1010": "INSUFFICIENT_PERMISSIONS", // Customer's permissions don't match
@@ -310,7 +312,7 @@ export function classifyBinanceCode(
     "-4164": "SPOT_TRADING_NOT_ENABLED", // Spot trading is not enabled
   };
 
-  const mapped = byCode[code];
+  const mapped = byCode[code] || byCode[-code];
   if (mapped) return mk(mapped, technicalDetail, `binance code ${code}`);
   return null;
 }
