@@ -61,7 +61,7 @@ class TradeAlertManager private constructor(context: Context) {
             _currentState.value = TradeAlertState.ALERT_REPLACED
             TradeAlertLogger.log("ALERT_REPLACED", "Updated active alert details to latest signal ($symbol)")
             scope.launch { AlertBus.send(alertData) }
-            postSystemNotification(alertData)
+            scope.launch { postSystemNotification(alertData) }
             _currentState.value = TradeAlertState.VOICE_PLAYING
             return
         }
@@ -73,7 +73,7 @@ class TradeAlertManager private constructor(context: Context) {
         acquireWakeLock()
         audioManager.startAlert()
         vibrationManager.startVibration()
-        postSystemNotification(alertData)
+        scope.launch { postSystemNotification(alertData) }
 
         _currentState.value = TradeAlertState.VOICE_PLAYING
         scope.launch { AlertBus.send(alertData) }
