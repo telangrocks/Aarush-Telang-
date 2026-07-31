@@ -168,7 +168,7 @@ export class CcxtProvider implements IExchangeProvider {
         this.exchange.markets_by_id = { 'BTCUSDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
         const testnetHost = (process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '');
         this.exchange.urls.api = {
-          ...this.exchange.urls.api,
+          ...(this.exchange.urls.api as Record<string, string>),
           sapi: `${testnetHost}/api/v3`,
           wapi: `${testnetHost}/api/v3`,
           fapi: 'https://testnet.binancefuture.com/fapi/v1',

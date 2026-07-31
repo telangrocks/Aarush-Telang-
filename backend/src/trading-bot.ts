@@ -863,7 +863,7 @@ export class TradingBot {
                 const rawOrder = await ExchangeManager.executeIdempotentOrder(writeProvider, req);
                 console.log(`[DIAGNOSTIC] [STAGE: BINANCE_HTTP_RESPONSE_RECEIVED] rawResponse=${JSON.stringify(rawOrder)}`);
 
-                const filledQty = rawOrder.filled?.toNumber() || (rawOrder.status === 'closed' || rawOrder.status === 'filled' ? rawOrder.amount.toNumber() : 0);
+                const filledQty = rawOrder.filled?.toNumber() || (rawOrder.status === 'closed' ? rawOrder.amount.toNumber() : 0);
                 const orderStatus = rawOrder.status === 'open' ? 'open' : 'filled';
 
                 let ocoResult: any = null;
