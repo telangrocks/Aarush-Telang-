@@ -35,7 +35,7 @@ export class ExchangeManager {
     } catch (error) {
       try {
         await provider.disconnect();
-      } catch (_) {}
+      } catch (_) { /* ignore disconnect error during cleanup */ }
       this.providerCache.delete(cacheKey);
       throw error;
     }
@@ -112,7 +112,7 @@ export class ExchangeManager {
         
         // Do not retry on validation, authentication, or insufficient funds errors
         if (error instanceof UnifiedError) {
-          if (['AUTHENTICATION_FAILED', 'INSUFFICIENT_FUNDS', 'INVALID_ORDER', 'UNSUPPORTED_EXCHANGE'].includes(error.mappedInternalErrorCode)) {
+          if (error?.mappedInternalErrorCode && ['AUTHENTICATION_FAILED', 'INSUFFICIENT_FUNDS', 'INVALID_ORDER', 'UNSUPPORTED_EXCHANGE'].includes(error.mappedInternalErrorCode)) {
             throw error;
           }
         }

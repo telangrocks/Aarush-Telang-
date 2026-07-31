@@ -411,7 +411,7 @@ export async function handleGetPersonalizedMarketCandidates(
 
     // Stage 4: Secret decrypted
     currentStage = "4. Secret decrypted";
-    let cleanKey = user.exchange_api_key ? cleanCredential(user.exchange_api_key) : undefined;
+    const cleanKey = user.exchange_api_key ? cleanCredential(user.exchange_api_key) : undefined;
     let cleanSecret: string | undefined = undefined;
     if (user.exchange_api_secret_encrypted && user.exchange_api_secret_iv && c.env.ENCRYPTION_KEY) {
       try {
@@ -883,11 +883,36 @@ export async function handleExecuteTrade(
     );
 
     const data = await response.json<{ success: boolean; message: string; order?: any }>();
+    c.status(response.status as any);
     return c.json(data);
   } catch (e: unknown) {
     const error = e as Error;
     c.status(500);
     return c.json({ success: false, message: error.message || "Failed to execute trade" });
+  }
+}
+
+export async function handleResetSafeMode(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/reset-safemode", { method: "POST" }),
+    );
+
+    const data = await response.json<any>();
+    c.status(response.status as any);
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ success: false, message: error.message || "Failed to reset Safe Mode" });
   }
 }
 

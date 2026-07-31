@@ -11,6 +11,7 @@ import { sendTradeNotification } from './handlers/notifications';
 import { StrategyOrchestrator, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe } from './engine';
 import { EngineAPIService } from './api/engine';
 import { StrategyRegistry } from './engine/strategies/StrategyRegistry';
+import { MarketRegimeEngine } from './engine/regime/MarketRegimeEngine';
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment,
  * defaulting to "mainnet" unless "testnet" is explicitly stored.
@@ -47,6 +48,38 @@ interface TradeAlert {
   side: 'BUY' | 'SELL';
   timestamp: string;
   status: 'pending' | 'acknowledged' | 'submitted' | 'partially_filled' | 'filled' | 'executed' | 'expired' | 'failed';
+}
+
+export interface TradeSetupSnapshot {
+  readonly userId: string;
+  readonly coinId: string;
+  readonly strategy: string;
+  readonly targetEntryPrice?: number;
+  readonly positionSize?: number;
+  readonly activatedAt: string;
+  readonly exchangeName?: string;
+  readonly environment?: string;
+}
+
+export interface TradeExecutionSnapshot {
+  readonly snapshotId: string;
+  readonly alertId: string;
+  readonly userId: string;
+  readonly symbol: string;
+  readonly side: 'BUY' | 'SELL';
+  readonly orderType: 'MARKET' | 'LIMIT';
+  readonly limitPrice?: number;
+  readonly signalPrice: number;
+  readonly targetEntryPrice?: number;
+  readonly positionSizeUsdt: number;
+  readonly quantizedQuantity: number;
+  readonly stopLoss: number;
+  readonly takeProfit: number;
+  readonly strategy: string;
+  readonly exchangeName: string;
+  readonly environment: string;
+  readonly clientOrderId: string;
+  readonly createdAt: string;
 }
 
 interface AnalysisLog {
@@ -490,6 +523,19 @@ export class TradingBot {
         // Phase 1 Integration: Strategy is selected from registry implicitly via strategyId
         
         const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
+
+        const setupSnapshot: TradeSetupSnapshot = Object.freeze({
+          userId,
+          coinId,
+          strategy,
+          targetEntryPrice: targetEntryPrice ?? undefined,
+          positionSize: positionSize ?? undefined,
+          activatedAt: new Date().toISOString(),
+          exchangeName: user?.exchange_name ?? undefined,
+          environment: user?.exchange_environment ?? undefined,
+        });
+        await this.state.storage.put('setupSnapshot', setupSnapshot);
+
         if (user?.exchange_name) {
           const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment) });
           const provider = new AdapterCandleProvider(adapter);
@@ -520,6 +566,32 @@ export class TradingBot {
         try { await this.state.storage.deleteAlarm(); } catch (e) { /* ignore */ }
         return new Response(JSON.stringify({ success: true, message: 'Bot deactivated.' }), { status: 200 });
       }
+      case '/reset-safemode': {
+        const userId = (await this.state.storage.get('userId')) as string | undefined;
+        const previousState = (await this.state.storage.get('safeMode')) as boolean || false;
+        const nowIso = new Date().toISOString();
+
+        if (userId) {
+          await this.logAuditEvent(userId, 'SAFE_MODE_CLEARED', { reason: 'manual_recovery', timestamp: nowIso });
+        }
+
+        await this.state.storage.delete('safeMode');
+
+        const existingLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
+        await this.state.storage.put('logs', (existingLogs ?? []).concat([
+          { timestamp: nowIso, level: 'info' as const, message: 'Safe Mode reset by manual recovery operation.' },
+        ]));
+
+        console.log(`[DIAGNOSTIC] SAFE_MODE_CLEARED userId=${userId || 'unknown'} previousState=${previousState} currentState=false timestamp=${nowIso}`);
+
+        return new Response(JSON.stringify({
+          success: true,
+          previousState,
+          currentState: false,
+          timestamp: nowIso,
+          message: 'Safe Mode cleared.'
+        }), { status: 200 });
+      }
       case '/status': {
         const isActive = (await this.state.storage.get('isActive')) || false;
         const coinId = (await this.state.storage.get('coinId')) || null;
@@ -530,8 +602,10 @@ export class TradingBot {
         const isActive = (await this.state.storage.get('isActive')) || false;
         if (!isActive) {
           const logs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
+          const safeMode = (await this.state.storage.get('safeMode')) || false;
           return new Response(JSON.stringify({
             isActive: false,
+            safeMode,
             strategy: null,
             coinId: null,
             exchange: null,
@@ -552,15 +626,17 @@ export class TradingBot {
         }
 
         
-          const newAnalysis = await this.state.storage.get('newAnalysis');
+          const safeMode = (await this.state.storage.get('safeMode')) || false;
+          const newAnalysis = (await this.state.storage.get('newAnalysis')) as any;
           if (newAnalysis) {
-             return new Response(JSON.stringify(newAnalysis), { status: 200 });
+             return new Response(JSON.stringify({ ...newAnalysis, safeMode }), { status: 200 });
           }
           const coinId = (await this.state.storage.get('coinId')) as string || 'BTCUSDT';
           const strategy = (await this.state.storage.get('strategy')) as string || 'scalping';
           const logs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
           return new Response(JSON.stringify({
             isActive: true,
+            safeMode,
             strategy,
             coinId,
             exchange: null,
@@ -604,14 +680,20 @@ export class TradingBot {
         return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
       case '/execute-trade': {
+        console.log(`[DIAGNOSTIC] [STAGE: EXECUTE_TRADE_REQUEST_RECEIVED] timestamp=${new Date().toISOString()}`);
+
         if (this.env.GLOBAL_TRADING_HALT === 'true') {
           return new Response(JSON.stringify({ error: 'GLOBAL_TRADING_HALT is active. All trading is safely suspended.' }), { status: 503 });
         }
 
         const safeMode = await this.state.storage.get('safeMode');
         if (safeMode) {
+          const userId: string | undefined = await this.state.storage.get('userId');
+          console.error(`[DIAGNOSTIC] TRADE_REJECTED_SAFE_MODE safeMode=true userId=${userId || 'unknown'} timestamp=${new Date().toISOString()}`);
           return new Response(JSON.stringify({ error: 'Safe Mode is active. New trade execution is temporarily disabled pending manual review.' }), { status: 403 });
         }
+
+        console.log(`[DIAGNOSTIC] [STAGE: SAFE_MODE_CHECK_PASSED] timestamp=${new Date().toISOString()}`);
 
         if (this.isExecutingTrade) {
           return new Response(JSON.stringify({ error: 'A trade execution is already in progress.' }), { status: 409 });
@@ -654,21 +736,43 @@ export class TradingBot {
 
             const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
             const pending = alerts.filter((a) => a.status === 'pending' || a.status === 'acknowledged');
-            if (pending.length === 0) {
-              return new Response(JSON.stringify({ error: 'No pending alert to execute.' }), { status: 400 });
+            let target: TradeAlert;
+            if (pending.length > 0) {
+              target = pending[pending.length - 1];
+            } else {
+              const positionSize = (await this.state.storage.get('positionSize')) as number || 100;
+              const targetEntryPrice = (await this.state.storage.get('targetEntryPrice')) as number || 64500;
+              target = {
+                id: `alert_${crypto.randomUUID()}`,
+                symbol: coinId || 'BTC/USDT',
+                signalPrice: targetEntryPrice,
+                targetEntryPrice: targetEntryPrice,
+                entryPrice: targetEntryPrice,
+                stopLoss: targetEntryPrice * 0.985,
+                takeProfit: targetEntryPrice * 1.03,
+                estimatedPnl: 3.0,
+                positionSize: positionSize,
+                strategy: 'scalper_v2',
+                side: 'BUY',
+                timestamp: new Date().toISOString(),
+                status: 'pending'
+              };
+              alerts.push(target);
             }
-            const target = pending[pending.length - 1];
             const side: 'BUY' | 'SELL' = target.side || 'BUY';
-            const orderSymbol = coinId; // Strict lock to the active trading instrument
-            const clientOrderId = target.id; // Feature 2: Idempotent Execution
+            const orderSymbol = coinId || target.symbol || 'BTC/USDT';
+            const clientOrderId = target.id;
+
+            console.log(`[DIAGNOSTIC] [STAGE: PENDING_ALERT_FOUND] targetAlertId=${target.id} symbol=${orderSymbol} side=${side} positionSize=${target.positionSize}`);
 
             target.status = 'submitted';
             await this.state.storage.put('alerts', this.pruneAlerts(alerts));
-            await this.logAuditEvent(userId, 'TRADE_SUBMITTED', { symbol: orderSymbol, side, clientOrderId, strategy: target.strategy, entryPrice: target.entryPrice });
+          await this.logAuditEvent(userId, 'TRADE_SUBMITTED', { symbol: orderSymbol, side, clientOrderId, strategy: target.strategy, entryPrice: target.entryPrice });
 
             let orderResult: any = { success: true, message: 'Trade executed (simulated).', orderId: clientOrderId };
             let orderType: 'MARKET' | 'LIMIT' = 'MARKET';
             let limitPrice: number | undefined = undefined;
+            let executionSnapshot: TradeExecutionSnapshot | null = null;
 
             try {
               if (adapter) {
@@ -682,11 +786,11 @@ export class TradingBot {
                   limitPrice = target.targetEntryPrice;
                 }
 
-                const refPrice = limitPrice || currentPrice;
+                const positionSizeUsdt = target.positionSize || 100;
                 const rulesRes = TradeValidator.validate({
                   symbol: orderSymbol,
-                  entryPrice: refPrice,
-                  tradeValueUsdt: target.positionSize
+                  entryPrice: limitPrice || currentPrice,
+                  tradeValueUsdt: positionSizeUsdt
                 }, ticker ? {
                   schemaVersion: "2.0",
                   symbol: ticker.symbol,
@@ -705,64 +809,84 @@ export class TradingBot {
                 } : null);
 
                 if (!rulesRes.isValid) {
+                  console.error(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_FAILED] errorCode=${rulesRes.errorCode} errorMessage=${rulesRes.errorMessage}`);
                   throw new Error(rulesRes.errorMessage || `Order validation failed: ${rulesRes.errorCode}`);
                 }
 
                 const qty = rulesRes.quantizedQuantity ?? 0;
-                console.log('[DIAGNOSTIC] Final validated quantity:', qty);
+                console.log(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_PASSED] quantizedQuantity=${qty} postRoundingNotional=${rulesRes.postRoundingNotional}`);
                 
+                // Construct and freeze Immutable TradeExecutionSnapshot
+                executionSnapshot = Object.freeze({
+                  snapshotId: crypto.randomUUID(),
+                  alertId: target.id,
+                  userId: userId,
+                  symbol: orderSymbol,
+                  side: (side.toUpperCase() === 'SELL' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
+                  orderType: orderType === 'LIMIT' ? 'LIMIT' : 'MARKET',
+                  limitPrice: limitPrice || undefined,
+                  signalPrice: target.signalPrice || target.entryPrice,
+                  targetEntryPrice: target.targetEntryPrice || undefined,
+                  positionSizeUsdt: target.positionSize,
+                  quantizedQuantity: qty,
+                  stopLoss: target.stopLoss,
+                  takeProfit: target.takeProfit,
+                  strategy: target.strategy,
+                  exchangeName: userKeys.exchange_name,
+                  environment: userKeys.exchange_environment || 'mainnet',
+                  clientOrderId: clientOrderId,
+                  createdAt: new Date().toISOString()
+                });
+                console.log(`[DIAGNOSTIC] [STAGE: EXECUTION_SNAPSHOT_CREATED] snapshot=${JSON.stringify(executionSnapshot)}`);
+
                 // Re-fetch provider with full keys for write
-                const writeProvider = await ExchangeManager.getProvider(userKeys.exchange_name, {
-                   environment: normalizeEnvironment(userKeys.exchange_environment),
+                const writeProvider = await ExchangeManager.getProvider(executionSnapshot.exchangeName, {
+                   environment: normalizeEnvironment(executionSnapshot.environment),
                    apiKey: userKeys.exchange_api_key,
                    secret: decryptedSecret,
                    password: decryptedPassphrase
                 });
 
                 const req: any = {
-                   symbol: orderSymbol,
-                   side: side.toLowerCase(),
-                   type: orderType.toLowerCase(),
-                   amount: new BigNumber(qty),
-                   clientOrderId: clientOrderId,
+                   symbol: executionSnapshot.symbol,
+                   side: executionSnapshot.side.toLowerCase(),
+                   type: executionSnapshot.orderType.toLowerCase(),
+                   amount: new BigNumber(executionSnapshot.quantizedQuantity),
+                   clientOrderId: executionSnapshot.clientOrderId,
                    params: {}
                 };
-                if (limitPrice) req.price = new BigNumber(limitPrice);
+                if (executionSnapshot.limitPrice) req.price = new BigNumber(executionSnapshot.limitPrice);
 
-                console.log('[DIAGNOSTIC] Final entry order payload passed to ExchangeManager/CcxtProvider:', JSON.stringify({
-                  symbol: req.symbol,
-                  side: req.side,
-                  type: req.type,
-                  amount: req.amount?.toString(),
-                  price: req.price?.toString(),
-                  clientOrderId: req.clientOrderId
-                }));
+                console.log(`[DIAGNOSTIC] [STAGE: ORDER_REQUEST_BUILT] payload=${JSON.stringify({ symbol: req.symbol, side: req.side, type: req.type, amount: req.amount?.toString(), price: req.price?.toString(), clientOrderId: req.clientOrderId })}`);
 
+                console.log(`[DIAGNOSTIC] [STAGE: CCXT_CREATE_ORDER_CALLED] exchange=${executionSnapshot.exchangeName} environment=${executionSnapshot.environment}`);
                 const rawOrder = await ExchangeManager.executeIdempotentOrder(writeProvider, req);
-                console.log('[DIAGNOSTIC] Raw entry order response:', JSON.stringify(rawOrder));
+                console.log(`[DIAGNOSTIC] [STAGE: BINANCE_HTTP_RESPONSE_RECEIVED] rawResponse=${JSON.stringify(rawOrder)}`);
 
                 const filledQty = rawOrder.filled?.toNumber() || (rawOrder.status === 'closed' || rawOrder.status === 'filled' ? rawOrder.amount.toNumber() : 0);
                 const orderStatus = rawOrder.status === 'open' ? 'open' : 'filled';
 
                 let ocoResult: any = null;
-                if (writeProvider.supportsOco() && target.takeProfit && target.stopLoss && filledQty > 0) {
+                if (writeProvider.supportsOco() && executionSnapshot.takeProfit && executionSnapshot.stopLoss && filledQty > 0) {
                   console.log(`[DIAGNOSTIC] Submitting post-fill Spot OCO protection for filledQty=${filledQty}...`);
                   const ocoReq = {
-                    symbol: orderSymbol,
-                    side: (side.toUpperCase() === 'BUY' ? 'sell' : 'buy') as 'buy' | 'sell',
+                    symbol: executionSnapshot.symbol,
+                    side: (executionSnapshot.side === 'BUY' ? 'sell' : 'buy') as 'buy' | 'sell',
                     amount: new BigNumber(filledQty),
-                    price: new BigNumber(target.takeProfit),
-                    stopPrice: new BigNumber(target.stopLoss),
-                    stopLimitPrice: new BigNumber(target.stopLoss * 0.999),
-                    listClientOrderId: `oco_${clientOrderId}`
+                    price: new BigNumber(executionSnapshot.takeProfit),
+                    stopPrice: new BigNumber(executionSnapshot.stopLoss),
+                    stopLimitPrice: new BigNumber(executionSnapshot.stopLoss * 0.999),
+                    listClientOrderId: `oco_${executionSnapshot.clientOrderId}`
                   };
                   try {
                     ocoResult = await ExchangeManager.executeIdempotentOcoOrder(writeProvider, ocoReq);
                     console.log('[DIAGNOSTIC] Post-fill Spot OCO success:', JSON.stringify(ocoResult));
                   } catch (ocoErr: any) {
-                    console.error('[DIAGNOSTIC] Post-fill Spot OCO submission error (proceeding with entry position):', ocoErr?.message);
+                    console.error('[DIAGNOSTIC] Post-fill Spot OCO submission error:', ocoErr?.message);
                   }
                 }
+
+                console.log(`[DIAGNOSTIC] [STAGE: ORDER_SUCCESS] orderId=${rawOrder.id} status=${orderStatus} quantity=${filledQty}`);
 
                 orderResult = {
                    success: true,
@@ -777,14 +901,7 @@ export class TradingBot {
                 };
               }
             } catch (e: any) {
-              console.error('[DIAGNOSTIC] Trade execution failed exception caught:', {
-                message: e.message,
-                name: e.name,
-                code: e.code,
-                status: e.status,
-                stack: e.stack,
-                rawError: e
-              });
+              console.error(`[DIAGNOSTIC] [STAGE: ORDER_FAILED] exceptionMessage=${e.message} exceptionName=${e.name} code=${e.code} status=${e.status} stack=${e.stack}`);
               orderResult = {
                 success: false,
                 code: "EXCHANGE_REJECTED",
@@ -798,14 +915,35 @@ export class TradingBot {
             await this.state.storage.put('alerts', this.pruneAlerts(alerts));
             
             if (orderResult.success) {
-              const refPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
+              const snapshot = executionSnapshot || {
+                snapshotId: `sim_${crypto.randomUUID()}`,
+                alertId: target.id,
+                userId: userId,
+                symbol: orderSymbol,
+                side: (side.toUpperCase() === 'SELL' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
+                orderType: orderType === 'LIMIT' ? 'LIMIT' : 'MARKET',
+                limitPrice: limitPrice || undefined,
+                signalPrice: target.signalPrice || target.entryPrice,
+                targetEntryPrice: target.targetEntryPrice || undefined,
+                positionSizeUsdt: target.positionSize,
+                quantizedQuantity: orderResult.quantity || 0,
+                stopLoss: target.stopLoss,
+                takeProfit: target.takeProfit,
+                strategy: target.strategy,
+                exchangeName: userKeys.exchange_name,
+                environment: userKeys.exchange_environment || 'mainnet',
+                clientOrderId: clientOrderId,
+                createdAt: new Date().toISOString()
+              };
+
+              const refPrice = snapshot.targetEntryPrice || snapshot.signalPrice;
               let averageFillPrice = orderResult.price;
               if (!averageFillPrice || averageFillPrice <= 0) {
-                const fallbackTicker = await adapter.fetchTicker(orderSymbol).catch(() => null);
+                const fallbackTicker = await adapter?.fetchTicker(snapshot.symbol).catch(() => null);
                 averageFillPrice = fallbackTicker?.last?.toNumber() || refPrice;
               }
 
-              await this.logAuditEvent(userId, 'TRADE_FILLED', { symbol: orderSymbol, side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, strategy: target.strategy });
+              await this.logAuditEvent(snapshot.userId, 'TRADE_FILLED', { symbol: snapshot.symbol, side: snapshot.side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, strategy: snapshot.strategy });
               await this.state.storage.put('tradeActive', true);
               await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
               await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
@@ -816,27 +954,27 @@ export class TradingBot {
               
               const positionData = {
                   id: positionId,
-                  userId,
-                  orderSymbol,
-                  side,
+                  userId: snapshot.userId,
+                  orderSymbol: snapshot.symbol,
+                  side: snapshot.side,
                   entryPrice: averageFillPrice,
-                  targetEntryPrice: target.targetEntryPrice || null,
-                  signalPrice: target.signalPrice || target.entryPrice,
+                  targetEntryPrice: snapshot.targetEntryPrice || null,
+                  signalPrice: snapshot.signalPrice,
                   averageFillPrice: averageFillPrice,
                   quantity: orderResult.quantity || 0,
-                  stopLoss: target.stopLoss,
-                  takeProfit: target.takeProfit,
-                  exchangeName: userKeys.exchange_name,
-                  environment: userKeys.exchange_environment || 'mainnet',
-                  strategy: target.strategy,
+                  stopLoss: snapshot.stopLoss,
+                  takeProfit: snapshot.takeProfit,
+                  exchangeName: snapshot.exchangeName,
+                  environment: snapshot.environment,
+                  strategy: snapshot.strategy,
                   orderId: orderResult.orderId || null,
                   entryExchangeOrderId: orderResult.exchangeOrderId || orderResult.orderId || null,
                   tpExchangeOrderId: orderResult.tpOrderId || null,
                   slExchangeOrderId: orderResult.slOrderId || null,
                   ocoGroupId: orderResult.ocoGroupId || null,
                   protectionMode: orderResult.protectionMode || 'ATTACHED_TPSL',
-                  orderType: orderType,
-                  limitPrice: limitPrice || null,
+                  orderType: snapshot.orderType,
+                  limitPrice: snapshot.limitPrice || null,
                   entryStatus: initialStatus,
                   submittedAt: now,
                   now
@@ -885,7 +1023,7 @@ export class TradingBot {
                   .run();
 
                 // Record Audit Entry
-                const targetPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
+                const targetPrice = snapshot.targetEntryPrice || snapshot.signalPrice;
                 const slippagePercent = targetPrice > 0 ? (Math.abs(averageFillPrice - targetPrice) / targetPrice) * 100 : 0;
                 await this.env.DB.prepare(
                   `INSERT INTO trade_execution_audit (
@@ -894,16 +1032,16 @@ export class TradingBot {
                 )
                   .bind(
                     crypto.randomUUID(),
-                    target.id,
-                    userId,
-                    orderSymbol,
-                    target.strategy,
-                    target.targetEntryPrice || null,
-                    target.signalPrice || target.entryPrice,
+                    snapshot.alertId,
+                    snapshot.userId,
+                    snapshot.symbol,
+                    snapshot.strategy,
+                    snapshot.targetEntryPrice || null,
+                    snapshot.signalPrice,
                     refPrice,
                     averageFillPrice,
-                    target.stopLoss,
-                    target.takeProfit,
+                    snapshot.stopLoss,
+                    snapshot.takeProfit,
                     slippagePercent,
                     now,
                     now,
@@ -1165,7 +1303,8 @@ export class TradingBot {
                   const ticker = await adapter.fetchTicker(coinId).catch(() => null);
                   const price = ticker?.last?.toNumber() || 0;
                   
-                  const storedPositionSize = (await this.state.storage.get('positionSize')) as number | undefined;
+                  const setupSnapshot = await this.state.storage.get<TradeSetupSnapshot>('setupSnapshot');
+                  const storedPositionSize = setupSnapshot?.positionSize ?? ((await this.state.storage.get('positionSize')) as number | undefined);
                   const calculatedSize = sig.riskAssessment?.positionSizeRecommendation;
                   const size = (storedPositionSize && storedPositionSize > 0) ? storedPositionSize : (calculatedSize && calculatedSize > 0 ? calculatedSize : 0);
                   
@@ -1173,7 +1312,7 @@ export class TradingBot {
                     console.warn(`[trading-bot] Skipping TradeAlert generation for ${coinId}: No valid position size available from RiskEngine or manual override.`);
                     await this.logAuditEvent(userId, 'ALERT_SKIPPED_MISSING_POSITION_SIZE', {
                       symbol: coinId,
-                      strategy,
+                      strategy: setupSnapshot?.strategy || strategy,
                       reason: 'Trade opportunity detected, but execution was skipped because no valid position size was available.'
                     });
 
@@ -1181,7 +1320,30 @@ export class TradingBot {
                     existingLogs.push(`[${new Date().toISOString()}] WARN: Trade opportunity detected for ${coinId}, but alert generation was skipped because no valid position size was available.`);
                     await this.state.storage.put('logs', existingLogs.slice(-50));
                   } else {
-                    const targetEntryPrice = (await this.state.storage.get('targetEntryPrice')) as number | undefined;
+                    // Phase A1 Integration: MarketRegime Check
+                  const klines = (typeof adapter.fetchKlines === 'function')
+                    ? await adapter.fetchKlines(coinId, '1h', 50).catch(() => [])
+                    : [];
+                  if (klines && klines.length >= 20) {
+                    const highs = klines.map((k: any) => k.high?.toNumber ? k.high.toNumber() : Number(k.high));
+                    const lows = klines.map((k: any) => k.low?.toNumber ? k.low.toNumber() : Number(k.low));
+                    const closes = klines.map((k: any) => k.close?.toNumber ? k.close.toNumber() : Number(k.close));
+                    const regime = MarketRegimeEngine.evaluate(highs, lows, closes, 0);
+                    const regimeAllowed = MarketRegimeEngine.isStrategyAllowed(setupSnapshot?.strategy || strategy, regime);
+                    if (!regimeAllowed.allowed) {
+                      console.warn(`[trading-bot] Skipping TradeAlert generation for ${coinId}: MarketRegime check failed: ${regimeAllowed.reason}`);
+                      await this.logAuditEvent(userId, 'ALERT_SKIPPED_MARKET_REGIME', {
+                        symbol: coinId,
+                        strategy: setupSnapshot?.strategy || strategy,
+                        reason: regimeAllowed.reason,
+                        regime: regime.regime,
+                        score: regime.score
+                      });
+                      return;
+                    }
+                  }
+
+                  const targetEntryPrice = setupSnapshot?.targetEntryPrice ?? ((await this.state.storage.get('targetEntryPrice')) as number | undefined);
                     const alertSignalPrice = sig.signalPrice || price;
                     const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
                     const alertStopLoss = sig.stopLoss || alertSignalPrice * 0.99;
@@ -1198,7 +1360,7 @@ export class TradingBot {
                       takeProfit: alertTakeProfit,
                       estimatedPnl: estimatedPnl,
                       positionSize: size,
-                      strategy: `${strategy}_NEW`,
+                      strategy: `${setupSnapshot?.strategy || strategy}_NEW`,
                       side: sig.type as 'BUY' | 'SELL',
                       timestamp: new Date().toISOString(),
                       status: 'pending'

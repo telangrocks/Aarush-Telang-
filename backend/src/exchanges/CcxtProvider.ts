@@ -414,13 +414,13 @@ export class CcxtProvider implements IExchangeProvider {
             : `https://testnet.binance.vision/api/v3/ticker/price?symbol=${rawPair}`;
           try {
             res = await globalThis.fetch(fallbackUrl);
-          } catch (_) {}
+          } catch (_) { /* ignore fallback fetch error */ }
         }
         if (res && !res.ok) {
           const rawKucoin = cleanSymbol.replace('/', '-');
           try {
             res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawKucoin}`);
-          } catch (_) {}
+          } catch (_) { /* ignore kucoin fallback fetch error */ }
           if (res && res.ok) {
             const json: any = await res.json();
             if (json.code === '200000' && json.data) {
@@ -721,76 +721,8 @@ export class CcxtProvider implements IExchangeProvider {
       params
     }));
 
-    // --- TASK #3 FORENSICS INSTRUMENTATION ---
-    const ex = this.exchange as any;
-    const describeOptions = ex?.describe ? (ex.describe().options || {}) : {};
-    const runtimeOptions = ex?.options || {};
-    const describeKeys = Object.keys(describeOptions);
-    const runtimeKeys = Object.keys(runtimeOptions);
-    const missingKeys = describeKeys.filter(k => !(k in runtimeOptions));
 
-    const forensics = {
-      ccxtVersion: (ccxt as any).version || 'unknown',
-      exchangeVersion: ex?.version || 'unknown',
-      exchangeId: ex?.id || 'unknown',
-      exchangeName: ex?.name || 'unknown',
-      entireRuntimeOptions: runtimeOptions,
-      runtimeOptionKeys: runtimeKeys,
-      specificFieldsCheck: {
-        createMarketBuyOrderRequiresPrice: runtimeOptions.createMarketBuyOrderRequiresPrice,
-        defaultType: runtimeOptions.defaultType,
-        defaultSubType: runtimeOptions.defaultSubType,
-        defaultTimeInForce: runtimeOptions.defaultTimeInForce,
-        recvWindow: runtimeOptions.recvWindow,
-        broker: runtimeOptions.broker,
-      },
-      exchangeHas: ex?.has || {},
-      exchangeFeatures: ex?.features || null,
-      describeOptions: describeOptions,
-      describeKeysCount: describeKeys.length,
-      runtimeKeysCount: runtimeKeys.length,
-      missingOptionsKeysInRuntime: missingKeys,
-    };
 
-    // --- TASK #5 FORENSICS INSTRUMENTATION ---
-    let resolvedMarket: any = null;
-    try {
-      resolvedMarket = ex.market ? ex.market(cleanSymbol) : null;
-    } catch (_) {
-      resolvedMarket = ex.markets ? ex.markets[cleanSymbol] : null;
-    }
-
-    const task5Trace = {
-      inputs: {
-        symbol: cleanSymbol,
-        type: order.type,
-        side: order.side,
-        amount: order.amount.toNumber(),
-        price: order.price ? order.price.toNumber() : undefined,
-        params,
-        exchangeOptions: ex?.options || {},
-        exchangeHas: ex?.has || {},
-        exchangeFeaturesSpot: ex?.features?.spot || null,
-      },
-      resolvedMarket: resolvedMarket ? {
-        symbol: resolvedMarket.symbol,
-        id: resolvedMarket.id,
-        type: resolvedMarket.type,
-        spot: resolvedMarket.spot,
-        margin: resolvedMarket.margin,
-        swap: resolvedMarket.swap,
-        future: resolvedMarket.future,
-        contract: resolvedMarket.contract,
-        linear: resolvedMarket.linear,
-        inverse: resolvedMarket.inverse,
-      } : null,
-      effectiveExchangeConfig: {
-        defaultType: ex?.options?.defaultType,
-        defaultSubType: ex?.options?.defaultSubType,
-        marginMode: ex?.options?.marginMode,
-        defaultMarginMode: ex?.options?.defaultMarginMode,
-      }
-    };
 
     // --- TASK #6 DUMP #2: IMMEDIATELY BEFORE CREATE_ORDER ---
     const ex2 = this.exchange as any;
