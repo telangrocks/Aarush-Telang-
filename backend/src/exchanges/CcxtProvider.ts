@@ -11,12 +11,14 @@ export class CcxtProvider implements IExchangeProvider {
   private exchangeId: string;
   private exchange: Exchange | null = null;
   private marketsCached: boolean = false;
+  private config!: ProviderConfig;
 
   constructor(exchangeId: string) {
     this.exchangeId = exchangeId;
   }
 
   public async connect(config: ProviderConfig): Promise<void> {
+    this.config = config;
     if (!ccxt.pro[this.exchangeId as keyof typeof ccxt.pro] && !ccxt[this.exchangeId as keyof typeof ccxt]) {
       throw new UnifiedError(`Exchange ${this.exchangeId} not supported by CCXT`, 'UNSUPPORTED_EXCHANGE');
     }
@@ -48,6 +50,28 @@ export class CcxtProvider implements IExchangeProvider {
     }
 
     this.exchange = new ExchangeClass(exchangeOptions) as Exchange;
+
+    if (this.exchangeId === 'binance' && this.exchange.options) {
+      if (!Array.isArray(this.exchange.options['createMarketBuyOrderRequiresPrice'])) {
+        this.exchange.options['createMarketBuyOrderRequiresPrice'] = ['market'];
+      }
+    }
+
+    // --- TASK #6 DUMP #1: IMMEDIATELY AFTER CONSTRUCTOR ---
+    const ex1 = this.exchange as any;
+    const describeOpts1 = ex1?.describe ? (ex1.describe().options || {}) : {};
+    const runtimeOpts1 = ex1?.options || {};
+    
+    console.log('[TASK_6_DUMP_1_AFTER_CONSTRUCTOR]', JSON.stringify({
+      keysCount: Object.keys(runtimeOpts1).length,
+      defaultType: runtimeOpts1.defaultType,
+      createMarketBuyOrderRequiresPrice: runtimeOpts1.createMarketBuyOrderRequiresPrice,
+      typeofCreateMarketBuyOrderRequiresPrice: typeof runtimeOpts1.createMarketBuyOrderRequiresPrice,
+      jsonCreateMarketBuyOrderRequiresPrice: JSON.stringify(runtimeOpts1.createMarketBuyOrderRequiresPrice),
+      isIdentityWithDescribe: runtimeOpts1 === describeOpts1,
+      describeKeysCount: Object.keys(describeOpts1).length,
+      entireObject: runtimeOpts1
+    }, null, 2));
 
     if (this.exchangeId === 'kucoin') {
       if (!this.exchange.options) this.exchange.options = {};
@@ -144,8 +168,7 @@ export class CcxtProvider implements IExchangeProvider {
         this.exchange.markets_by_id = { 'BTCUSDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
         const testnetHost = (process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '');
         this.exchange.urls.api = {
-          public: 'https://api.binance.com/api/v3',
-          private: `${testnetHost}/api/v3`,
+          ...this.exchange.urls.api,
           sapi: `${testnetHost}/api/v3`,
           wapi: `${testnetHost}/api/v3`,
           fapi: 'https://testnet.binancefuture.com/fapi/v1',
@@ -154,24 +177,30 @@ export class CcxtProvider implements IExchangeProvider {
         const secretVal = config.secret || this.exchange.secret || '';
         const apiKeyVal = config.apiKey || this.exchange.apiKey || '';
         const origFetch = this.exchange.fetch.bind(this.exchange);
-        this.exchange.fetch = async (url: string, method = 'GET', headers: any = {}, body?: any) => {
-          if (typeof url === 'string' && (url.includes('/sapi/') || url.includes('/wapi/') || url.includes('/fapi/') || url.includes('/capital/config/getall'))) {
-            console.warn(`[SHORT-CIRCUITED UNSUPPORTED TESTNET ENDPOINT] ${method} ${url}`);
-            return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        this.exchange.fetch = async (url: any, method = 'GET', headers: any = {}, body?: any) => {
+          try {
+            const urlString = typeof url === 'string' ? url : (url && typeof url.url === 'string' ? url.url : String(url || ''));
+            if (urlString && (urlString.includes('/sapi/') || urlString.includes('/wapi/') || urlString.includes('/fapi/') || urlString.includes('/capital/config/getall'))) {
+              console.warn(`[SHORT-CIRCUITED UNSUPPORTED TESTNET ENDPOINT] ${method} ${urlString}`);
+              return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (urlString && urlString.includes('/api/v3/account')) {
+              const ts = Date.now();
+              const query = 'timestamp=' + ts + '&recvWindow=10000';
+              const encoder = new TextEncoder();
+              const keyData = encoder.encode(secretVal);
+              const msgData = encoder.encode(query);
+              const key = await globalThis.crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+              const sigBuf = await globalThis.crypto.subtle.sign('HMAC', key, msgData);
+              const sig = Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+              const cleanUrl = `${testnetHost}/api/v3/account?` + query + '&signature=' + sig;
+              return globalThis.fetch(cleanUrl, { method: 'GET', headers: { 'X-MBX-APIKEY': apiKeyVal } });
+            }
+            return origFetch(url, method, headers, body);
+          } catch (fetchErr: any) {
+            console.error('[DIAGNOSTIC] CcxtProvider.fetch override exception:', fetchErr?.message, fetchErr?.stack);
+            throw fetchErr;
           }
-          if (typeof url === 'string' && url.includes('/api/v3/account')) {
-            const ts = Date.now();
-            const query = 'timestamp=' + ts + '&recvWindow=10000';
-            const encoder = new TextEncoder();
-            const keyData = encoder.encode(secretVal);
-            const msgData = encoder.encode(query);
-            const key = await globalThis.crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-            const sigBuf = await globalThis.crypto.subtle.sign('HMAC', key, msgData);
-            const sig = Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-            const cleanUrl = `${testnetHost}/api/v3/account?` + query + '&signature=' + sig;
-            return globalThis.fetch(cleanUrl, { method: 'GET', headers: { 'X-MBX-APIKEY': apiKeyVal } });
-          }
-          return origFetch(url, method, headers, body);
         };
       } else if (this.exchangeId === 'kucoin') {
         // KuCoin has permanently disabled their sandbox environment.
@@ -368,20 +397,31 @@ export class CcxtProvider implements IExchangeProvider {
     if (exId.includes('binance')) {
       try {
         const rawPair = cleanSymbol.replace('/', '');
-        let res = await globalThis.fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-        });
-        if (!res.ok) {
-          res = await globalThis.fetch(`https://testnet.binance.vision/api/v3/ticker/price?symbol=${rawPair}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-          });
+        const primaryUrl = (this.config?.environment === 'testnet' || this.config?.environment === 'Testing')
+          ? `https://testnet.binance.vision/api/v3/ticker/price?symbol=${rawPair}`
+          : `https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`;
+        
+        let res: Response | null = null;
+        try {
+          res = await globalThis.fetch(primaryUrl);
+        } catch (err: any) {
+          console.error('[FETCH_TICKER_ERROR_PRIMARY]', primaryUrl, err?.message, err?.stack);
         }
-        if (!res.ok) {
+
+        if (!res || !res.ok) {
+          const fallbackUrl = (this.config?.environment === 'testnet' || this.config?.environment === 'Testing')
+            ? `https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`
+            : `https://testnet.binance.vision/api/v3/ticker/price?symbol=${rawPair}`;
+          try {
+            res = await globalThis.fetch(fallbackUrl);
+          } catch (_) {}
+        }
+        if (res && !res.ok) {
           const rawKucoin = cleanSymbol.replace('/', '-');
-          res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawKucoin}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-          });
-          if (res.ok) {
+          try {
+            res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawKucoin}`);
+          } catch (_) {}
+          if (res && res.ok) {
             const json: any = await res.json();
             if (json.code === '200000' && json.data) {
               const px = new BigNumber(json.data.price || json.data.bestBid || 0);
@@ -399,8 +439,9 @@ export class CcxtProvider implements IExchangeProvider {
             }
           }
         }
-        if (res.ok) {
-          const data: any = await res.json();
+        if (res && res.ok) {
+          const text = await res.text();
+          const data: any = JSON.parse(text);
           const px = new BigNumber(data.price || 0);
           return {
             symbol: cleanSymbol,
@@ -633,14 +674,43 @@ export class CcxtProvider implements IExchangeProvider {
 
   public async createOrder(order: OrderRequest): Promise<Order> {
     this.ensureConnected();
+    if (this.exchangeId === 'binance' && this.exchange && this.exchange.options) {
+      if (!Array.isArray(this.exchange.options['createMarketBuyOrderRequiresPrice'])) {
+        this.exchange.options['createMarketBuyOrderRequiresPrice'] = ['market'];
+      }
+    }
+
+    const keyStr = this.exchange?.apiKey || '';
+    const secretStr = this.exchange?.secret || '';
+
+    console.log('[TASK_12_CREDENTIAL_FORENSICS]', JSON.stringify({
+      apiKeyExists: Boolean(keyStr),
+      apiKeyLength: keyStr.length,
+      apiKeyStart: keyStr ? keyStr.slice(0, 6) : '',
+      apiKeyEnd: keyStr ? keyStr.slice(-6) : '',
+      secretExists: Boolean(secretStr),
+      secretLength: secretStr.length,
+      secretStart: secretStr ? secretStr.slice(0, 6) : '',
+      secretEnd: secretStr ? secretStr.slice(-6) : '',
+      environment: this.config?.environment,
+      exchangeId: this.exchangeId,
+      sandbox: Boolean((this.exchange as any)?.sandbox || (this.exchange as any)?.urls?.test),
+      publicUrl: this.exchange?.urls?.api ? (this.exchange.urls.api as any).public : undefined,
+      privateUrl: this.exchange?.urls?.api ? (this.exchange.urls.api as any).private : undefined,
+      keyMatchesConfig: this.exchange?.apiKey === this.config?.apiKey,
+      secretMatchesConfig: this.exchange?.secret === this.config?.secret,
+    }, null, 2));
     const cleanSymbol = this.ensureMarket(order.symbol);
-    const params = {
+    const params: Record<string, any> = {
       clientOrderId: order.clientOrderId,
-      timeInForce: order.timeInForce,
       ...order.params
     };
+    if (order.timeInForce) {
+      params.timeInForce = order.timeInForce;
+    }
     delete params.stopLossPrice;
     delete params.takeProfitPrice;
+    Object.keys(params).forEach(key => params[key] === undefined && delete params[key]);
 
     console.log('[DIAGNOSTIC] CcxtProvider.createOrder args:', JSON.stringify({
       cleanSymbol,
@@ -650,6 +720,93 @@ export class CcxtProvider implements IExchangeProvider {
       price: order.price ? order.price.toNumber() : undefined,
       params
     }));
+
+    // --- TASK #3 FORENSICS INSTRUMENTATION ---
+    const ex = this.exchange as any;
+    const describeOptions = ex?.describe ? (ex.describe().options || {}) : {};
+    const runtimeOptions = ex?.options || {};
+    const describeKeys = Object.keys(describeOptions);
+    const runtimeKeys = Object.keys(runtimeOptions);
+    const missingKeys = describeKeys.filter(k => !(k in runtimeOptions));
+
+    const forensics = {
+      ccxtVersion: (ccxt as any).version || 'unknown',
+      exchangeVersion: ex?.version || 'unknown',
+      exchangeId: ex?.id || 'unknown',
+      exchangeName: ex?.name || 'unknown',
+      entireRuntimeOptions: runtimeOptions,
+      runtimeOptionKeys: runtimeKeys,
+      specificFieldsCheck: {
+        createMarketBuyOrderRequiresPrice: runtimeOptions.createMarketBuyOrderRequiresPrice,
+        defaultType: runtimeOptions.defaultType,
+        defaultSubType: runtimeOptions.defaultSubType,
+        defaultTimeInForce: runtimeOptions.defaultTimeInForce,
+        recvWindow: runtimeOptions.recvWindow,
+        broker: runtimeOptions.broker,
+      },
+      exchangeHas: ex?.has || {},
+      exchangeFeatures: ex?.features || null,
+      describeOptions: describeOptions,
+      describeKeysCount: describeKeys.length,
+      runtimeKeysCount: runtimeKeys.length,
+      missingOptionsKeysInRuntime: missingKeys,
+    };
+
+    // --- TASK #5 FORENSICS INSTRUMENTATION ---
+    let resolvedMarket: any = null;
+    try {
+      resolvedMarket = ex.market ? ex.market(cleanSymbol) : null;
+    } catch (_) {
+      resolvedMarket = ex.markets ? ex.markets[cleanSymbol] : null;
+    }
+
+    const task5Trace = {
+      inputs: {
+        symbol: cleanSymbol,
+        type: order.type,
+        side: order.side,
+        amount: order.amount.toNumber(),
+        price: order.price ? order.price.toNumber() : undefined,
+        params,
+        exchangeOptions: ex?.options || {},
+        exchangeHas: ex?.has || {},
+        exchangeFeaturesSpot: ex?.features?.spot || null,
+      },
+      resolvedMarket: resolvedMarket ? {
+        symbol: resolvedMarket.symbol,
+        id: resolvedMarket.id,
+        type: resolvedMarket.type,
+        spot: resolvedMarket.spot,
+        margin: resolvedMarket.margin,
+        swap: resolvedMarket.swap,
+        future: resolvedMarket.future,
+        contract: resolvedMarket.contract,
+        linear: resolvedMarket.linear,
+        inverse: resolvedMarket.inverse,
+      } : null,
+      effectiveExchangeConfig: {
+        defaultType: ex?.options?.defaultType,
+        defaultSubType: ex?.options?.defaultSubType,
+        marginMode: ex?.options?.marginMode,
+        defaultMarginMode: ex?.options?.defaultMarginMode,
+      }
+    };
+
+    // --- TASK #6 DUMP #2: IMMEDIATELY BEFORE CREATE_ORDER ---
+    const ex2 = this.exchange as any;
+    const describeOpts2 = ex2?.describe ? (ex2.describe().options || {}) : {};
+    const runtimeOpts2 = ex2?.options || {};
+    
+    console.log('[TASK_6_DUMP_2_BEFORE_CREATE_ORDER]', JSON.stringify({
+      keysCount: Object.keys(runtimeOpts2).length,
+      defaultType: runtimeOpts2.defaultType,
+      createMarketBuyOrderRequiresPrice: runtimeOpts2.createMarketBuyOrderRequiresPrice,
+      typeofCreateMarketBuyOrderRequiresPrice: typeof runtimeOpts2.createMarketBuyOrderRequiresPrice,
+      jsonCreateMarketBuyOrderRequiresPrice: JSON.stringify(runtimeOpts2.createMarketBuyOrderRequiresPrice),
+      isIdentityWithDescribe: runtimeOpts2 === describeOpts2,
+      describeKeysCount: Object.keys(describeOpts2).length,
+      entireObject: runtimeOpts2
+    }, null, 2));
 
     try {
       const response = await this.exchange!.createOrder(
@@ -825,8 +982,13 @@ export class CcxtProvider implements IExchangeProvider {
   }
 
   private ensureConnected(): void {
-    if (!this.exchange || !this.marketsCached) {
-      throw new UnifiedError('Exchange provider not connected', 'NOT_CONNECTED');
+    if (!this.exchange) {
+      throw new UnifiedError('Exchange provider not connected.', 'NOT_CONNECTED');
+    }
+    if (this.exchangeId === 'binance' && this.exchange.options) {
+      if (!Array.isArray(this.exchange.options['createMarketBuyOrderRequiresPrice'])) {
+        this.exchange.options['createMarketBuyOrderRequiresPrice'] = ['market'];
+      }
     }
   }
 
@@ -854,7 +1016,8 @@ export class CcxtProvider implements IExchangeProvider {
   }
 
   private mapError(e: any, _endpoint: string): UnifiedError {
-    const errorClass = e.constructor.name;
+    console.error('[DIAGNOSTIC MAPERROR STACK]', { message: e?.message, name: e?.name, stack: e?.stack });
+    const errorClass = e?.constructor?.name || 'Error';
     let mappedCode = 'UNKNOWN_ERROR';
     
     if (e instanceof ccxt.AuthenticationError) {
@@ -876,11 +1039,11 @@ export class CcxtProvider implements IExchangeProvider {
     }
 
     return new UnifiedError(
-      e.message,
+      `${e?.message || String(e)} | STACK: ${e?.stack || 'no_stack'}`,
       mappedCode,
       errorClass,
-      e.code,
-      e.message
+      e?.code,
+      e?.message
     );
   }
 }
