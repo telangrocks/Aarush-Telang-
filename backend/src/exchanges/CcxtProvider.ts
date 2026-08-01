@@ -164,8 +164,6 @@ export class CcxtProvider implements IExchangeProvider {
       }
       if (this.exchangeId === 'binance' && this.exchange.urls) {
         (this.exchange as any).fetchCapitalConfig = async () => [];
-        this.exchange.markets = { 'BTC/USDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
-        this.exchange.markets_by_id = { 'BTCUSDT': { id: 'BTCUSDT', symbol: 'BTC/USDT' } as any };
         const testnetHost = (process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '');
         this.exchange.urls.api = {
           ...(this.exchange.urls.api as Record<string, string>),
@@ -219,8 +217,8 @@ export class CcxtProvider implements IExchangeProvider {
       return this.exchange!.markets || {};
     };
     (this.exchange as any).fetchMarkets = async () => {
-      console.log(`[CUSTOM fetchMarkets CALLED] Returning static market list`);
-      return [];
+      console.log(`[CUSTOM fetchMarkets CALLED] Returning populated static market list`);
+      return Object.values(this.exchange?.markets || {});
     };
 
     const topPairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT'];
@@ -389,7 +387,7 @@ export class CcxtProvider implements IExchangeProvider {
       const highPx = new BigNumber(ticker.high ?? 0);
       const lowPx = new BigNumber(ticker.low ?? 0);
 
-      if (lastPx.isGreaterThan(0) && (baseVol.isGreaterThan(0) || quoteVol.isGreaterThan(0))) {
+      if (lastPx.isGreaterThan(0)) {
         return {
           symbol: ticker.symbol || cleanSymbol,
           timestamp: ticker.timestamp ?? Date.now(),
@@ -420,11 +418,11 @@ export class CcxtProvider implements IExchangeProvider {
       for (const url of urls) {
         try {
           const res = await globalThis.fetch(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' }
+            headers: { 'User-Agent': 'CryptoPulse/1.0', 'Accept': 'application/json' }
           });
           if (res.ok) {
             const data: any = await res.json();
-            const lastPx = new BigNumber(data.lastPrice || 0);
+            const lastPx = new BigNumber(data.lastPrice || data.price || 0);
             if (lastPx.isGreaterThan(0)) {
               const baseVol = new BigNumber(data.volume || 0);
               const quoteVol = new BigNumber(data.quoteVolume || 0);
@@ -446,7 +444,9 @@ export class CcxtProvider implements IExchangeProvider {
               };
             }
           }
-        } catch (_) { /* ignore fallback fetch error */ }
+        } catch (fErr: any) {
+          console.warn(`[CCXT REST FETCH_TICKER FALLBACK FAILED] ${url}:`, fErr?.message);
+        }
       }
     }
 
@@ -455,7 +455,7 @@ export class CcxtProvider implements IExchangeProvider {
       const rawPair = cleanSymbol.replace('/', '-');
       try {
         const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/stats?symbol=${rawPair}`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+          headers: { 'Accept': 'application/json' }
         });
         if (res.ok) {
           const json: any = await res.json();
