@@ -1,78 +1,39 @@
 package com.cryptopulse.app.service
 
-import android.content.Intent
 import android.util.Log
+import com.cryptopulse.app.data.local.TokenManager
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class FcmService : FirebaseMessagingService() {
 
+    @Inject
+    lateinit var tokenManager: TokenManager
+
+    @Inject
+    lateinit var fcmRepository: com.cryptopulse.app.domain.repository.FcmRepository
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    @Inject
-    lateinit var tokenManager: com.cryptopulse.app.data.local.TokenManager
-
-    @Inject
-    lateinit var fcmApi: com.cryptopulse.app.data.api.FcmApi
-
     override fun onNewToken(token: String) {
-        registerTokenWithBackend(token)
-    }
+        super.onNewToken(token)
+        Log.d("FcmService", "New FCM token generated: $token")
 
-    override fun onMessageReceived(message: RemoteMessage) {
-        Log.d("FcmService", "Message received from: ${message.from}")
-
-        message.data.let { data ->
-            Log.d("FcmService", "Message data: $data")
-            if (data["type"] == "trade_alert") {
-                val entryPrice = data["entryPrice"]?.toDoubleOrNull() ?: 0.0
-                val signalPrice = data["signalPrice"]?.toDoubleOrNull() ?: entryPrice
-                val targetEntryPrice = data["targetEntryPrice"]?.toDoubleOrNull()
-                val positionSize = data["positionSize"]?.toDoubleOrNull()
-                val alert = mutableMapOf<String, Any>(
-                    "id" to (data["alertId"] ?: data["id"] ?: ""),
-                    "symbol" to (data["symbol"] ?: "UNKNOWN"),
-                    "entryPrice" to entryPrice,
-                    "stopLoss" to (data["stopLoss"]?.toDoubleOrNull() ?: 0.0),
-                    "takeProfit" to (data["takeProfit"]?.toDoubleOrNull() ?: 0.0),
-                    "estimatedPnl" to (data["estimatedPnl"]?.toDoubleOrNull() ?: 0.0),
-                    "signalPrice" to signalPrice,
-                )
-                if (targetEntryPrice != null && targetEntryPrice > 0.0) {
-                    alert["targetEntryPrice"] = targetEntryPrice
-                }
-                if (positionSize != null && positionSize > 0.0) {
-                    alert["positionSize"] = positionSize
-                }
-                TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(alert)
-            }
-        }
-
-        message.notification?.let { notification ->
-            Log.d("FcmService", "Notification Title: ${notification.title}")
-            Log.d("FcmService", "Notification Body: ${notification.body}")
-        }
-    }
-
-    private fun registerTokenWithBackend(token: String) {
         serviceScope.launch {
             try {
                 val jwtToken = tokenManager.getToken() ?: return@launch
-                val request = mapOf("fcmToken" to token)
-                val response = fcmApi.registerToken(request)
-                if (response.isSuccessful) {
+                val response = fcmRepository.registerToken(token)
+                if (response is com.cryptopulse.app.core.network.NetworkResult.Success) {
                     Log.d("FcmService", "FCM token registered with backend")
                 } else {
-                    response.errorBody()?.close()
-                    Log.e("FcmService", "Failed to register FCM token: ${response.code()}")
+                    Log.e("FcmService", "Failed to register FCM token")
                 }
             } catch (e: Exception) {
                 Log.e("FcmService", "Error registering FCM token", e)
@@ -80,8 +41,43 @@ class FcmService : FirebaseMessagingService() {
         }
     }
 
+    override fun onMessageReceived(message: RemoteMessage) {
+        super.onMessageReceived(message)
+        
+        Log.d("FcmService", "Message received from: ${message.from}")
+
+        // Handle data payload
+        if (message.data.isNotEmpty()) {
+            Log.d("FcmService", "Message data payload: ${message.data}")
+            handleDataPayload(message.data)
+        }
+
+        // Handle notification payload
+        message.notification?.let {
+            Log.d("FcmService", "Message Notification Body: ${it.body}")
+            // System handles notification tray automatically when app is in background
+        }
+    }
+
+    private fun handleDataPayload(data: Map<String, String>) {
+        val alertType = data["type"]
+        if (alertType == "TRADE_ALERT") {
+            val alertData = mapOf<String, Any>(
+                "id" to (data["id"] ?: ""),
+                "symbol" to (data["symbol"] ?: ""),
+                "entryPrice" to (data["entryPrice"]?.toDoubleOrNull() ?: 0.0),
+                "stopLoss" to (data["stopLoss"]?.toDoubleOrNull() ?: 0.0),
+                "takeProfit" to (data["takeProfit"]?.toDoubleOrNull() ?: 0.0),
+                "estimatedPnl" to (data["estimatedPnl"]?.toDoubleOrNull() ?: 0.0),
+                "strategy" to (data["strategy"] ?: ""),
+                "side" to (data["side"] ?: "")
+            )
+            TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(alertData)
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        serviceScope.cancel()
+        // serviceScope.cancel() 
     }
 }

@@ -1,97 +1,61 @@
 package com.cryptopulse.app.data.repository
 
-import com.cryptopulse.app.data.api.AuthService
-import com.cryptopulse.app.data.api.LoginRequest
-import com.cryptopulse.app.data.api.RegisterRequest
-import com.cryptopulse.app.data.api.RefreshRequest
+import com.cryptopulse.app.core.dispatcher.DispatcherProvider
+import com.cryptopulse.app.core.network.NetworkResult
+import com.cryptopulse.app.data.api.dto.auth.request.*
+import com.cryptopulse.app.data.datasource.remote.auth.AuthRemoteDataSource
 import com.cryptopulse.app.data.local.TokenManager
-import com.cryptopulse.app.domain.model.AuthResult
-import kotlinx.coroutines.flow.first
+import com.cryptopulse.app.domain.repository.AuthRepository
+import kotlinx.coroutines.withContext
+import javax.inject.Inject
+import javax.inject.Singleton
 
-class AuthRepository(
-    private val api: AuthService,
+@Singleton
+class AuthRepositoryImpl @Inject constructor(
+    private val authRemoteDataSource: AuthRemoteDataSource,
+    private val dispatcherProvider: DispatcherProvider,
     private val tokenManager: TokenManager
-) {
-    suspend fun register(email: String, password: String): AuthResult<Unit> {
-        return try {
-            val response = api.register(RegisterRequest(email, password, password))
-            if (response.isSuccessful) {
-                val body = response.body()
-                if (body?.accessToken != null && body.refreshToken != null) {
-                    tokenManager.saveTokens(body.accessToken, body.refreshToken)
-                    AuthResult.Success(Unit)
-                } else {
-                    AuthResult.Error(body?.error ?: "Registration failed")
-                }
-            } else {
-                response.errorBody()?.close()
-                AuthResult.Error(response.body()?.error ?: "Registration failed")
+) : AuthRepository {
+    override suspend fun login(email: String, password: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+        when (val result = authRemoteDataSource.login(LoginRequestDto(email, password))) {
+            is NetworkResult.Success -> {
+                tokenManager.saveTokens(result.data.accessToken ?: "", result.data.refreshToken ?: "")
+                NetworkResult.Success(Unit)
             }
-        } catch (e: Exception) {
-            AuthResult.Error(e.localizedMessage ?: "Unknown error occurred")
+            is NetworkResult.Error -> result
         }
     }
 
-    suspend fun login(email: String, password: String): AuthResult<Unit> {
-        return try {
-            val response = api.login(LoginRequest(email, password))
-            if (response.isSuccessful) {
-                val body = response.body()
-                if (body?.accessToken != null && body.refreshToken != null) {
-                    tokenManager.saveTokens(body.accessToken, body.refreshToken)
-                    AuthResult.Success(Unit)
-                } else {
-                    AuthResult.Error(body?.error ?: "Login failed")
-                }
-            } else {
-                response.errorBody()?.close()
-                AuthResult.Error(response.body()?.error ?: "Login failed")
-            }
-        } catch (e: Exception) {
-            AuthResult.Error(e.localizedMessage ?: "Unknown error occurred")
+    override suspend fun register(email: String, password: String, confirm: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+        when (val result = authRemoteDataSource.register(RegisterRequestDto(email, password, confirm))) {
+            is NetworkResult.Success -> NetworkResult.Success(Unit)
+            is NetworkResult.Error -> result
         }
     }
 
-    suspend fun refreshToken(): AuthResult<Unit> {
-        return try {
-            val refreshToken = tokenManager.refreshTokenFlow.first()
-            if (refreshToken.isNullOrEmpty()) {
-                return AuthResult.Error("No refresh token available")
-            }
-
-            val response = api.refresh(RefreshRequest(refreshToken))
-            if (response.isSuccessful) {
-                val body = response.body()
-                if (body?.accessToken != null && body.refreshToken != null) {
-                    tokenManager.saveTokens(body.accessToken, body.refreshToken)
-                    AuthResult.Success(Unit)
-                } else {
-                    AuthResult.Error(body?.error ?: "Token refresh failed")
-                }
-            } else {
-                response.errorBody()?.close()
+    override suspend fun logout(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+        when (val result = authRemoteDataSource.logout()) {
+            is NetworkResult.Success -> {
                 tokenManager.clearTokens()
-                AuthResult.Error(response.body()?.error ?: "Token refresh failed")
+                NetworkResult.Success(Unit)
             }
-        } catch (e: Exception) {
-            tokenManager.clearTokens()
-            AuthResult.Error(e.localizedMessage ?: "Unknown error occurred")
+            is NetworkResult.Error -> result
         }
     }
 
-    suspend fun logout() {
-        try {
-            val token = tokenManager.getToken()
-            if (!token.isNullOrEmpty()) {
-                val response = api.logout()
-                if (!response.isSuccessful) {
-                    response.errorBody()?.close()
-                }
+    override suspend fun refreshToken(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+        val currentToken = tokenManager.tokenFlow.value ?: return@withContext NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception("No token")))
+        when (val result = authRemoteDataSource.refreshToken(RefreshRequestDto(currentToken))) {
+            is NetworkResult.Success -> {
+                tokenManager.saveTokens(result.data.accessToken ?: "", result.data.refreshToken ?: "")
+                NetworkResult.Success(Unit)
             }
-        } catch (e: Exception) {
-            // Proceed with local cleanup even if server call fails
-        } finally {
-            tokenManager.clearTokens()
+            is NetworkResult.Error -> {
+                tokenManager.clearTokens()
+                result
+            }
         }
     }
 }
+
+

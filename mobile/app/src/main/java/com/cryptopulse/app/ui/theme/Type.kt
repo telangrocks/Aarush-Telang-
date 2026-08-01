@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.theme
 
+import com.cryptopulse.app.core.network.*
+
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -102,3 +104,4 @@ val Typography = Typography(
         letterSpacing = 0.8.sp,
     ),
 )
+

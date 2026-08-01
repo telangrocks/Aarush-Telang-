@@ -1,11 +1,13 @@
 package com.cryptopulse.app.ui.auth
 
+import com.cryptopulse.app.core.network.*
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import com.cryptopulse.app.data.repository.AuthRepository
+import com.cryptopulse.app.domain.repository.AuthRepository
 import com.cryptopulse.app.domain.model.AuthResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -87,12 +89,12 @@ class AuthViewModel @Inject constructor(
             isLoading = true
             errorMessage = null
 
-            when (val result = repository.register(email.trim(), password)) {
-                is AuthResult.Success -> {
+            when (val result = repository.register(email.trim(), password, confirmPassword)) {
+                is NetworkResult.Success -> {
                     isAuthenticated = true
                 }
-                is AuthResult.Error -> {
-                    errorMessage = result.message
+                is NetworkResult.Error -> {
+                    errorMessage = result.error.toString()
                 }
                 else -> {}
             }
@@ -124,11 +126,11 @@ class AuthViewModel @Inject constructor(
             errorMessage = null
 
             when (val result = repository.login(trimmedEmail, password)) {
-                is AuthResult.Success -> {
+                is NetworkResult.Success -> {
                     isAuthenticated = true
                 }
-                is AuthResult.Error -> {
-                    errorMessage = result.message
+                is NetworkResult.Error -> {
+                    errorMessage = result.error.toString()
                 }
                 else -> {}
             }
@@ -136,3 +138,7 @@ class AuthViewModel @Inject constructor(
         }
     }
 }
+
+
+
+

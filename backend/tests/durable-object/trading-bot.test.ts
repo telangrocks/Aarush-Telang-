@@ -134,6 +134,41 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     expect(mockState.storage.setAlarm).toHaveBeenCalled();
   });
 
+  it("Task #1: should block execute-trade with 403 when safeMode is true, reset it via /reset-safemode, and verify analysis-status reports safeMode=false", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set('userId', 'user-123');
+    mockStorage.set('safeMode', true);
+
+    // 1. Verify /execute-trade is blocked with HTTP 403 when safeMode is active
+    const blockReq = new Request('http://bot/execute-trade', { method: 'POST' });
+    const blockRes = await bot.fetch(blockReq);
+    expect(blockRes.status).toBe(403);
+    const blockData = await blockRes.json<any>();
+    expect(blockData.error).toContain('Safe Mode is active');
+
+    // 2. Verify /deactivate does NOT clear safeMode
+    const deactReq = new Request('http://bot/deactivate', { method: 'POST' });
+    await bot.fetch(deactReq);
+    expect(mockStorage.get('safeMode')).toBe(true);
+
+    // 3. Call /reset-safemode explicit recovery endpoint
+    const resetReq = new Request('http://bot/reset-safemode', { method: 'POST' });
+    const resetRes = await bot.fetch(resetReq);
+    expect(resetRes.status).toBe(200);
+    const resetData = await resetRes.json<any>();
+    expect(resetData.success).toBe(true);
+    expect(resetData.previousState).toBe(true);
+    expect(resetData.currentState).toBe(false);
+    expect(resetData.message).toBe('Safe Mode cleared.');
+
+    // 4. Verify GET /analysis-status reports safeMode = false
+    const statusReq = new Request('http://bot/analysis-status', { method: 'GET' });
+    const statusRes = await bot.fetch(statusReq);
+    const statusData = await statusRes.json<any>();
+    expect(statusData.safeMode).toBe(false);
+    expect(mockStorage.get('safeMode')).toBeUndefined();
+  });
+
   it("should execute trade using targetEntryPrice and record averageFillPrice and execution audit in D1", async () => {
     mockDb.run = vi.fn().mockResolvedValue({ success: true });
     mockDb.prepare = vi.fn().mockReturnValue({

@@ -42,17 +42,8 @@ export class MarketDataEngine {
         const candles = await this.provider.fetchCandles(symbol, tf);
         snapshot.candles[tf] = candles;
       } catch (e) {
-        console.warn(`[MarketDataEngine] Failed to fetch candles for ${symbol} at ${tf}, generating fallback snapshot:`, e);
-        const now = Date.now();
-        const px = snapshot.currentPrice || 100;
-        snapshot.candles[tf] = Array.from({ length: 50 }).map((_, i) => ({
-          timestamp: now - (50 - i) * 60000,
-          open: px * 0.999,
-          high: px * 1.001,
-          low: px * 0.998,
-          close: px,
-          volume: 100
-        }));
+        console.error(`[MarketDataEngine] Failed to fetch genuine live candles for ${symbol} at ${tf}:`, e);
+        throw new Error(`Failed to retrieve authentic market candle statistics for ${symbol} (${tf}): ${e instanceof Error ? e.message : String(e)}`);
       }
     });
 

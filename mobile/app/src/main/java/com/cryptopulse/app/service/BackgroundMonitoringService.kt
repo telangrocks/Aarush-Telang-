@@ -7,15 +7,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.media.Ringtone
-import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.cryptopulse.app.MainActivity
 import com.cryptopulse.app.data.local.TokenManager
-import com.cryptopulse.app.data.api.TradingBotService
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import javax.inject.Inject
@@ -26,12 +23,11 @@ class BackgroundMonitoringService : Service() {
     lateinit var tokenManager: TokenManager
 
     @Inject
-    lateinit var tradingBotService: TradingBotService
+    lateinit var botRepository: com.cryptopulse.app.domain.repository.BotRepository
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollingJob: Job? = null
     private var lastAlertId: String? = null
-    private var alertRingtone: Ringtone? = null
 
     companion object {
         const val CHANNEL_ID = "trading_bot_channel"
@@ -143,27 +139,20 @@ class BackgroundMonitoringService : Service() {
 
         withContext(Dispatchers.IO) {
             try {
-                val response = tradingBotService.getAlerts()
-                if (response.code() == 401) {
-                    response.errorBody()?.close()
+                val result = botRepository.getAlerts()
+                if (result is com.cryptopulse.app.core.network.NetworkResult.Error && result.error is com.cryptopulse.app.core.error.NetworkError.Unauthorized) {
                     stopSelf()
                     return@withContext
                 }
-                if (response.isSuccessful && response.body() != null) {
-                    val alerts = response.body()!!
+                if (result is com.cryptopulse.app.core.network.NetworkResult.Success) {
+                    val alerts = result.data
                     if (alerts.isNotEmpty()) {
                         val latestAlert = alerts.first()
-                        if (latestAlert["id"] != lastAlertId) {
-                            lastAlertId = latestAlert["id"] as? String
+                        if (latestAlert.id != lastAlertId) {
+                            lastAlertId = latestAlert.id
                             showTradeAlert(latestAlert)
-                        } else {
-                            // no-op
                         }
-                    } else {
-                        // no-op
                     }
-                } else {
-                    response.errorBody()?.close()
                 }
             } catch (e: Exception) {
                 Log.e("BackgroundMonitoring", "Failed to poll alerts", e)
@@ -171,8 +160,17 @@ class BackgroundMonitoringService : Service() {
         }
     }
 
-    private fun showTradeAlert(alert: Map<String, Any>) {
-        TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(alert)
+    private fun showTradeAlert(alert: com.cryptopulse.app.domain.models.BotAlert) {
+        val map = mapOf<String, Any>(
+            "id" to alert.id,
+            "symbol" to alert.symbol,
+            "entryPrice" to alert.entryPrice,
+            "stopLoss" to alert.stopLoss,
+            "takeProfit" to alert.takeProfit,
+            "estimatedPnl" to alert.estimatedPnl,
+            "strategy" to (alert.strategy ?: ""),
+            "side" to (alert.side ?: "")
+        )
+        TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(map)
     }
 }
-

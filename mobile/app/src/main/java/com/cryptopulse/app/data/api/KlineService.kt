@@ -1,24 +1,15 @@
 package com.cryptopulse.app.data.api
 
+import com.cryptopulse.app.data.api.dto.market.response.KlineDto
 import retrofit2.Response
 import retrofit2.http.GET
 import retrofit2.http.Query
 
-data class KlineDto(
-    val openTime: Long,
-    val open: Double,
-    val high: Double,
-    val low: Double,
-    val close: Double,
-    val volume: Double,
-    val closeTime: Long,
-)
-
 interface KlineService {
-    @GET("/api/market/klines")
+    @GET(ApiConstants.MARKET_KLINES)
     suspend fun getKlines(
         @Query("symbol") symbol: String,
-        @Query("interval") interval: String = "1h",
-        @Query("limit") limit: Int = 100,
+        @Query("interval") interval: String,
+        @Query("limit") limit: Int = 100
     ): Response<List<KlineDto>>
 }

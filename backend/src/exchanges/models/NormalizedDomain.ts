@@ -34,6 +34,9 @@ export interface Ticker {
   low: BigNumber;
   volume: BigNumber;
   quoteVolume: BigNumber;
+  change?: BigNumber;
+  percentage?: number;
+  info?: any;
 }
 
 export interface Position {

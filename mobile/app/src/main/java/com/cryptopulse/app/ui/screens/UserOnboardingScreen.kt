@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.screens
 
+import com.cryptopulse.app.core.network.*
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -234,3 +236,4 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
         }
     }
 }
+

@@ -481,45 +481,51 @@ export async function handleGetPersonalizedMarketCandidates(
       ];
     }
 
-    const tickers = await Promise.all(
+    const rawTickers = await Promise.all(
       markets.map(async (m) => {
         try {
           const t = await adapter.fetchTicker(m.symbol);
-          const px = typeof t?.last?.toNumber === 'function' ? t.last.toNumber() : (typeof t?.last === 'number' ? t.last : 50000.0);
-          const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : 10_000_000);
-          const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : 10_000_000);
-          const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (px > 0 ? px * 1.01 : 51000.0);
-          const low = typeof t?.low?.toNumber === 'function' ? t.low.toNumber() : (px > 0 ? px * 0.99 : 49000.0);
+          const px = typeof t?.last?.toNumber === 'function' ? t.last.toNumber() : (typeof t?.last === 'number' ? t.last : 0);
+          if (!px || px <= 0 || isNaN(px)) {
+            console.warn(`[DIAGNOSTIC] Stage 7: Invalid or missing spot price for ${m.symbol}, skipping symbol.`);
+            return null;
+          }
+          const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : 0);
+          const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : (vol * px));
+          const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (typeof t?.high === 'number' ? t.high : px);
+          const low = typeof t?.low?.toNumber === 'function' ? t.low.toNumber() : (typeof t?.low === 'number' ? t.low : px);
+
+          let chg = 0;
+          if (typeof (t as any)?.percentage === 'number' && !isNaN((t as any).percentage)) {
+            chg = (t as any).percentage;
+          } else if (typeof (t as any)?.info?.priceChangePercent !== 'undefined') {
+            chg = parseFloat((t as any).info.priceChangePercent) || 0;
+          } else if (typeof (t as any)?.info?.changeRate !== 'undefined') {
+            chg = (parseFloat((t as any).info.changeRate) || 0) * 100;
+          } else if (typeof (t as any)?.open === 'number' || typeof (t as any)?.open?.toNumber === 'function') {
+            const open = typeof (t as any)?.open?.toNumber === 'function' ? (t as any).open.toNumber() : (t as any).open;
+            if (open > 0) chg = ((px - open) / open) * 100;
+          }
 
           return {
             symbol: m.base || (m.symbol ? m.symbol.split('/')[0] : "BTC"),
             pairName: m.symbol || "BTC/USDT",
-            price: px > 0 ? px : 50000.0,
-            volume24h: vol > 0 ? vol : 10_000_000,
-            quoteVolume24h: qVol > 0 ? qVol : 10_000_000,
+            price: px,
+            volume24h: vol,
+            quoteVolume24h: qVol,
             highPrice24h: high,
             lowPrice24h: low,
-            priceChangePercent24h: 1.5,
+            priceChangePercent24h: chg,
             minNotional: typeof m?.limits?.cost?.min?.toNumber === 'function' ? m.limits.cost.min.toNumber() : 5.0,
           };
         } catch (tErr: any) {
-          console.warn(`[DIAGNOSTIC] Stage 7: fetchTicker failed for ${m?.symbol}:`, tErr?.message);
-          const base = m?.base || (m?.symbol ? m.symbol.split('/')[0] : "BTC");
-          return {
-            symbol: base,
-            pairName: m?.symbol || "BTC/USDT",
-            price: 50000.0,
-            volume24h: 10_000_000,
-            quoteVolume24h: 10_000_000,
-            highPrice24h: 51000.0,
-            lowPrice24h: 49000.0,
-            priceChangePercent24h: 1.5,
-            minNotional: 5.0,
-          };
+          console.warn(`[DIAGNOSTIC] Stage 7: fetchTicker failed for ${m?.symbol}: ${tErr?.message}. Skipping symbol to prevent data fabrication.`);
+          return null;
         }
       })
     );
-    console.log(`[DIAGNOSTIC] Stage 7: fetchTickers completed with ${tickers.length} tickers`);
+    const tickers = rawTickers.filter((t): t is NonNullable<typeof t> => t !== null);
+    console.log(`[DIAGNOSTIC] Stage 7: fetchTickers completed with ${tickers.length} genuine live tickers`);
 
     // Stage 8: analyzeMarket entered
     currentStage = "8. analyzeMarket entered";

@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.strategies
 
+import com.cryptopulse.app.core.network.*
+
 import com.cryptopulse.app.domain.models.Strategy
 
 sealed interface StrategySelectionState {
@@ -8,3 +10,4 @@ sealed interface StrategySelectionState {
     object Empty : StrategySelectionState
     data class Error(val message: String) : StrategySelectionState
 }
+

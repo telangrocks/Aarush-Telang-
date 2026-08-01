@@ -39,6 +39,7 @@ import {
   handleGetTradingBotStatus,
   handleGetAnalysisStatus,
   handleExecuteTrade,
+  handleResetSafeMode,
   handleMockTrade,
   handleStopTradingBot,
   handleGetBotAlerts,
@@ -331,6 +332,7 @@ api.post("/trading-bot/activate", handleActivateTradingBot);
 api.get("/trading-bot/status", handleGetTradingBotStatus);
 api.get("/trading-bot/analysis-status", handleGetAnalysisStatus);
 api.post("/trading-bot/execute-trade", handleExecuteTrade);
+api.post("/trading-bot/reset-safemode", handleResetSafeMode);
 api.post("/trading-bot/mock-trade", handleMockTrade);
 // /deactivate and /stop-trade are both used by the Android client:
 // /deactivate = stop the bot session; /stop-trade = close an open position

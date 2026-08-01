@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.theme
 
+import com.cryptopulse.app.core.network.*
+
 import android.app.Activity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -47,3 +49,4 @@ fun CryptoPulseTheme(content: @Composable () -> Unit) {
         content     = content
     )
 }
+

@@ -174,8 +174,6 @@ export class CcxtProvider implements IExchangeProvider {
           fapi: 'https://testnet.binancefuture.com/fapi/v1',
         };
 
-        const secretVal = config.secret || this.exchange.secret || '';
-        const apiKeyVal = config.apiKey || this.exchange.apiKey || '';
         const origFetch = this.exchange.fetch.bind(this.exchange);
         this.exchange.fetch = async (url: any, method = 'GET', headers: any = {}, body?: any) => {
           try {
@@ -183,18 +181,6 @@ export class CcxtProvider implements IExchangeProvider {
             if (urlString && (urlString.includes('/sapi/') || urlString.includes('/wapi/') || urlString.includes('/fapi/') || urlString.includes('/capital/config/getall'))) {
               console.warn(`[SHORT-CIRCUITED UNSUPPORTED TESTNET ENDPOINT] ${method} ${urlString}`);
               return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
-            }
-            if (urlString && urlString.includes('/api/v3/account')) {
-              const ts = Date.now();
-              const query = 'timestamp=' + ts + '&recvWindow=10000';
-              const encoder = new TextEncoder();
-              const keyData = encoder.encode(secretVal);
-              const msgData = encoder.encode(query);
-              const key = await globalThis.crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-              const sigBuf = await globalThis.crypto.subtle.sign('HMAC', key, msgData);
-              const sig = Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
-              const cleanUrl = `${testnetHost}/api/v3/account?` + query + '&signature=' + sig;
-              return globalThis.fetch(cleanUrl, { method: 'GET', headers: { 'X-MBX-APIKEY': apiKeyVal } });
             }
             return origFetch(url, method, headers, body);
           } catch (fetchErr: any) {
@@ -394,140 +380,111 @@ export class CcxtProvider implements IExchangeProvider {
     const cleanSymbol = this.ensureMarket(symbol);
     const exId = (this.exchangeId || '').toLowerCase();
 
-    if (exId.includes('binance')) {
-      try {
-        const rawPair = cleanSymbol.replace('/', '');
-        const primaryUrl = (this.config?.environment === 'testnet' || this.config?.environment === 'Testing')
-          ? `https://testnet.binance.vision/api/v3/ticker/price?symbol=${rawPair}`
-          : `https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`;
-        
-        let res: Response | null = null;
-        try {
-          res = await globalThis.fetch(primaryUrl);
-        } catch (err: any) {
-          console.error('[FETCH_TICKER_ERROR_PRIMARY]', primaryUrl, err?.message, err?.stack);
-        }
+    // 1. Prefer CCXT's native fetchTicker implementation
+    try {
+      const ticker = await this.exchange!.fetchTicker(cleanSymbol);
+      const lastPx = new BigNumber(ticker.last ?? (ticker.close ?? 0));
+      const baseVol = new BigNumber(ticker.baseVolume ?? ((ticker as any).volume ?? 0));
+      const quoteVol = new BigNumber(ticker.quoteVolume ?? ((ticker as any).quoteVolume ?? 0));
+      const highPx = new BigNumber(ticker.high ?? 0);
+      const lowPx = new BigNumber(ticker.low ?? 0);
 
-        if (!res || !res.ok) {
-          const fallbackUrl = (this.config?.environment === 'testnet' || this.config?.environment === 'Testing')
-            ? `https://api.binance.com/api/v3/ticker/price?symbol=${rawPair}`
-            : `https://testnet.binance.vision/api/v3/ticker/price?symbol=${rawPair}`;
-          try {
-            res = await globalThis.fetch(fallbackUrl);
-          } catch (_) { /* ignore fallback fetch error */ }
-        }
-        if (res && !res.ok) {
-          const rawKucoin = cleanSymbol.replace('/', '-');
-          try {
-            res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawKucoin}`);
-          } catch (_) { /* ignore kucoin fallback fetch error */ }
-          if (res && res.ok) {
-            const json: any = await res.json();
-            if (json.code === '200000' && json.data) {
-              const px = new BigNumber(json.data.price || json.data.bestBid || 0);
+      if (lastPx.isGreaterThan(0) && (baseVol.isGreaterThan(0) || quoteVol.isGreaterThan(0))) {
+        return {
+          symbol: ticker.symbol || cleanSymbol,
+          timestamp: ticker.timestamp ?? Date.now(),
+          last: lastPx,
+          bid: new BigNumber(ticker.bid ?? lastPx),
+          ask: new BigNumber(ticker.ask ?? lastPx),
+          high: highPx.isGreaterThan(0) ? highPx : lastPx,
+          low: lowPx.isGreaterThan(0) ? lowPx : lastPx,
+          volume: baseVol,
+          quoteVolume: quoteVol.isGreaterThan(0) ? quoteVol : baseVol.multipliedBy(lastPx),
+          change: new BigNumber(ticker.change ?? 0),
+          percentage: typeof ticker.percentage === 'number' ? ticker.percentage : (typeof ticker.info?.priceChangePercent !== 'undefined' ? parseFloat(ticker.info.priceChangePercent) : undefined),
+          info: ticker.info,
+        };
+      }
+    } catch (e: any) {
+      console.warn(`[CCXT NATIVE FETCH_TICKER WARNING] ${cleanSymbol} on ${this.exchangeId}: ${e?.message}`);
+    }
+
+    // 2. Direct 24-hour Ticker Fallback for Binance (provides complete 24h market statistics without fabrication)
+    if (exId.includes('binance')) {
+      const rawPair = cleanSymbol.replace('/', '');
+      const isTestnet = this.config?.environment === 'testnet' || this.config?.environment === 'Testing';
+      const urls = isTestnet
+        ? [`https://testnet.binance.vision/api/v3/ticker/24hr?symbol=${rawPair}`, `https://api.binance.com/api/v3/ticker/24hr?symbol=${rawPair}`]
+        : [`https://api.binance.com/api/v3/ticker/24hr?symbol=${rawPair}`, `https://testnet.binance.vision/api/v3/ticker/24hr?symbol=${rawPair}`];
+
+      for (const url of urls) {
+        try {
+          const res = await globalThis.fetch(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' }
+          });
+          if (res.ok) {
+            const data: any = await res.json();
+            const lastPx = new BigNumber(data.lastPrice || 0);
+            if (lastPx.isGreaterThan(0)) {
+              const baseVol = new BigNumber(data.volume || 0);
+              const quoteVol = new BigNumber(data.quoteVolume || 0);
+              const highPx = new BigNumber(data.highPrice || lastPx);
+              const lowPx = new BigNumber(data.lowPrice || lastPx);
               return {
                 symbol: cleanSymbol,
-                timestamp: json.data.time || Date.now(),
-                last: px,
-                bid: new BigNumber(json.data.bestBid || px.toString()),
-                ask: new BigNumber(json.data.bestAsk || px.toString()),
-                high: px.multipliedBy(1.01),
-                low: px.multipliedBy(0.99),
-                volume: new BigNumber(json.data.size || 1000),
-                quoteVolume: px.multipliedBy(1000),
+                timestamp: data.closeTime || Date.now(),
+                last: lastPx,
+                bid: new BigNumber(data.bidPrice || lastPx),
+                ask: new BigNumber(data.askPrice || lastPx),
+                high: highPx.isGreaterThan(0) ? highPx : lastPx,
+                low: lowPx.isGreaterThan(0) ? lowPx : lastPx,
+                volume: baseVol,
+                quoteVolume: quoteVol.isGreaterThan(0) ? quoteVol : baseVol.multipliedBy(lastPx),
+                change: new BigNumber(data.priceChange || 0),
+                percentage: typeof data.priceChangePercent !== 'undefined' ? parseFloat(data.priceChangePercent) : undefined,
+                info: data,
               };
             }
           }
-        }
-        if (res && res.ok) {
-          const text = await res.text();
-          const data: any = JSON.parse(text);
-          const px = new BigNumber(data.price || 0);
-          return {
-            symbol: cleanSymbol,
-            timestamp: Date.now(),
-            last: px,
-            bid: px,
-            ask: px,
-            high: px.multipliedBy(1.01),
-            low: px.multipliedBy(0.99),
-            volume: new BigNumber(1000),
-            quoteVolume: px.multipliedBy(1000),
-          };
-        }
-      } catch (_) {
-        // Fallback to standard ticker fetch
+        } catch (_) { /* ignore fallback fetch error */ }
       }
-    } else if (exId.includes('kucoin')) {
+    }
+
+    // 3. Direct 24-hour Ticker Fallback for KuCoin (using KuCoin 24h market stats endpoint)
+    if (exId.includes('kucoin')) {
+      const rawPair = cleanSymbol.replace('/', '-');
       try {
-        const rawPair = cleanSymbol.replace('/', '-');
-        const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawPair}`, {
+        const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/stats?symbol=${rawPair}`, {
           headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
         });
         if (res.ok) {
           const json: any = await res.json();
-          if (json.code === '200000' && json.data) {
-            const px = new BigNumber(json.data.price || json.data.bestBid || 0);
-            return {
-              symbol: cleanSymbol,
-              timestamp: json.data.time || Date.now(),
-              last: px,
-              bid: new BigNumber(json.data.bestBid || px.toString()),
-              ask: new BigNumber(json.data.bestAsk || px.toString()),
-              high: px.multipliedBy(1.01),
-              low: px.multipliedBy(0.99),
-              volume: new BigNumber(json.data.size || 1000),
-              quoteVolume: px.multipliedBy(1000),
-            };
-          }
-        }
-      } catch (_) {
-        // Fallback to standard ticker fetch
-      }
-    }
-
-    try {
-      const ticker = await this.exchange!.fetchTicker(cleanSymbol);
-      return {
-        symbol: ticker.symbol || cleanSymbol,
-        timestamp: ticker.timestamp ?? Date.now(),
-        last: new BigNumber(ticker.last ?? 0),
-        bid: new BigNumber(ticker.bid ?? 0),
-        ask: new BigNumber(ticker.ask ?? 0),
-        high: new BigNumber(ticker.high ?? 0),
-        low: new BigNumber(ticker.low ?? 0),
-        volume: new BigNumber(ticker.baseVolume ?? (ticker as any).volume ?? 0),
-        quoteVolume: new BigNumber(ticker.quoteVolume ?? 0),
-      };
-    } catch (e: any) {
-      const msg = (e?.message || '').toLowerCase();
-      if (msg.includes('451') || msg.includes('restricted location') || msg.includes('eligibility') || msg.includes('403')) {
-        try {
-          const rawKucoin = cleanSymbol.replace('/', '-');
-          const kcRes = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawKucoin}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-          });
-          if (kcRes.ok) {
-            const json: any = await kcRes.json();
-            if (json.code === '200000' && json.data) {
-              const px = new BigNumber(json.data.price || json.data.bestBid || 0);
+          if (json.code === '200000' && json.data && json.data.last) {
+            const lastPx = new BigNumber(json.data.last || 0);
+            if (lastPx.isGreaterThan(0)) {
+              const baseVol = new BigNumber(json.data.vol || 0);
+              const quoteVol = new BigNumber(json.data.volValue || 0);
               return {
                 symbol: cleanSymbol,
                 timestamp: json.data.time || Date.now(),
-                last: px,
-                bid: new BigNumber(json.data.bestBid || px.toString()),
-                ask: new BigNumber(json.data.bestAsk || px.toString()),
-                high: px.multipliedBy(1.01),
-                low: px.multipliedBy(0.99),
-                volume: new BigNumber(json.data.size || 1000),
-                quoteVolume: px.multipliedBy(1000),
+                last: lastPx,
+                bid: new BigNumber(json.data.buy || lastPx),
+                ask: new BigNumber(json.data.sell || lastPx),
+                high: new BigNumber(json.data.high || lastPx),
+                low: new BigNumber(json.data.low || lastPx),
+                volume: baseVol,
+                quoteVolume: quoteVol.isGreaterThan(0) ? quoteVol : baseVol.multipliedBy(lastPx),
+                change: new BigNumber(json.data.change || 0),
+                percentage: typeof json.data.changeRate !== 'undefined' ? parseFloat(json.data.changeRate) * 100 : undefined,
+                info: json.data,
               };
             }
           }
-        } catch (_) { /* ignore fallback */ }
-      }
-      throw this.mapError(e, 'fetchTicker');
+        }
+      } catch (_) { /* ignore fallback */ }
     }
+
+    throw new UnifiedError(`Unable to retrieve genuine live ticker statistics for ${cleanSymbol} on ${this.exchangeId}`, 'UNAVAILABLE');
   }
 
   public async fetchKlines(symbol: string, interval: string, limit: number): Promise<any[]> {

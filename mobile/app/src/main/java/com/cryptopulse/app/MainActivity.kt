@@ -30,7 +30,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.activity.viewModels
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
-import com.cryptopulse.app.data.repository.AuthRepository
+import com.cryptopulse.app.domain.repository.AuthRepository
 import com.cryptopulse.app.ui.auth.AuthScreen
 import com.cryptopulse.app.ui.auth.AuthViewModel
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
@@ -64,13 +64,13 @@ class MainActivity : FragmentActivity() {
     lateinit var exchangeConnectionManager: ExchangeConnectionManager
 
     @Inject
-    lateinit var exchangeService: com.cryptopulse.app.data.api.ExchangeService
+    lateinit var exchangeRepository: com.cryptopulse.app.domain.repository.ExchangeRepository
 
     @Inject
     lateinit var authRepository: AuthRepository
 
     @Inject
-    lateinit var tradingBotService: com.cryptopulse.app.data.api.TradingBotService
+    lateinit var botRepository: com.cryptopulse.app.domain.repository.BotRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -115,8 +115,8 @@ class MainActivity : FragmentActivity() {
                                 navController = navController,
                                 tokenManager = tokenManager,
                                 exchangeConnectionManager = exchangeConnectionManager,
-                                exchangeService = exchangeService,
-                                tradingBotService = tradingBotService,
+                                exchangeRepository = exchangeRepository,
+                                botRepository = botRepository,
                             )
                         }
                         composable("onboarding") {
@@ -387,4 +387,6 @@ class MainActivity : FragmentActivity() {
         }
     }
 }
+
+
 

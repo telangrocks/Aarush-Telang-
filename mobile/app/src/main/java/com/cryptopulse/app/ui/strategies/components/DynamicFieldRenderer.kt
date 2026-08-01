@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.strategies.components
 
+import com.cryptopulse.app.core.network.*
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -142,3 +144,4 @@ fun EnumField(
         }
     }
 }
+

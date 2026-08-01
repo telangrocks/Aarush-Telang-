@@ -187,8 +187,8 @@ function calculateScore(ticker: any): number {
   const volatilityScore = Math.min(volatility * 3, 30);
 
   const price = Number(ticker.price || 0);
-  const high = Number(ticker.highPrice24h || (price > 0 ? price * 1.01 : 50000));
-  const low = Number(ticker.lowPrice24h || (price > 0 ? price * 0.99 : 50000));
+  const high = Number(ticker.highPrice24h || price || 0);
+  const low = Number(ticker.lowPrice24h || price || 0);
   const range = Math.max(0, high - low);
   const rangePercent = price > 0 ? (range / price) * 100 : 0;
   const rangeScore = Math.min(rangePercent * 3, 20);

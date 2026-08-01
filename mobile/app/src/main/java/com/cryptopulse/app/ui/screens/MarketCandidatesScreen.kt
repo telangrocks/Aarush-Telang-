@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.screens
 
+import com.cryptopulse.app.core.network.*
+
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,7 +27,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.cryptopulse.app.data.api.MarketCandidateDto
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.theme.*
@@ -76,7 +77,7 @@ fun MarketCandidatesScreen(
     
     android.util.Log.d("MarketCandidatesScreen", "[DIAGNOSTIC] Recomposed: VM hash=${System.identityHashCode(viewModel)}, candidatesCount=${candidates.size}, marketDataState=$marketDataState")
 
-    val mappedCandidates = remember(candidates) { candidates.toScreenCandidates() }
+    val mappedCandidates = candidates
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
 
     var currentTime by remember { mutableStateOf(getCurrentTime()) }
@@ -415,10 +416,10 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = candidate.symbol.take(2),
+                text = candidate.symbol.take(4),
                 color = candidate.coinColor,
                 fontWeight = FontWeight.ExtraBold,
-                fontSize = 14.sp,
+                fontSize = 12.sp,
             )
         }
 
@@ -446,12 +447,23 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                     )
                 }
 
-                Text(
-                    text = "$${candidate.formattedPrice.ifEmpty { formatCryptoPrice(candidate.currentMarketPrice) }}",
-                    color = TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "$${candidate.formattedPrice.ifEmpty { formatCryptoPrice(candidate.currentMarketPrice) }}",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    val isPositive = candidate.priceChangePercent24h >= 0
+                    val changeColor = if (isPositive) ProfitGreen else LossRed
+                    Text(
+                        text = String.format(Locale.US, "%s%.2f%%", if (isPositive) "+" else "", candidate.priceChangePercent24h),
+                        color = changeColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                    )
+                }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -576,50 +588,4 @@ private fun formatCryptoPrice(price: Double): String {
         else -> String.format(Locale.US, "%.8f", price).trimEnd('0').removeSuffix(".")
     }
 }
-
-// ─── Mapper from DTO to screen model ──────────────────────────────────────────
-fun List<MarketCandidateDto>.toScreenCandidates(): List<MarketCandidate> {
-    val coinColors = mapOf(
-        "BTC" to Color(0xFFF7931A),
-        "ETH" to Color(0xFF627EEA),
-        "BNB" to Color(0xFFF3BA2F),
-        "SOL" to Color(0xFF9945FF),
-        "XRP" to Color(0xFF00AAE4),
-        "USDT" to Color(0xFF26A17B),
-        "USDC" to Color(0xFF2775CA),
-        "DOGE" to Color(0xFFC2A633),
-        "ADA" to Color(0xFF0033AD),
-        "AVAX" to Color(0xFFE84142),
-        "DOT" to Color(0xFFE6007A),
-        "LINK" to Color(0xFF375BD2),
-        "MATIC" to Color(0xFF8247E5),
-        "NEAR" to Color(0xFF00C1DE),
-        "ARB" to Color(0xFF12AAFF),
-        "IMX" to Color(0xFF17B5CB),
-        "RNDR" to Color(0xFFE95F2B),
-    )
-    return this.map { dto ->
-        val symbol = dto.symbol.uppercase(Locale.getDefault())
-        MarketCandidate(
-            rank = dto.rank,
-            symbol = symbol,
-            pairName = "$symbol/USDT",
-            coinName = symbol,
-            notations = dto.score.toInt(),
-            currentMarketPrice = dto.currentMarketPrice,
-            minNotional = dto.minNotional,
-            coinColor = coinColors[symbol] ?: Color(0xFF00B4FF),
-            volume24h = dto.volume24h,
-            quoteVolume24h = dto.quoteVolume24h,
-            priceChangePercent24h = dto.priceChangePercent24h,
-            score = dto.score,
-            recommendedTimeframe = dto.recommendedTimeframe,
-            tradeSide = dto.tradeSide,
-            formattedPrice = formatCryptoPrice(dto.currentMarketPrice),
-            formattedMinNotional = formatCryptoPrice(dto.minNotional),
-            formattedVolume = String.format(Locale.US, "%.1fM", dto.quoteVolume24h / 1_000_000.0),
-        )
-    }
-}
-
 

@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.screens
 
+import com.cryptopulse.app.core.network.*
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -279,3 +281,4 @@ private fun AnalysisBadge(title: String, value: String, accentColor: Color) {
         }
     }
 }
+

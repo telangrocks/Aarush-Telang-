@@ -1,9 +1,11 @@
 package com.cryptopulse.app.ui.strategies
 
+import com.cryptopulse.app.core.network.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.cryptopulse.app.data.repository.StrategyRepository
-import com.cryptopulse.app.data.repository.TradeSessionRepository
+
+import com.cryptopulse.app.domain.repository.StrategyRepository
+import com.cryptopulse.app.domain.repository.TradeSessionRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,3 +48,7 @@ class StrategySelectionViewModel @Inject constructor(
         sessionRepository.setStrategyId(id)
     }
 }
+
+
+
+

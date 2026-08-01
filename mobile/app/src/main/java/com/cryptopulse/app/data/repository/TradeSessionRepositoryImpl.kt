@@ -1,20 +1,12 @@
 package com.cryptopulse.app.data.repository
 
 import com.cryptopulse.app.domain.models.TradeSetupConfig
+import com.cryptopulse.app.domain.repository.TradeSessionRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
-
-interface TradeSessionRepository {
-    val selectedStrategyId: StateFlow<String?>
-    val tradeSetupConfig: StateFlow<TradeSetupConfig?>
-
-    fun setStrategyId(id: String)
-    fun setTradeSetupConfig(config: TradeSetupConfig)
-    fun clearSession()
-}
 
 @Singleton
 class TradeSessionRepositoryImpl @Inject constructor() : TradeSessionRepository {

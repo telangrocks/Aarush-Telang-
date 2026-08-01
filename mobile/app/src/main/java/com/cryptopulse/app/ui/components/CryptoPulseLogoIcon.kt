@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.components
 
+import com.cryptopulse.app.core.network.*
+
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -147,3 +149,4 @@ fun CryptoPulseLogoIcon(
         drawCircle(color = Color.White, radius = strokeW * 0.18f, center = Offset(endX, cy))
     }
 }
+

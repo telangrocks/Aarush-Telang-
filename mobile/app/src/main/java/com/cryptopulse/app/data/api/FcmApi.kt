@@ -1,14 +1,12 @@
 package com.cryptopulse.app.data.api
 
+import com.cryptopulse.app.data.api.dto.fcm.request.*
+import com.cryptopulse.app.data.api.dto.fcm.response.*
 import retrofit2.Response
 import retrofit2.http.Body
-import retrofit2.http.Headers
 import retrofit2.http.POST
 
 interface FcmApi {
-    @POST("/api/fcm/register")
-    @Headers("Content-Type: application/json")
-    suspend fun registerToken(
-        @Body request: Map<String, String>
-    ): Response<Map<String, Any>>
+    @POST(ApiConstants.FCM_REGISTER)
+    suspend fun registerToken(@Body request: FcmRegisterRequestDto): Response<FcmRegisterResponseDto>
 }

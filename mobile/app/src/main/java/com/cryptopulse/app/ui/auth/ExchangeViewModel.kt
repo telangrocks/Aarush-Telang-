@@ -1,23 +1,21 @@
 package com.cryptopulse.app.ui.auth
 
-import android.util.Log
+import com.cryptopulse.app.core.network.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.cryptopulse.app.data.api.ActivateBotRequest
-import com.cryptopulse.app.data.api.ConnectExchangeRequest
-import com.cryptopulse.app.data.api.ExchangeService
-import com.cryptopulse.app.data.api.KlineDto
-import com.cryptopulse.app.data.api.KlineService
-import com.cryptopulse.app.data.api.MarketCandidateDto
-import com.cryptopulse.app.data.api.MarketService
-import com.cryptopulse.app.data.api.TechnicalAnalysisRequest
-import com.cryptopulse.app.data.api.TechnicalAnalysisResponse
-import com.cryptopulse.app.data.api.TechnicalAnalysisService
-import com.cryptopulse.app.data.api.TickerResponse
-import com.cryptopulse.app.data.api.TickerService
-import com.cryptopulse.app.data.api.ValidateExchangeRequest
-import com.cryptopulse.app.data.api.ValidationResponse
+
+import android.util.Log
+import com.cryptopulse.app.domain.repository.BotRepository
+import com.cryptopulse.app.domain.repository.ExchangeRepository
+import com.cryptopulse.app.domain.repository.FcmRepository
+import com.cryptopulse.app.domain.repository.MarketRepository
+import com.cryptopulse.app.domain.repository.TechnicalAnalysisRepository
+import com.cryptopulse.app.domain.models.BotAlert
+import com.cryptopulse.app.domain.models.DomainException
+import com.cryptopulse.app.domain.models.Kline
 import com.cryptopulse.app.ui.screens.MarketCandidate
+import com.cryptopulse.app.domain.models.TechnicalAnalysisResult
+import com.cryptopulse.app.domain.models.Ticker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,7 +36,7 @@ sealed class ExchangeUiState {
 sealed interface MarketDataUiState {
     object Idle : MarketDataUiState
     object Loading : MarketDataUiState
-    data class Success(val candidates: List<MarketCandidateDto>) : MarketDataUiState
+    data class Success(val candidates: List<MarketCandidate>) : MarketDataUiState
     data class Empty(val message: String) : MarketDataUiState
     data class Error(val message: String, val hint: String? = null) : MarketDataUiState
 }
@@ -65,16 +63,14 @@ data class TradeSetupState(
 @HiltViewModel
 class ExchangeViewModel @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
-    private val exchangeService: ExchangeService,
-    private val marketService: MarketService,
-    private val technicalAnalysisService: TechnicalAnalysisService,
-    private val tickerService: TickerService,
-    private val klineService: KlineService,
-    private val tradingBotService: com.cryptopulse.app.data.api.TradingBotService,
+    private val exchangeRepository: ExchangeRepository,
+    private val marketRepository: MarketRepository,
+    private val technicalAnalysisRepository: TechnicalAnalysisRepository,
+    private val botRepository: BotRepository,
+    private val fcmRepository: FcmRepository,
     private val tokenManager: com.cryptopulse.app.data.local.TokenManager,
-    private val fcmApi: com.cryptopulse.app.data.api.FcmApi,
     private val exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager,
-    private val sessionRepository: com.cryptopulse.app.data.repository.TradeSessionRepository
+    private val sessionRepository: com.cryptopulse.app.domain.repository.TradeSessionRepository
 ) : ViewModel() {
 
     private val _formState = MutableStateFlow(ExchangeFormState())
@@ -83,8 +79,8 @@ class ExchangeViewModel @Inject constructor(
     private val _uiState = MutableStateFlow<ExchangeUiState>(ExchangeUiState.Idle)
     val uiState: StateFlow<ExchangeUiState> = _uiState
 
-    private val _candidates = MutableStateFlow<List<MarketCandidateDto>>(emptyList())
-    val candidates: StateFlow<List<MarketCandidateDto>> = _candidates
+    private val _candidates = MutableStateFlow<List<MarketCandidate>>(emptyList())
+    val candidates: StateFlow<List<MarketCandidate>> = _candidates
 
     private val _candidatesLoading = MutableStateFlow(false)
     val candidatesLoading: StateFlow<Boolean> = _candidatesLoading
@@ -101,28 +97,19 @@ class ExchangeViewModel @Inject constructor(
     init {
         Log.d("VM_CHECK", "[DIAGNOSTIC] ExchangeViewModel hash=${System.identityHashCode(this)}")
         Log.d("ExchangeViewModel", "[DIAGNOSTIC] ViewModel created: ${System.identityHashCode(this)}")
-        viewModelScope.launch {
-            uiState.collect { Log.d("ExchangeViewModel", "[DIAGNOSTIC] uiState changed: $it") }
-        }
-        viewModelScope.launch {
-            readyForCandidates.collect { Log.d("ExchangeViewModel", "[DIAGNOSTIC] readyForCandidates changed: $it") }
-        }
-        viewModelScope.launch {
-            candidates.collect { Log.d("ExchangeViewModel", "[DIAGNOSTIC] candidates changed, count: ${it.size}") }
-        }
     }
 
-    private val _technicalAnalysis = MutableStateFlow<TechnicalAnalysisResponse?>(null)
-    val technicalAnalysis: StateFlow<TechnicalAnalysisResponse?> = _technicalAnalysis
+    private val _technicalAnalysis = MutableStateFlow<TechnicalAnalysisResult?>(null)
+    val technicalAnalysis: StateFlow<TechnicalAnalysisResult?> = _technicalAnalysis
 
     private val _tradeSetup = MutableStateFlow<TradeSetupState?>(null)
     val tradeSetup: StateFlow<TradeSetupState?> = _tradeSetup
 
-    private val _ticker = MutableStateFlow<TickerResponse?>(null)
-    val ticker: StateFlow<TickerResponse?> = _ticker
+    private val _ticker = MutableStateFlow<Ticker?>(null)
+    val ticker: StateFlow<Ticker?> = _ticker
 
-    private val _klines = MutableStateFlow<List<KlineDto>>(emptyList())
-    val klines: StateFlow<List<KlineDto>> = _klines
+    private val _klines = MutableStateFlow<List<Kline>>(emptyList())
+    val klines: StateFlow<List<Kline>> = _klines
 
     private val _pendingAlert = MutableStateFlow<Map<String, Any>?>(null)
     val pendingAlert: StateFlow<Map<String, Any>?> = _pendingAlert
@@ -131,7 +118,7 @@ class ExchangeViewModel @Inject constructor(
     val lastTrade: StateFlow<TradeSetupState?> = _lastTrade
 
 
-    // ── User-facing error state for previously silent-failure paths ──────────
+    // ── User-facing error state ──────────
     private val _candidatesError = MutableStateFlow<String?>(null)
     val candidatesError: StateFlow<String?> = _candidatesError
 
@@ -144,8 +131,8 @@ class ExchangeViewModel @Inject constructor(
     private val _botError = MutableStateFlow<String?>(null)
     val botError: StateFlow<String?> = _botError
 
-    private val _balances = MutableStateFlow<List<com.cryptopulse.app.data.api.BalanceItemData>>(emptyList())
-    val balances: StateFlow<List<com.cryptopulse.app.data.api.BalanceItemData>> = _balances
+    private val _balances = MutableStateFlow<List<com.cryptopulse.app.domain.models.BalanceItem>>(emptyList())
+    val balances: StateFlow<List<com.cryptopulse.app.domain.models.BalanceItem>> = _balances
 
     private val _balancesError = MutableStateFlow<String?>(null)
     val balancesError: StateFlow<String?> = _balancesError
@@ -155,8 +142,6 @@ class ExchangeViewModel @Inject constructor(
     fun clearTradeError() { _tradeError.value = null }
     fun clearBotError() { _botError.value = null }
     fun clearBalancesError() { _balancesError.value = null }
-
-
 
     fun onExchangeSelected(exchange: String) {
         _formState.value = _formState.value.copy(selectedExchange = exchange)
@@ -190,104 +175,23 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
-    private suspend fun getUserFriendlyErrorMessage(
-        endpointName: String = "Exchange API",
-        response: retrofit2.Response<*>? = null,
-        exception: Exception? = null
-    ): Pair<String, String?> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        var rawErrorBody: String? = null
-        var parsedMessage: String? = null
-        var parsedHint: String? = null
+    private fun getUserFriendlyErrorMessage(
+        endpointName: String = "API",
+        exception: Throwable
+    ): Pair<String, String?> {
+        Log.e(TAG, "[DIAGNOSTIC] Error | Endpoint: $endpointName | Exception Class: ${exception::class.java.name} | Message: ${exception.message}", exception)
 
-        if (response != null) {
-            try {
-                if (!response.isSuccessful) {
-                    rawErrorBody = response.errorBody()?.string()
-                    Log.e(TAG, "[DIAGNOSTIC] API Call Failed | Endpoint: $endpointName | HTTP Code: ${response.code()} | Message: ${response.message()} | Raw errorBody: $rawErrorBody")
-                } else {
-                    Log.d(TAG, "[DIAGNOSTIC] API Call HTTP 200 | Endpoint: $endpointName | Body success = false")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "[DIAGNOSTIC] Failed to read error body for Endpoint: $endpointName | Exception: ${e::class.java.name}: ${e.message}", e)
-            }
-        } else if (exception != null) {
-            Log.e(TAG, "[DIAGNOSTIC] Retrofit Exception | Endpoint: $endpointName | Exception Class: ${exception::class.java.name} | Message: ${exception.message}", exception)
+        if (exception is DomainException) {
+            return exception.message to exception.code
         }
 
-        if (response != null && response.isSuccessful && response.body() != null) {
-            val body = response.body()!!
-            when (body) {
-                is ValidationResponse -> {
-                    if (!body.success) {
-                        parsedMessage = body.message
-                        parsedHint = body.hint
-                        Log.e(TAG, "[DIAGNOSTIC] Parsed Response Error | Endpoint: $endpointName | Message: $parsedMessage | Hint: $parsedHint")
-                        return@withContext body.message to body.hint
-                    }
-                }
-                is com.cryptopulse.app.data.api.ConnectExchangeResponse -> {
-                    if (!body.success) {
-                        parsedMessage = body.message
-                        parsedHint = body.hint
-                        Log.e(TAG, "[DIAGNOSTIC] Parsed Response Error | Endpoint: $endpointName | Message: $parsedMessage | Hint: $parsedHint")
-                        return@withContext body.message to body.hint
-                    }
-                }
-            }
+        val exMsgPair = when (exception) {
+            is SocketTimeoutException -> "Connection timeout. Please check your internet connection." to null
+            is UnknownHostException -> "No internet connection. Please check your network." to null
+            is IOException -> "Network error. Please check your internet connection." to null
+            else -> "An unexpected error occurred. Please try again." to null
         }
-
-        if (!rawErrorBody.isNullOrBlank()) {
-            try {
-                val gson = com.google.gson.Gson()
-                val json = gson.fromJson(rawErrorBody, com.google.gson.JsonObject::class.java)
-                val msg = json.get("message")?.asString
-                val hint = json.get("hint")?.asString
-                val details = json.get("details")?.asString
-                val code = json.get("code")?.asString
-                val exchangeCode = json.get("exchangeCode")?.asInt
-                
-                if (!msg.isNullOrBlank()) {
-                    parsedMessage = msg
-                    parsedHint = when {
-                        !details.isNullOrBlank() -> details
-                        !hint.isNullOrBlank() -> hint
-                        exchangeCode != null -> "Exchange Code: $exchangeCode"
-                        else -> null
-                    }
-                    Log.e(TAG, "[DIAGNOSTIC] Parsed Error JSON | Endpoint: $endpointName | Message: $parsedMessage | Hint: $parsedHint")
-                    return@withContext msg to parsedHint
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "[DIAGNOSTIC] Could not parse error body as JSON for Endpoint: $endpointName: ${e.message}")
-            }
-        }
-
-        if (response != null && !response.isSuccessful) {
-            val userMsgPair = when (response.code()) {
-                400 -> "Invalid request. Please check your API key and secret." to null
-                401 -> "Authentication failed. Invalid API key or secret." to null
-                403 -> "Access forbidden. Check your IP whitelist or permissions." to null
-                404 -> "Exchange endpoint not found. Please check your exchange selection." to null
-                429 -> "Rate limit exceeded. Please try again later." to null
-                500, 502, 503, 504 -> "Exchange service unavailable. Please try again later." to null
-                else -> "Request failed. Please try again." to null
-            }
-            Log.e(TAG, "[DIAGNOSTIC] Fallback HTTP Code Mapping | Endpoint: $endpointName | HTTP Code: ${response.code()} | User Message: ${userMsgPair.first}")
-            return@withContext userMsgPair
-        }
-
-        if (exception != null) {
-            val exMsgPair = when (exception) {
-                is SocketTimeoutException -> "Connection timeout. Please check your internet connection." to null
-                is UnknownHostException -> "No internet connection. Please check your network." to null
-                is IOException -> "Network error. Please check your internet connection." to null
-                else -> "An unexpected error occurred. Please try again." to null
-            }
-            Log.e(TAG, "[DIAGNOSTIC] Fallback Exception Mapping | Endpoint: $endpointName | Exception Class: ${exception::class.java.name} | User Message: ${exMsgPair.first}")
-            return@withContext exMsgPair
-        }
-
-        "An unknown error occurred. Please try again." to null
+        return exMsgPair
     }
 
     fun validateAndConnect() {
@@ -319,98 +223,81 @@ class ExchangeViewModel @Inject constructor(
             _uiState.value = ExchangeUiState.Validating
             _formState.value = _formState.value.copy(isLoading = true, validationMessage = null)
 
-            try {
-                val validationRequest = ValidateExchangeRequest(
-                    exchangeName = state.selectedExchange,
-                    apiKey = state.apiKey,
-                    apiSecret = state.apiSecret,
-                    apiPassphrase = state.apiPassphrase.takeIf { it.isNotBlank() },
-                    environment = state.environment,
+            val valResult = exchangeRepository.validateKeys(
+                exchangeName = state.selectedExchange,
+                apiKey = state.apiKey,
+                apiSecret = state.apiSecret,
+                apiPassphrase = state.apiPassphrase.takeIf { it.isNotBlank() },
+                environment = state.environment,
                 )
-                val validationResponse = exchangeService.validate(validationRequest)
 
-                if (!validationResponse.isSuccessful || validationResponse.body()?.success != true) {
-                    val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/validate", response = validationResponse)
-                    Log.e(TAG, "[DIAGNOSTIC] validate failed: message=$userMessage, hint=$hint")
-                    _uiState.value = ExchangeUiState.Error(userMessage, hint)
-                    _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
-                    return@launch
-                }
-
-                Log.d(TAG, "[DIAGNOSTIC] validate success: status=${validationResponse.code()}, body=${validationResponse.body()}")
-                _formState.value = _formState.value.copy(validationMessage = "Credentials valid. Connecting...")
-
-                val connectRequest = ConnectExchangeRequest(
-                    exchangeName = state.selectedExchange,
-                    apiKey = state.apiKey,
-                    apiSecret = state.apiSecret,
-                    apiPassphrase = state.apiPassphrase.takeIf { it.isNotBlank() },
-                    environment = state.environment,
-                )
-                val connectResponse = exchangeService.connect(connectRequest)
-
-                if (!connectResponse.isSuccessful || connectResponse.body()?.success != true) {
-                    val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/connect", response = connectResponse)
-                    Log.e(TAG, "[DIAGNOSTIC] connect failed: message=$userMessage, hint=$hint")
-                    _uiState.value = ExchangeUiState.Error(userMessage, hint)
-                    _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
-                    return@launch
-                }
-
-                Log.d(TAG, "[DIAGNOSTIC] connect success: status=${connectResponse.code()}, body=${connectResponse.body()}")
-                _formState.value = _formState.value.copy(isLoading = false)
-                
-                Log.d(TAG, "[DIAGNOSTIC] state update: setting uiState = ExchangeUiState.Connected(${state.selectedExchange})")
-                _uiState.value = ExchangeUiState.Connected(state.selectedExchange)
-
-                exchangeConnectionManager.saveConnection(state.selectedExchange, state.environment)
-
-                fetchMarketCandidates()
-            } catch (e: Exception) {
-                val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/validate-or-connect", exception = e)
-                Log.e(TAG, "[DIAGNOSTIC] validate-or-connect exception: message=${e.message}", e)
+            if (valResult is NetworkResult.Error) { val e = valResult.exceptionOrNull() ?: Exception();
+                val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/validate", exception = e)
                 _uiState.value = ExchangeUiState.Error(userMessage, hint)
                 _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
+                return@launch
             }
+
+            _formState.value = _formState.value.copy(validationMessage = "Credentials valid. Connecting...")
+
+            val connResult = exchangeRepository.connectExchange(
+                exchangeName = state.selectedExchange,
+                apiKey = state.apiKey,
+                apiSecret = state.apiSecret,
+                apiPassphrase = state.apiPassphrase.takeIf { it.isNotBlank() },
+                environment = state.environment,
+                )
+
+            if (connResult is NetworkResult.Error) { val e = connResult.exceptionOrNull() ?: Exception();
+                val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/connect", exception = e)
+                _uiState.value = ExchangeUiState.Error(userMessage, hint)
+                _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
+                return@launch
+            }
+
+            _formState.value = _formState.value.copy(isLoading = false)
+            _uiState.value = ExchangeUiState.Connected(state.selectedExchange)
+
+            exchangeConnectionManager.saveConnection(state.selectedExchange, state.environment)
+
+            fetchMarketCandidates()
         }
     }
 
     fun fetchMarketCandidates() {
-        Log.d(TAG, "[DIAGNOSTIC] fetchMarketCandidates invoked")
         _candidatesError.value = null
         _candidatesLoading.value = true
         _marketDataState.value = MarketDataUiState.Loading
         viewModelScope.launch {
-            try {
-                val response = marketService.getCandidates()
-                if (response.isSuccessful && response.body() != null) {
-                    val list = response.body()!!
-                    Log.d(TAG, "[DIAGNOSTIC] candidates success: status=${response.code()}, count=${list.size}")
-                    
-                    Log.d(TAG, "[DIAGNOSTIC] state update: updating _candidates.value with ${list.size} items and setting readyForCandidates = true")
-                    _candidates.value = list
-                    _readyForCandidates.value = true
-                    if (list.isEmpty()) {
-                        val emptyMsg = "No market candidates matching volume criteria found on exchange."
-                        _candidatesError.value = emptyMsg
-                        _marketDataState.value = MarketDataUiState.Empty(emptyMsg)
-                    } else {
-                        _marketDataState.value = MarketDataUiState.Success(list)
-                    }
-                } else {
-                    val (errMsg, hintMsg) = getUserFriendlyErrorMessage(endpointName = "/api/market/candidates", response = response)
-                    Log.e(TAG, "[DIAGNOSTIC] candidates failed: status=${response.code()}, message=$errMsg")
-                    _candidatesError.value = errMsg
-                    _marketDataState.value = MarketDataUiState.Error(errMsg, hintMsg)
+            val result = marketRepository.getCandidates()
+            result.onSuccess { list ->
+                val uiList = list.map { dto ->
+                    MarketCandidate(
+                        rank = dto.rank,
+                        symbol = dto.symbol,
+                        pairName = "${dto.symbol}/USDT",
+                        coinName = dto.symbol,
+                        notations = 0,
+                        currentMarketPrice = dto.currentMarketPrice,
+                        minNotional = dto.minNotional,
+                        coinColor = androidx.compose.ui.graphics.Color.Gray
+                    )
                 }
-            } catch (e: Exception) {
+                _candidates.value = uiList
+                _readyForCandidates.value = true
+                if (uiList.isEmpty()) {
+                    val emptyMsg = "No market candidates matching volume criteria found on exchange."
+                    _candidatesError.value = emptyMsg
+                    _marketDataState.value = MarketDataUiState.Empty(emptyMsg)
+                } else {
+                    _marketDataState.value = MarketDataUiState.Success(uiList)
+                }
+            }.onFailure { e ->
                 val (errMsg, hintMsg) = getUserFriendlyErrorMessage(endpointName = "/api/market/candidates", exception = e)
-                Log.e(TAG, "[DIAGNOSTIC] candidates exception: message=${e.message}", e)
                 _candidatesError.value = errMsg
                 _marketDataState.value = MarketDataUiState.Error(errMsg, hintMsg)
-            } finally {
-                _candidatesLoading.value = false
             }
+            _candidatesLoading.value = false
         }
     }
 
@@ -444,16 +331,6 @@ class ExchangeViewModel @Inject constructor(
         _selectedCandidate.value = candidate
     }
 
-    /**
-     * Restores an existing Focus Mode session from the backend without triggering
-     * a new market scan or bot activation. Called when the app is reopened while
-     * the backend Durable Object already has an active locked instrument.
-     *
-     * Builds a minimal [MarketCandidate] from the [coinId] so the live_analysis
-     * screen has a valid selection to display. Price and metadata are intentionally
-     * left at zero — the live_analysis screen fetches its own live data from the
-     * backend analysis-status endpoint.
-     */
     fun restoreSession(coinId: String, strategy: String?) {
         val symbol = coinId.replace("/USDT", "").replace("USDT", "").uppercase()
         _selectedCandidate.value = MarketCandidate(
@@ -464,33 +341,20 @@ class ExchangeViewModel @Inject constructor(
             notations = 0,
             currentMarketPrice = 0.0,
             minNotional = 0.0,
-            coinColor = androidx.compose.ui.graphics.Color(0xFF00B4FF),
+            coinColor = androidx.compose.ui.graphics.Color(0xFF00B4FF)
         )
-        // strategy ignored in ExchangeViewModel as it's now handled by StrategySelectionViewModel
     }
-
-
-
 
     fun fetchTechnicalAnalysis(strategy: String, config: Map<String, Any>? = null) {
         val candidate = _selectedCandidate.value ?: return
         _analysisError.value = null
+        val tradeConfig = sessionRepository.tradeSetupConfig.value
 
         viewModelScope.launch {
-            try {
-                val response = technicalAnalysisService.getAnalysis(
-                    TechnicalAnalysisRequest(
-                        symbol = candidate.symbol,
-                        strategy = strategy,
-                        config = config
-                    )
-                )
-                if (response.isSuccessful && response.body() != null) {
-                    _technicalAnalysis.value = response.body()
-                } else {
-                    _analysisError.value = getUserFriendlyErrorMessage(endpointName = "/api/market/technical-analysis", response = response).first
-                }
-            } catch (e: Exception) {
+            val result = technicalAnalysisRepository.getAnalysis(candidate.symbol, strategy, tradeConfig)
+            result.onSuccess {
+                _technicalAnalysis.value = it
+            }.onFailure { e ->
                 _analysisError.value = getUserFriendlyErrorMessage(endpointName = "/api/market/technical-analysis", exception = e).first
             }
         }
@@ -498,53 +362,25 @@ class ExchangeViewModel @Inject constructor(
 
     fun fetchTicker() {
         val candidate = _selectedCandidate.value ?: return
-
         viewModelScope.launch {
-            try {
-                val response = tickerService.getTicker(candidate.symbol)
-                if (response.isSuccessful && response.body() != null) {
-                    _ticker.value = response.body()
-                }
-            } catch (e: Exception) {
-                // Silently fail
-            }
+            marketRepository.getTicker(candidate.symbol).onSuccess { _ticker.value = it }
         }
     }
 
     fun fetchKlines(interval: String = "1h", limit: Int = 100) {
+        val symbol = _selectedCandidate.value?.symbol ?: return
         viewModelScope.launch {
-            try {
-                val symbol = _selectedCandidate.value?.symbol ?: return@launch
-                val result = klineService.getKlines(symbol, interval, limit)
-                if (result.isSuccessful && result.body() != null) {
-                    _klines.value = result.body()!!
-                } else {
-                    result.errorBody()?.close()
-                }
-            } catch (e: Exception) {
-                // Ignore silent failures for klines update loop
-            }
+            marketRepository.getKlines(symbol, interval, limit).onSuccess { _klines.value = it }
         }
     }
 
     fun fetchBalances() {
         viewModelScope.launch {
-            try {
-                val response = exchangeService.getBalance()
-                if (response.isSuccessful) {
-                    val body = response.body()
-                    if (body != null && body.success) {
-                        _balances.value = body.balances ?: emptyList()
-                        _balancesError.value = null
-                    } else {
-                        _balancesError.value = body?.message ?: "Failed to fetch balances"
-                    }
-                } else {
-                    response.errorBody()?.close()
-                    _balancesError.value = "Server error: ${response.code()}"
-                }
-            } catch (e: Exception) {
-                _balancesError.value = "Network error: ${e.message}"
+            exchangeRepository.getBalances().onSuccess { body ->
+                _balances.value = body
+                _balancesError.value = null
+            }.onFailure { e ->
+                _balancesError.value = e.message ?: "Network error"
             }
         }
     }
@@ -553,14 +389,14 @@ class ExchangeViewModel @Inject constructor(
         _pendingAlert.value = alert
     }
 
-    fun setPendingBotAlert(alert: com.cryptopulse.app.data.api.BotAlert) {
+    fun setPendingBotAlert(alert: BotAlert) {
         _pendingAlert.value = mapOf(
             "id" to alert.id,
             "symbol" to alert.symbol,
             "entryPrice" to alert.entryPrice,
-            "stopLoss" to alert.stopLoss,
-            "takeProfit" to alert.takeProfit,
-            "estimatedPnl" to alert.estimatedPnl,
+            "stopLoss" to (alert.stopLoss ?: 0.0),
+            "takeProfit" to (alert.takeProfit ?: 0.0),
+            "estimatedPnl" to (alert.estimatedPnl ?: 0.0),
             "strategy" to (alert.strategy ?: ""),
             "side" to (alert.side ?: "BUY"),
         )
@@ -571,16 +407,9 @@ class ExchangeViewModel @Inject constructor(
         val alertId = _pendingAlert.value?.get("id") as? String
         if (alertId != null) {
             viewModelScope.launch {
-                try {
-                    val token = tokenManager.getToken()
-                    if (token != null) {
-                        val res = tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
-                        if (!res.isSuccessful) {
-                            res.errorBody()?.close()
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Silently fail
+                val token = tokenManager.getToken()
+                if (token != null) {
+                    botRepository.acknowledgeAlert(alertId)
                 }
             }
         }
@@ -595,92 +424,54 @@ class ExchangeViewModel @Inject constructor(
         }
         val tradeSetup = _tradeSetup.value
         _tradeError.value = null
-        // Clear any previous result so observers can unambiguously detect the
-        // outcome of THIS execution (fresh _lastTrade == success signal).
         _lastTrade.value = null
 
         viewModelScope.launch {
-            try {
-                val token = tokenManager.getToken()
-                if (token != null) {
-                    val response = tradingBotService.executeTrade()
-                    if (response.isSuccessful && response.body() != null) {
-                        val body = response.body()!!
-                        val success = body["success"] as? Boolean ?: false
-                        
-                        if (success) {
-                            val alertId = alert["id"] as? String
-                            if (alertId != null) {
-                                val ackRes = tradingBotService.acknowledgeAlert(mapOf("alertId" to alertId))
-                                if (!ackRes.isSuccessful) {
-                                    ackRes.errorBody()?.close()
-                                }
-                            }
-                            _pendingAlert.value = null
-                            val entryPrice = (alert["entryPrice"] as? Double)
-                                ?: tradeSetup?.entryPrice ?: 0.0
-                            val stopLoss = (alert["stopLoss"] as? Double)
-                                ?: tradeSetup?.stopLossPrice ?: entryPrice * 0.99
-                            val takeProfit = (alert["takeProfit"] as? Double)
-                                ?: tradeSetup?.takeProfitPrice ?: entryPrice * 1.02
-                            _lastTrade.value = TradeSetupState(
-                                entryPrice = entryPrice,
-                                stopLossPrice = stopLoss,
-                                takeProfitPrice = takeProfit,
-                            )
-                        } else {
-                            val order = body["order"] as? Map<String, Any>
-                            val friendlyMsg = order?.get("friendlyMessage") as? String
-                            val message = body["message"] as? String
-                            _tradeError.value = friendlyMsg ?: message ?: "Trade execution failed."
-                        }
-                    } else {
-                        _tradeError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/execute-trade", response = response).first
-                    }
-                } else {
-                    _tradeError.value = "Your session has expired. Please sign in again."
+            val token = tokenManager.getToken()
+            if (token != null) {
+                val result = botRepository.executeTrade()
+                result.onSuccess {
+                    val alertId = alert["id"] as? String ?: ""
+                    botRepository.acknowledgeAlert(alertId)
+                    _pendingAlert.value = null
+                    
+                    val entryPrice = (alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0
+                    val stopLoss = (alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: entryPrice * 0.99
+                    val takeProfit = (alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: entryPrice * 1.02
+                    
+                    _lastTrade.value = TradeSetupState(
+                        entryPrice = entryPrice,
+                        stopLossPrice = stopLoss,
+                        takeProfitPrice = takeProfit,
+                    )
+                }.onFailure { e ->
+                    _tradeError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/execute-trade", exception = e).first
                 }
-            } catch (e: Exception) {
-                _tradeError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/execute-trade", exception = e).first
+            } else {
+                _tradeError.value = "Your session has expired. Please sign in again."
             }
         }
     }
 
     fun activateBot(symbol: String, strategy: String, config: Map<String, Any>? = null) {
         _botError.value = null
-        val targetPrice = sessionRepository.tradeSetupConfig.value?.entryPrice?.takeIf { it > 0.0 }
+        val tradeConfig = sessionRepository.tradeSetupConfig.value
         viewModelScope.launch {
-            try {
-                val token = tokenManager.getToken()
-                if (token != null) {
-                    val response = tradingBotService.activate(
-                        ActivateBotRequest(
-                            coinId = symbol,
-                            strategy = strategy,
-                            targetEntryPrice = targetPrice,
-                            config = config
-                        )
-                    )
-                    if (!response.isSuccessful) {
-                        _botError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/activate", response = response).first
-                    }
+            val token = tokenManager.getToken()
+            if (token != null) {
+                val result = botRepository.activateBot(symbol, strategy, tradeConfig)
+                result.onFailure { e ->
+                    _botError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/activate", exception = e).first
                 }
-            } catch (e: Exception) {
-                _botError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/activate", exception = e).first
             }
         }
     }
 
     fun registerFcmToken(fcmToken: String) {
         viewModelScope.launch {
-            try {
-                val token = tokenManager.getToken()
-                if (token != null) {
-                    val request = mapOf("fcmToken" to fcmToken)
-                    fcmApi.registerToken(request)
-                }
-            } catch (e: Exception) {
-                // Silently fail
+            val token = tokenManager.getToken()
+            if (token != null) {
+                fcmRepository.registerToken(fcmToken)
             }
         }
     }
@@ -689,3 +480,9 @@ class ExchangeViewModel @Inject constructor(
         private const val TAG = "ExchangeViewModel"
     }
 }
+
+
+
+
+
+

@@ -1,10 +1,12 @@
 package com.cryptopulse.app.ui.strategies
 
-import androidx.lifecycle.SavedStateHandle
+import com.cryptopulse.app.core.network.*
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.cryptopulse.app.data.repository.StrategyRepository
-import com.cryptopulse.app.data.repository.TradeSessionRepository
+
+import androidx.lifecycle.SavedStateHandle
+import com.cryptopulse.app.domain.repository.StrategyRepository
+import com.cryptopulse.app.domain.repository.TradeSessionRepository
 import com.cryptopulse.app.domain.models.DynamicFieldModel
 import com.cryptopulse.app.domain.models.SymbolTradingRules
 import com.cryptopulse.app.domain.models.TradeSetupConfig
@@ -52,7 +54,7 @@ sealed interface BalanceUiState {
 class TradeSetupViewModel @Inject constructor(
     private val repository: StrategyRepository,
     private val sessionRepository: TradeSessionRepository,
-    private val exchangeService: com.cryptopulse.app.data.api.ExchangeService
+    private val exchangeRepository: com.cryptopulse.app.domain.repository.ExchangeRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TradeSetupUiState())
@@ -69,37 +71,17 @@ class TradeSetupViewModel @Inject constructor(
     fun loadBalance() {
         viewModelScope.launch {
             _balanceState.value = BalanceUiState.Loading
-            try {
-                val response = exchangeService.getBalance()
-                if (!response.isSuccessful) {
-                    response.errorBody()?.close()
-                    _balanceState.value = BalanceUiState.Error("Failed to fetch exchange balance (${response.code()})")
-                    return@launch
-                }
-
-                val body = response.body()
-                if (body == null) {
-                    _balanceState.value = BalanceUiState.Error("Empty response from exchange service.")
-                    return@launch
-                }
-
-                if (!body.success) {
-                    if (body.code == "NO_EXCHANGE_CONNECTED") {
-                        _balanceState.value = BalanceUiState.NotConnected
-                    } else {
-                        _balanceState.value = BalanceUiState.Error(body.message ?: "Failed to fetch balance.", body.code)
-                    }
-                    return@launch
-                }
-
-                val primaryAsset = body.primaryAsset ?: "USDT"
-                val balances = body.balances ?: emptyList()
+            
+            val result = exchangeRepository.getBalances()
+            result.onSuccess { body ->
+                val primaryAsset = ("USDT") ?: "USDT"
+                val balances = body
                 val primaryItem = balances.find { it.asset.equals(primaryAsset, ignoreCase = true) }
                 
                 val free = primaryItem?.free ?: 0.0
                 val total = primaryItem?.total ?: 0.0
-                val exchange = body.exchange?.replaceFirstChar { it.uppercase() } ?: "Exchange"
-                val env = body.environment?.replaceFirstChar { it.uppercase() } ?: "Mainnet"
+                val exchange = ("Exchange")?.replaceFirstChar { it.uppercase() } ?: "Exchange"
+                val env = ("Mainnet")?.replaceFirstChar { it.uppercase() } ?: "Mainnet"
 
                 _balanceState.value = BalanceUiState.Success(
                     primaryAsset = primaryAsset.uppercase(),
@@ -108,8 +90,12 @@ class TradeSetupViewModel @Inject constructor(
                     exchangeName = exchange,
                     environment = env
                 )
-            } catch (e: Exception) {
-                _balanceState.value = BalanceUiState.Error(e.message ?: "Network error fetching balance.")
+            }.onFailure { e ->
+                if (e is com.cryptopulse.app.domain.models.DomainException && e.code == "NO_EXCHANGE_CONNECTED") {
+                    _balanceState.value = BalanceUiState.NotConnected
+                } else {
+                    _balanceState.value = BalanceUiState.Error(e.message ?: "Failed to fetch balance.")
+                }
             }
         }
     }
@@ -306,3 +292,9 @@ class TradeSetupViewModel @Inject constructor(
         return TradeSetupConfigResult.Success(config)
     }
 }
+
+
+
+
+
+

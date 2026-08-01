@@ -1,5 +1,7 @@
 package com.cryptopulse.app.ui.screens
 
+import com.cryptopulse.app.core.network.*
+
 import com.cryptopulse.app.ui.components.CoinInfoCard
 
 import androidx.compose.foundation.background
@@ -195,4 +197,5 @@ fun StrategyCard(strategy: Strategy, isSelected: Boolean, onClick: () -> Unit) {
         }
     }
 }
+
 

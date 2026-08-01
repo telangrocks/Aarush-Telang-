@@ -12,8 +12,8 @@ import com.cryptopulse.app.data.api.TickerService
 import com.cryptopulse.app.data.api.TradingBotService
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
-import com.cryptopulse.app.data.repository.AuthRepository
-import com.cryptopulse.app.domain.model.AuthResult
+import com.cryptopulse.app.domain.repository.AuthRepository
+import com.cryptopulse.app.core.network.NetworkResult
 import dagger.Lazy
 import dagger.Module
 import dagger.Provides
@@ -70,7 +70,7 @@ object AppModule {
                         isRefreshing = true
                         try {
                             val result = runBlocking { authRepositoryLazy.get().refreshToken() }
-                            if (result is AuthResult.Success) {
+                            if (result is NetworkResult.Success) {
                                 val newToken = tokenManager.tokenFlow.value
                                 if (!newToken.isNullOrEmpty()) {
                                     val newRequest = chain.request().newBuilder()
@@ -163,11 +163,6 @@ object AppModule {
         return retrofit.create(AuthService::class.java)
     }
 
-    @Provides
-    @Singleton
-    fun provideAuthRepository(api: AuthService, tokenManager: TokenManager): AuthRepository {
-        return AuthRepository(api, tokenManager)
-    }
 
     @Provides
     @Singleton
@@ -217,3 +212,4 @@ object AppModule {
         return retrofit.create(FcmApi::class.java)
     }
 }
+
