@@ -1,8 +1,9 @@
 package com.cryptopulse.app.ui.strategies
 
-import com.cryptopulse.app.data.api.*
-import com.cryptopulse.app.data.repository.TradeSessionRepository
-import com.cryptopulse.app.domain.models.TradeSetupConfig
+import com.cryptopulse.app.core.network.NetworkResult
+import com.cryptopulse.app.domain.models.*
+import com.cryptopulse.app.domain.repository.BotRepository
+import com.cryptopulse.app.domain.repository.TradeSessionRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,11 +11,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.*
 import org.junit.After
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import retrofit2.Response
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TechnicalAnalysisViewModelTest {
@@ -45,43 +44,33 @@ class TechnicalAnalysisViewModelTest {
         }
     }
 
-    private fun createMockTradingBotService(shouldSucceed: Boolean = true): TradingBotService {
-        return object : TradingBotService {
-            override suspend fun activate(request: ActivateBotRequest): Response<ActivateBotResponse> {
+    private fun createMockBotRepository(shouldSucceed: Boolean = true): BotRepository {
+        return object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+
+            private val _isConnected = MutableStateFlow(true)
+            override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+            override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
                 return if (shouldSucceed) {
-                    Response.success(ActivateBotResponse(success = true, message = "Bot activated."))
+                    NetworkResult.Success(Unit)
                 } else {
-                    Response.error(400, okhttp3.ResponseBody.create(null, "Failed"))
+                    NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(400, "Failed", "ERROR"))
                 }
             }
 
-            override suspend fun deactivate(): Response<ActivateBotResponse> {
-                return Response.success(ActivateBotResponse(success = true, message = "Deactivated"))
-            }
+            override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getStatus(): NetworkResult<BotState> = NetworkResult.Success(BotState.ANALYSING)
+            override suspend fun executeTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
 
-            override suspend fun getStatus(): Response<BotStatusResponse> {
-                return Response.success(BotStatusResponse(isActive = true, coinId = "BTC", strategy = "scalper-v2"))
-            }
-
-            override suspend fun getAnalysisStatus(): Response<com.cryptopulse.app.domain.models.AnalysisSnapshot> {
-                return Response.error(404, okhttp3.ResponseBody.create(null, "Not found"))
-            }
-
-            override suspend fun executeTrade(): Response<Map<String, Any>> {
-                return Response.success(mapOf("success" to true))
-            }
-
-            override suspend fun stopTrade(): Response<Map<String, Any>> {
-                return Response.success(mapOf("success" to true))
-            }
-
-            override suspend fun getAlerts(): Response<List<Map<String, Any>>> {
-                return Response.success(emptyList())
-            }
-
-            override suspend fun acknowledgeAlert(request: Map<String, String>): Response<Map<String, Any>> {
-                return Response.success(emptyMap())
-            }
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
+            override fun updateConnectionState(connected: Boolean) { _isConnected.value = connected }
+            override fun startObserving() {}
+            override fun stopObserving() {}
         }
     }
 
@@ -89,7 +78,7 @@ class TechnicalAnalysisViewModelTest {
     fun `activateBot performs explicit user activation handshake and invokes onSuccess`() = runTest {
         val viewModel = TechnicalAnalysisViewModel(
             createMockSessionRepository("scalper-v2"),
-            createMockTradingBotService(shouldSucceed = true)
+            createMockBotRepository(shouldSucceed = true)
         )
 
         var isSuccessInvoked = false
@@ -105,7 +94,7 @@ class TechnicalAnalysisViewModelTest {
     fun `stopBot deactivates session and invokes onSuccess`() = runTest {
         val viewModel = TechnicalAnalysisViewModel(
             createMockSessionRepository("scalper-v2"),
-            createMockTradingBotService(shouldSucceed = true)
+            createMockBotRepository(shouldSucceed = true)
         )
 
         var isStoppedInvoked = false
@@ -117,3 +106,4 @@ class TechnicalAnalysisViewModelTest {
         assertTrue(isStoppedInvoked)
     }
 }
+
