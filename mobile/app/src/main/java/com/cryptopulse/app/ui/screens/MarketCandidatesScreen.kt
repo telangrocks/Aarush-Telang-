@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,6 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -30,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.theme.*
+import com.cryptopulse.app.ui.utils.Formatters
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -53,7 +57,21 @@ data class MarketCandidate(
     val formattedPrice: String = "",
     val formattedMinNotional: String = "",
     val formattedVolume: String = "",
+    val highPrice24h: Double = 0.0,
+    val lowPrice24h: Double = 0.0,
 )
+
+fun MarketCandidate.toAccessibilityDescription(): String {
+    val priceStr = Formatters.formatCryptoPrice(currentMarketPrice)
+    val pctStr = Formatters.formatPercentage(priceChangePercent24h)
+    val volStr = Formatters.formatQuoteVolume(quoteVolume24h)
+    val minStr = Formatters.formatMinNotional(minNotional)
+    val scoreStr = Formatters.formatScore(score)
+    val sideText = if (tradeSide.isNotBlank()) "$tradeSide." else ""
+    val tfText = if (recommendedTimeframe.isNotBlank()) "$recommendedTimeframe." else ""
+    val directionText = if (priceChangePercent24h >= 0) "Up" else "Down"
+    return "Rank $rank. $pairName. $sideText $tfText Price $priceStr dollars. $directionText $pctStr. AI Score $scoreStr. 24 hour volume $volStr. Minimum order $minStr."
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Market Candidates Screen
@@ -79,6 +97,7 @@ fun MarketCandidatesScreen(
 
     val mappedCandidates = candidates
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
+    val listState = rememberLazyListState()
 
     var currentTime by remember { mutableStateOf(getCurrentTime()) }
     LaunchedEffect(Unit) {
@@ -292,6 +311,7 @@ fun MarketCandidatesScreen(
                 }
 
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
@@ -358,7 +378,7 @@ fun MarketCandidatesScreen(
                     Divider(color = NavyBorder, thickness = 1.dp, modifier = Modifier.padding(vertical = 4.dp))
                 }
 
-                itemsIndexed(mappedCandidates, key = { _, candidate -> candidate.symbol }) { _, candidate ->
+                itemsIndexed(mappedCandidates, key = { _, candidate -> candidate.pairName.ifEmpty { candidate.symbol } }) { _, candidate ->
                     android.util.Log.d("MarketCandidatesScreen", "[DIAGNOSTIC] Rendering item: symbol=${candidate.symbol}, pair=${candidate.pairName}, rank=${candidate.rank}, price=$${candidate.currentMarketPrice}")
                     CandidateRow(candidate = candidate, onClick = {
                         viewModel.selectCandidate(candidate)
@@ -396,12 +416,17 @@ fun MarketCandidatesScreen(
 // ─── Single candidate row ─────────────────────────────────────────────────────
 @Composable
 private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
+    val accessibleDescription = candidate.toAccessibilityDescription()
+    
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .testTag("candidate_item")
-            .padding(vertical = 16.dp, horizontal = 4.dp),
+            .semantics(mergeDescendants = true) {
+                contentDescription = accessibleDescription
+            }
+            .padding(vertical = 14.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RankBadge(rank = candidate.rank)
@@ -426,55 +451,29 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
         Spacer(Modifier.width(14.dp))
 
         Column(modifier = Modifier.weight(1f)) {
+            // Row 1: Pair / Badges & Price / % Change
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.Bottom) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = candidate.coinName,
+                        text = candidate.symbol,
                         color = TextPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
-                        text = "/USDT",
+                        text = if (candidate.pairName.contains("/")) "/${candidate.pairName.split("/").getOrElse(1) { "USDT" }}" else "/USDT",
                         color = TextMuted,
                         fontSize = 12.sp,
                         modifier = Modifier.padding(bottom = 1.dp)
                     )
-                }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "$${candidate.formattedPrice.ifEmpty { formatCryptoPrice(candidate.currentMarketPrice) }}",
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    val isPositive = candidate.priceChangePercent24h >= 0
-                    val changeColor = if (isPositive) ProfitGreen else LossRed
-                    Text(
-                        text = String.format(Locale.US, "%s%.2f%%", if (isPositive) "+" else "", candidate.priceChangePercent24h),
-                        color = changeColor,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
                     if (candidate.tradeSide.isNotBlank()) {
+                        Spacer(Modifier.width(8.dp))
                         val sideColor = if (candidate.tradeSide.equals("BUY", ignoreCase = true)) ProfitGreen else LossRed
                         Box(
                             modifier = Modifier
@@ -490,8 +489,9 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                             )
                         }
                     }
+
                     if (candidate.recommendedTimeframe.isNotBlank()) {
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(6.dp))
                         Box(
                             modifier = Modifier
                                 .background(NavyBorder.copy(alpha = 0.3f), RoundedCornerShape(4.dp))
@@ -499,7 +499,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = candidate.recommendedTimeframe,
+                                text = candidate.recommendedTimeframe.uppercase(),
                                 color = TextSecondary,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
@@ -508,20 +508,79 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                     }
                 }
 
-                Column(horizontalAlignment = Alignment.End) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "24h Vol: $${candidate.formattedVolume.ifEmpty { String.format(Locale.US, "%.1fM", candidate.quoteVolume24h / 1_000_000.0) }}",
-                        color = TextSecondary,
-                        fontSize = 11.sp,
+                        text = if (candidate.formattedPrice.isNotBlank()) "$${candidate.formattedPrice}" else "$${Formatters.formatCryptoPrice(candidate.currentMarketPrice)}",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
                     )
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.width(8.dp))
+                    val isPositive = candidate.priceChangePercent24h >= 0
+                    val changeColor = if (isPositive) ProfitGreen else LossRed
                     Text(
-                        text = "Min: $${candidate.formattedMinNotional.ifEmpty { formatCryptoPrice(candidate.minNotional) }}",
-                        color = CyanPrimary,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
+                        text = Formatters.formatPercentage(candidate.priceChangePercent24h),
+                        color = changeColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
                     )
                 }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            // Row 2: AI Score & 24h Volume
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "AI Score: ",
+                        color = CyanPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = Formatters.formatScore(candidate.score),
+                        color = TextPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Text(
+                    text = "24h Vol: ${Formatters.formatQuoteVolume(candidate.quoteVolume24h)}",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            // Row 3: 24h High/Low & Min Notional
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (candidate.highPrice24h > 0 || candidate.lowPrice24h > 0) {
+                    Text(
+                        text = "H: $${Formatters.formatCryptoPrice(candidate.highPrice24h)}  L: $${Formatters.formatCryptoPrice(candidate.lowPrice24h)}",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                    )
+                } else {
+                    Spacer(Modifier.width(1.dp))
+                }
+
+                Text(
+                    text = "Min: $${candidate.formattedMinNotional.ifEmpty { Formatters.formatMinNotional(candidate.minNotional) }}",
+                    color = CyanPrimary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
         }
     }
@@ -580,12 +639,3 @@ private fun getCurrentTime(): String =
 
 private fun getCurrentDate(): String =
     SimpleDateFormat("d MMM yyyy", Locale.getDefault()).format(Date())
-
-private fun formatCryptoPrice(price: Double): String {
-    return when {
-        price >= 1.0 -> String.format(Locale.US, "%.2f", price)
-        price >= 0.01 -> String.format(Locale.US, "%.4f", price)
-        else -> String.format(Locale.US, "%.8f", price).trimEnd('0').removeSuffix(".")
-    }
-}
-

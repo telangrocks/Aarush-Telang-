@@ -27,21 +27,31 @@ class StrategyRepositoryImpl @Inject constructor(
 
         when (val result = strategyRemoteDataSource.getAvailableStrategies()) {
             is NetworkResult.Success -> {
-                val strategies = result.data.strategies.map { dto ->
+                val strategies = (result.data.strategies ?: emptyList()).map { dto ->
                     Strategy(
-                        id = dto.id,
-                        name = dto.displayName,
-                        description = dto.description,
-                        category = parseCategory(dto.category),
-                        riskLevel = parseRisk(dto.riskProfile),
+                        id = dto.id ?: "unknown",
+                        name = dto.displayName ?: "Unnamed Strategy",
+                        description = dto.description ?: "",
+                        category = parseCategory(dto.category ?: "CUSTOM"),
+                        riskLevel = parseRisk(dto.riskProfile ?: "MEDIUM"),
                         schemaVersion = 1,
+                        version = dto.version ?: "1.0",
+                        supportedMarkets = dto.supportedMarkets ?: emptyList(),
+                        supportedTimeframes = dto.supportedTimeframes ?: emptyList(),
+                        minimumCandles = dto.minimumCandles ?: 0,
+                        supportsLong = dto.supportsLong ?: true,
+                        supportsShort = dto.supportsShort ?: true,
+                        supportsPaperTrading = dto.supportsPaperTrading ?: true,
+                        supportsLiveTrading = dto.supportsLiveTrading ?: true,
+                        status = dto.status ?: "ACTIVE",
+                        author = dto.author ?: "CryptoPulse Core",
                         requiredParameters = dto.parameters?.map { p ->
                             StrategyParameterSchema(
-                                key = p.key,
-                                displayName = p.displayName,
-                                type = ParameterType.valueOf(p.type),
-                                defaultValue = p.defaultValue,
-                                isRequired = p.isRequired,
+                                key = p.key ?: "",
+                                displayName = p.displayName ?: "",
+                                type = parseParameterType(p.type),
+                                defaultValue = p.defaultValue ?: "",
+                                isRequired = p.isRequired ?: false,
                                 minValue = p.minValue,
                                 maxValue = p.maxValue,
                                 options = p.options
@@ -80,5 +90,10 @@ class StrategyRepositoryImpl @Inject constructor(
 
     private fun parseRisk(risk: String): RiskLevel {
         return try { RiskLevel.valueOf(risk.uppercase()) } catch (e: Exception) { RiskLevel.MEDIUM }
+    }
+
+    private fun parseParameterType(typeStr: String?): ParameterType {
+        if (typeStr.isNullOrBlank()) return ParameterType.DOUBLE
+        return try { ParameterType.valueOf(typeStr.uppercase()) } catch (e: Exception) { ParameterType.DOUBLE }
     }
 }

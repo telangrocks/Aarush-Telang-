@@ -27,7 +27,8 @@ import com.cryptopulse.app.ui.components.CoinInfoCard
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.theme.*
-
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.cryptopulse.app.ui.components.GradientButton
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -140,7 +141,13 @@ fun TechnicalAnalysisScreen(
 
                     // Card 1: Live Engine Decision Pipeline & Confidence
                     GlowCard {
-                        Column(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics(mergeDescendants = true) {
+                                    contentDescription = "Engine confidence $confidence percent. Signal $signal. Alignment $trend."
+                                }
+                        ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,

@@ -5,19 +5,26 @@ import com.cryptopulse.app.domain.models.MarketCandidate
 import com.cryptopulse.app.domain.models.Kline
 import com.cryptopulse.app.domain.models.Ticker
 
-fun MarketCandidateDto.toDomain(): MarketCandidate = MarketCandidate(
-    rank = rank,
-    symbol = symbol,
-    currentMarketPrice = currentMarketPrice,
-    volume24h = volume24h,
-    quoteVolume24h = quoteVolume24h,
-    priceChange24h = priceChange24h,
-    priceChangePercent24h = priceChangePercent24h,
-    score = score,
-    minNotional = minNotional,
-    recommendedTimeframe = recommendedTimeframe,
-    tradeSide = tradeSide
-)
+fun MarketCandidateDto.toDomain(): MarketCandidate {
+    val sym = symbol?.takeIf { it.isNotBlank() } ?: "UNKNOWN"
+    val pair = pairName?.takeIf { it.isNotBlank() } ?: "$sym/USDT"
+    return MarketCandidate(
+        rank = rank ?: 0,
+        symbol = sym,
+        pairName = pair,
+        currentMarketPrice = currentMarketPrice?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        volume24h = volume24h?.takeIf { !it.isNaN() && !it.isInfinite() }?.coerceAtLeast(0.0) ?: 0.0,
+        quoteVolume24h = quoteVolume24h?.takeIf { !it.isNaN() && !it.isInfinite() }?.coerceAtLeast(0.0) ?: 0.0,
+        priceChange24h = priceChange24h?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        priceChangePercent24h = priceChangePercent24h?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        highPrice24h = highPrice24h?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        lowPrice24h = lowPrice24h?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        score = score?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        minNotional = minNotional?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        recommendedTimeframe = recommendedTimeframe ?: "",
+        tradeSide = tradeSide ?: ""
+    )
+}
 
 fun KlineDto.toDomain(): Kline = Kline(
     openTime = openTime,

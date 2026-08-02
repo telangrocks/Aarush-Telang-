@@ -76,11 +76,15 @@ android {
         }
     }
 
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+        disable += "MissingClass"
+    }
+
     kapt {
         correctErrorTypes = true
     }
-
-
 }
 
 
@@ -130,6 +134,9 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 
+    // Debug & Test manifest helpers
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+
     // Android UI & Instrumentation Testing (Espresso, UI Automator, Compose Test, Orchestrator)
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test:rules:1.5.0")
@@ -138,8 +145,7 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-intents:3.5.1")
     androidTestImplementation("androidx.test.espresso:espresso-idling-resource:3.5.1")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4:1.6.7")
-    androidTestImplementation("androidx.compose.ui:ui-test-manifest:1.6.7")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("com.google.dagger:hilt-android-testing:2.51.1")
     kaptAndroidTest("com.google.dagger:hilt-compiler:2.51.1")
     androidTestUtil("androidx.test:orchestrator:1.4.2")

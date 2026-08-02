@@ -23,7 +23,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.border
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.cryptopulse.app.ui.screens.MarketCandidate
+import com.cryptopulse.app.domain.models.RiskLevel
 import com.cryptopulse.app.domain.models.Strategy
 import com.cryptopulse.app.domain.models.StrategyCategory
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
@@ -136,6 +140,13 @@ fun StrategySelectionScreen(
     }
 }
 
+fun Strategy.toAccessibilityDescription(): String {
+    val riskText = "Risk level ${riskLevel.name.lowercase()}."
+    val dirText = if (supportsLong && supportsShort) "Supports long and short." else if (supportsLong) "Supports long." else "Supports short."
+    val tfText = if (supportedTimeframes.isNotEmpty()) "Timeframes ${supportedTimeframes.joinToString(", ")}." else ""
+    return "$name. $description. $riskText $dirText $tfText"
+}
+
 @Composable
 fun StrategyCard(strategy: Strategy, isSelected: Boolean, onClick: () -> Unit) {
     val borderColor = if (isSelected) CyanPrimary else Color.Transparent
@@ -151,11 +162,20 @@ fun StrategyCard(strategy: Strategy, isSelected: Boolean, onClick: () -> Unit) {
         else -> Icons.Default.AutoGraph
     }
 
+    val riskColor = when (strategy.riskLevel) {
+        RiskLevel.LOW -> ProfitGreen
+        RiskLevel.MEDIUM -> Color(0xFFFFB300)
+        RiskLevel.HIGH -> LossRed
+    }
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .testTag("strategy_option_${strategy.id.lowercase()}"),
+            .testTag("strategy_option_${strategy.id.lowercase()}")
+            .semantics(mergeDescendants = true) {
+                contentDescription = strategy.toAccessibilityDescription()
+            },
         color = bgColor,
         shape = RoundedCornerShape(12.dp),
         border = androidx.compose.foundation.BorderStroke(if (isSelected) 2.dp else 1.dp, if (isSelected) borderColor else Color(0xFF2A3650))
@@ -170,23 +190,91 @@ fun StrategyCard(strategy: Strategy, isSelected: Boolean, onClick: () -> Unit) {
                 tint = if (isSelected) CyanPrimary else TextSecondary,
                 modifier = Modifier.size(32.dp)
             )
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = strategy.name,
-                    color = if (isSelected) Color.White else TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = strategy.name,
+                        color = if (isSelected) Color.White else TextPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+
+                    // Risk Badge
+                    Box(
+                        modifier = Modifier
+                            .background(riskColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                            .border(0.5.dp, riskColor.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "${strategy.riskLevel.name} RISK",
+                            color = riskColor,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(4.dp))
+
                 Text(
                     text = strategy.description,
                     color = TextSecondary,
                     fontSize = 12.sp,
                     lineHeight = 16.sp
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Metadata tags row: Supported Timeframes & Direction support
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (strategy.supportsLong) {
+                        Box(
+                            modifier = Modifier
+                                .background(ProfitGreen.copy(alpha = 0.12f), RoundedCornerShape(3.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                        ) {
+                            Text("LONG", color = ProfitGreen, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    if (strategy.supportsShort) {
+                        Box(
+                            modifier = Modifier
+                                .background(LossRed.copy(alpha = 0.12f), RoundedCornerShape(3.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.dp)
+                        ) {
+                            Text("SHORT", color = LossRed, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    if (strategy.supportedTimeframes.isNotEmpty()) {
+                        Text(
+                            text = "TF: ${strategy.supportedTimeframes.take(3).joinToString(", ")}",
+                            color = TextMuted,
+                            fontSize = 10.sp
+                        )
+                    }
+
+                    Spacer(Modifier.weight(1f))
+
+                    Text(
+                        text = "v${strategy.version}",
+                        color = TextMuted.copy(alpha = 0.7f),
+                        fontSize = 10.sp
+                    )
+                }
             }
+
             if (isSelected) {
+                Spacer(modifier = Modifier.width(12.dp))
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
                     contentDescription = "Selected",

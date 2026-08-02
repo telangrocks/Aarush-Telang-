@@ -71,24 +71,30 @@ class TradeSetupViewModel @Inject constructor(
     fun loadBalance() {
         viewModelScope.launch {
             _balanceState.value = BalanceUiState.Loading
+
+            val statusResult = exchangeRepository.getConnectionStatus()
+            val (exchangeName, environmentName) = if (statusResult is NetworkResult.Success) {
+                val status = statusResult.data
+                (status.exchangeName?.replaceFirstChar { it.uppercase() } ?: "Exchange") to (status.environment?.replaceFirstChar { it.uppercase() } ?: "Mainnet")
+            } else {
+                "Exchange" to "Mainnet"
+            }
             
             val result = exchangeRepository.getBalances()
             result.onSuccess { body ->
-                val primaryAsset = ("USDT") ?: "USDT"
+                val primaryAsset = "USDT"
                 val balances = body
                 val primaryItem = balances.find { it.asset.equals(primaryAsset, ignoreCase = true) }
                 
                 val free = primaryItem?.free ?: 0.0
                 val total = primaryItem?.total ?: 0.0
-                val exchange = ("Exchange")?.replaceFirstChar { it.uppercase() } ?: "Exchange"
-                val env = ("Mainnet")?.replaceFirstChar { it.uppercase() } ?: "Mainnet"
 
                 _balanceState.value = BalanceUiState.Success(
                     primaryAsset = primaryAsset.uppercase(),
                     freeBalance = free,
                     totalBalance = total,
-                    exchangeName = exchange,
-                    environment = env
+                    exchangeName = exchangeName,
+                    environment = environmentName
                 )
             }.onFailure { e ->
                 if (e is com.cryptopulse.app.domain.models.DomainException && e.code == "NO_EXCHANGE_CONNECTED") {

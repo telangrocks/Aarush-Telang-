@@ -21,6 +21,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.cryptopulse.app.ui.components.CoinInfoCard
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GradientButton
@@ -228,6 +230,13 @@ fun AvailableBalanceCard(
     balanceState: com.cryptopulse.app.ui.strategies.BalanceUiState,
     onRetry: () -> Unit
 ) {
+    val accessibleBalanceText = when (balanceState) {
+        is com.cryptopulse.app.ui.strategies.BalanceUiState.Success -> "Available balance ${String.format(java.util.Locale.US, "%,.2f", balanceState.freeBalance)} ${balanceState.primaryAsset} on ${balanceState.exchangeName} ${balanceState.environment}."
+        is com.cryptopulse.app.ui.strategies.BalanceUiState.NotConnected -> "No exchange connected."
+        is com.cryptopulse.app.ui.strategies.BalanceUiState.Error -> "Balance error: ${balanceState.message}"
+        else -> "Fetching wallet balance."
+    }
+
     Surface(
         shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
         color = Color(0xFF0F1B2D),
@@ -235,6 +244,9 @@ fun AvailableBalanceCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("available_balance_card")
+            .semantics(mergeDescendants = true) {
+                contentDescription = accessibleBalanceText
+            }
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)

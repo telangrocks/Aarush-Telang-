@@ -271,15 +271,23 @@ class ExchangeViewModel @Inject constructor(
         viewModelScope.launch {
             val result = marketRepository.getCandidates()
             result.onSuccess { list ->
-                val uiList = list.map { dto ->
+                val uiList = list.map { domain ->
                     MarketCandidate(
-                        rank = dto.rank,
-                        symbol = dto.symbol,
-                        pairName = "${dto.symbol}/USDT",
-                        coinName = dto.symbol,
+                        rank = domain.rank,
+                        symbol = domain.symbol,
+                        pairName = domain.pairName,
+                        coinName = domain.symbol,
                         notations = 0,
-                        currentMarketPrice = dto.currentMarketPrice,
-                        minNotional = dto.minNotional,
+                        currentMarketPrice = domain.currentMarketPrice,
+                        volume24h = domain.volume24h,
+                        quoteVolume24h = domain.quoteVolume24h,
+                        priceChangePercent24h = domain.priceChangePercent24h,
+                        score = domain.score,
+                        recommendedTimeframe = domain.recommendedTimeframe,
+                        tradeSide = domain.tradeSide,
+                        minNotional = domain.minNotional,
+                        highPrice24h = domain.highPrice24h,
+                        lowPrice24h = domain.lowPrice24h,
                         coinColor = androidx.compose.ui.graphics.Color.Gray
                     )
                 }

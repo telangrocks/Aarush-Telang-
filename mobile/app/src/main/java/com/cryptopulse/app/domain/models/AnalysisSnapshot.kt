@@ -1,5 +1,8 @@
 package com.cryptopulse.app.domain.models
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class EngineStatusDTO(
     val state: String?,
     val activeStrategy: String?,
@@ -8,12 +11,14 @@ data class EngineStatusDTO(
     val health: String?
 )
 
+@Immutable
 data class IndicatorSummary(
     val name: String,
     val value: String,
     val signal: String
 )
 
+@Immutable
 data class ConditionSummary(
     val id: String,
     val name: String,
@@ -22,6 +27,7 @@ data class ConditionSummary(
     val status: String
 )
 
+@Immutable
 data class MarketAnalysisDTO(
     val symbol: String?,
     val timeframeStatus: String?,
@@ -31,6 +37,7 @@ data class MarketAnalysisDTO(
     val confidenceExplanation: List<String>?
 )
 
+@Immutable
 data class SignalDTO(
     val type: String?,
     val entryContext: String?,
@@ -42,6 +49,7 @@ data class SignalDTO(
     val reasoning: List<String>?
 )
 
+@Immutable
 data class AnalysisSnapshot(
     val engineStatus: EngineStatusDTO?,
     val marketAnalysis: MarketAnalysisDTO?,

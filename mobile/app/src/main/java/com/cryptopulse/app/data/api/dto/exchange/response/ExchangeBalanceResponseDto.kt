@@ -1,14 +1,16 @@
 package com.cryptopulse.app.data.api.dto.exchange.response
 
 data class BalanceItemDataDto(
-    val asset: String,
-    val free: Double,
-    val locked: Double,
-    val total: Double
+    val asset: String? = null,
+    val currency: String? = null,
+    val free: Double? = null,
+    val locked: Double? = null,
+    val used: Double? = null,
+    val total: Double? = null
 )
 
 data class ExchangeBalanceResponseDto(
-    val success: Boolean,
+    val success: Boolean = false,
     val exchange: String? = null,
     val environment: String? = null,
     val primaryAsset: String? = "USDT",
