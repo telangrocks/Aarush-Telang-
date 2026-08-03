@@ -197,6 +197,61 @@ export class CcxtProvider implements IExchangeProvider {
       (this.exchange as any).fetchCapitalConfig = async () => [];
       (this.exchange as any).publicGetExchangeInfo = async () => ({ symbols: [] });
       (this.exchange as any).publicGetApiV3ExchangeInfo = async () => ({ symbols: [] });
+
+      const isTestnet = config.environment === 'testnet' || config.environment === 'Testing';
+      const host = isTestnet ? 'https://testnet.binance.vision' : 'https://api.binance.com';
+      const cleanKey = config.apiKey || '';
+      const cleanSec = config.secret || '';
+
+      if (cleanKey && cleanSec) {
+        this.exchange.fetchBalance = async () => {
+          const ts = Date.now().toString();
+          const query = `timestamp=${ts}&recvWindow=10000`;
+          const encoder = new TextEncoder();
+          const keyData = encoder.encode(cleanSec);
+          const queryData = encoder.encode(query);
+          const key = await globalThis.crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+          const sigBuf = await globalThis.crypto.subtle.sign('HMAC', key, queryData);
+          const hashArray = Array.from(new Uint8Array(sigBuf));
+          const sigHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+          const url = `${host}/api/v3/account?${query}&signature=${sigHex}`;
+
+          console.log(`[BINANCE NATIVE FETCHBALANCE REQUEST] GET ${url}`);
+          const res = await globalThis.fetch(url, {
+            headers: {
+              'X-MBX-APIKEY': cleanKey,
+              'Accept': 'application/json',
+              'User-Agent': 'CryptoPulse/1.0'
+            }
+          });
+
+          if (!res.ok) {
+            const errText = await res.text();
+            console.error(`[BINANCE NATIVE FETCHBALANCE ERROR] HTTP ${res.status}: ${errText}`);
+            let parsedErr: any = {};
+            try { parsedErr = JSON.parse(errText); } catch (_) {}
+            const errorMsg = parsedErr?.msg || errText;
+            const errorCode = parsedErr?.code || res.status;
+            if (errorCode === -1022 || String(errorMsg).toLowerCase().includes('signature')) {
+              throw new ccxt.AuthenticationError(`Binance API Error ${errorCode}: ${errorMsg}`);
+            }
+            throw new ccxt.ExchangeError(`Binance API Error ${errorCode}: ${errorMsg}`);
+          }
+
+          const data: any = await res.json();
+          const balances: any = { free: {}, used: {}, total: {}, info: data };
+          if (Array.isArray(data.balances)) {
+            for (const b of data.balances) {
+              const free = parseFloat(b.free) || 0;
+              const locked = parseFloat(b.locked) || 0;
+              balances.free[b.asset] = free;
+              balances.used[b.asset] = locked;
+              balances.total[b.asset] = free + locked;
+            }
+          }
+          return balances;
+        };
+      }
     } else if (this.exchangeId === 'kucoin') {
       (this.exchange as any).publicGetSymbols = async () => ({ code: '200000', data: [] });
       (this.exchange as any).publicGetApiV1Symbols = async () => ({ code: '200000', data: [] });
@@ -209,8 +264,20 @@ export class CcxtProvider implements IExchangeProvider {
         console.warn(`[SHORT-CIRCUITED HEAVY ENDPOINT] ${method} ${url}`);
         return new Response(JSON.stringify({ symbols: [], code: '200000', data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      console.log(`[CCXT OUTBOUND FETCH] ${method} ${url}`);
-      return origCcxtFetch(url, method, headers, body);
+      console.log(`[CCXT OUTBOUND FETCH DETAIL] ${method} ${url}`, JSON.stringify({ headers, body: body ? String(body).slice(0, 100) : null }));
+      try {
+        const res = await origCcxtFetch(url, method, headers, body);
+        console.log(`[CCXT OUTBOUND FETCH SUCCESS] ${method} ${url} Status:`, res?.status || 'OK');
+        return res;
+      } catch (fetchError: any) {
+        console.error(`[CCXT OUTBOUND FETCH EXCEPTION] ${method} ${url}:`, {
+          name: fetchError?.name,
+          message: fetchError?.message,
+          cause: fetchError?.cause,
+          stack: fetchError?.stack
+        });
+        throw fetchError;
+      }
     };
 
     this.exchange.loadMarkets = async () => {

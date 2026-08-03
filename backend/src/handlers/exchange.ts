@@ -63,6 +63,24 @@ export async function handleValidateExchange(
       });
     }
 
+    // DIAGNOSTIC 1: Direct native fetch to Binance Testnet ping & time inside Cloudflare Worker
+    let directPingResult: any = null;
+    let directTimeResult: any = null;
+    if (exchangeName === 'binance' && normalizeEnvironment(environment) === 'testnet') {
+      try {
+        const pingRes = await globalThis.fetch('https://testnet.binance.vision/api/v3/ping');
+        directPingResult = { status: pingRes.status, text: await pingRes.text() };
+      } catch (directErr: any) {
+        directPingResult = { error: directErr?.message || String(directErr), name: directErr?.name, cause: String(directErr?.cause || '') };
+      }
+      try {
+        const timeRes = await globalThis.fetch('https://testnet.binance.vision/api/v3/time');
+        directTimeResult = { status: timeRes.status, text: await timeRes.text() };
+      } catch (directErr: any) {
+        directTimeResult = { error: directErr?.message || String(directErr), name: directErr?.name, cause: String(directErr?.cause || '') };
+      }
+    }
+
     let provider;
     try {
       provider = await ExchangeManager.createUncachedProvider(exchangeName as ExchangeName, {
@@ -73,7 +91,7 @@ export async function handleValidateExchange(
       });
       await provider.fetchBalance();
       console.log(`[exchange-auth] validation successful for ${exchangeName}`);
-      return c.json({ success: true, message: "Credentials verified. You're all set." });
+      return c.json({ success: true, message: "Credentials verified. You're all set.", directPingResult, directTimeResult });
     } catch (valErr: unknown) {
       const classified = classifyException(valErr, exchangeName);
       console.error(`[exchange-auth] validation failed for ${exchangeName} (${classified.technicalDetail}):`, valErr);
@@ -84,7 +102,9 @@ export async function handleValidateExchange(
         message: classified.friendlyMessage,
         hint: classified.hint,
         detail: classified.technicalDetail,
-        rawError: valErr instanceof Error ? valErr.message : String(valErr),
+        rawError: valErr instanceof Error ? `${valErr.message} | ${valErr.stack}` : String(valErr),
+        directPingResult,
+        directTimeResult
       });
     } finally {
       if (provider) {

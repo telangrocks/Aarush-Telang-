@@ -39,6 +39,7 @@ export type ExchangeErrorCode =
   | "BINANCE_NETWORK_BLOCKED"
   | "UPSTREAM_PROVIDER_BLOCKED"
   | "INSUFFICIENT_BALANCE"
+  | "NETWORK_ERROR"
   | "UNKNOWN_EXCHANGE_ERROR";
 
 export interface ExchangeErrorInfo {
@@ -137,6 +138,11 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
     code: "NETWORK_TIMEOUT",
     friendlyMessage: "We couldn't reach the exchange in time.",
     hint: "Check your internet connection or try again in a few moments.",
+  },
+  NETWORK_ERROR: {
+    code: "NETWORK_ERROR",
+    friendlyMessage: "Network connection to the exchange failed.",
+    hint: "Crypto Pulse could not establish a network connection to the exchange servers. Please try again.",
   },
   SSL_CONNECTION_FAILURE: {
     code: "SSL_CONNECTION_FAILURE",
@@ -438,8 +444,8 @@ export function classifyByBodyText(
   ) {
     return mk("AUTHENTICATION_FAILED", technicalDetail, lower); // Mapped under auth mismatch
   }
-  // Explicit signature failures
-  if (lower.includes("signature") || lower.includes("sign") && lower.includes("invalid") || lower.includes("invalid signature")) {
+  // Explicit signature failures (strictly check for signature error text to avoid matching stack trace lines like binance.sign)
+  if (lower.includes("invalid signature") || lower.includes("signature for this request") || (lower.includes("signature") && lower.includes("not valid"))) {
     return mk("INVALID_SIGNATURE", technicalDetail, lower);
   }
   // Timestamp out of sync
