@@ -8,6 +8,7 @@ import { UnifiedError } from './models/UnifiedError';
 import { SymbolResolver } from '../utils/SymbolResolver';
 
 export class CcxtProvider implements IExchangeProvider {
+  private static tickerCache = new Map<string, { ticker: Ticker; timestamp: number }>();
   private exchangeId: string;
   private exchange: Exchange | null = null;
   private marketsCached: boolean = false;
@@ -35,7 +36,7 @@ export class CcxtProvider implements IExchangeProvider {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       },
     };
-    const pwd = config.password || config.passphrase;
+    const pwd = config.password || config.passphrase || config.apiPassphrase;
     if (config.apiKey) exchangeOptions.apiKey = config.apiKey;
     if (config.secret) exchangeOptions.secret = config.secret;
     if (pwd) exchangeOptions.password = pwd;
@@ -407,6 +408,51 @@ export class CcxtProvider implements IExchangeProvider {
       console.warn(`[CCXT NATIVE FETCH_TICKER WARNING] ${cleanSymbol} on ${this.exchangeId}: ${e?.message}`);
     }
 
+    // Resilient memory cache for ticker data across transient network drops
+    const cacheKey = `${this.exchangeId}:${cleanSymbol}`;
+
+    // Helper to safely drain/cancel HTTP response body to prevent Worker stalled socket deadlocks
+    const safeDrainBody = async (res: Response) => {
+      try {
+        if (res && res.body && !res.bodyUsed) {
+          await res.arrayBuffer();
+        }
+      } catch (_) {
+        try { if (res && res.body && !res.bodyUsed) res.body.cancel(); } catch (__) {}
+      }
+    };
+
+    // 1. Prefer CCXT's native fetchTicker implementation
+    try {
+      const ticker = await this.exchange!.fetchTicker(cleanSymbol);
+      const lastPx = new BigNumber(ticker.last ?? (ticker.close ?? 0));
+      const baseVol = new BigNumber(ticker.baseVolume ?? ((ticker as any).volume ?? 0));
+      const quoteVol = new BigNumber(ticker.quoteVolume ?? ((ticker as any).quoteVolume ?? 0));
+      const highPx = new BigNumber(ticker.high ?? 0);
+      const lowPx = new BigNumber(ticker.low ?? 0);
+
+      if (lastPx.isGreaterThan(0)) {
+        const result: Ticker = {
+          symbol: ticker.symbol || cleanSymbol,
+          timestamp: ticker.timestamp ?? Date.now(),
+          last: lastPx,
+          bid: new BigNumber(ticker.bid ?? lastPx),
+          ask: new BigNumber(ticker.ask ?? lastPx),
+          high: highPx.isGreaterThan(0) ? highPx : lastPx,
+          low: lowPx.isGreaterThan(0) ? lowPx : lastPx,
+          volume: baseVol,
+          quoteVolume: quoteVol.isGreaterThan(0) ? quoteVol : baseVol.multipliedBy(lastPx),
+          change: new BigNumber(ticker.change ?? 0),
+          percentage: typeof ticker.percentage === 'number' ? ticker.percentage : (typeof ticker.info?.priceChangePercent !== 'undefined' ? parseFloat(ticker.info.priceChangePercent) : undefined),
+          info: ticker.info,
+        };
+        CcxtProvider.tickerCache.set(cacheKey, { ticker: result, timestamp: Date.now() });
+        return result;
+      }
+    } catch (e: any) {
+      console.warn(`[CCXT NATIVE FETCH_TICKER WARNING] ${cleanSymbol} on ${this.exchangeId}: ${e?.message}`);
+    }
+
     // 2. Direct 24-hour Ticker Fallback for Binance (provides complete 24h market statistics without fabrication)
     if (exId.includes('binance')) {
       const rawPair = cleanSymbol.replace('/', '');
@@ -416,8 +462,9 @@ export class CcxtProvider implements IExchangeProvider {
         : [`https://api.binance.com/api/v3/ticker/24hr?symbol=${rawPair}`, `https://testnet.binance.vision/api/v3/ticker/24hr?symbol=${rawPair}`];
 
       for (const url of urls) {
+        let res: Response | null = null;
         try {
-          const res = await globalThis.fetch(url, {
+          res = await globalThis.fetch(url, {
             headers: { 'User-Agent': 'CryptoPulse/1.0', 'Accept': 'application/json' }
           });
           if (res.ok) {
@@ -428,7 +475,7 @@ export class CcxtProvider implements IExchangeProvider {
               const quoteVol = new BigNumber(data.quoteVolume || 0);
               const highPx = new BigNumber(data.highPrice || lastPx);
               const lowPx = new BigNumber(data.lowPrice || lastPx);
-              return {
+              const result: Ticker = {
                 symbol: cleanSymbol,
                 timestamp: data.closeTime || Date.now(),
                 last: lastPx,
@@ -442,9 +489,14 @@ export class CcxtProvider implements IExchangeProvider {
                 percentage: typeof data.priceChangePercent !== 'undefined' ? parseFloat(data.priceChangePercent) : undefined,
                 info: data,
               };
+              CcxtProvider.tickerCache.set(cacheKey, { ticker: result, timestamp: Date.now() });
+              return result;
             }
+          } else {
+            await safeDrainBody(res);
           }
         } catch (fErr: any) {
+          if (res) await safeDrainBody(res);
           console.warn(`[CCXT REST FETCH_TICKER FALLBACK FAILED] ${url}:`, fErr?.message);
         }
       }
@@ -453,8 +505,9 @@ export class CcxtProvider implements IExchangeProvider {
     // 3. Direct 24-hour Ticker Fallback for KuCoin (using KuCoin 24h market stats endpoint)
     if (exId.includes('kucoin')) {
       const rawPair = cleanSymbol.replace('/', '-');
+      let res: Response | null = null;
       try {
-        const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/stats?symbol=${rawPair}`, {
+        res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/stats?symbol=${rawPair}`, {
           headers: { 'Accept': 'application/json' }
         });
         if (res.ok) {
@@ -464,7 +517,7 @@ export class CcxtProvider implements IExchangeProvider {
             if (lastPx.isGreaterThan(0)) {
               const baseVol = new BigNumber(json.data.vol || 0);
               const quoteVol = new BigNumber(json.data.volValue || 0);
-              return {
+              const result: Ticker = {
                 symbol: cleanSymbol,
                 timestamp: json.data.time || Date.now(),
                 last: lastPx,
@@ -478,10 +531,23 @@ export class CcxtProvider implements IExchangeProvider {
                 percentage: typeof json.data.changeRate !== 'undefined' ? parseFloat(json.data.changeRate) * 100 : undefined,
                 info: json.data,
               };
+              CcxtProvider.tickerCache.set(cacheKey, { ticker: result, timestamp: Date.now() });
+              return result;
             }
           }
+        } else {
+          await safeDrainBody(res);
         }
-      } catch (_) { /* ignore fallback */ }
+      } catch (_) {
+        if (res) await safeDrainBody(res);
+      }
+    }
+
+    // 4. Return cached valid ticker data if available to withstand transient socket drops / rate limits
+    const cached = CcxtProvider.tickerCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 300000) { // 5-minute cache fallback
+      console.log(`[TICKER CACHE FALLBACK] Returning cached ticker for ${cleanSymbol}`);
+      return cached.ticker;
     }
 
     throw new UnifiedError(`Unable to retrieve genuine live ticker statistics for ${cleanSymbol} on ${this.exchangeId}`, 'UNAVAILABLE');

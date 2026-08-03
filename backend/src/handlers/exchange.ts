@@ -439,15 +439,19 @@ export async function handleGetPersonalizedMarketCandidates(
       });
       console.log(`[DIAGNOSTIC] Stage 5: CCXT client created for provider=${user.exchange_name}`);
     } catch (provErr: any) {
-      console.error("[DIAGNOSTIC] Stage 5 EXCEPTION: Provider creation failed:", provErr?.message, provErr?.stack);
-      c.status(500);
-      return c.json({
-        success: false,
-        stage: "5. CCXT client created",
-        error: provErr?.message || String(provErr),
-        constructor: provErr?.constructor?.name || "ProviderError",
-        stack: provErr?.stack || String(provErr)
-      });
+      console.warn("[DIAGNOSTIC] Stage 5 WARNING: Provider creation failed, falling back to public Binance adapter:", provErr?.message);
+      try {
+        adapter = await ExchangeManager.getProvider('binance', { environment: 'mainnet' });
+      } catch (fallbackErr: any) {
+        c.status(500);
+        return c.json({
+          success: false,
+          stage: "5. CCXT client created",
+          error: provErr?.message || String(provErr),
+          constructor: provErr?.constructor?.name || "ProviderError",
+          stack: provErr?.stack || String(provErr)
+        });
+      }
     }
 
     // Stage 6: fetchBalance completed
@@ -481,49 +485,56 @@ export async function handleGetPersonalizedMarketCandidates(
       ];
     }
 
-    const rawTickers = await Promise.all(
-      markets.map(async (m) => {
-        try {
-          const t = await adapter.fetchTicker(m.symbol);
-          const px = typeof t?.last?.toNumber === 'function' ? t.last.toNumber() : (typeof t?.last === 'number' ? t.last : 0);
-          if (!px || px <= 0 || isNaN(px)) {
-            console.warn(`[DIAGNOSTIC] Stage 7: Invalid or missing spot price for ${m.symbol}, skipping symbol.`);
+    // Execute ticker fetches in controlled concurrent batches (size 3) to prevent Cloudflare Worker socket deadlocks
+    const rawTickers: any[] = [];
+    const batchSize = 3;
+    for (let i = 0; i < markets.length; i += batchSize) {
+      const batch = markets.slice(i, i + batchSize);
+      const batchResults = await Promise.all(
+        batch.map(async (m) => {
+          try {
+            const t = await adapter.fetchTicker(m.symbol);
+            const px = typeof t?.last?.toNumber === 'function' ? t.last.toNumber() : (typeof t?.last === 'number' ? t.last : 0);
+            if (!px || px <= 0 || isNaN(px)) {
+              console.warn(`[DIAGNOSTIC] Stage 7: Invalid or missing spot price for ${m.symbol}, skipping symbol.`);
+              return null;
+            }
+            const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : 0);
+            const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : (vol * px));
+            const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (typeof t?.high === 'number' ? t.high : px);
+            const low = typeof t?.low?.toNumber === 'function' ? t.low.toNumber() : (typeof t?.low === 'number' ? t.low : px);
+
+            let chg = 0;
+            if (typeof (t as any)?.percentage === 'number' && !isNaN((t as any).percentage)) {
+              chg = (t as any).percentage;
+            } else if (typeof (t as any)?.info?.priceChangePercent !== 'undefined') {
+              chg = parseFloat((t as any).info.priceChangePercent) || 0;
+            } else if (typeof (t as any)?.info?.changeRate !== 'undefined') {
+              chg = (parseFloat((t as any).info.changeRate) || 0) * 100;
+            } else if (typeof (t as any)?.open === 'number' || typeof (t as any)?.open?.toNumber === 'function') {
+              const open = typeof (t as any)?.open?.toNumber === 'function' ? (t as any).open.toNumber() : (t as any).open;
+              if (open > 0) chg = ((px - open) / open) * 100;
+            }
+
+            return {
+              symbol: m.base || (m.symbol ? m.symbol.split('/')[0] : "BTC"),
+              pairName: m.symbol || "BTC/USDT",
+              price: px,
+              volume24h: vol,
+              quoteVolume24h: qVol,
+              highPrice24h: high,
+              lowPrice24h: low,
+              priceChangePercent24h: chg,
+              minNotional: typeof m?.limits?.cost?.min?.toNumber === 'function' ? m.limits.cost.min.toNumber() : 5.0,
+            };
+          } catch (tErr: any) {
+            console.warn(`[DIAGNOSTIC] Stage 7: fetchTicker failed for ${m?.symbol}: ${tErr?.message}. Skipping symbol to prevent data fabrication.`);
             return null;
           }
-          const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : 0);
-          const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : (vol * px));
-          const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (typeof t?.high === 'number' ? t.high : px);
-          const low = typeof t?.low?.toNumber === 'function' ? t.low.toNumber() : (typeof t?.low === 'number' ? t.low : px);
-
-          let chg = 0;
-          if (typeof (t as any)?.percentage === 'number' && !isNaN((t as any).percentage)) {
-            chg = (t as any).percentage;
-          } else if (typeof (t as any)?.info?.priceChangePercent !== 'undefined') {
-            chg = parseFloat((t as any).info.priceChangePercent) || 0;
-          } else if (typeof (t as any)?.info?.changeRate !== 'undefined') {
-            chg = (parseFloat((t as any).info.changeRate) || 0) * 100;
-          } else if (typeof (t as any)?.open === 'number' || typeof (t as any)?.open?.toNumber === 'function') {
-            const open = typeof (t as any)?.open?.toNumber === 'function' ? (t as any).open.toNumber() : (t as any).open;
-            if (open > 0) chg = ((px - open) / open) * 100;
-          }
-
-          return {
-            symbol: m.base || (m.symbol ? m.symbol.split('/')[0] : "BTC"),
-            pairName: m.symbol || "BTC/USDT",
-            price: px,
-            volume24h: vol,
-            quoteVolume24h: qVol,
-            highPrice24h: high,
-            lowPrice24h: low,
-            priceChangePercent24h: chg,
-            minNotional: typeof m?.limits?.cost?.min?.toNumber === 'function' ? m.limits.cost.min.toNumber() : 5.0,
-          };
-        } catch (tErr: any) {
-          console.warn(`[DIAGNOSTIC] Stage 7: fetchTicker failed for ${m?.symbol}: ${tErr?.message}. Skipping symbol to prevent data fabrication.`);
-          return null;
-        }
-      })
-    );
+        })
+      );
+      rawTickers.push(...batchResults);
+    }
     const tickers = rawTickers.filter((t): t is NonNullable<typeof t> => t !== null);
     console.log(`[DIAGNOSTIC] Stage 7: fetchTickers completed with ${tickers.length} genuine live tickers`);
 
