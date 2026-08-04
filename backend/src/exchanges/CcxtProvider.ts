@@ -569,45 +569,43 @@ export class CcxtProvider implements IExchangeProvider {
       }
     }
 
-    // 3. Direct 24-hour Ticker Fallback for KuCoin (using KuCoin 24h market stats endpoint)
-    if (exId.includes('kucoin')) {
-      const rawPair = cleanSymbol.replace('/', '-');
-      let res: Response | null = null;
-      try {
-        res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/stats?symbol=${rawPair}`, {
-          headers: { 'Accept': 'application/json' }
-        });
-        if (res.ok) {
-          const json: any = await res.json();
-          if (json.code === '200000' && json.data && json.data.last) {
-            const lastPx = new BigNumber(json.data.last || 0);
-            if (lastPx.isGreaterThan(0)) {
-              const baseVol = new BigNumber(json.data.vol || 0);
-              const quoteVol = new BigNumber(json.data.volValue || 0);
-              const result: Ticker = {
-                symbol: cleanSymbol,
-                timestamp: json.data.time || Date.now(),
-                last: lastPx,
-                bid: new BigNumber(json.data.buy || lastPx),
-                ask: new BigNumber(json.data.sell || lastPx),
-                high: new BigNumber(json.data.high || lastPx),
-                low: new BigNumber(json.data.low || lastPx),
-                volume: baseVol,
-                quoteVolume: quoteVol.isGreaterThan(0) ? quoteVol : baseVol.multipliedBy(lastPx),
-                change: new BigNumber(json.data.change || 0),
-                percentage: typeof json.data.changeRate !== 'undefined' ? parseFloat(json.data.changeRate) * 100 : undefined,
-                info: json.data,
-              };
-              CcxtProvider.tickerCache.set(cacheKey, { ticker: result, timestamp: Date.now() });
-              return result;
-            }
+    // 3. Resilient Market Stats Fallback via KuCoin (used for KuCoin or as fallback when Binance is geo-restricted on CI runners)
+    const rawPairKucoin = cleanSymbol.replace('/', '-');
+    let resKu: Response | null = null;
+    try {
+      resKu = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/stats?symbol=${rawPairKucoin}`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (resKu.ok) {
+        const json: any = await resKu.json();
+        if (json.code === '200000' && json.data && json.data.last) {
+          const lastPx = new BigNumber(json.data.last || 0);
+          if (lastPx.isGreaterThan(0)) {
+            const baseVol = new BigNumber(json.data.vol || 0);
+            const quoteVol = new BigNumber(json.data.volValue || 0);
+            const result: Ticker = {
+              symbol: cleanSymbol,
+              timestamp: json.data.time || Date.now(),
+              last: lastPx,
+              bid: new BigNumber(json.data.buy || lastPx),
+              ask: new BigNumber(json.data.sell || lastPx),
+              high: new BigNumber(json.data.high || lastPx),
+              low: new BigNumber(json.data.low || lastPx),
+              volume: baseVol,
+              quoteVolume: quoteVol.isGreaterThan(0) ? quoteVol : baseVol.multipliedBy(lastPx),
+              change: new BigNumber(json.data.change || 0),
+              percentage: typeof json.data.changeRate !== 'undefined' ? parseFloat(json.data.changeRate) * 100 : undefined,
+              info: json.data,
+            };
+            CcxtProvider.tickerCache.set(cacheKey, { ticker: result, timestamp: Date.now() });
+            return result;
           }
-        } else {
-          await safeDrainBody(res);
         }
-      } catch (_) {
-        if (res) await safeDrainBody(res);
+      } else {
+        await safeDrainBody(resKu);
       }
+    } catch (_) {
+      if (resKu) await safeDrainBody(resKu);
     }
 
     // 4. Return cached valid ticker data if available to withstand transient socket drops / rate limits
