@@ -12,6 +12,10 @@ account_id = "0ea8292ec77cc8fabb1bdc1b73127a19"
 # Skip Wrangler telemetry network calls in CI.
 send_metrics = false
 
+# Enable Smart Placement to optimize backend execution location near upstream services/exchanges
+[placement]
+mode = "smart"
+
 # Workers AI binding — used to call Moonshot AI "Kimi K3" (moonshotai/kimi-k3)
 # via env.AI.run(...). Workers AI is enabled on all Cloudflare plans by default.
 [ai]
