@@ -2,6 +2,9 @@ package com.cryptopulse.app.data.mapper.technicalanalysis
 
 import com.cryptopulse.app.data.api.dto.technicalanalysis.response.TechnicalAnalysisResponseDto
 import com.cryptopulse.app.data.api.dto.technicalanalysis.response.CheckpointDto
+import com.cryptopulse.app.data.api.dto.bot.response.AnalysisSnapshotDto
+import com.cryptopulse.app.data.mapper.bot.toDomain
+import com.cryptopulse.app.domain.models.AnalysisSnapshot
 import com.cryptopulse.app.domain.models.TechnicalAnalysisResult
 import com.cryptopulse.app.domain.models.Checkpoint
 
@@ -22,8 +25,16 @@ fun TechnicalAnalysisResponseDto.toDomain(): TechnicalAnalysisResult = Technical
     timestamp = timestamp
 )
 
+fun TechnicalAnalysisResponseDto.toAnalysisSnapshot(): AnalysisSnapshot {
+    val snapshotDto = AnalysisSnapshotDto(
+        engineStatus = engineStatus,
+        marketAnalysis = marketAnalysis,
+        tradingSignal = tradingSignal
+    )
+    return snapshotDto.toDomain()
+}
+
 fun CheckpointDto.toDomain(): Checkpoint = Checkpoint(
     name = name,
     status = status
 )
-
