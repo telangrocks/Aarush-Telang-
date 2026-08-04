@@ -4,6 +4,7 @@ import com.cryptopulse.app.core.network.NetworkResult
 import com.cryptopulse.app.domain.models.*
 import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.repository.TradeSessionRepository
+import com.cryptopulse.app.domain.repository.TechnicalAnalysisRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -74,11 +75,23 @@ class TechnicalAnalysisViewModelTest {
         }
     }
 
+    private fun createMockTechnicalAnalysisRepository(): TechnicalAnalysisRepository {
+        return object : TechnicalAnalysisRepository {
+            override suspend fun getAnalysis(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<TechnicalAnalysisResult> {
+                return NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(400, "Mock", "MOCK"))
+            }
+            override suspend fun getAnalysisSnapshot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<AnalysisSnapshot> {
+                return NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(400, "Mock", "MOCK"))
+            }
+        }
+    }
+
     @Test
     fun `activateBot performs explicit user activation handshake and invokes onSuccess`() = runTest {
         val viewModel = TechnicalAnalysisViewModel(
             createMockSessionRepository("scalper-v2"),
-            createMockBotRepository(shouldSucceed = true)
+            createMockBotRepository(shouldSucceed = true),
+            createMockTechnicalAnalysisRepository()
         )
 
         var isSuccessInvoked = false
@@ -94,7 +107,8 @@ class TechnicalAnalysisViewModelTest {
     fun `stopBot deactivates session and invokes onSuccess`() = runTest {
         val viewModel = TechnicalAnalysisViewModel(
             createMockSessionRepository("scalper-v2"),
-            createMockBotRepository(shouldSucceed = true)
+            createMockBotRepository(shouldSucceed = true),
+            createMockTechnicalAnalysisRepository()
         )
 
         var isStoppedInvoked = false
@@ -106,4 +120,3 @@ class TechnicalAnalysisViewModelTest {
         assertTrue(isStoppedInvoked)
     }
 }
-

@@ -10,7 +10,6 @@ import com.cryptopulse.app.domain.repository.TechnicalAnalysisRepository
 import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.models.AnalysisSnapshot
 import com.cryptopulse.app.domain.models.TradeSetupConfig
-import com.cryptopulse.app.data.mapper.technicalanalysis.toAnalysisSnapshot
 import com.cryptopulse.app.ui.screens.MarketCandidate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,9 +41,8 @@ class TechnicalAnalysisViewModel @Inject constructor(
 
     fun loadPreviewAnalysis(symbol: String, strategy: String, config: TradeSetupConfig? = null) {
         viewModelScope.launch {
-            val result = technicalAnalysisRepository.getAnalysis(symbol, strategy, config)
-            result.onSuccess { responseDto ->
-                val snapshot = responseDto.toAnalysisSnapshot()
+            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategy, config)
+            result.onSuccess { snapshot ->
                 botRepository.updateAnalysisState(snapshot)
             }
         }
