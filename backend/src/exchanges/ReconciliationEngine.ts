@@ -275,9 +275,6 @@ export class ReconciliationEngine {
     if (!exPos || exPos.size <= 0) return false;
     const fillPx = exPos.entry_price || 0;
     if (fillPx <= 0) return false;
-    // In a real production system, we would validate max leverage, max loss, etc.
-    // Here we ensure it has a valid symbol and size, and leverage is not insane.
-    if ((exPos as any).leverage && (exPos as any).leverage > 20) return false; 
     
     return true;
   }

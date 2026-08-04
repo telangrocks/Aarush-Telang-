@@ -45,7 +45,6 @@ export interface Position {
   side: 'long' | 'short';
   entryPrice: BigNumber;
   unrealizedPnl: BigNumber;
-  leverage: number;
 }
 
 export interface Order {

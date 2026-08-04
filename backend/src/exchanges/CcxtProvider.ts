@@ -768,7 +768,6 @@ export class CcxtProvider implements IExchangeProvider {
         side: p.side as 'long' | 'short',
         entryPrice: new BigNumber(p.entryPrice ?? 0),
         unrealizedPnl: new BigNumber(p.unrealizedPnl ?? 0),
-        leverage: p.leverage ?? 1,
       }));
     } catch (e: any) {
       throw this.mapError(e, 'fetchPositions');

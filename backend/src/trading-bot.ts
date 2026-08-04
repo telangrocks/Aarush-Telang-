@@ -8,8 +8,8 @@ import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
 import { TradeValidator } from './validation/TradeValidator';
 import { sendTradeNotification } from './handlers/notifications';
-import { StrategyOrchestrator, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe } from './engine';
-import { EngineAPIService } from './api/engine';
+import { StrategyOrchestrator, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe, AdapterCandleProvider } from './engine';
+import { EngineAPIService, AnalysisSnapshotMapper } from './api/engine';
 import { StrategyRegistry } from './engine/strategies/StrategyRegistry';
 import { MarketRegimeEngine } from './engine/regime/MarketRegimeEngine';
 /**
@@ -434,28 +434,7 @@ export function evaluateStrategy(
  * AdapterCandleProvider acts as a bridge between the isolated MarketDataEngine
  * and the legacy ExchangeAdapters.
  */
-class AdapterCandleProvider implements ICandleProvider {
-  constructor(private adapter: IExchangeProvider) {}
 
-  async fetchCandles(symbol: string, timeframe: Timeframe, limit: number = 100): Promise<NormalizedCandle[]> {
-    // We map internal timeframes (1m, 3m, 5m, 15m, 30m, 1h, 4h) directly 
-    // to the adapter's expected intervals. 
-    // The legacy `fetchKlines` expects interval as string.
-    const klines = await this.adapter.fetchKlines(symbol, timeframe, limit);
-    return klines.map((k: Kline) => ({
-      timestamp: k.openTime,
-      open: k.open,
-      high: k.high,
-      low: k.low,
-      close: k.close,
-      volume: k.volume
-    }));
-  }
-
-  async fetchTicker(symbol: string): Promise<Ticker | null> {
-    return this.adapter.fetchTicker(symbol);
-  }
-}
 
 export class TradingBot {
   state: DurableObjectState;
@@ -1286,9 +1265,19 @@ export class TradingBot {
             const currentState = this.orchestrator.getCurrentState();
             await this.state.storage.put('engineState', currentState);
         
-            // Phase 1: Android Contract Integration
-            const primaryResult = results.length > 0 ? results[0] : undefined;
-            const newAnalysis = this.engineApi.transform(currentState, coinId, primaryResult);
+            // Phase 1: Android Contract Integration (Harmonized AnalysisSnapshotMapper)
+            const registry = StrategyRegistry.getInstance();
+            const normalizedId = registry.normalizeStrategyId(strategy);
+            const manifest = registry.getManifest(normalizedId) || registry.getAllManifests()[0];
+            const snapshot = await dataEngine.getSnapshot(coinId, manifest.supportedTimeframes || ['5m']);
+            const primaryResult = results.length > 0 ? results[0] : {
+              strategyId: manifest.id,
+              timestamp: Date.now(),
+              confidenceScore: 50,
+              hasSignal: false,
+              metadata: { reasoning: ['Evaluation pending'] }
+            };
+            const newAnalysis = AnalysisSnapshotMapper.map(primaryResult, manifest, snapshot, currentState.toString(), true);
             await this.state.storage.put('newAnalysis', newAnalysis);
 
             // Phase 1: Trading Signal Integration

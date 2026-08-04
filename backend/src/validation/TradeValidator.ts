@@ -158,8 +158,6 @@ export class TradeValidator {
       };
     }
 
-      // 8. Spot-only (Leverage removed)
-
     if (rules.maxPosition && postRoundingNotionalBN.isGreaterThan(rules.maxPosition)) {
       return {
         isValid: false,

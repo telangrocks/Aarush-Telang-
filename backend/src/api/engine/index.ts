@@ -7,6 +7,7 @@ export * from './MarketAnalysisDTO';
 export * from './SignalDTO';
 export * from './StrategyManifestDTO';
 export * from './EngineAPIService';
+export * from './AnalysisSnapshotMapper';
 
 export interface AndroidIntegrationContract {
   engineStatus: EngineStatusDTO;

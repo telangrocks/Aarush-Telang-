@@ -13,7 +13,6 @@ export enum ValidationErrorReason {
   INVALID_STEP_SIZE = "INVALID_STEP_SIZE",
   MIN_NOTIONAL_FAILED = "MIN_NOTIONAL_FAILED",
   MAX_POSITION_FAILED = "MAX_POSITION_FAILED",
-  LEVERAGE_LIMIT_FAILED = "LEVERAGE_LIMIT_FAILED",
   EXCHANGE_RULES_UPDATED = "EXCHANGE_RULES_UPDATED",
 }
 
@@ -36,7 +35,6 @@ export interface SymbolTradingRules {
   minPrice: number;
   maxPrice: number;
   contractSize: number;
-  maxLeverage?: number;
   maxPosition?: number;
   additionalFilters?: ExchangeFilterConstraint[];
   lastUpdated: number;

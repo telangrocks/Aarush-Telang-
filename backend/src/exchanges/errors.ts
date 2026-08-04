@@ -17,7 +17,6 @@ export type ExchangeErrorCode =
   | "INVALID_API_SECRET"
   | "INVALID_PASSPHRASE"
   | "IP_NOT_WHITELISTED"
-  | "FUTURES_TRADING_NOT_ENABLED"
   | "SPOT_TRADING_NOT_ENABLED"
   | "PERMISSION_DENIED"
   | "INVALID_SIGNATURE"
@@ -88,11 +87,6 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
     code: "UPSTREAM_PROVIDER_BLOCKED",
     friendlyMessage: "An upstream provider is blocking our connection to the exchange.",
     hint: "This is a server-side issue, not a problem with your API keys.",
-  },
-  FUTURES_TRADING_NOT_ENABLED: {
-    code: "FUTURES_TRADING_NOT_ENABLED",
-    friendlyMessage: "Futures trading is not enabled on this API key.",
-    hint: "Go to your exchange API settings and check the 'Enable Futures' or 'Contract Trade' permission.",
   },
   SPOT_TRADING_NOT_ENABLED: {
     code: "SPOT_TRADING_NOT_ENABLED",
@@ -314,7 +308,6 @@ export function classifyBinanceCode(
     "-1121": "INVALID_SIGNATURE", // Invalid symbol
     "-1010": "INSUFFICIENT_PERMISSIONS", // Customer's permissions don't match
     "-2010": "INSUFFICIENT_PERMISSIONS", // Account has insufficient permission
-    "-2027": "FUTURES_TRADING_NOT_ENABLED", // Futures trading is not enabled
     "-4164": "SPOT_TRADING_NOT_ENABLED", // Spot trading is not enabled
   };
 
@@ -385,10 +378,7 @@ export function classifyByBodyText(
   ) {
     return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
   }
-  // Futures/Spot specific permissions
-  if (lower.includes("futures") && (lower.includes("not enabled") || lower.includes("disabled") || lower.includes("futures trading"))) {
-    return mk("FUTURES_TRADING_NOT_ENABLED", technicalDetail, lower);
-  }
+  // Spot specific permissions
   if (lower.includes("spot") && (lower.includes("not enabled") || lower.includes("disabled") || lower.includes("spot trading"))) {
     return mk("SPOT_TRADING_NOT_ENABLED", technicalDetail, lower);
   }

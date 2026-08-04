@@ -584,6 +584,9 @@ export async function handleGetPersonalizedMarketCandidates(
 }
 
 import { StrategyRegistry } from "../engine/strategies/StrategyRegistry";
+import { StrategyOrchestrator } from "../engine/orchestrator/StrategyOrchestrator";
+import { MarketDataEngine, AdapterCandleProvider } from "../engine/market-data";
+import { AnalysisSnapshotMapper } from "../api/engine/AnalysisSnapshotMapper";
 
 export async function handleGetStrategies(
   c: Context<{ Bindings: Env }>,
@@ -708,7 +711,7 @@ export async function handleGetTechnicalAnalysis(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
-    const { symbol, strategy } = await c.req.json<{
+    const { symbol, strategy, config } = await c.req.json<{
       symbol: string;
       strategy: string;
       config?: any;
@@ -747,52 +750,31 @@ export async function handleGetTechnicalAnalysis(
       return c.json({ error: `Symbol '${symbol}' is not available on your connected exchange.` });
     }
 
-    const price = ticker.last.toNumber() || 0;
-    const change24h = 0; // 24h percentage not yet in NormalizedDomain Ticker
-    const volume = ticker.volume.toNumber() || 0;
-    const high24h = ticker.high.toNumber() || price * 1.02;
-    const low24h = ticker.low.toNumber() || price * 0.98;
+    const candleProvider = new AdapterCandleProvider(adapter);
+    const dataEngine = new MarketDataEngine(candleProvider);
+    const orchestrator = new StrategyOrchestrator();
+    orchestrator.setMarketDataEngine(dataEngine);
 
-    const klines = await adapter.fetchKlines(symbol, "1h", 100);
-    const closes = klines.map((k: Kline) => k.close);
-    const highs = klines.map((k: Kline) => k.high);
-    const lows = klines.map((k: Kline) => k.low);
-    const indicators: IndicatorSet = computeIndicators(closes);
-    const atr = calculateAtr(highs, lows, closes, 14);
-    const metrics: Metrics = toMetrics(ticker);
-    const evaluation: StrategyEvaluation = evaluateStrategy(ticker, indicators, strategy, atr, 10.0, 10);
+    const registry = StrategyRegistry.getInstance();
+    const normalizedId = registry.normalizeStrategyId(strategy);
+    const manifests = registry.getAllManifests();
+    const manifest = registry.getManifest(normalizedId) 
+      || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase()) 
+      || manifests[0];
 
-    const signals = {
-      trend: metrics.change24h > 0 ? "BULLISH" : metrics.change24h < 0 ? "BEARISH" : "NEUTRAL",
-      strength: Math.abs(metrics.change24h) > 2 ? "STRONG" : Math.abs(metrics.change24h) > 0.5 ? "MODERATE" : "WEAK",
-      recommendation: evaluation.opportunity?.side || "HOLD",
-      confidence: evaluation.confidence,
+    const results = await orchestrator.executeCycle(symbol, normalizedId, config);
+    const evalResult = results[0] || {
+      strategyId: manifest.id,
+      timestamp: Date.now(),
+      confidenceScore: 50,
+      hasSignal: false,
+      metadata: { reasoning: ['Evaluation pending'] }
     };
 
-    return c.json({
-      symbol: ticker.symbol,
-      strategy,
-      price,
-      change24h,
-      volume,
-      high24h,
-      low24h,
-      indicators: {
-        rsi: indicators.rsi,
-        macd: indicators.macd,
-        macdSignal: indicators.macdSignal,
-        ema20: computeEMA(closes, 20).at(-1) || price,
-        ema50: computeEMA(closes, 50).at(-1) || price,
-        sma200: closes.slice(-200).reduce((a, b) => a + b, 0) / Math.min(closes.length, 200),
-        atr: atr,
-      },
-      signals,
-      checkpoints: evaluation.checkpoints,
-      progress: evaluation.progress,
-      conditionsMet: evaluation.conditionsMet,
-      opportunity: evaluation.opportunity,
-      timestamp: new Date().toISOString(),
-    });
+    const snapshot = await dataEngine.getSnapshot(symbol, manifest.supportedTimeframes || ['5m']);
+    const snapshotDto = AnalysisSnapshotMapper.map(evalResult, manifest, snapshot, 'ACTIVE', false);
+
+    return c.json(snapshotDto);
   } catch (e: unknown) {
     const error = e as Error;
     c.status(500);

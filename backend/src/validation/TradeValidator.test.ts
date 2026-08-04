@@ -16,7 +16,6 @@ const mockBtcRules: SymbolTradingRules = {
   minPrice: 0.1,
   maxPrice: 1000000.0,
   contractSize: 1.0,
-  maxLeverage: 125,
   lastUpdated: Date.now(),
 };
 
