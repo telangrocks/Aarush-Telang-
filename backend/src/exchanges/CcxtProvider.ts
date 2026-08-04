@@ -229,7 +229,7 @@ export class CcxtProvider implements IExchangeProvider {
             const errText = await res.text();
             console.error(`[BINANCE NATIVE FETCHBALANCE ERROR] HTTP ${res.status}: ${errText}`);
             let parsedErr: any = {};
-            try { parsedErr = JSON.parse(errText); } catch (_) {}
+            try { parsedErr = JSON.parse(errText); } catch (_) { /* ignore JSON parse error */ }
             const errorMsg = parsedErr?.msg || errText;
             const errorCode = parsedErr?.code || res.status;
             if (errorCode === -1022 || String(errorMsg).toLowerCase().includes('signature')) {
@@ -485,7 +485,7 @@ export class CcxtProvider implements IExchangeProvider {
           await res.arrayBuffer();
         }
       } catch (_) {
-        try { if (res && res.body && !res.bodyUsed) res.body.cancel(); } catch (__) {}
+        try { if (res && res.body && !res.bodyUsed) res.body.cancel(); } catch (__) { /* ignore cancel error */ }
       }
     };
 
