@@ -358,13 +358,15 @@ export class CcxtProvider implements IExchangeProvider {
         option: false,
         active: true,
         contract: false,
-        precision: { price: 8, amount: 8, cost: 8 },
+        precision: { price: 0.01, amount: 0.00001, cost: 0.01 },
         limits: {
           amount: { min: 0.0001, max: 999999 },
           price: { min: 0.0001, max: 999999 },
           cost: { min: 5, max: 9999999 },
         },
-        info: {}
+        info: {
+          orderTypes: ['LIMIT', 'MARKET', 'STOP_LOSS', 'STOP_LOSS_LIMIT', 'TAKE_PROFIT', 'TAKE_PROFIT_LIMIT', 'LIMIT_MAKER']
+        }
       };
       marketsObj[sym] = mData;
       marketsByIdObj[id] = mData;
