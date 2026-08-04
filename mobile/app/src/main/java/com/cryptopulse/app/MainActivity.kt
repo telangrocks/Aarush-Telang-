@@ -241,6 +241,10 @@ class MainActivity : FragmentActivity() {
                                 coinColor = Color(0xFFF7931A),
                             )
 
+                            LaunchedEffect(candidate.symbol) {
+                                technicalAnalysisViewModel.loadPreviewAnalysis(candidate.symbol, "ScalperV2")
+                            }
+
                             LaunchedEffect(Unit) {
                                 AlertBus.alerts.collect { alert ->
                                     viewModel.setPendingAlert(alert)

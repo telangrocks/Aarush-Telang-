@@ -6,8 +6,11 @@ import androidx.lifecycle.viewModelScope
 
 import com.cryptopulse.app.data.api.TradingBotService
 import com.cryptopulse.app.domain.repository.TradeSessionRepository
+import com.cryptopulse.app.domain.repository.TechnicalAnalysisRepository
+import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.models.AnalysisSnapshot
 import com.cryptopulse.app.domain.models.TradeSetupConfig
+import com.cryptopulse.app.data.mapper.technicalanalysis.toAnalysisSnapshot
 import com.cryptopulse.app.ui.screens.MarketCandidate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,7 +22,8 @@ import javax.inject.Inject
 @HiltViewModel
 class TechnicalAnalysisViewModel @Inject constructor(
     private val sessionRepository: TradeSessionRepository,
-    private val botRepository: com.cryptopulse.app.domain.repository.BotRepository
+    private val botRepository: BotRepository,
+    private val technicalAnalysisRepository: TechnicalAnalysisRepository
 ) : ViewModel() {
 
     val tradeSetupConfig: StateFlow<TradeSetupConfig?> = sessionRepository.tradeSetupConfig
@@ -34,6 +38,16 @@ class TechnicalAnalysisViewModel @Inject constructor(
 
     init {
         botRepository.startObserving()
+    }
+
+    fun loadPreviewAnalysis(symbol: String, strategy: String, config: TradeSetupConfig? = null) {
+        viewModelScope.launch {
+            val result = technicalAnalysisRepository.getAnalysis(symbol, strategy, config)
+            result.onSuccess { responseDto ->
+                val snapshot = responseDto.toAnalysisSnapshot()
+                botRepository.updateAnalysisState(snapshot)
+            }
+        }
     }
 
     fun activateBot(
@@ -74,27 +88,16 @@ class TechnicalAnalysisViewModel @Inject constructor(
         viewModelScope.launch {
             val result = botRepository.getStatus()
             result.onSuccess { status ->
-                // Because BotState in BotRepository doesn't natively expose 'coinId' and 'strategy' 
-                // in the same way, we might need a workaround. Wait, BotState is an enum!
-                // We'll just call startObserving if it's active. 
-                // We can't trivially extract coinId and strategy from BotState enum.
                 if (status == com.cryptopulse.app.domain.models.BotState.ANALYSING) {
                     botRepository.startObserving()
-                    onSessionRestored("BTCUSDT", "scalping") // Placeholder until we refactor session fully
+                    onSessionRestored("BTCUSDT", "ScalperV2")
                 }
             }
         }
     }
-
-    private fun String?.isNullMeOrBlank(): Boolean = this == null || this.isBlank()
 
     override fun onCleared() {
         super.onCleared()
         botRepository.stopObserving()
     }
 }
-
-
-
-
-

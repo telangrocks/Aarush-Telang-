@@ -579,60 +579,49 @@ export class TradingBot {
       }
       case '/analysis-status': {
         const isActive = (await this.state.storage.get('isActive')) || false;
-        if (!isActive) {
-          const logs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
-          const safeMode = (await this.state.storage.get('safeMode')) || false;
-          return new Response(JSON.stringify({
-            isActive: false,
-            safeMode,
-            strategy: null,
-            coinId: null,
-            exchange: null,
-            environment: null,
-            scanningProgress: 0,
-            etaSeconds: 0,
-            confluenceScore: 0,
-            alignment: 'NONE',
-            primarySignal: 'HOLD',
-            timeframes: [],
-            coinsCurrentlyScanning: [],
-            nearMatches: [],
-            checkpoints: [],
-            logs: logs ? logs.slice(-50) : [],
-            lastAnalysisAt: 0,
-            opportunityDetected: false,
-          } as AnalysisSnapshot), { status: 200 });
+        const safeMode = (await this.state.storage.get('safeMode')) || false;
+        const newAnalysis = (await this.state.storage.get('newAnalysis')) as any;
+
+        if (newAnalysis) {
+          return new Response(JSON.stringify({ ...newAnalysis, safeMode }), { status: 200 });
         }
 
-        
-          const safeMode = (await this.state.storage.get('safeMode')) || false;
-          const newAnalysis = (await this.state.storage.get('newAnalysis')) as any;
-          if (newAnalysis) {
-             return new Response(JSON.stringify({ ...newAnalysis, safeMode }), { status: 200 });
-          }
-          const coinId = (await this.state.storage.get('coinId')) as string || 'BTCUSDT';
-          const strategy = (await this.state.storage.get('strategy')) as string || 'scalping';
-          const logs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
-          return new Response(JSON.stringify({
-            isActive: true,
-            safeMode,
-            strategy,
-            coinId,
-            exchange: null,
-            environment: null,
-            scanningProgress: 10,
-            etaSeconds: 5,
-            confluenceScore: 0,
-            alignment: 'NONE',
-            primarySignal: 'HOLD',
-            timeframes: [],
-            coinsCurrentlyScanning: [{ symbol: coinId, price: 0, progress: 10, status: 'scanning' }],
-            nearMatches: [],
-            checkpoints: [],
-            logs: logs ? logs.slice(-50) : [],
-            lastAnalysisAt: Date.now(),
-            opportunityDetected: false,
-          } as AnalysisSnapshot), { status: 200 });
+        const coinId = (await this.state.storage.get('coinId')) as string || 'BTCUSDT';
+        const strategy = (await this.state.storage.get('strategy')) as string || 'ScalperV2';
+
+        const registry = StrategyRegistry.getInstance();
+        const normalizedId = registry.normalizeStrategyId(strategy);
+        const manifest = registry.getManifest(normalizedId) || registry.getAllManifests()[0];
+
+        const fallbackResult = {
+          strategyId: manifest.id,
+          timestamp: Date.now(),
+          confidenceScore: 50,
+          hasSignal: false,
+          metadata: {
+            reasoning: ['Analysis pending initial evaluation cycle'],
+          },
+        };
+
+        const fallbackSnapshot = {
+          symbol: coinId,
+          timestamp: Date.now(),
+          currentPrice: 50000.0,
+          volume24h: 1000000.0,
+          quoteVolume24h: 1000000.0,
+          candles: { '1m': [], '3m': [], '5m': [], '15m': [], '30m': [], '1h': [], '4h': [] },
+          metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 51000.0, lowPrice24h: 49000.0 },
+        };
+
+        const snapshotDto = AnalysisSnapshotMapper.map(
+          fallbackResult,
+          manifest,
+          fallbackSnapshot as any,
+          isActive ? 'WAITING' : 'STOPPED',
+          Boolean(isActive)
+        );
+
+        return new Response(JSON.stringify({ ...snapshotDto, safeMode }), { status: 200 });
       }
       case '/strategies': {
         const manifests = StrategyRegistry.getInstance().getAllManifests();

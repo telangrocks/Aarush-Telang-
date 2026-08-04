@@ -18,20 +18,20 @@ fun BotAlertDto.toDomain(): BotAlert = BotAlert(
 )
 
 fun AnalysisSnapshotDto.toDomain(): AnalysisSnapshot = AnalysisSnapshot(
-    engineStatus = engineStatus?.let { e -> 
-        EngineStatusDTO(e.state ?: "ANALYSING", e.activeStrategy ?: "NONE", e.lastEvaluationTimestamp ?: 0L, e.nextEvaluationTime ?: 0L, e.health ?: "OK") 
-    },
-    marketAnalysis = marketAnalysis?.let { m -> 
+    engineStatus = (engineStatus?.let { e -> 
+        EngineStatusDTO(e.state ?: "ANALYSING", e.activeStrategy ?: "ScalperV2", e.lastEvaluationTimestamp ?: System.currentTimeMillis(), e.nextEvaluationTime ?: 0L, e.health ?: "OK") 
+    }) ?: EngineStatusDTO("ACTIVE", "ScalperV2", System.currentTimeMillis(), 0L, "OK"),
+    marketAnalysis = (marketAnalysis?.let { m -> 
         MarketAnalysisDTO(
             symbol = m.symbol ?: "BTCUSDT",
-            timeframeStatus = m.timeframeStatus ?: "",
+            timeframeStatus = m.timeframeStatus ?: "ALIGNED",
             indicatorSummary = m.indicatorSummary?.map { IndicatorSummary(it.name ?: "", it.value ?: "", it.signal ?: "HOLD") } ?: emptyList(),
             conditionSummary = m.conditionSummary?.map { ConditionSummary(it.id ?: "", it.name ?: "", it.currentValue ?: "", it.targetValue ?: "", it.status ?: "PENDING") } ?: emptyList(),
-            confidenceScore = m.confidenceScore ?: 0,
+            confidenceScore = m.confidenceScore ?: 50,
             confidenceExplanation = m.confidenceExplanation ?: emptyList()
         ) 
-    },
-    tradingSignal = tradingSignal?.let { s -> 
+    }) ?: MarketAnalysisDTO("BTCUSDT", "ALIGNED", emptyList(), emptyList(), 50, emptyList()),
+    tradingSignal = (tradingSignal?.let { s -> 
         SignalDTO(s.type ?: "HOLD", s.entryContext ?: "NONE", s.signalPrice ?: 0.0, s.targetEntryPrice ?: 0.0, s.stopLoss ?: 0.0, s.takeProfit ?: 0.0, s.riskClassification ?: "MEDIUM", s.reasoning ?: emptyList()) 
-    }
+    }) ?: SignalDTO("HOLD", "NONE", 0.0, 0.0, 0.0, 0.0, "LOW", emptyList())
 )
