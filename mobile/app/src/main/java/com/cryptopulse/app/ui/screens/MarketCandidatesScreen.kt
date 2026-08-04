@@ -465,21 +465,19 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
             }
     ) {
 
-        // ── PRIMARY SECTION: left group | right group, no large gap ──────────
+        // ── PRIMARY SECTION: 5 items in a single row with consistent equal spacing ──
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 14.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-
-            // ── LEFT: coin avatar + pair/price ──────────────────────────────
+            // 1. Ticker (Avatar + Pair Symbol)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // Coin avatar
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(34.dp)
                         .background(candidate.coinColor.copy(alpha = 0.15f), CircleShape)
                         .border(1.5.dp, candidate.coinColor.copy(alpha = 0.45f), CircleShape),
                     contentAlignment = Alignment.Center,
@@ -492,14 +490,13 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                         textAlign = TextAlign.Center,
                     )
                 }
-                Spacer(Modifier.width(8.dp))
-                // Pair name + quote + live price — all on one line
+                Spacer(Modifier.width(6.dp))
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         text = candidate.symbol,
                         color = TextPrimary,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         letterSpacing = 0.2.sp,
                     )
                     Text(
@@ -507,95 +504,95 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                             "/${candidate.pairName.split("/").getOrElse(1) { "USDT" }}"
                         else "/USDT",
                         color = TextMuted,
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(start = 2.dp, bottom = 1.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = if (candidate.formattedPrice.isNotBlank())
-                            "\$${candidate.formattedPrice}"
-                        else
-                            "\$${Formatters.formatCryptoPrice(candidate.currentMarketPrice)}",
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        letterSpacing = 0.1.sp,
-                        modifier = Modifier.padding(bottom = 1.dp),
+                        fontSize = 9.sp,
+                        modifier = Modifier.padding(start = 1.dp, bottom = 1.dp),
                     )
                 }
             }
 
-            // ── RIGHT: signal + timeframe + AI score + min order ────────────
+            // 2. Live Market Price
+            Text(
+                text = if (candidate.formattedPrice.isNotBlank())
+                    "\$${candidate.formattedPrice}"
+                else
+                    "\$${Formatters.formatCryptoPrice(candidate.currentMarketPrice)}",
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                letterSpacing = 0.1.sp,
+            )
+
+            // 3. Buy/Sell Suggestion & Timeframe
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                // Signal badge
                 if (candidate.tradeSide.isNotBlank()) {
                     Box(
                         modifier = Modifier
                             .background(sideColor.copy(alpha = 0.18f), RoundedCornerShape(5.dp))
                             .border(0.8.dp, sideColor.copy(alpha = 0.55f), RoundedCornerShape(5.dp))
-                            .padding(horizontal = 7.dp, vertical = 3.dp)
+                            .padding(horizontal = 6.dp, vertical = 2.5.dp)
                     ) {
                         Text(
                             text = candidate.tradeSide.uppercase(),
                             color = sideColor,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 0.6.sp,
+                            letterSpacing = 0.5.sp,
                         )
                     }
                 }
-                // Timeframe badge
                 if (candidate.recommendedTimeframe.isNotBlank()) {
                     Box(
                         modifier = Modifier
                             .background(CyanPrimary.copy(alpha = 0.10f), RoundedCornerShape(5.dp))
                             .border(0.8.dp, CyanPrimary.copy(alpha = 0.35f), RoundedCornerShape(5.dp))
-                            .padding(horizontal = 7.dp, vertical = 3.dp)
+                            .padding(horizontal = 6.dp, vertical = 2.5.dp)
                     ) {
                         Text(
                             text = candidate.recommendedTimeframe.uppercase(),
                             color = CyanPrimary,
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp,
+                            letterSpacing = 0.4.sp,
                         )
                     }
                 }
-                // AI Score
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "Score",
-                        color = TextMuted,
-                        fontSize = 7.sp,
-                        fontWeight = FontWeight.Medium,
-                        letterSpacing = 0.3.sp,
-                    )
-                    Text(
-                        text = Formatters.formatScore(candidate.score),
-                        color = CyanPrimary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                    )
-                }
-                // Min Order
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "Min",
-                        color = TextMuted,
-                        fontSize = 7.sp,
-                        fontWeight = FontWeight.Medium,
-                        letterSpacing = 0.3.sp,
-                    )
-                    Text(
-                        text = "\$${candidate.formattedMinNotional.ifEmpty { Formatters.formatMinNotional(candidate.minNotional) }}",
-                        color = TextPrimary,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
+            }
+
+            // 4. AI Score
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "Score",
+                    color = TextMuted,
+                    fontSize = 7.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.3.sp,
+                )
+                Text(
+                    text = Formatters.formatScore(candidate.score),
+                    color = CyanPrimary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                )
+            }
+
+            // 5. Minimum Notional
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "Min",
+                    color = TextMuted,
+                    fontSize = 7.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 0.3.sp,
+                )
+                Text(
+                    text = "\$${candidate.formattedMinNotional.ifEmpty { Formatters.formatMinNotional(candidate.minNotional) }}",
+                    color = TextPrimary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
         }
 

@@ -322,20 +322,6 @@ export async function handleGetExchangeBalances(
       total: b.total.toNumber(),
     }));
 
-    if (!formattedBalances.some(b => b.asset.toUpperCase() === 'USDT' && b.total > 0)) {
-      formattedBalances = [
-        {
-          asset: 'USDT',
-          currency: 'USDT',
-          free: 10000.0,
-          locked: 0.0,
-          used: 0.0,
-          total: 10000.0,
-        },
-        ...formattedBalances
-      ];
-    }
-
     return c.json({
       success: true,
       exchange: user.exchange_name,

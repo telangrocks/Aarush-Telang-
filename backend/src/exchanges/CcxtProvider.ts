@@ -234,33 +234,8 @@ export class CcxtProvider implements IExchangeProvider {
             const errorCode = parsedErr?.code || res.status;
 
             if (res.status === 451 || String(errorMsg).toLowerCase().includes('restricted location')) {
-              console.warn('[BINANCE 451 GEO-BLOCK DETECTED] Handling regional restriction fallback...');
-              const isCiRunner = typeof process !== 'undefined' && Boolean(process.env.GITHUB_ACTIONS);
-              if (isCiRunner) {
-                const workerUrl = process.env.WORKER_URL || 'https://crypto-pulse-backend.telangrocks.workers.dev';
-                try {
-                  const proxyRes = await globalThis.fetch(`${workerUrl}/api/exchange/validate`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      exchangeName: 'binance',
-                      apiKey: cleanKey,
-                      apiSecret: cleanSec,
-                      environment: isTestnet ? 'testnet' : 'mainnet'
-                    })
-                  });
-                  if (proxyRes.ok) {
-                    const pData: any = await proxyRes.json();
-                    if (pData.success) {
-                      return { free: { USDT: 1000 }, used: {}, total: { USDT: 1000 }, info: pData };
-                    }
-                  }
-                } catch (pErr: any) {
-                  console.error('[WORKER PROXY VALIDATION FALLBACK FAILED]:', pErr?.message || String(pErr));
-                }
-              }
-              // Inside Worker runtime or if proxy unavailable, return valid fallback balance structure for regional restrictions
-              return { free: { USDT: 1000 }, used: {}, total: { USDT: 1000 }, info: { regionalRestrictionBypassed: true } };
+              console.warn('[BINANCE 451 GEO-BLOCK DETECTED] Reporting regional restriction error');
+              throw new ccxt.ExchangeError(`Binance API Error 451: Regional restriction / ${errorMsg}`);
             }
 
             if (errorCode === -1022 || String(errorMsg).toLowerCase().includes('signature')) {
@@ -310,9 +285,6 @@ export class CcxtProvider implements IExchangeProvider {
           }
           if (urlStr.includes('/ping')) {
             return {};
-          }
-          if (urlStr.includes('/account')) {
-            return { balances: [{ asset: 'USDT', free: '1000', locked: '0' }] };
           }
         }
         console.error(`[CCXT OUTBOUND FETCH EXCEPTION] ${method} ${url}:`, {
