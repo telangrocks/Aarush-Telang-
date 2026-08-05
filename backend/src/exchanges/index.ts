@@ -6,3 +6,4 @@ export { ExchangeRegistry } from '../infrastructure/exchange/registry/ExchangeRe
 export * from './models/NormalizedDomain';
 export * from './models/ConnectionConfig';
 export { UnifiedError } from './models/UnifiedError';
+export { ProviderFactory } from './ProviderFactory';
