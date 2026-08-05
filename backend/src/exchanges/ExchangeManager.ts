@@ -1,131 +1,134 @@
 import { IExchangeProvider } from './IExchangeProvider';
-import { ProviderFactory } from './ProviderFactory';
 import { ProviderConfig } from './models/ConnectionConfig';
-import { Order, OrderRequest } from './models/NormalizedDomain';
-// NOTE: crypto.randomUUID() is available as a Web Crypto API global in Cloudflare
-// Workers — no import needed. Importing 'crypto' from Node would require
-// nodejs_compat but adds unnecessary bundling complexity.
-import { UnifiedError } from './models/UnifiedError';
+import { Order, OrderRequest, OcoOrderRequest, OcoOrderResponse } from './models/NormalizedDomain';
+import { ExchangeRegistry } from '../infrastructure/exchange/registry/ExchangeRegistry';
+import { BaseExchangeAdapter } from '../infrastructure/exchange/adapters/BaseExchangeAdapter';
+import { BinanceAdapter } from '../infrastructure/exchange/adapters/BinanceAdapter';
+import { KucoinAdapter } from '../infrastructure/exchange/adapters/KucoinAdapter';
+import { BybitAdapter } from '../infrastructure/exchange/adapters/BybitAdapter';
+import { ProviderPool } from '../infrastructure/cache/ProviderPool';
+import { ExchangeOrchestrator } from '../infrastructure/orchestrator/ExchangeOrchestrator';
+import { Result } from '../domain/types/Result';
+
+// Bootstrap registration of polymorphic adapters
+ExchangeRegistry.register({ exchangeId: 'binance', factory: () => new BinanceAdapter() });
+ExchangeRegistry.register({ exchangeId: 'kucoin', factory: () => new KucoinAdapter() });
+ExchangeRegistry.register({ exchangeId: 'bybit', factory: () => new BybitAdapter() });
 
 export class ExchangeManager {
-  private static providerCache = new Map<string, IExchangeProvider>();
+  private static pool = new ProviderPool(50, 15 * 60 * 1000);
+  private static orchestrator = new ExchangeOrchestrator();
 
   /**
-   * Retrieves a connected Exchange Provider. 
-   * Providers are cached by a deterministic hash of their credentials 
-   * to reuse connections and market data caches across requests.
+   * Retrieves a connected Exchange Provider from the bounded ProviderPool.
    */
   public static async getProvider(exchangeId: string, config: ProviderConfig): Promise<IExchangeProvider> {
-    const cacheKey = `${exchangeId}:${config.environment}:${config.apiKey}:${config.secret || ''}`;
-    
-    if (this.providerCache.has(cacheKey)) {
-      return this.providerCache.get(cacheKey)!;
+    const cacheKey = await this.pool.generateCacheKey(
+      exchangeId,
+      config.environment,
+      config.apiKey || '',
+      config.secret || ''
+    );
+
+    const cached = this.pool.get(cacheKey);
+    if (cached) {
+      return cached;
     }
 
-    const provider = ProviderFactory.create(exchangeId);
-    
+    const provider = ExchangeRegistry.create(exchangeId);
     try {
-      // Automatic retry backoff for initial connections
-      await this.withRetry(async () => {
-        await provider.connect(config);
-      }, 3);
+      await this.orchestrator.execute(provider, 'connect', async (p) => {
+        await p.connect(config);
+      });
 
-      this.providerCache.set(cacheKey, provider);
+      this.pool.set(cacheKey, provider);
       return provider;
     } catch (error) {
       try {
         await provider.disconnect();
-      } catch (_) { /* ignore disconnect error during cleanup */ }
-      this.providerCache.delete(cacheKey);
+      } catch (_) {}
+      this.pool.delete(cacheKey);
       throw error;
     }
   }
 
   /**
    * Creates a fresh, uncached Exchange Provider instance for validation flows.
-   * Credentials used during validation are never read from or saved to the cache.
    */
   public static async createUncachedProvider(exchangeId: string, config: ProviderConfig): Promise<IExchangeProvider> {
-    const provider = ProviderFactory.create(exchangeId);
-    await this.withRetry(async () => {
-      await provider.connect(config);
-    }, 3);
+    const provider = ExchangeRegistry.create(exchangeId);
+    const res = await this.orchestrator.execute(provider, 'connect', async (p) => {
+      await p.connect(config);
+    });
+    if (res.isFailure) {
+      throw new Error(res.error.message);
+    }
     return provider;
   }
 
   /**
-   * Disconnects and removes a provider from the active cache.
+   * Disconnects and removes a provider from the pool.
    */
   public static async disconnectProvider(exchangeId: string, config: ProviderConfig): Promise<void> {
-    const cacheKey = `${exchangeId}:${config.environment}:${config.apiKey}:${config.secret || ''}`;
-    const provider = this.providerCache.get(cacheKey);
-    
-    if (provider) {
-      await provider.disconnect();
-      this.providerCache.delete(cacheKey);
-    }
+    const cacheKey = await this.pool.generateCacheKey(
+      exchangeId,
+      config.environment,
+      config.apiKey || '',
+      config.secret || ''
+    );
+    this.pool.delete(cacheKey);
   }
 
   /**
-   * Safely executes an order placement with strict idempotency enforcement.
-   * Ensures a clientOrderId is always injected.
+   * Executes a provider operation through the ExchangeOrchestrator pipeline
+   * (Telemetry -> Capability -> RateLimit -> CircuitBreaker -> Retry -> Adapter -> ErrorTranslation).
    */
+  public static async executeOrchestrated<T>(
+    provider: IExchangeProvider,
+    operationName: string,
+    operation: (adapter: BaseExchangeAdapter) => Promise<T>
+  ): Promise<Result<T>> {
+    if (provider instanceof BaseExchangeAdapter) {
+      return this.orchestrator.execute(provider, operationName, operation);
+    }
+    const res = await operation(provider as any);
+    return { isSuccess: true, isFailure: false, value: res } as any;
+  }
+
   public static async executeIdempotentOrder(provider: IExchangeProvider, request: OrderRequest): Promise<Order> {
     const idempotentRequest = { ...request };
-    
     if (!idempotentRequest.clientOrderId) {
       idempotentRequest.clientOrderId = crypto.randomUUID();
     }
-
-    return this.withRetry(async () => {
-      return provider.createOrder(idempotentRequest);
-    }, 3);
+    if (provider instanceof BaseExchangeAdapter) {
+      const res = await this.orchestrator.execute(provider, 'createOrder', async (p) => {
+        return p.createOrder(idempotentRequest);
+      });
+      if (res.isFailure) {
+        throw new Error(res.error.message);
+      }
+      return res.value;
+    }
+    return provider.createOrder(idempotentRequest);
   }
 
-  /**
-   * Safely executes an OCO order placement with strict idempotency enforcement.
-   */
   public static async executeIdempotentOcoOrder(
     provider: IExchangeProvider,
-    request: import('./models/NormalizedDomain').OcoOrderRequest
-  ): Promise<import('./models/NormalizedDomain').OcoOrderResponse> {
+    request: OcoOrderRequest
+  ): Promise<OcoOrderResponse> {
     const idempotentRequest = { ...request };
     if (!idempotentRequest.listClientOrderId) {
       idempotentRequest.listClientOrderId = `oco_${crypto.randomUUID()}`;
     }
-
-    return this.withRetry(async () => {
-      return provider.createOcoOrder(idempotentRequest);
-    }, 3);
-  }
-
-  /**
-   * Generic retry wrapper with exponential backoff (250ms, 500ms, 1000ms).
-   */
-  private static async withRetry<T>(operation: () => Promise<T>, maxRetries: number = 3): Promise<T> {
-    let attempt = 0;
-    while (attempt < maxRetries) {
-      try {
-        return await operation();
-      } catch (error: any) {
-        attempt++;
-        
-        // Do not retry on validation, authentication, or insufficient funds errors
-        if (error instanceof UnifiedError) {
-          if (error?.mappedInternalErrorCode && ['AUTHENTICATION_FAILED', 'INSUFFICIENT_FUNDS', 'INVALID_ORDER', 'UNSUPPORTED_EXCHANGE'].includes(error.mappedInternalErrorCode)) {
-            throw error;
-          }
-        }
-
-        if (attempt >= maxRetries) {
-          throw error;
-        }
-
-        // Exponential backoff: 250ms, 500ms, 1000ms
-        const delay = Math.min(250 * Math.pow(2, attempt - 1), 1000);
-        await new Promise(resolve => setTimeout(resolve, delay));
+    if (provider instanceof BaseExchangeAdapter) {
+      const res = await this.orchestrator.execute(provider, 'createOcoOrder', async (p) => {
+        return p.createOcoOrder(idempotentRequest);
+      });
+      if (res.isFailure) {
+        throw new Error(res.error.message);
       }
+      return res.value;
     }
-    throw new Error('Unreachable');
+    return provider.createOcoOrder(idempotentRequest);
   }
 }
