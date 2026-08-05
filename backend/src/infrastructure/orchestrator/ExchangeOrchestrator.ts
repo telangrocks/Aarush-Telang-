@@ -4,11 +4,40 @@ import { RateLimiter } from './RateLimiter';
 import { RetryPolicy } from './RetryPolicy';
 import { TelemetryTracer, MetricsCollector } from '../telemetry/Telemetry';
 import { Result, ok, fail, createDomainError, DomainError } from '../../domain/types/Result';
+import { ValidationPipeline } from '../safety/ValidationPipeline';
+import { ValidationContext } from '../safety/ValidationContext';
+import { SafetyTelemetry } from '../safety/SafetyTelemetry';
 
 export class ExchangeOrchestrator {
   private circuitBreaker = new CircuitBreaker();
   private rateLimiter = new RateLimiter();
   private retryPolicy = new RetryPolicy();
+
+  public async validateAndExecuteOrder<T>(
+    pipeline: ValidationPipeline,
+    context: ValidationContext,
+    adapter: BaseExchangeAdapter,
+    operationName: string,
+    operation: (adapter: BaseExchangeAdapter) => Promise<T>,
+    tracer?: TelemetryTracer
+  ): Promise<Result<T, DomainError>> {
+    const startTime = performance.now();
+    const valRes = pipeline.execute(context);
+
+    if (valRes.isFailure) {
+      const firstFail = valRes.error;
+      SafetyTelemetry.recordValidationFailure(adapter.exchangeId, {
+        validatorName: 'ValidationPipeline',
+        isValid: false,
+        errorCode: firstFail.code,
+        errorMessage: firstFail.message,
+      });
+      return fail(firstFail);
+    }
+
+    SafetyTelemetry.recordValidationSuccess(adapter.exchangeId, performance.now() - startTime);
+    return this.execute(adapter, operationName, operation, tracer);
+  }
 
   public async execute<T>(
     adapter: BaseExchangeAdapter,
