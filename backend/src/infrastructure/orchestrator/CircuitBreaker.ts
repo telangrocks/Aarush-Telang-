@@ -1,5 +1,3 @@
-import { DomainError, createDomainError } from '../../domain/types/Result';
-
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export class CircuitBreaker {

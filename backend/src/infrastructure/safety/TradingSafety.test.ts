@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { ValidationPipeline } from './ValidationPipeline';
 import { ValidationContext } from './ValidationContext';
 import { JournalRecord } from '../runtime/ExecutionJournal';
-import { DEFAULT_CAPABILITIES } from '../../domain/capabilities/ExchangeCapabilities';
 
 describe('Milestone 9 — Comprehensive Trading Safety & Validation Engine Test Suite', () => {
   it('Scenario 1: Reject malformed order intent (limit order missing price)', () => {

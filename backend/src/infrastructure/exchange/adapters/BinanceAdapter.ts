@@ -1,6 +1,6 @@
 import { BaseExchangeAdapter } from './BaseExchangeAdapter';
 import { ProviderConfig } from '../../../exchanges/models/ConnectionConfig';
-import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade, OcoOrderRequest, OcoOrderResponse } from '../../../exchanges/models/NormalizedDomain';
+import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade } from '../../../exchanges/models/NormalizedDomain';
 import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapabilities';
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';
 import { UnifiedError } from '../../../exchanges/models/UnifiedError';
@@ -63,7 +63,11 @@ export class BinanceAdapter extends BaseExchangeAdapter {
     if (!res.ok) {
       const errText = await res.text();
       let parsedErr: any = {};
-      try { parsedErr = JSON.parse(errText); } catch (_) {}
+      try {
+        parsedErr = JSON.parse(errText);
+      } catch (_) {
+        // Ignored JSON parse failure
+      }
       const errorMsg = parsedErr?.msg || errText;
 
       if (res.status === 451 || String(errorMsg).toLowerCase().includes('restricted location')) {
@@ -87,7 +91,9 @@ export class BinanceAdapter extends BaseExchangeAdapter {
                 return [{ currency: 'USDT', free: new BigNumber(1000), used: new BigNumber(0), total: new BigNumber(1000) }];
               }
             }
-          } catch (_) {}
+          } catch (_) {
+            // Ignored proxy attempt failure
+          }
         }
         throw new UnifiedError(`This exchange or endpoint is not supported in your region. / ${errorMsg}`, 'REGION_NOT_SUPPORTED');
       }
@@ -186,7 +192,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
     return [];
   }
 
-  public async createOrder(order: OrderRequest): Promise<Order> {
+  public async createOrder(_order: OrderRequest): Promise<Order> {
     throw new UnifiedError('Not implemented in base adapter', 'UNSUPPORTED_OPERATION');
   }
 

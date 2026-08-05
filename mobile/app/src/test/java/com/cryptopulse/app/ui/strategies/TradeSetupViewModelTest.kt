@@ -67,7 +67,7 @@ class TradeSetupViewModelTest {
             StrategyParameterSchema("stopLoss", "stopLoss", ParameterType.INT, "5.0", true, 1.0, 100.0, null),
             StrategyParameterSchema("risk", "Risk", ParameterType.DOUBLE, "1.5", true, 0.1, 5.0, null),
             StrategyParameterSchema("mode", "Mode", ParameterType.ENUM, "Safe", true, null, null, listOf("Safe", "Aggressive")),
-            StrategyParameterSchema("trailing_stop", "TS", ParameterType.BOOLEAN, "false", false, null, null, null)
+            StrategyParameterSchema("takeProfitMultiplier", "TP", ParameterType.DOUBLE, "2.0", false, null, null, null)
         )
     )
 
@@ -95,7 +95,7 @@ class TradeSetupViewModelTest {
         assertEquals("5.0", state.formValues["stopLoss"])
         assertEquals("1.5", state.formValues["risk"])
         assertEquals("Safe", state.formValues["mode"])
-        assertEquals("false", state.formValues["trailing_stop"])
+        assertEquals("2.0", state.formValues["takeProfitMultiplier"])
         assertEquals("", state.entryPrice)
         assertEquals(null, state.entryPriceError)
     }

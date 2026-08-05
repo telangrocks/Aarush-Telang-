@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/ban-types */
 import { LruTtlCache } from '../cache/LruTtlCache';
 import { Symbol } from '../../domain/value-objects/Symbol';
 import { Price } from '../../domain/value-objects/Price';

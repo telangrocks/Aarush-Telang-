@@ -19,7 +19,7 @@ export class ExchangeOrchestrator {
     adapter: BaseExchangeAdapter,
     operationName: string,
     operation: (adapter: BaseExchangeAdapter) => Promise<T>,
-    tracer?: TelemetryTracer
+    _tracer?: TelemetryTracer
   ): Promise<Result<T, DomainError>> {
     const startTime = performance.now();
     const valRes = pipeline.execute(context);
@@ -36,14 +36,14 @@ export class ExchangeOrchestrator {
     }
 
     SafetyTelemetry.recordValidationSuccess(adapter.exchangeId, performance.now() - startTime);
-    return this.execute(adapter, operationName, operation, tracer);
+    return this.execute(adapter, operationName, operation, _tracer);
   }
 
   public async execute<T>(
     adapter: BaseExchangeAdapter,
     operationName: string,
     operation: (adapter: BaseExchangeAdapter) => Promise<T>,
-    tracer?: TelemetryTracer
+    _tracer?: TelemetryTracer
   ): Promise<Result<T, DomainError>> {
     const startTime = performance.now();
 

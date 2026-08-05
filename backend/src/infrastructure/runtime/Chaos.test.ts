@@ -1,16 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { TimeoutPolicy } from './TimeoutPolicy';
-import { RetryBudget } from './RetryBudget';
 import { HealthMonitor } from './HealthMonitor';
 import { ExecutionJournal } from './ExecutionJournal';
 import { ReconciliationService } from './ReconciliationService';
 import { PartialResultContainer } from './PartialFailureFramework';
-import { RecoveryCoordinator } from './RecoveryCoordinator';
-import { BotSupervisor } from './BotSupervisor';
 import { BinanceAdapter } from '../exchange/adapters/BinanceAdapter';
 import { ResilientWebSocketManager } from './WebSocketManager';
 import { MockExchangeSocketAdapter } from './adapters/ExchangeSocketAdapter';
-import { EventBus } from '../../domain/events/EventBus';
 import BigNumber from 'bignumber.js';
 
 describe('Milestone 10 — Continuous Chaos & Runtime Resilience Test Suite', () => {

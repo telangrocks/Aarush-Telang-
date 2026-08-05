@@ -1,6 +1,6 @@
 import { ExecutionJournal, JournalRecord } from './ExecutionJournal';
 import { BaseExchangeAdapter } from '../exchange/adapters/BaseExchangeAdapter';
-import { Result, ok, fail, createDomainError, DomainError } from '../../domain/types/Result';
+import { Result, ok, DomainError } from '../../domain/types/Result';
 
 export interface ReconciliationResultItem {
   readonly clientOrderId: string;
@@ -19,46 +19,47 @@ export interface ReconciliationReport {
 export class ReconciliationService {
   constructor(private readonly journal: ExecutionJournal) {}
 
-  public async reconcilePendingOrders(
+  public async reconcileUncertainState(
     adapter: BaseExchangeAdapter
   ): Promise<Result<ReconciliationReport, DomainError>> {
     const checkpoints = this.journal.getRecoveryCheckpoints();
-    const items: ReconciliationResultItem[] = [];
+    const reconciledItems: ReconciliationResultItem[] = [];
 
-    for (const checkpoint of checkpoints) {
-      try {
-        const item = await this.reconcileSingleOrder(adapter, checkpoint);
-        items.push(item);
-      } catch (err: any) {
-        items.push({
-          clientOrderId: checkpoint.clientOrderId,
-          previousState: checkpoint.state,
-          resolvedState: 'FAILED',
-          note: `Reconciliation error: ${err?.message || String(err)}`,
-        });
+    for (const cp of checkpoints) {
+      const item = await this.reconcileSingleRecord(adapter, cp);
+      if (item) {
+        reconciledItems.push(item);
       }
     }
 
     const report: ReconciliationReport = {
       timestamp: Date.now(),
-      reconciledCount: items.length,
-      items,
+      reconciledCount: reconciledItems.length,
+      items: reconciledItems,
     };
 
     return ok(report);
   }
 
-  private async reconcileSingleOrder(
+  public async reconcilePendingOrders(
+    adapter: BaseExchangeAdapter
+  ): Promise<Result<ReconciliationReport, DomainError>> {
+    return this.reconcileUncertainState(adapter);
+  }
+
+  private async reconcileSingleRecord(
     adapter: BaseExchangeAdapter,
     checkpoint: JournalRecord
-  ): Promise<ReconciliationResultItem> {
+  ): Promise<ReconciliationResultItem | null> {
     const symbol = (checkpoint.payload as any)?.symbol || 'BTC/USDT';
 
     // 1. Query remote exchange open/closed orders (Authoritative Source)
     let remoteOrders: any[] = [];
     try {
       remoteOrders = await adapter.fetchOpenOrders(symbol);
-    } catch (_) {}
+    } catch (_) {
+      // Ignored fetch open orders failure
+    }
 
     const matchedRemote = remoteOrders.find(
       (o) => o.clientOrderId === checkpoint.clientOrderId || o.id === (checkpoint.result as any)?.exchangeOrderId
@@ -91,7 +92,9 @@ export class ReconciliationService {
     let closedOrders: any[] = [];
     try {
       closedOrders = await adapter.fetchClosedOrders(symbol);
-    } catch (_) {}
+    } catch (_) {
+      // Ignored fetch closed orders failure
+    }
 
     const matchedClosed = closedOrders.find(
       (o) => o.clientOrderId === checkpoint.clientOrderId || o.id === (checkpoint.result as any)?.exchangeOrderId

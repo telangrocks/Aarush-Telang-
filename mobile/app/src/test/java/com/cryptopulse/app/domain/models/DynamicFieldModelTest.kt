@@ -9,8 +9,8 @@ class DynamicFieldModelTest {
     @Test
     fun `test complete schema mapping to dynamic field`() {
         val schema = StrategyParameterSchema(
-            key = "leverage",
-            displayName = "Leverage",
+            key = "position_limit",
+            displayName = "Position Limit",
             type = ParameterType.INT,
             defaultValue = "10",
             isRequired = true,
@@ -19,7 +19,7 @@ class DynamicFieldModelTest {
             options = null
         )
         val field = schema.toDynamicFieldModel()
-        assertEquals("leverage", field.key)
+        assertEquals("position_limit", field.key)
         assertEquals(ParameterType.INT, field.type)
         assertEquals("10", field.defaultValue)
         assertEquals(true, field.isRequired)
@@ -52,8 +52,8 @@ class DynamicFieldModelTest {
     @Test
     fun `test edge case mapping with null bounds`() {
         val schema = StrategyParameterSchema(
-            key = "use_trailing_sl",
-            displayName = "Trailing SL",
+            key = "enable_notifications",
+            displayName = "Notifications",
             type = ParameterType.BOOLEAN,
             defaultValue = "false",
             isRequired = true

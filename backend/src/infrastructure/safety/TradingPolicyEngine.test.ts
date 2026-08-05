@@ -40,4 +40,15 @@ describe('Milestone 6 — TradingPolicyEngine Business & Risk Policy Unit Tests'
     expect(res.isValid).toBe(false);
     expect(res.errorCode).toBe('COOLDOWN_ACTIVE');
   });
+
+  it('MaxOrderNotionalLimitValidator blocks orders exceeding max notional', () => {
+    const ctx = new ValidationContext({
+      intent: { userId: 'u1', exchangeId: 'binance', environment: 'mainnet', symbol: 'BTC/USDT', side: 'buy', type: 'limit', price: 50000, quantity: 1 },
+      riskLimits: { maxOrderNotionalUsdt: 10000 },
+    });
+
+    const res = MaxOrderNotionalLimitValidator(ctx);
+    expect(res.isValid).toBe(false);
+    expect(res.errorCode).toBe('EXCEEDED_MAX_ORDER_NOTIONAL');
+  });
 });

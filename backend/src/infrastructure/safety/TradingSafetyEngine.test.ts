@@ -6,7 +6,7 @@ describe('Milestone 1 — Pure TradingSafetyEngine & ValidationContext Unit Test
   it('TradingSafetyEngine validates order intent through registered steps cleanly', () => {
     const engine = new TradingSafetyEngine(false);
 
-    engine.registerValidator((ctx) => ({
+    engine.registerValidator((_ctx) => ({
       validatorName: 'DummyPassValidator',
       isValid: true,
     }));
@@ -35,13 +35,13 @@ describe('Milestone 1 — Pure TradingSafetyEngine & ValidationContext Unit Test
   it('TradingSafetyEngine respects failFast option when validation step fails', () => {
     const engine = new TradingSafetyEngine(true); // Fail fast mode
 
-    engine.registerValidator((ctx) => ({
+    engine.registerValidator((_ctx) => ({
       validatorName: 'FailStep1',
       isValid: false,
       errorMessage: 'Step 1 failed intentionally',
     }));
 
-    engine.registerValidator((ctx) => ({
+    engine.registerValidator((_ctx) => ({
       validatorName: 'Step2NotReached',
       isValid: true,
     }));

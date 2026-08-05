@@ -1,14 +1,13 @@
 import { Env } from './index';
-import { ExchangeManager, ExchangeName, ExchangeEnvironment, IExchangeProvider } from './exchanges';
+import { ExchangeManager, ExchangeName, ExchangeEnvironment } from './exchanges';
 import { Ticker } from './exchanges/models/NormalizedDomain';
 import BigNumber from 'bignumber.js';
 
-import { type Kline } from './exchanges/types';
 import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
 import { decrypt } from './crypto';
 import { TradeValidator } from './validation/TradeValidator';
 import { sendTradeNotification } from './handlers/notifications';
-import { StrategyOrchestrator, MarketDataEngine, ICandleProvider, NormalizedCandle, Timeframe, AdapterCandleProvider } from './engine';
+import { StrategyOrchestrator, MarketDataEngine, AdapterCandleProvider } from './engine';
 import { EngineAPIService, AnalysisSnapshotMapper } from './api/engine';
 import { StrategyRegistry } from './engine/strategies/StrategyRegistry';
 import { MarketRegimeEngine } from './engine/regime/MarketRegimeEngine';
@@ -141,7 +140,7 @@ export interface StrategyEvaluation {
   } | null;
 }
 
-interface AnalysisSnapshot {
+export interface AnalysisSnapshot {
   isActive: boolean;
   strategy: string | null;
   coinId: string | null;

@@ -56,10 +56,10 @@ class StrategyParsingTest {
     @Test
     fun `strategy parameter schema preserves min and max bounds`() {
         val field = StrategyParameterSchema(
-            key = "leverage",
-            displayName = "Leverage",
+            key = "atr_period",
+            displayName = "ATR Period",
             type = ParameterType.INT,
-            defaultValue = "10",
+            defaultValue = "14",
             isRequired = true,
             minValue = 1.0,
             maxValue = 100.0

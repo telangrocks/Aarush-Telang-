@@ -12,7 +12,7 @@ describe('Milestone 1 — TimeoutPolicy Runtime Unit Tests', () => {
 
   it('executeWithTimeout succeeds when operation resolves before timeout', async () => {
     const policy = new TimeoutPolicy();
-    const result = await policy.executeWithTimeout(async (signal) => {
+    const result = await policy.executeWithTimeout(async (_signal) => {
       return 'fast_response';
     }, 500, 'test_fast');
 
@@ -24,7 +24,7 @@ describe('Milestone 1 — TimeoutPolicy Runtime Unit Tests', () => {
 
   it('executeWithTimeout aborts and returns failure Result when operation exceeds timeout', async () => {
     const policy = new TimeoutPolicy();
-    const result = await policy.executeWithTimeout(async (signal) => {
+    const result = await policy.executeWithTimeout(async (_signal) => {
       await new Promise(r => setTimeout(r, 100)); // 100ms task
       return 'too_slow';
     }, 20, 'test_slow'); // 20ms limit
@@ -37,7 +37,7 @@ describe('Milestone 1 — TimeoutPolicy Runtime Unit Tests', () => {
 
   it('executeWithTimeout captures inner errors gracefully', async () => {
     const policy = new TimeoutPolicy();
-    const result = await policy.executeWithTimeout(async (signal) => {
+    const result = await policy.executeWithTimeout(async (_signal) => {
       throw new Error('Inner network error');
     }, 500, 'test_error');
 

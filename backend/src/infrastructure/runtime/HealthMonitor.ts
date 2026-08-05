@@ -1,6 +1,6 @@
 import { CircuitBreaker } from '../orchestrator/CircuitBreaker';
 import { RetryBudget } from './RetryBudget';
-import { RuntimeState, ExchangeHealthSnapshot, RecoveryReason } from './RuntimeState';
+import { RuntimeState, ExchangeHealthSnapshot } from './RuntimeState';
 
 export interface HealthCheckDecision {
   readonly allowed: boolean;

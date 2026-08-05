@@ -3,17 +3,6 @@ import { Env } from "../index";
 import { encrypt, decrypt, cleanCredential } from "../crypto";
 import { ExchangeManager, ExchangeName, ExchangeEnvironment, type ExchangeRegion } from "../exchanges";
 import { FRIENDLY_MESSAGES, classifyException, type ExchangeErrorCode } from "../exchanges/errors";
-import {
-  computeEMA,
-  computeIndicators,
-  evaluateStrategy,
-  calculateAtr,
-  toMetrics,
-  type IndicatorSet,
-  type StrategyEvaluation,
-  type Metrics,
-} from "../trading-bot";
-import { type Kline } from "../exchanges/types";
 import { analyzeMarket } from "../market-analysis";
 
 /**
@@ -313,7 +302,7 @@ export async function handleGetExchangeBalances(
       password: decryptedPassphrase,
     });
     const balanceRes = await adapter.fetchBalance();
-    let formattedBalances = balanceRes.map(b => ({
+    const formattedBalances = balanceRes.map(b => ({
       asset: b.currency,
       currency: b.currency,
       free: b.free.toNumber(),

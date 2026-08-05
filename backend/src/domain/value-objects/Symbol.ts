@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/ban-types */
 import { Result, ok, fail, createDomainError } from '../types/Result';
 
 export class Symbol {

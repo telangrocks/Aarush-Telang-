@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { SecretManager } from './SecretManager';
 import { SecureMemory } from './SecureMemory';
-import { SecurityPolicy, ExchangePermissionSet } from './SecurityPolicy';
+import { ExchangePermissionSet } from './SecurityPolicy';
 import { PermissionValidator } from './PermissionValidator';
 import { AuditLogger } from './AuditLogger';
 import { SecurityAwareCache } from './SecurityAwareCache';

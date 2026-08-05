@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ConfigService } from './config/ConfigService';
-import { StructuredLogger, MetricsCollector, TelemetryTracer } from './telemetry/Telemetry';
+import { StructuredLogger, MetricsCollector } from './telemetry/Telemetry';
 import { Container } from './di/Container';
 
 describe('Infrastructure Layer Unit Tests', () => {

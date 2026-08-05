@@ -35,7 +35,7 @@ describe('Milestone 10 — ExchangeOrchestrator Pipeline Integration Unit Tests'
       context,
       adapter,
       'createOrder',
-      async (ad) => ({ orderId: 'ex_123' })
+      async (_ad) => ({ orderId: 'ex_123' })
     );
 
     expect(res.isSuccess).toBe(true);

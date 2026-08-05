@@ -44,7 +44,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     };
   }
 
-  public async fetchKlines(symbol: string, interval: string, limit: number): Promise<any[]> {
+  public async fetchKlines(_symbol: string, _interval: string, _limit: number): Promise<any[]> {
     return [];
   }
 
@@ -56,7 +56,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return [];
   }
 
-  public async createOrder(order: OrderRequest): Promise<Order> {
+  public async createOrder(_order: OrderRequest): Promise<Order> {
     throw new UnifiedError('Not implemented', 'UNSUPPORTED_OPERATION');
   }
 

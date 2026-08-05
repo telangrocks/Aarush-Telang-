@@ -44,4 +44,15 @@ describe('Milestone 3 — MarketRulesValidators Unit Tests', () => {
     expect(res.isValid).toBe(false);
     expect(res.errorCode).toBe('MIN_NOTIONAL_VIOLATION');
   });
+
+  it('MinMaxQuantityValidator enforces min and max quantity boundaries', () => {
+    const ctxLowQty = new ValidationContext({
+      intent: { userId: 'u1', exchangeId: 'binance', environment: 'mainnet', symbol: 'BTC/USDT', side: 'buy', type: 'limit', quantity: 0.00001 },
+      marketRules: { symbol: 'BTC/USDT', minQty: 0.001 },
+    });
+
+    const res = MinMaxQuantityValidator(ctxLowQty);
+    expect(res.isValid).toBe(false);
+    expect(res.errorCode).toBe('MIN_QTY_VIOLATION');
+  });
 });

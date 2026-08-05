@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { HealthMonitor } from './HealthMonitor';
-import { RuntimeState } from './RuntimeState';
 
 describe('Milestone 3 — HealthMonitor & RuntimeState Unit Tests', () => {
   it('HealthMonitor computes health score and respects circuit breaker status', () => {

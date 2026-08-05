@@ -22,15 +22,16 @@ export interface DomainError {
   readonly details?: Record<string, unknown>;
 }
 
+/* eslint-disable @typescript-eslint/no-unused-vars */
 export type Result<T, E = DomainError> = Success<T, E> | Failure<T, E>;
 
-export class Success<T, E> {
+export class Success<T, E = DomainError> {
   readonly isSuccess = true;
   readonly isFailure = false;
   constructor(readonly value: T) {}
 }
 
-export class Failure<T, E> {
+export class Failure<T, E = DomainError> {
   readonly isSuccess = false;
   readonly isFailure = true;
   constructor(readonly error: E) {}

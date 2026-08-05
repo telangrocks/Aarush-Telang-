@@ -1,4 +1,3 @@
-import BigNumber from 'bignumber.js';
 import { Money } from '../value-objects/Money';
 import { Price } from '../value-objects/Price';
 import { Quantity } from '../value-objects/Quantity';

@@ -9,10 +9,8 @@ import { MarketMetadataService } from './services/MarketMetadataService';
 import { ExecutionIdempotencyService } from './services/ExecutionIdempotencyService';
 import { CircuitBreaker } from './orchestrator/CircuitBreaker';
 import { RateLimiter } from './orchestrator/RateLimiter';
-import { RetryPolicy } from './orchestrator/RetryPolicy';
 import { EventBus, DomainEvent } from '../domain/events/EventBus';
-import { StructuredLogger, TelemetryTracer, MetricsCollector } from './telemetry/Telemetry';
-import { ConfigService } from './config/ConfigService';
+import { StructuredLogger, TelemetryTracer } from './telemetry/Telemetry';
 import { WebCryptoSigner } from './crypto/WebCryptoSigner';
 import BigNumber from 'bignumber.js';
 
@@ -130,13 +128,13 @@ describe('Phase 1D – Production Stabilization & Runtime Validation Suite', () 
     let notificationSent = false;
     let portfolioUpdated = false;
 
-    bus.subscribe<MockOrderFilledEvent>('ORDER_FILLED', async (evt) => {
+    bus.subscribe<MockOrderFilledEvent>('ORDER_FILLED', async (_evt) => {
       auditLogged = true;
     });
-    bus.subscribe<MockOrderFilledEvent>('ORDER_FILLED', async (evt) => {
+    bus.subscribe<MockOrderFilledEvent>('ORDER_FILLED', async (_evt) => {
       notificationSent = true;
     });
-    bus.subscribe<MockOrderFilledEvent>('ORDER_FILLED', async (evt) => {
+    bus.subscribe<MockOrderFilledEvent>('ORDER_FILLED', async (_evt) => {
       portfolioUpdated = true;
     });
 

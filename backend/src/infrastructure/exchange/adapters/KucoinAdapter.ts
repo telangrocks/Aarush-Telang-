@@ -154,7 +154,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     return [];
   }
 
-  public async createOrder(order: OrderRequest): Promise<Order> {
+  public async createOrder(_order: OrderRequest): Promise<Order> {
     throw new UnifiedError('Not implemented', 'UNSUPPORTED_OPERATION');
   }
 

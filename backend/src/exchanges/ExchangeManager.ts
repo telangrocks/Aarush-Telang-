@@ -46,7 +46,9 @@ export class ExchangeManager {
     } catch (error) {
       try {
         await provider.disconnect();
-      } catch (_) {}
+      } catch (_) {
+        // Disconnect error ignored during teardown
+      }
       this.pool.delete(cacheKey);
       throw error;
     }

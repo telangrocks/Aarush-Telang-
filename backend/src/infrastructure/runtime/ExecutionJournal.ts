@@ -74,7 +74,7 @@ export class ExecutionJournal {
     const records: JournalRecord[] = [];
     // Uncompleted records needing reconciliation / recovery
     const now = Date.now();
-    for (const [_, record] of (this.cache as any).cache.entries()) {
+    for (const record of (this.cache as any).cache.values()) {
       if (now <= record.expiresAt) {
         const val: JournalRecord = record.value;
         if (val.state === 'SUBMITTING' || val.state === 'COMMITTED' || val.state === 'RECONCILING') {
