@@ -1,8 +1,4 @@
 import { ExchangeErrorClassifier } from '../src/exchanges/ExchangeErrorClassifier';
-import { BinanceAdapter } from '../src/infrastructure/exchange/adapters/BinanceAdapter';
-import { KucoinAdapter } from '../src/infrastructure/exchange/adapters/KucoinAdapter';
-import { BybitAdapter } from '../src/infrastructure/exchange/adapters/BybitAdapter';
-import { UnifiedError } from '../src/exchanges/models/UnifiedError';
 
 interface RegressionMatrixItem {
   exchange: string;

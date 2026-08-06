@@ -1,12 +1,5 @@
-import { ExchangeSpecificationRegistry } from '../src/exchanges/registry/ExchangeSpecificationRegistry';
 import { ExchangeErrorClassifier } from '../src/exchanges/ExchangeErrorClassifier';
-import { BinanceAdapter } from '../src/infrastructure/exchange/adapters/BinanceAdapter';
-import { KucoinAdapter } from '../src/infrastructure/exchange/adapters/KucoinAdapter';
-import { BybitAdapter } from '../src/infrastructure/exchange/adapters/BybitAdapter';
-import { ExchangeOrchestrator } from '../src/infrastructure/orchestrator/ExchangeOrchestrator';
 import { TradeValidator } from '../src/validation/TradeValidator';
-import { RetryBudget } from '../src/infrastructure/runtime/RetryBudget';
-import { CircuitBreaker } from '../src/infrastructure/orchestrator/CircuitBreaker';
 
 export interface QATestRecord {
   testId: number;
@@ -37,7 +30,6 @@ async function executeQASuite() {
   console.log('========================================================================================\n');
 
   const classifier = ExchangeErrorClassifier.getInstance();
-  const orchestrator = new ExchangeOrchestrator();
 
   const targets: { exchange: string; env: 'Mainnet' | 'Testnet' }[] = [
     { exchange: 'Binance', env: 'Mainnet' },
@@ -62,7 +54,7 @@ async function executeQASuite() {
       const reqId = `req_${crypto.randomUUID().slice(0, 8)}`;
       let status = 401;
       let bodyText = '';
-      let headers: Record<string, string> = {};
+      const headers: Record<string, string> = {};
 
       try {
         const url = exId === 'binance'

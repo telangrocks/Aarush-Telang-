@@ -206,7 +206,7 @@ export function classifyExchangeResponse(
 
 export function classifyBinanceCode(
   bodyText: string,
-  technicalDetail: string
+  _technicalDetail: string
 ): ClassifiedError | null {
   const classifier = ExchangeErrorClassifier.getInstance();
   return classifier.classifyResponse('binance', 400, {}, bodyText);
@@ -214,7 +214,7 @@ export function classifyBinanceCode(
 
 export function classifyKuCoinCode(
   bodyText: string,
-  technicalDetail: string
+  _technicalDetail: string
 ): ClassifiedError | null {
   const classifier = ExchangeErrorClassifier.getInstance();
   return classifier.classifyResponse('kucoin', 400, {}, bodyText);
@@ -222,7 +222,7 @@ export function classifyKuCoinCode(
 
 export function classifyByBodyText(
   lower: string,
-  technicalDetail: string,
+  _technicalDetail: string,
   exchangeName: string
 ): ClassifiedError {
   return ExchangeErrorClassifier.getInstance().classifyResponse(exchangeName, 400, {}, lower);
