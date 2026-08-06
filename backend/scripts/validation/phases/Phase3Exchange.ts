@@ -18,8 +18,8 @@ export class Phase3Exchange implements ValidationPhase {
     let status: "PASS" | "FAIL" = "PASS";
     let apiLatency = 0;
 
-    const exchangeId = context.selectedExchangeId;
-    const environment = context.environment;
+    const exchangeId = context.validationExchangeId || context.resolvedExchange?.exchangeId || "binance";
+    const environment = context.validationExchangeEnv || context.resolvedExchange?.environment || "mainnet";
 
     // 1. Diagnostic Environment Log
     const keyEnvVar = exchangeId === "kucoin" ? "KUCOIN_TEST_KEY" : exchangeId === "bybit" ? "BYBIT_TEST_KEY" : "BINANCE_TEST_KEY";
