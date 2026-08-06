@@ -172,6 +172,7 @@ app.get("/db-status", async (c) => {
       "jwt_blacklist",
       "refresh_tokens",
       "login_attempts",
+      "registration_attempts",
       "password_reset_tokens",
       "audit_log",
     ];
