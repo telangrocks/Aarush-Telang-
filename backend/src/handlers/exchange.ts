@@ -27,6 +27,10 @@ export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   let exchangeNameForLog = "unknown";
+  const correlationId = crypto.randomUUID();
+  const cfRay = c.req.header("cf-ray") || "none";
+  const cfCountry = c.req.header("cf-ipcountry") || "unknown";
+
   try {
     const { exchangeName, apiKey, apiSecret, apiPassphrase, environment } = await c.req.json<{
       exchangeName: ExchangeName;
@@ -41,6 +45,9 @@ export async function handleValidateExchange(
     const cleanApiKey = cleanCredential(apiKey);
     const cleanApiSecret = cleanCredential(apiSecret);
     const cleanApiPassphrase = cleanCredential(apiPassphrase);
+
+    const redactedApiKey = cleanApiKey ? `${cleanApiKey.slice(0, 4)}...${cleanApiKey.slice(-4)}` : "[MISSING]";
+    console.log(`[EXCHANGE_VALIDATE_START] correlationId=${correlationId} exchange=${exchangeName} env=${environment} key=${redactedApiKey} cfRay=${cfRay} cfCountry=${cfCountry}`);
 
     if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
       c.status(400);
@@ -79,17 +86,19 @@ export async function handleValidateExchange(
         password: cleanApiPassphrase
       });
       await provider.fetchBalance();
-      console.log(`[exchange-auth] validation successful for ${exchangeName}`);
-      return c.json({ success: true, message: "Credentials verified. You're all set.", directPingResult, directTimeResult });
+      console.log(`[EXCHANGE_VALIDATE_SUCCESS] correlationId=${correlationId} exchange=${exchangeName} cfRay=${cfRay}`);
+      return c.json({ success: true, message: "Credentials verified. You're all set.", version: "1.0", correlationId, directPingResult, directTimeResult });
     } catch (valErr: unknown) {
-      const classified = classifyException(valErr, exchangeName);
-      console.error(`[exchange-auth] validation failed for ${exchangeName} (${classified.technicalDetail}):`, valErr);
+      const classified = classifyException(valErr, exchangeName, correlationId);
+      console.error(`[EXCHANGE_VALIDATE_FAILED] correlationId=${correlationId} exchange=${exchangeName} code=${classified.code} msg="${classified.friendlyMessage}" cfRay=${cfRay} (${classified.technicalDetail}):`, valErr);
       c.status(400);
       return c.json({
         success: false,
         code: classified.code,
         message: classified.friendlyMessage,
         hint: classified.hint,
+        version: classified.version || "1.0",
+        correlationId,
         detail: classified.technicalDetail,
         rawError: valErr instanceof Error ? `${valErr.message} | ${valErr.stack}` : String(valErr),
         directPingResult,
@@ -105,14 +114,16 @@ export async function handleValidateExchange(
       }
     }
   } catch (e: unknown) {
-    const classified = classifyException(e, exchangeNameForLog);
-    console.error(`[exchange-auth] validate outer exception (${classified.technicalDetail}):`, e);
+    const classified = classifyException(e, exchangeNameForLog, correlationId);
+    console.error(`[EXCHANGE_VALIDATE_FATAL] correlationId=${correlationId} exchange=${exchangeNameForLog} code=${classified.code} cfRay=${cfRay} (${classified.technicalDetail}):`, e);
     c.status(400);
     return c.json({
       success: false,
       code: classified.code,
       message: classified.friendlyMessage,
       hint: classified.hint,
+      version: classified.version || "1.0",
+      correlationId,
       detail: classified.technicalDetail,
       rawError: e instanceof Error ? `${e.message} | ${e.stack}` : String(e),
     });

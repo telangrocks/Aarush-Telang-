@@ -1,16 +1,9 @@
 /**
  * Centralised, exchange-agnostic error classification for the connect-exchange
  * and bot-activation flows.
- *
- * Goal: never surface raw, technical exchange errors to end users. Every
- * failure is mapped to a stable `ExchangeErrorCode` that carries:
- *   - `code`          : stable machine-readable identifier
- *   - `friendlyMessage`: plain-language, actionable text shown in the app
- *   - `technicalDetail`: raw detail logged server-side only (never sent to app)
- *
- * The classification inspects HTTP status, response body text, and exception
- * types across Binance.
  */
+
+import { ExchangeErrorClassifier } from './ExchangeErrorClassifier';
 
 export type ExchangeErrorCode =
   | "INVALID_API_KEY"
@@ -30,6 +23,7 @@ export type ExchangeErrorCode =
   | "SERVICE_TEMPORARILY_UNAVAILABLE"
   | "AUTHENTICATION_FAILED"
   | "REGION_NOT_SUPPORTED"
+  | "LEGAL_RESTRICTION_UNKNOWN"
   | "EXCHANGE_NOT_REACHABLE"
   | "INSUFFICIENT_PERMISSIONS"
   | "INVALID_API_VERSION"
@@ -48,10 +42,6 @@ export interface ExchangeErrorInfo {
   hint?: string;
 }
 
-/**
- * Friendly, natural-language copy for every error code. Written for a
- * non-technical trader — no jargon, clear next step.
- */
 export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
   INVALID_API_KEY: {
     code: "INVALID_API_KEY",
@@ -163,6 +153,11 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
     friendlyMessage: "This exchange or endpoint is not supported in your region.",
     hint: "Due to local regulations, some markets or products may be blocked. Verify your regional settings.",
   },
+  LEGAL_RESTRICTION_UNKNOWN: {
+    code: "LEGAL_RESTRICTION_UNKNOWN",
+    friendlyMessage: "Access to this exchange endpoint was restricted by a server policy.",
+    hint: "Verify your network connection, or try again later.",
+  },
   EXCHANGE_NOT_REACHABLE: {
     code: "EXCHANGE_NOT_REACHABLE",
     friendlyMessage: "The exchange API is currently not reachable.",
@@ -195,361 +190,48 @@ export interface ClassifiedError {
   friendlyMessage: string;
   hint?: string;
   technicalDetail: string;
+  version: string;
+  correlationId?: string;
 }
 
-/**
- * Inspect a failed exchange validation response (HTTP status + body) and
- * classify the root cause into a stable, user-friendly error.
- */
 export function classifyExchangeResponse(
   status: number,
   bodyText: string,
   exchangeName: string,
+  headers: Record<string, string> = {},
+  correlationId?: string
 ): ClassifiedError {
-  const lower = (bodyText || "").toLowerCase();
-  const technicalDetail = `exchange=${exchangeName} status=${status} body=${bodyText.slice(0, 500)}`;
-  // {code,...} / {retCode,...} body. Resolve it precisely FIRST before text matching!
-  const structured =
-    classifyBinanceCode(bodyText, technicalDetail) ||
-    classifyKuCoinCode(bodyText, technicalDetail);
-  if (structured) return structured;
-
-  // ---- Network / CloudFront / IP restrictions ----
-  if (status === 403 && (lower.includes("request blocked") || lower.includes("cloudflare") || lower.includes("asn"))) {
-    return mk("BINANCE_WAF_BLOCKED", technicalDetail, lower);
-  }
-  if (status === 403 && (lower.includes("ip_restricted") || lower.includes("ip whitelist"))) {
-    return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
-  }
-  if (status === 401 || status === 403) {
-    return mk("AUTHENTICATION_FAILED", technicalDetail, lower);
-  }
-  if (status === 404) {
-    return mk("EXCHANGE_NOT_REACHABLE", technicalDetail, lower);
-  }
-  if (status === 408) {
-    return mk("NETWORK_TIMEOUT", technicalDetail, lower);
-  }
-  if (status === 429) {
-    return mk("API_RATE_LIMIT_REACHED", technicalDetail, lower);
-  }
-  if (lower.includes("maintenance") || lower.includes("upgrade")) {
-    return mk("EXCHANGE_UNDER_MAINTENANCE", technicalDetail, lower);
-  }
-  if (status === 418 || status === 503 || status === 502 || status === 504) {
-    return mk("SERVICE_TEMPORARILY_UNAVAILABLE", technicalDetail, lower);
-  }
-  if (status === 451) {
-    return mk("REGION_NOT_SUPPORTED", technicalDetail, lower);
-  }
-  if (status >= 500) {
-    return mk("SERVICE_TEMPORARILY_UNAVAILABLE", technicalDetail, lower);
-  }
-
-  // ---- 4xx with a body: inspect the message text per exchange ----
-  return classifyByBodyText(lower, technicalDetail, exchangeName);
+  return ExchangeErrorClassifier.getInstance().classifyResponse(exchangeName, status, headers, bodyText, correlationId);
 }
 
-/**
- * Map Binance's well-known structured error `code` values to accurate,
- * user-facing error codes. Binance returns these as `{"code": <int>, "msg": ...}`.
- * Using the numeric code is far more reliable than text heuristics and prevents
- * misclassification (e.g. a bad API key being reported as an IP-whitelist issue).
- *
- * Returns null when the code is not one we recognise or the body has no code,
- * so the caller can fall back to text-based classification.
- */
 export function classifyBinanceCode(
   bodyText: string,
-  technicalDetail: string,
+  technicalDetail: string
 ): ClassifiedError | null {
-  let code: number | undefined;
-  let msg = "";
-  try {
-    const raw = bodyText.includes("{") ? bodyText.slice(bodyText.indexOf("{"), bodyText.lastIndexOf("}") + 1) : bodyText;
-    const parsed = JSON.parse(raw) as { code?: number; msg?: string };
-    if (typeof parsed.code === "number") code = parsed.code;
-    if (parsed.msg) msg = parsed.msg;
-  } catch {
-    const match = bodyText.match(/"code"\s*:\s*(-?\d+)/) || bodyText.match(/code=(-?\d+)/);
-    if (match) code = parseInt(match[1], 10);
-  }
-  if (code === undefined) return null;
-
-  // Reference: https://binance-docs.github.io/apidocs/spot/en/#error-codes
-  if (code === -2015) {
-    const lowerMsg = (msg || bodyText).toLowerCase();
-    const ipMatch = bodyText.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
-    if (lowerMsg.includes("request ip:") || lowerMsg.includes("ip whitelist") || lowerMsg.includes("ip restricted") || ipMatch) {
-      const hint = ipMatch
-        ? `Crypto Pulse server IP is ${ipMatch[0]}. Please add this IP to your Binance API Key whitelist.`
-        : FRIENDLY_MESSAGES.IP_NOT_WHITELISTED.hint;
-      return {
-        code: "IP_NOT_WHITELISTED",
-        friendlyMessage: FRIENDLY_MESSAGES.IP_NOT_WHITELISTED.friendlyMessage,
-        hint,
-        technicalDetail,
-      };
-    }
-    return mk("INVALID_API_KEY", technicalDetail, lowerMsg);
-  }
-
-  const byCode: Record<number, ExchangeErrorCode> = {
-    "-2008": "INVALID_API_KEY", // Invalid Api-Key ID (e.g. testnet key used on mainnet)
-    "-2014": "INVALID_API_KEY", // API-key format invalid
-    "-2016": "INVALID_API_SECRET", // Invalid API secret / IP or permissions
-    "-1022": "INVALID_SIGNATURE", // Invalid signature
-    "-1021": "TIMESTAMP_OUT_OF_SYNC", // Timestamp for this request was outside of the recvWindow
-    "-1003": "API_RATE_LIMIT_REACHED", // Too much request weight used
-    "-1007": "NETWORK_TIMEOUT", // Timeout waiting for response
-    "-1101": "UNKNOWN_EXCHANGE_ERROR", // Unknown endpoint / Too many parameters
-    "1101": "UNKNOWN_EXCHANGE_ERROR",
-    "-1102": "INVALID_SIGNATURE", // Malformed/empty mandatory parameter
-    "-1121": "INVALID_SIGNATURE", // Invalid symbol
-    "-1010": "INSUFFICIENT_PERMISSIONS", // Customer's permissions don't match
-    "-2010": "INSUFFICIENT_PERMISSIONS", // Account has insufficient permission
-    "-4164": "SPOT_TRADING_NOT_ENABLED", // Spot trading is not enabled
-  };
-
-  const mapped = byCode[code] || byCode[-code];
-  if (mapped) return mk(mapped, technicalDetail, `binance code ${code}`);
-  return null;
+  const classifier = ExchangeErrorClassifier.getInstance();
+  return classifier.classifyResponse('binance', 400, {}, bodyText);
 }
 
-/**
- * Map KuCoin's specific string error `code` values to user-facing error codes.
- * Returns null when the code is not one we recognise or body has no code.
- */
 export function classifyKuCoinCode(
   bodyText: string,
-  technicalDetail: string,
+  technicalDetail: string
 ): ClassifiedError | null {
-  let code: string | undefined;
-  try {
-    const raw = bodyText.includes("{") ? bodyText.slice(bodyText.indexOf("{"), bodyText.lastIndexOf("}") + 1) : bodyText;
-    const parsed = JSON.parse(raw) as { code?: string };
-    if (typeof parsed.code === "string") code = parsed.code;
-  } catch {
-    const match = bodyText.match(/"code"\s*:\s*"(\d+)"/) || bodyText.match(/code="(\d+)"/);
-    if (match) code = match[1];
-  }
-  if (!code) return null;
-
-  // KuCoin successful code is "200000". This method is only called if a request fails or doesn't have 200000.
-  
-  const byCode: Record<string, ExchangeErrorCode> = {
-    "400100": "INVALID_SIGNATURE",
-    "400001": "INVALID_API_KEY",
-    "400003": "IP_NOT_WHITELISTED",
-    "400004": "INVALID_PASSPHRASE",
-    "400005": "INVALID_SIGNATURE", // Invalid timestamp
-    "400006": "INVALID_API_KEY", // Invalid API version
-    "400007": "INVALID_SIGNATURE", // Invalid API signature
-    "411100": "ACCOUNT_RESTRICTED", // Account frozen
-    "200004": "INSUFFICIENT_BALANCE", // Insufficient funds
-    "429000": "API_RATE_LIMIT_REACHED",
-    "500000": "SERVICE_TEMPORARILY_UNAVAILABLE",
-    "260100": "INSUFFICIENT_BALANCE",
-  };
-
-  const mapped = byCode[code];
-  if (mapped) return mk(mapped, technicalDetail, `kucoin code ${code}`);
-  return null;
+  const classifier = ExchangeErrorClassifier.getInstance();
+  return classifier.classifyResponse('kucoin', 400, {}, bodyText);
 }
 
-
-/**
- * Classify based on the human-readable error text returned by the exchange.
- * Covers Binance message conventions.
- */
 export function classifyByBodyText(
   lower: string,
   technicalDetail: string,
-  _exchangeName: string,
+  exchangeName: string
 ): ClassifiedError {
-  // Prefer the exchange's structured numeric error code when present — it is
-  // the most accurate signal and avoids ambiguous text matching. Binance uses
-  const bodyRaw = technicalDetail.split("body=")[1] ?? "";
-  const structured = classifyBinanceCode(bodyRaw, technicalDetail);
-  if (structured) return structured;
-  // IP allow-list / restriction
-  if (
-    lower.includes("ip") && (lower.includes("not allow") || lower.includes("whitelist") || lower.includes("allowlist") || lower.includes("forbidden") || lower.includes("banned") || lower.includes("not permitted"))
-  ) {
-    return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
-  }
-  // Spot specific permissions
-  if (lower.includes("spot") && (lower.includes("not enabled") || lower.includes("disabled") || lower.includes("spot trading"))) {
-    return mk("SPOT_TRADING_NOT_ENABLED", technicalDetail, lower);
-  }
-  // Passphrase
-  if (lower.includes("passphrase") || lower.includes("password") || lower.includes("invalid passphrase")) {
-    return mk("INVALID_PASSPHRASE", technicalDetail, lower);
-  }
-  if (lower.includes("api key") && (lower.includes("invalid") || lower.includes("not valid") || lower.includes("not found") || lower.includes("incorrect"))) {
-    return mk("INVALID_API_KEY", technicalDetail, lower);
-  }
-  // Permission / scope errors (read/trade/withdraw)
-  if (
-    lower.includes("permission") ||
-    lower.includes("api-key") && lower.includes("permission") ||
-    lower.includes("not have") && lower.includes("permission") ||
-    lower.includes("unauthorized") && lower.includes("permission") ||
-    lower.includes("insufficient") && lower.includes("permission") ||
-    lower.includes("forbidden") ||
-    lower.includes("api key does not have") ||
-    lower.includes("key does not have") ||
-    lower.includes("permission denied") ||
-    lower.includes("require") && lower.includes("permission")
-  ) {
-    return mk("INSUFFICIENT_PERMISSIONS", technicalDetail, lower);
-  }
-  // API Version
-  if (lower.includes("api version") || lower.includes("deprecated version") || lower.includes("version not supported")) {
-    return mk("INVALID_API_VERSION", technicalDetail, lower);
-  }
-  // Region
-  if (lower.includes("region") || lower.includes("country") || lower.includes("not supported in this region") || lower.includes("geo-block") || lower.includes("service restricted") || lower.includes("restricted territory") || lower.includes("restricted location")) {
-    return mk("REGION_NOT_SUPPORTED", technicalDetail, lower);
-  }
-  // Account status
-  if (lower.includes("suspended") || lower.includes("suspend")) {
-    return mk("ACCOUNT_SUSPENDED", technicalDetail, lower);
-  }
-  if (lower.includes("account has restrictions") || lower.includes("restricted") || lower.includes("restrict") || lower.includes("frozen")) {
-    if (lower.includes("ip")) {
-      return mk("IP_NOT_WHITELISTED", technicalDetail, lower);
-    }
-    return mk("ACCOUNT_RESTRICTED", technicalDetail, lower);
-  }
-  // Testnet vs live mismatch
-  if (
-    lower.includes("testnet") && lower.includes("mainnet") ||
-    lower.includes("mainnet") && lower.includes("testnet") ||
-    lower.includes("invalid api") && (lower.includes("environment") || lower.includes("network")) ||
-    lower.includes("api key is for testnet") ||
-    lower.includes("api key is for mainnet") ||
-    lower.includes("wrong") && lower.includes("environment") ||
-    lower.includes("sandbox") && lower.includes("production")
-  ) {
-    return mk("AUTHENTICATION_FAILED", technicalDetail, lower); // Mapped under auth mismatch
-  }
-  // Explicit signature failures (strictly check for signature error text to avoid matching stack trace lines like binance.sign)
-  if (lower.includes("invalid signature") || lower.includes("signature for this request") || (lower.includes("signature") && lower.includes("not valid"))) {
-    return mk("INVALID_SIGNATURE", technicalDetail, lower);
-  }
-  // Timestamp out of sync
-  if (lower.includes("timestamp") || lower.includes("recvwindow") || (lower.includes("time") && lower.includes("outside"))) {
-    return mk("TIMESTAMP_OUT_OF_SYNC", technicalDetail, lower);
-  }
-  // Rate limiting by message
-  if (
-    lower.includes("rate limit") ||
-    lower.includes("too many requests") ||
-    lower.includes("request frequency") ||
-    lower.includes("too many") && lower.includes("request")
-  ) {
-    return mk("API_RATE_LIMIT_REACHED", technicalDetail, lower);
-  }
-  // Timeout by message
-  if (lower.includes("timeout") || lower.includes("timed out")) {
-    return mk("NETWORK_TIMEOUT", technicalDetail, lower);
-  }
-  // Distinguish key vs secret when explicitly stated
-  if (lower.includes("api key") && lower.includes("not found")) {
-    return mk("INVALID_API_KEY", technicalDetail, lower);
-  }
-  if (lower.includes("api secret") && (lower.includes("invalid") || lower.includes("not valid"))) {
-    return mk("INVALID_API_SECRET", technicalDetail, lower);
-  }
-
-  return mk("UNKNOWN_EXCHANGE_ERROR", technicalDetail, lower);
+  return ExchangeErrorClassifier.getInstance().classifyResponse(exchangeName, 400, {}, lower);
 }
 
-function mk(
-  code: ExchangeErrorCode,
-  technicalDetail: string,
-  _lowerBody: string,
-): ClassifiedError {
-  const info = FRIENDLY_MESSAGES[code];
-  return {
-    code,
-    friendlyMessage: info.friendlyMessage,
-    hint: info.hint,
-    technicalDetail,
-  };
+export function classifyException(error: unknown, exchangeName: string, correlationId?: string): ClassifiedError {
+  return ExchangeErrorClassifier.getInstance().classifyException(error, exchangeName, correlationId);
 }
 
-/**
- * Classify a thrown exception (network failure, timeout, JSON parse, etc.).
- */
-export function classifyException(error: unknown, exchangeName: string): ClassifiedError {
-  const errObj = error as any;
-  const message = error instanceof Error ? error.message : String(error ?? "unknown error");
-  const origMsg = errObj?.originalExchangeErrorMessage || "";
-  const fullText = `${message} ${origMsg}`.trim();
-  const lower = fullText.toLowerCase();
-  const technicalDetail = `exchange=${exchangeName} exception=${message.slice(0, 500)}`;
-
-  // Guard against internal SQLite / D1 database errors
-  if (lower.includes("no such column") || lower.includes("d1_error") || lower.includes("sqlite") || lower.includes("table users")) {
-    return mk("UNKNOWN_EXCHANGE_ERROR", technicalDetail, lower);
-  }
-
-  // 1. Mapped internal code from UnifiedError (from CCXT Provider / UnifiedError)
-  if (errObj?.mappedInternalErrorCode && FRIENDLY_MESSAGES[errObj.mappedInternalErrorCode as ExchangeErrorCode]) {
-    return mk(errObj.mappedInternalErrorCode as ExchangeErrorCode, technicalDetail, lower);
-  }
-
-  // 2. Structured code matching (Binance numeric codes like -2015, KuCoin string codes like 400100)
-  const structured =
-    classifyBinanceCode(fullText, technicalDetail) ||
-    classifyKuCoinCode(fullText, technicalDetail);
-  if (structured) return structured;
-
-  // 3. Text matching per exchange body conventions
-  const byText = classifyByBodyText(lower, technicalDetail, exchangeName);
-  if (byText && byText.code !== "UNKNOWN_EXCHANGE_ERROR") {
-    return byText;
-  }
-
-  // 4. Fetch timeout (Cloudflare Workers AbortError / TimeoutError)
-  if (
-    error instanceof Error &&
-    (error.name === "AbortError" || error.name === "TimeoutError" || lower.includes("timeout") || lower.includes("timed out"))
-  ) {
-    return mk("NETWORK_TIMEOUT", technicalDetail, lower);
-  }
-  // SSL connection failures
-  if (lower.includes("ssl") || lower.includes("tls") || lower.includes("cert")) {
-    return mk("SSL_CONNECTION_FAILURE", technicalDetail, lower);
-  }
-  // Network-level failures
-  if (
-    lower.includes("fetch failed") ||
-    lower.includes("network") ||
-    lower.includes("econnrefused") ||
-    lower.includes("dns") ||
-    lower.includes("enotfound") ||
-    lower.includes("failed to fetch") ||
-    lower.includes("networkerror") ||
-    lower.includes("connection") ||
-    lower.includes("socket")
-  ) {
-    return mk("EXCHANGE_NOT_REACHABLE", technicalDetail, lower);
-  }
-  // Cloudflare HTML error bodies sometimes surface as thrown errors
-  if (lower.includes("403") || lower.includes("request blocked") || lower.includes("forbidden") || lower.includes("cloudflare") || lower.includes("asn")) {
-    return mk("BINANCE_WAF_BLOCKED", technicalDetail, lower);
-  }
-
-  return mk("UNKNOWN_EXCHANGE_ERROR", technicalDetail, lower);
-}
-
-/**
- * Convenience wrapper used by adapters when they already hold a parsed error
- * message string (e.g. `data.error.message`). Lowercases before classification.
- */
 export function classifyByBody(bodyText: string, exchangeName: string): ClassifiedError {
-  return classifyByBodyText((bodyText || "").toLowerCase(), `exchange=${exchangeName} body=${bodyText.slice(0, 500)}`, exchangeName);
+  return ExchangeErrorClassifier.getInstance().classifyResponse(exchangeName, 400, {}, bodyText);
 }

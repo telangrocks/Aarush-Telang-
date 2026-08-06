@@ -311,6 +311,7 @@ private fun ExchangeDropdown(
 ) {
     val exchanges = listOf(
         "binance" to "Binance",
+        "bybit" to "Bybit",
         "kucoin" to "KuCoin",
     )
     var expanded by remember { mutableStateOf(false) }

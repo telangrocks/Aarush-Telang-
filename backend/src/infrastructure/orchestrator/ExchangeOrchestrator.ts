@@ -7,6 +7,7 @@ import { Result, ok, fail, createDomainError, DomainError } from '../../domain/t
 import { ValidationPipeline } from '../safety/ValidationPipeline';
 import { ValidationContext } from '../safety/ValidationContext';
 import { SafetyTelemetry } from '../safety/SafetyTelemetry';
+import { ExchangeErrorClassifier } from '../../exchanges/ExchangeErrorClassifier';
 
 export class ExchangeOrchestrator {
   private circuitBreaker = new CircuitBreaker();
@@ -71,14 +72,8 @@ export class ExchangeOrchestrator {
       this.circuitBreaker.recordFailure();
       MetricsCollector.increment(`orchestrator_error_${adapter.exchangeId}`, 1);
 
-      const msg = err?.message || String(err);
-      if (msg.includes('region') || msg.includes('451')) {
-        return fail(createDomainError('REGION_NOT_SUPPORTED', msg));
-      }
-      if (msg.includes('credentials') || msg.includes('401')) {
-        return fail(createDomainError('AUTHENTICATION_FAILED', msg));
-      }
-      return fail(createDomainError('EXCHANGE_ERROR', msg));
+      const classified = ExchangeErrorClassifier.getInstance().classifyException(err, adapter.exchangeId);
+      return fail(createDomainError(classified.code as any, classified.friendlyMessage));
     }
   }
 }

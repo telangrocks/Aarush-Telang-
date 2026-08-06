@@ -1,0 +1,62 @@
+import { IExchangeErrorMapper } from './IExchangeErrorMapper';
+import { ExchangeErrorCode, ClassifiedError, FRIENDLY_MESSAGES } from '../errors';
+
+export class BybitErrorMapper implements IExchangeErrorMapper {
+  readonly exchangeId = 'bybit';
+
+  public mapErrorPayload(
+    _status: number,
+    bodyText: string,
+    _headers: Record<string, string>,
+    technicalDetail: string
+  ): ClassifiedError | null {
+    if (!bodyText) return null;
+
+    let retCode: number | undefined;
+    try {
+      const raw = bodyText.includes('{')
+        ? bodyText.slice(bodyText.indexOf('{'), bodyText.lastIndexOf('}') + 1)
+        : bodyText;
+      const parsed = JSON.parse(raw) as { retCode?: number; ret_code?: number };
+      if (typeof parsed.retCode === 'number') retCode = parsed.retCode;
+      else if (typeof parsed.ret_code === 'number') retCode = parsed.ret_code;
+    } catch {
+      const match = bodyText.match(/"retCode"\s*:\s*(-?\d+)/) || bodyText.match(/"ret_code"\s*:\s*(-?\d+)/);
+      if (match) retCode = parseInt(match[1], 10);
+    }
+
+    if (retCode === undefined) return null;
+
+    const codeMap: Record<number, ExchangeErrorCode> = {
+      10001: 'INVALID_SIGNATURE', // Parameter error / invalid signature
+      10002: 'INVALID_SIGNATURE', // Invalid request timestamp
+      10003: 'INVALID_API_KEY', // Invalid ApiKey
+      10004: 'INVALID_SIGNATURE', // Invalid sign
+      10005: 'AUTHENTICATION_FAILED', // Permission denied
+      10006: 'API_RATE_LIMIT_REACHED', // Too many requests
+      10010: 'IP_NOT_WHITELISTED', // Unmatched IP address
+      10014: 'INVALID_SIGNATURE', // Invalid parameter
+      10018: 'IP_NOT_WHITELISTED', // IP restricted
+      130006: 'INSUFFICIENT_BALANCE', // Insufficient balance
+      130021: 'SPOT_TRADING_NOT_ENABLED',
+    };
+
+    const targetCode = codeMap[retCode];
+    if (targetCode) {
+      return this.mk(targetCode, technicalDetail);
+    }
+
+    return null;
+  }
+
+  private mk(code: ExchangeErrorCode, technicalDetail: string): ClassifiedError {
+    const info = FRIENDLY_MESSAGES[code];
+    return {
+      code,
+      friendlyMessage: info.friendlyMessage,
+      hint: info.hint,
+      technicalDetail,
+      version: '1.0',
+    };
+  }
+}

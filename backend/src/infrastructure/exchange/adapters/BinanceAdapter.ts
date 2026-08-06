@@ -4,6 +4,7 @@ import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade } from '.
 import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapabilities';
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';
 import { UnifiedError } from '../../../exchanges/models/UnifiedError';
+import { ExchangeErrorClassifier } from '../../../exchanges/ExchangeErrorClassifier';
 import BigNumber from 'bignumber.js';
 
 export class BinanceAdapter extends BaseExchangeAdapter {
@@ -62,44 +63,8 @@ export class BinanceAdapter extends BaseExchangeAdapter {
 
     if (!res.ok) {
       const errText = await res.text();
-      let parsedErr: any = {};
-      try {
-        parsedErr = JSON.parse(errText);
-      } catch (_) {
-        // Ignored JSON parse failure
-      }
-      const errorMsg = parsedErr?.msg || errText;
-
-      if (res.status === 451 || res.status === 403 || String(errorMsg).toLowerCase().includes('restricted location')) {
-        const isCiRunner = typeof process !== 'undefined' && (Boolean(process.env.GITHUB_ACTIONS) || Boolean(process.env.CI));
-        if (isCiRunner) {
-          const workerUrl = process.env.WORKER_URL || 'https://crypto-pulse-backend.telangrocks.workers.dev';
-          try {
-            const proxyRes = await globalThis.fetch(`${workerUrl}/api/exchange/validate`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                exchangeName: 'binance',
-                apiKey: cleanKey,
-                apiSecret: cleanSec,
-                environment: this.config.environment,
-              }),
-            });
-            if (proxyRes.ok) {
-              const pData: any = await proxyRes.json();
-              if (pData.success) {
-                return [{ currency: 'USDT', free: new BigNumber(1000), used: new BigNumber(0), total: new BigNumber(1000) }];
-              }
-            }
-          } catch (_) {
-            // Ignored proxy attempt failure
-          }
-          return [{ currency: 'USDT', free: new BigNumber(1000), used: new BigNumber(0), total: new BigNumber(1000) }];
-        }
-        throw new UnifiedError(`This exchange or endpoint is not supported in your region. / ${errorMsg}`, 'REGION_NOT_SUPPORTED');
-      }
-
-      throw new UnifiedError(`Binance API Error ${res.status}: ${errorMsg}`, 'AUTHENTICATION_FAILED');
+      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+      throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
 
     const data: any = await res.json();
@@ -130,8 +95,10 @@ export class BinanceAdapter extends BaseExchangeAdapter {
       });
 
       if (!res.ok) {
+        const errText = await res.text();
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
         const isCi = typeof process !== 'undefined' && (Boolean(process.env.GITHUB_ACTIONS) || Boolean(process.env.CI));
-        if (isCi || res.status === 451 || res.status === 403) {
+        if (isCi) {
           const fallbackPrice = new BigNumber(65000);
           return {
             symbol,
@@ -145,7 +112,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
             quoteVolume: fallbackPrice.multipliedBy(1000),
           };
         }
-        throw new UnifiedError(`Failed to fetch ticker for ${symbol}`, 'EXCHANGE_ERROR');
+        throw new UnifiedError(classified.friendlyMessage, classified.code);
       }
 
       const data: any = await res.json();
@@ -162,22 +129,9 @@ export class BinanceAdapter extends BaseExchangeAdapter {
         quoteVolume: px.multipliedBy(1000),
       };
     } catch (err: any) {
-      const isCi = typeof process !== 'undefined' && (Boolean(process.env.GITHUB_ACTIONS) || Boolean(process.env.CI));
-      if (isCi || err?.message?.includes('451') || err?.message?.includes('403')) {
-        const fallbackPrice = new BigNumber(65000);
-        return {
-          symbol,
-          timestamp: Date.now(),
-          last: fallbackPrice,
-          bid: fallbackPrice,
-          ask: fallbackPrice,
-          high: fallbackPrice,
-          low: fallbackPrice,
-          volume: new BigNumber(1000),
-          quoteVolume: fallbackPrice.multipliedBy(1000),
-        };
-      }
-      throw err;
+      if (err instanceof UnifiedError) throw err;
+      const classified = ExchangeErrorClassifier.getInstance().classifyException(err, 'binance');
+      throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
   }
 
@@ -192,8 +146,10 @@ export class BinanceAdapter extends BaseExchangeAdapter {
       });
 
       if (!res.ok) {
+        const errText = await res.text();
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
         const isCi = typeof process !== 'undefined' && (Boolean(process.env.GITHUB_ACTIONS) || Boolean(process.env.CI));
-        if (isCi || res.status === 451 || res.status === 403) {
+        if (isCi) {
           const now = Date.now();
           const candles: any[] = [];
           const count = limit || 100;
@@ -209,7 +165,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
           }
           return candles;
         }
-        throw new UnifiedError(`Failed to fetch klines for ${symbol}`, 'EXCHANGE_ERROR');
+        throw new UnifiedError(classified.friendlyMessage, classified.code);
       }
 
       const data: any[] = await res.json();
@@ -222,24 +178,9 @@ export class BinanceAdapter extends BaseExchangeAdapter {
         volume: parseFloat(k[5]),
       }));
     } catch (err: any) {
-      const isCi = typeof process !== 'undefined' && (Boolean(process.env.GITHUB_ACTIONS) || Boolean(process.env.CI));
-      if (isCi || err?.message?.includes('451') || err?.message?.includes('403')) {
-        const now = Date.now();
-        const candles: any[] = [];
-        const count = limit || 100;
-        for (let i = count - 1; i >= 0; i--) {
-          candles.push({
-            openTime: now - i * 15 * 60 * 1000,
-            open: 65000,
-            high: 65500,
-            low: 64500,
-            close: 65200,
-            volume: 100,
-          });
-        }
-        return candles;
-      }
-      throw err;
+      if (err instanceof UnifiedError) throw err;
+      const classified = ExchangeErrorClassifier.getInstance().classifyException(err, 'binance');
+      throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
   }
 

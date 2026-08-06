@@ -4,6 +4,7 @@ import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade } from '.
 import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapabilities';
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';
 import { UnifiedError } from '../../../exchanges/models/UnifiedError';
+import { ExchangeErrorClassifier } from '../../../exchanges/ExchangeErrorClassifier';
 import BigNumber from 'bignumber.js';
 
 export class KucoinAdapter extends BaseExchangeAdapter {
@@ -60,15 +61,23 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     };
 
     const res = await globalThis.fetch(`https://openapi-v2.kucoin.com${endpoint}`, { method, headers });
+    const errText = await res.text();
 
     if (!res.ok) {
-      const errText = await res.text();
-      throw new UnifiedError(`KuCoin API Error ${res.status}: ${errText}`, 'AUTHENTICATION_FAILED');
+      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
+      throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
 
-    const json: any = await res.json();
+    let json: any = {};
+    try {
+      json = JSON.parse(errText);
+    } catch (_) {
+      // Ignored
+    }
+
     if (json.code !== '200000' || !Array.isArray(json.data)) {
-      throw new UnifiedError(`KuCoin Error: ${json.msg || 'Invalid credentials'}`, 'AUTHENTICATION_FAILED');
+      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
+      throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
 
     const balances: Balance[] = [];
@@ -88,12 +97,23 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   public async fetchTicker(symbol: string): Promise<Ticker> {
     const rawSymbol = symbol.replace('/', '-').toUpperCase();
     const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawSymbol}`);
+    const errText = await res.text();
+
     if (!res.ok) {
-      throw new UnifiedError(`Failed to fetch KuCoin ticker for ${symbol}`, 'EXCHANGE_ERROR');
+      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
+      throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
-    const json: any = await res.json();
+
+    let json: any = {};
+    try {
+      json = JSON.parse(errText);
+    } catch (_) {
+      // Ignored
+    }
+
     if (json.code !== '200000' || !json.data) {
-      throw new UnifiedError(`KuCoin Ticker Error: ${json.msg || 'Unknown'}`, 'EXCHANGE_ERROR');
+      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
+      throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
 
     const px = new BigNumber(json.data.price || json.data.bestBid || 0);
@@ -114,12 +134,23 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     const rawSymbol = symbol.replace('/', '-').toUpperCase();
     const kcType = interval === '1m' ? '1min' : interval === '5m' ? '5min' : interval === '15m' ? '15min' : interval === '1h' ? '1hour' : '1min';
     const res = await globalThis.fetch(`https://openapi-v2.kucoin.com/api/v1/market/candles?symbol=${rawSymbol}&type=${kcType}`);
+    const errText = await res.text();
+
     if (!res.ok) {
-      throw new UnifiedError(`Failed to fetch KuCoin klines for ${symbol}`, 'EXCHANGE_ERROR');
+      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
+      throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
-    const json: any = await res.json();
+
+    let json: any = {};
+    try {
+      json = JSON.parse(errText);
+    } catch (_) {
+      // Ignored
+    }
+
     if (json.code !== '200000' || !Array.isArray(json.data)) {
-      throw new UnifiedError(`KuCoin Klines Error: ${json.msg || 'Unknown'}`, 'EXCHANGE_ERROR');
+      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
+      throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
 
     return json.data.slice(0, limit).map((k: any) => ({

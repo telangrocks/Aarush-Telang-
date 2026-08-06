@@ -12,41 +12,59 @@ export class RetryBudget {
 
   public isRetryable(error: unknown): boolean {
     if (!error) return false;
-    const msg = String((error as any)?.message || error).toLowerCase();
-    const code = (error as any)?.code;
+    const code = (error as any)?.code || (error as any)?.errorCode;
 
-    // Non-retryable errors (Security/Credentials/Invalid Payload/Balance)
+    const nonRetryableCodes = new Set([
+      'INVALID_API_KEY',
+      'INVALID_API_SECRET',
+      'INVALID_PASSPHRASE',
+      'IP_NOT_WHITELISTED',
+      'INSUFFICIENT_PERMISSIONS',
+      'PERMISSION_DENIED',
+      'AUTHENTICATION_FAILED',
+      'MISSING_REQUIRED_CREDENTIALS',
+      'INVALID_SIGNATURE',
+      'SPOT_TRADING_NOT_ENABLED',
+      'ACCOUNT_SUSPENDED',
+      'ACCOUNT_RESTRICTED',
+      'UNSUPPORTED_OPERATION',
+    ]);
+
+    if (code && nonRetryableCodes.has(code)) {
+      return false;
+    }
+
+    const retryableCodes = new Set([
+      'API_RATE_LIMIT_REACHED',
+      'RATE_LIMIT_EXCEEDED',
+      'NETWORK_TIMEOUT',
+      'SERVICE_TEMPORARILY_UNAVAILABLE',
+      'EXCHANGE_UNDER_MAINTENANCE',
+      'EXCHANGE_NOT_REACHABLE',
+      'BINANCE_WAF_BLOCKED',
+      'BINANCE_NETWORK_BLOCKED',
+      'UPSTREAM_PROVIDER_BLOCKED',
+      'REGION_NOT_SUPPORTED',
+      'EXCHANGE_ERROR',
+    ]);
+
+    if (code && retryableCodes.has(code)) {
+      return true;
+    }
+
+    // Fallback message inspection if code property is absent or generic
+    const msg = String((error as any)?.message || error).toLowerCase();
     if (
       msg.includes('401') ||
       msg.includes('403') ||
       msg.includes('authentication') ||
       msg.includes('credentials') ||
-      msg.includes('invalid_symbol') ||
       msg.includes('insufficient funds') ||
       msg.includes('insufficient_funds') ||
-      msg.includes('unsupported_operation') ||
-      code === 'AUTHENTICATION_FAILED' ||
-      code === 'MISSING_REQUIRED_CREDENTIALS'
+      msg.includes('invalid_symbol') ||
+      msg.includes('unsupported_operation')
     ) {
       return false;
-    }
-
-    // Retryable errors (Rate limits, Timeouts, Server Glitches, Geo-Proxy 451)
-    if (
-      msg.includes('429') ||
-      msg.includes('451') ||
-      msg.includes('500') ||
-      msg.includes('502') ||
-      msg.includes('503') ||
-      msg.includes('504') ||
-      msg.includes('timed out') ||
-      msg.includes('network') ||
-      msg.includes('econnreset') ||
-      code === 'RATE_LIMIT_EXCEEDED' ||
-      code === 'EXCHANGE_ERROR' ||
-      code === 'REGION_NOT_SUPPORTED'
-    ) {
-      return true;
     }
 
     return true; // Default fallback to retry for unrecognized transient errors
