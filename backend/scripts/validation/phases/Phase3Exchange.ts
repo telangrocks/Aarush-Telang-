@@ -86,12 +86,13 @@ export class Phase3Exchange implements ValidationPhase {
       const pingStart = performance.now();
       await provider.connect({ environment });
       apiLatency = Math.round(performance.now() - pingStart);
-      const pingOk = apiLatency <= context.config.maxApiPingLatencyMs;
+      const maxApiSla = context.config.maxExchangeApiLatencyMs || 5000;
+      const pingOk = apiLatency <= maxApiSla;
 
       assertions.push({
         name: "Exchange REST API Connectivity & Ping SLA",
         passed: pingOk,
-        details: `Connected in ${apiLatency}ms (SLA <= ${context.config.maxApiPingLatencyMs}ms)`,
+        details: `Connected in ${apiLatency}ms (SLA <= ${maxApiSla}ms)`,
         empiricalData: { exchange: exchangeId, pingLatencyMs: apiLatency },
         failureCategory: pingOk ? undefined : "THIRD_PARTY_SERVICE_FAILURE",
       });
