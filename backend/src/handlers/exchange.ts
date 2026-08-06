@@ -445,19 +445,17 @@ export async function handleGetPersonalizedMarketCandidates(
       });
       console.log(`[DIAGNOSTIC] Stage 5: CCXT client created for provider=${user.exchange_name}`);
     } catch (provErr: any) {
-      console.warn("[DIAGNOSTIC] Stage 5 WARNING: Provider creation failed, falling back to public Binance adapter:", provErr?.message);
-      try {
-        adapter = await ExchangeManager.getProvider('binance', { environment: 'mainnet' });
-      } catch (fallbackErr: any) {
-        c.status(500);
-        return c.json({
-          success: false,
-          stage: "5. CCXT client created",
-          error: provErr?.message || String(provErr),
-          constructor: provErr?.constructor?.name || "ProviderError",
-          stack: provErr?.stack || String(provErr)
-        });
-      }
+      console.error("[EXCHANGE_PROVIDER_ERROR] Provider creation failed:", provErr?.message);
+      const classified = classifyException(provErr, user.exchange_name, correlationId);
+      c.status(400);
+      return c.json({
+        success: false,
+        code: classified.code,
+        message: classified.friendlyMessage,
+        hint: classified.hint,
+        version: classified.version || "1.0",
+        correlationId,
+      });
     }
 
     // Stage 6: fetchBalance completed

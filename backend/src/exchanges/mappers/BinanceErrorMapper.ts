@@ -67,6 +67,7 @@ export class BinanceErrorMapper implements IExchangeErrorMapper {
       [-1121]: 'INVALID_SIGNATURE', // Invalid symbol
       [-1010]: 'INSUFFICIENT_PERMISSIONS', // Customer's permissions don't match required API security
       [-2010]: 'INSUFFICIENT_PERMISSIONS', // Account has insufficient permission
+      [-2027]: 'SPOT_TRADING_NOT_ENABLED', // Futures/Margin trading not enabled
       [-4164]: 'SPOT_TRADING_NOT_ENABLED', // Spot trading is not enabled
     };
 

@@ -744,7 +744,7 @@ export class TradingBot {
             try {
               if (adapter) {
                 const ticker = await adapter.fetchTicker(orderSymbol);
-                const currentPrice = ticker?.last?.toNumber() || target.signalPrice || target.entryPrice;
+                const currentPrice = (typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0)) || target.signalPrice || target.entryPrice;
                 const targetPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
                 
                 const deltaPercent = currentPrice > 0 ? (Math.abs(targetPrice - currentPrice) / currentPrice) : 0;
@@ -907,7 +907,7 @@ export class TradingBot {
               let averageFillPrice = orderResult.price;
               if (!averageFillPrice || averageFillPrice <= 0) {
                 const fallbackTicker = await adapter?.fetchTicker(snapshot.symbol).catch(() => null);
-                averageFillPrice = fallbackTicker?.last?.toNumber() || refPrice;
+                averageFillPrice = (typeof fallbackTicker?.last?.toNumber === 'function' ? fallbackTicker.last.toNumber() : (typeof fallbackTicker?.last === 'number' ? fallbackTicker.last : 0)) || refPrice;
               }
 
               await this.logAuditEvent(snapshot.userId, 'TRADE_FILLED', { symbol: snapshot.symbol, side: snapshot.side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, strategy: snapshot.strategy });
@@ -1278,7 +1278,7 @@ export class TradingBot {
                 if (!recentAlert) {
                   // Fetch live market price at the exact moment of signal generation
                   const ticker = await adapter.fetchTicker(coinId).catch(() => null);
-                  const price = ticker?.last?.toNumber() || 0;
+                  const price = typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0);
                   
                   const setupSnapshot = await this.state.storage.get<TradeSetupSnapshot>('setupSnapshot');
                   const storedPositionSize = setupSnapshot?.positionSize ?? ((await this.state.storage.get('positionSize')) as number | undefined);
@@ -1370,8 +1370,8 @@ export class TradingBot {
             }
           }
         }
-      } catch (err) {
-        console.error('Orchestrator cycle failed:', err);
+      } catch (err: any) {
+        console.error('Orchestrator cycle failed:', err?.message || err, err?.stack);
       }
 
       const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;

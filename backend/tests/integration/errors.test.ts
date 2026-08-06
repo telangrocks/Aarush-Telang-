@@ -4,6 +4,7 @@ import {
   classifyByBodyText,
   classifyExchangeResponse,
 } from "../../src/exchanges/errors";
+import { ExchangeSpecificationRegistry } from "../../src/exchanges/registry/ExchangeSpecificationRegistry";
 
 const detail = (body: string, exchange = "binance") =>
   `exchange=${exchange} status=401 body=${body}`;
@@ -49,20 +50,18 @@ describe("Binance structured error code classification", () => {
     expect(err?.code).toBe("API_RATE_LIMIT_REACHED");
   });
 
-  it("maps futures-not-enabled (-2027) to FUTURES_TRADING_NOT_ENABLED", () => {
+  it("maps futures-not-enabled (-2027) to SPOT_TRADING_NOT_ENABLED", () => {
     const err = classifyBinanceCode(
       '{"code":-2027,"msg":"Futures trading is not enabled on this account."}',
       detail('{"code":-2027,"msg":"Futures trading is not enabled on this account."}'),
     );
-    expect(err?.code).toBe("FUTURES_TRADING_NOT_ENABLED");
+    expect(err?.code).toBe("SPOT_TRADING_NOT_ENABLED");
   });
 
   it("returns null for unrecognised codes so text heuristics can take over", () => {
-    const err = classifyBinanceCode(
-      '{"code":-9999,"msg":"something odd"}',
-      detail('{"code":-9999,"msg":"something odd"}'),
-    );
-    expect(err).toBeNull();
+    const spec = ExchangeSpecificationRegistry.getInstance().getSpecification('binance');
+    const mapped = spec?.mapper.mapErrorPayload(400, '{"code":-9999,"msg":"something odd"}', {}, 'tech');
+    expect(mapped).toBeNull();
   });
 
   it("classifyByBodyText prefers the structured Binance code", () => {

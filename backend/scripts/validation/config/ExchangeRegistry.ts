@@ -101,25 +101,22 @@ export const SUPPORTED_EXCHANGES: Record<string, ExchangeConfig> = {
     },
   },
 
-  // ─── Future exchanges — add one block below, zero engine changes required ──
-  //
-  // bybit: {
-  //   ccxtId: "bybit",
-  //   displayName: "Bybit",
-  //   environments: {
-  //     testnet: { displayLabel: "Bybit Testnet",  requiresPassphrase: false, secretPrefix: "BYBIT_TESTNET" },
-  //     mainnet: { displayLabel: "Bybit Mainnet",  requiresPassphrase: false, secretPrefix: "BYBIT_MAINNET" },
-  //   },
-  // },
-  //
-  // okx: {
-  //   ccxtId: "okx",
-  //   displayName: "OKX",
-  //   environments: {
-  //     testnet: { displayLabel: "OKX Demo Trading", requiresPassphrase: true, secretPrefix: "OKX_TESTNET" },
-  //     mainnet: { displayLabel: "OKX Mainnet",       requiresPassphrase: true, secretPrefix: "OKX_MAINNET" },
-  //   },
-  // },
+  bybit: {
+    ccxtId: "bybit",
+    displayName: "Bybit",
+    environments: {
+      mainnet: {
+        displayLabel: "Bybit Mainnet",
+        requiresPassphrase: false,
+        secretPrefix: "BYBIT_MAINNET",
+      },
+      testnet: {
+        displayLabel: "Bybit Testnet",
+        requiresPassphrase: false,
+        secretPrefix: "BYBIT_TESTNET",
+      },
+    },
+  },
 
 };
 

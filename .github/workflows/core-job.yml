@@ -20,6 +20,7 @@ on:
         options:
           - ""
           - binance
+          - bybit
           - kucoin
   push:
     branches: [main]
@@ -42,7 +43,7 @@ permissions:
 
 jobs:
   production-validation:
-    name: Production Validation Framework (11 Phases)
+    name: Production Validation Framework (All Exchanges)
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -75,24 +76,28 @@ jobs:
       - name: Run Production Validation Pipeline
         env:
           WORKER_URL: "https://crypto-pulse-backend.telangrocks.workers.dev"
-          # Exchange selection — optional override. When blank, ExchangeRegistry level defaults apply:
-          #   level1_public     → binance (mainnet, public endpoints only)
-          #   level2_testnet    → binance (testnet)
-          #   level3_prod_smoke → kucoin  (mainnet, read-only)
           VALIDATION_EXCHANGE: ${{ inputs.exchange || '' }}
-          # ── Binance Testnet credentials (Level 2 / BINANCE_TESTNET_* prefix) ─────
+          # ── Binance credentials ─────
+          BINANCE_MAINNET_API_KEY:    ${{ secrets.BINANCE_MAINNET_API_KEY }}
+          BINANCE_MAINNET_API_SECRET: ${{ secrets.BINANCE_MAINNET_API_SECRET }}
           BINANCE_TESTNET_API_KEY:    ${{ secrets.BINANCE_TESTNET_API_KEY }}
           BINANCE_TESTNET_API_SECRET: ${{ secrets.BINANCE_TESTNET_API_SECRET }}
-          # ── KuCoin Mainnet credentials (Level 3 / KUCOIN_MAINNET_* prefix) ───────
-          KUCOIN_MAINNET_API_KEY:          ${{ secrets.KUCOIN_MAINNET_API_KEY }}
-          KUCOIN_MAINNET_API_SECRET:       ${{ secrets.KUCOIN_MAINNET_API_SECRET }}
-          KUCOIN_MAINNET_API_PASSPHRASE:   ${{ secrets.KUCOIN_MAINNET_API_PASSPHRASE }}
-          # ── Future exchanges: add secrets + input options; no engine code changes ─
-          # BYBIT_TESTNET_API_KEY:    ${{ secrets.BYBIT_TESTNET_API_KEY }}
-          # BYBIT_TESTNET_API_SECRET: ${{ secrets.BYBIT_TESTNET_API_SECRET }}
+          # ── Bybit credentials ───────
+          BYBIT_MAINNET_API_KEY:      ${{ secrets.BYBIT_MAINNET_API_KEY }}
+          BYBIT_MAINNET_API_SECRET:   ${{ secrets.BYBIT_MAINNET_API_SECRET }}
+          BYBIT_TESTNET_API_KEY:      ${{ secrets.BYBIT_TESTNET_API_KEY }}
+          BYBIT_TESTNET_API_SECRET:   ${{ secrets.BYBIT_TESTNET_API_SECRET }}
+          # ── KuCoin credentials ──────
+          KUCOIN_MAINNET_API_KEY:        ${{ secrets.KUCOIN_MAINNET_API_KEY }}
+          KUCOIN_MAINNET_API_SECRET:     ${{ secrets.KUCOIN_MAINNET_API_SECRET }}
+          KUCOIN_MAINNET_API_PASSPHRASE: ${{ secrets.KUCOIN_MAINNET_API_PASSPHRASE }}
         run: |
           LEVEL="${{ inputs.level || 'level1_public' }}"
           npx tsx scripts/validation/runner.ts --level=$LEVEL --outDir=reports
+
+      - name: Assert KuCoin Testnet Deprecation Handling
+        run: |
+          npx vitest run src/infrastructure/exchange/Adapters.test.ts
 
       - name: Upload Validation Artifacts
         if: always()

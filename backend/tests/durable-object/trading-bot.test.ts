@@ -13,7 +13,8 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
     ...actual,
     ExchangeManager: {
       getProvider: vi.fn().mockResolvedValue({
-        fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', price: 50100, last: { toNumber: () => 50100 } }),
+        fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', last: 50100, bid: 50090, ask: 50110, high: 51000, low: 49000, volume: 100, quoteVolume: 5010000 }),
+        fetchKlines: vi.fn().mockResolvedValue([{ openTime: Date.now(), open: 50000, high: 51000, low: 49000, close: 50500, volume: 100 }]),
         createOrder: vi.fn().mockResolvedValue({ id: 'ord-123', status: 'closed', filled: { toNumber: () => 0.02 }, amount: { toNumber: () => 0.02 }, average: { toNumber: () => 50100 } }),
         supportsOco: vi.fn().mockReturnValue(false),
         createOcoOrder: vi.fn()
@@ -33,6 +34,7 @@ vi.mock("../../src/engine/orchestrator/StrategyOrchestrator", () => {
   StrategyOrchestratorMock.prototype.executeCycle = vi.fn().mockResolvedValue([
     {
       strategyId: 'scalper-v2',
+      confidenceScore: 75,
       hasSignal: true,
       metadata: {
         signal: {
@@ -77,10 +79,14 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       prepare: vi.fn().mockReturnThis(),
       bind: vi.fn().mockReturnThis(),
       all: vi.fn().mockResolvedValue({ results: [] }),
+      run: vi.fn().mockResolvedValue({ success: true }),
       first: vi.fn().mockResolvedValue({
         exchange_name: 'binance',
         exchange_environment: 'testnet',
-        exchange_region: 'global'
+        exchange_region: 'global',
+        exchange_api_key: 'mock_api_key',
+        exchange_api_secret_encrypted: 'mock_secret',
+        exchange_api_secret_iv: 'mock_iv',
       })
     };
 

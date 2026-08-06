@@ -65,7 +65,14 @@ export class WebSocketManager {
     this.eventListeners = this.eventListeners.filter(l => l !== listener);
   }
 
-  public getPingPayload(_exchange: ExchangeName): string | null {    return null;
+  public getPingPayload(exchange: ExchangeName): string | null {
+    if (exchange === "bybit") {
+      return JSON.stringify({ op: "ping" });
+    }
+    if (exchange === "kucoin") {
+      return JSON.stringify({ id: Date.now().toString(), type: "ping" });
+    }
+    return null;
   }
 
   public emitEvent(event: ExchangeEvent) {
@@ -133,7 +140,47 @@ export class WebSocketManager {
         ? "wss://testnet.binance.vision/ws"
         : "wss://stream.binance.com:9443/ws";
       return listenKey ? `${baseUrl}/${listenKey}` : baseUrl;
-    }    throw new Error(`Unsupported exchange: ${exchange}`);
+    }
+
+    if (exchange === "bybit") {
+      const baseUrl = environment === "testnet"
+        ? "wss://stream-testnet.bybit.com/v5/public/linear"
+        : "wss://stream.bybit.com/v5/public/linear";
+      return listenKey ? `${baseUrl}?listenKey=${listenKey}` : baseUrl;
+    }
+
+    if (exchange === "kucoin") {
+      return "wss://ws-api-spot.kucoin.com/endpoint";
+    }
+
+    throw new Error(`Unsupported exchange: ${exchange}`);
+  }
+
+  public getSubscriptionPayload(exchange: ExchangeName, symbol: string, channel = "ticker"): string {
+    const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    if (exchange === "binance") {
+      return JSON.stringify({
+        method: "SUBSCRIBE",
+        params: [`${rawSymbol.toLowerCase()}@ticker`],
+        id: Date.now(),
+      });
+    }
+    if (exchange === "bybit") {
+      return JSON.stringify({
+        op: "subscribe",
+        args: [`tickers.${rawSymbol}`],
+      });
+    }
+    if (exchange === "kucoin") {
+      return JSON.stringify({
+        id: Date.now().toString(),
+        type: "subscribe",
+        topic: `/market/ticker:${symbol.replace('/', '-')}`,
+        privateChannel: false,
+        response: true,
+      });
+    }
+    return "";
   }
 
   // Event Ingestion Normalizers

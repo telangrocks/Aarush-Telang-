@@ -134,7 +134,7 @@ export class AnalysisSnapshotMapper {
       progress: result.confidenceScore,
       conditionsMet,
       opportunity,
-      timestamp: new Date(result.timestamp).toISOString(),
+      timestamp: new Date(result?.timestamp || Date.now()).toISOString(),
     };
   }
 
