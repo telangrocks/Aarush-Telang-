@@ -29,7 +29,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   };
 
   private getHost(): string {
-    const isTestnet = this.config?.environment === 'testnet' || this.config?.environment === 'Testing' || this.config?.environment === 'sandbox';
+    const isTestnet = this.config?.environment === 'testnet' || this.config?.environment === 'Testing' || (this.config?.environment as string) === 'sandbox';
     if (isTestnet) {
       return (process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '');
     }

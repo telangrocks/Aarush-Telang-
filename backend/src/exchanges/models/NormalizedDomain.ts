@@ -45,6 +45,9 @@ export interface Position {
   side: 'long' | 'short';
   entryPrice: BigNumber;
   unrealizedPnl: BigNumber;
+  markPrice?: BigNumber;
+  leverage?: number;
+  liquidationPrice?: BigNumber;
 }
 
 export interface Order {
@@ -55,13 +58,13 @@ export interface Order {
   status: 'open' | 'closed' | 'canceled' | 'rejected' | 'expired';
   side: 'buy' | 'sell';
   type: 'limit' | 'market';
-  timeInForce: 'GTC' | 'IOC' | 'FOK' | 'PO';
+  timeInForce?: 'GTC' | 'IOC' | 'FOK' | 'PO';
   price?: BigNumber;
   average?: BigNumber;
   amount: BigNumber;
   filled: BigNumber;
   remaining: BigNumber;
-  cost: BigNumber;
+  cost?: BigNumber;
   fee?: {
     currency: string;
     cost: BigNumber;

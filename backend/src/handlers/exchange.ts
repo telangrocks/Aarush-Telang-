@@ -346,6 +346,7 @@ export async function handleGetPersonalizedMarketCandidates(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   let currentStage = "1. JWT verification";
+  const correlationId = crypto.randomUUID();
   console.log("[DIAGNOSTIC] Stage 0: Endpoint /api/market/candidates invoked");
   
   try {

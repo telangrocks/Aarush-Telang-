@@ -1,4 +1,4 @@
-export type ExchangeName = "binance" | "kucoin" | "delta";
+export type ExchangeName = "binance" | "bybit" | "kucoin" | "delta";
 
 export type ExchangeEnvironment = "mainnet" | "testnet";
 

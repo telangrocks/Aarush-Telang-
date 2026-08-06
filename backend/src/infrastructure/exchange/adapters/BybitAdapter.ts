@@ -29,7 +29,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
   };
 
   private getHost(): string {
-    const isTestnet = this.config?.environment === 'testnet' || this.config?.environment === 'Testing' || this.config?.environment === 'sandbox';
+    const isTestnet = this.config?.environment === 'testnet' || this.config?.environment === 'Testing' || (this.config?.environment as string) === 'sandbox';
     if (isTestnet) {
       return (process.env.BYBIT_TESTNET_URL || 'https://api-testnet.bybit.com').replace(/\/$/, '');
     }
@@ -257,7 +257,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
         side: p.side === 'Buy' ? 'long' : 'short',
         entryPrice: new BigNumber(p.avgPrice || p.entryPrice || 0),
         markPrice: new BigNumber(p.markPrice || 0),
-        amount: size,
+        size: size,
         unrealizedPnl: new BigNumber(p.unrealisedPnl || 0),
         leverage: parseFloat(p.leverage || '1'),
       });

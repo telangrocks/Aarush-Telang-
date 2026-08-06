@@ -29,7 +29,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   };
 
   public override async connect(config: ProviderConfig): Promise<void> {
-    if (config.environment === 'testnet' || config.environment === 'Testing' || config.environment === 'sandbox') {
+    if (config.environment === 'testnet' || config.environment === 'Testing' || (config.environment as string) === 'sandbox') {
       throw new UnifiedError('KuCoin Sandbox is officially deprecated and offline.', 'UNSUPPORTED_OPERATION');
     }
     await super.connect(config);
