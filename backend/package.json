@@ -25,7 +25,7 @@
   "author": "Aarush Telang",
   "license": "UNLICENSED",
   "dependencies": {
-    "@hono/node-server": "^1.11.1",
+    "@hono/node-server": "^2.0.12",
     "bignumber.js": "^11.1.5",
     "ccxt": "4.5.69",
     "dotenv": "^16.4.5",
