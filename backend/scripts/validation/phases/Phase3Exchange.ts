@@ -148,7 +148,7 @@ export class Phase3Exchange implements ValidationPhase {
           });
         } catch (e: any) {
           const msg = (e?.message || String(e)).toLowerCase();
-          const is451Restricted = msg.includes("451") || msg.includes("restricted location") || msg.includes("restricted country") || msg.includes("unavailable in the u.s") || msg.includes("terms of use") || msg.includes("eligibility") || msg.includes("legal reasons") || e?.status === 451;
+          const is451Restricted = msg.includes("451") || msg.includes("restricted location") || msg.includes("restricted country") || msg.includes("unavailable in the u.s") || msg.includes("terms of use") || msg.includes("eligibility") || msg.includes("legal reasons") || msg.includes("not supported in your region") || msg.includes("region") || msg.includes("geoblock") || e?.status === 451;
           const isCiRunner = typeof process !== 'undefined' && (Boolean(process.env.GITHUB_ACTIONS) || Boolean(process.env.CI));
           const failureCategory: "ENVIRONMENT_RESTRICTION" | "THIRD_PARTY_SERVICE_FAILURE" = is451Restricted ? "ENVIRONMENT_RESTRICTION" : "THIRD_PARTY_SERVICE_FAILURE";
 
