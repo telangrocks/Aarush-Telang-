@@ -192,6 +192,11 @@ export class BybitAdapter extends BaseExchangeAdapter {
   public async fetchTicker(symbol: string): Promise<Ticker> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
+    const startTime = Date.now();
+    const url = `${this.getHost()}/v5/market/tickers?category=linear&symbol=${rawSymbol}`;
+
+    this.logger.info('[BybitAdapter] Outbound fetchTicker', { symbol: canonicalSymbol, rawSymbol, url });
+
     let result: any;
     try {
       result = await this.makeRequest('GET', '/v5/market/tickers', { category: 'linear', symbol: rawSymbol }, false);
@@ -212,6 +217,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const volume = new BigNumber(item.volume24h || 0);
     const quoteVolume = new BigNumber(item.turnover24h || volume.multipliedBy(px));
 
+    this.logger.info('[BybitAdapter] fetchTicker success', { symbol: canonicalSymbol, price: px.toString(), latencyMs: Date.now() - startTime });
+
     return {
       symbol: canonicalSymbol,
       timestamp: Date.now(),
@@ -230,6 +237,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const bybitInterval = this.normalizeInterval(interval);
     const tfMs = CandleValidator.timeframeToMs(interval);
+    const startTime = Date.now();
+    const url = `${this.getHost()}/v5/market/kline?category=linear&symbol=${rawSymbol}&interval=${bybitInterval}&limit=${limit}`;
+
+    this.logger.info('[BybitAdapter] Outbound fetchKlines', { symbol: canonicalSymbol, rawSymbol, interval, limit, url });
 
     let result: any;
     try {
@@ -253,8 +264,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
       };
     });
 
-    // Create a copy before sorting to avoid mutating original array (Fix L5)
-    return [...parsed].sort((a: any, b: any) => a.openTime - b.openTime);
+    const candles = [...parsed].sort((a: any, b: any) => a.openTime - b.openTime);
+    this.logger.info('[BybitAdapter] fetchKlines success', { symbol: canonicalSymbol, interval, candleCount: candles.length, latencyMs: Date.now() - startTime });
+
+    return candles;
   }
 
   public async fetchMarkets(): Promise<Market[]> {
