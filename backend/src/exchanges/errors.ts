@@ -28,7 +28,6 @@ export type ExchangeErrorCode =
   | "INSUFFICIENT_PERMISSIONS"
   | "INVALID_API_VERSION"
   | "MISSING_REQUIRED_CREDENTIALS"
-  | "BINANCE_WAF_BLOCKED"
   | "BINANCE_NETWORK_BLOCKED"
   | "UPSTREAM_PROVIDER_BLOCKED"
   | "INSUFFICIENT_BALANCE"
@@ -69,11 +68,6 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
     code: "IP_NOT_WHITELISTED",
     friendlyMessage: "Your exchange account restricts API access to specific IP addresses.",
     hint: "Add Crypto Pulse's server IP to your exchange API whitelist, or turn off IP restrictions for this key.",
-  },
-  BINANCE_WAF_BLOCKED: {
-    code: "BINANCE_WAF_BLOCKED",
-    friendlyMessage: "Crypto Pulse is temporarily unable to reach Binance. This is a server-side connectivity issue, not a problem with your API keys.",
-    hint: "Binance's firewall is currently blocking our servers. Our team is actively monitoring this.",
   },
   BINANCE_NETWORK_BLOCKED: {
     code: "BINANCE_NETWORK_BLOCKED",

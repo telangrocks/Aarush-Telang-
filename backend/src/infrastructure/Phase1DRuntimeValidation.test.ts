@@ -56,8 +56,7 @@ describe('Phase 1D – Production Stabilization & Runtime Validation Suite', () 
       quoteVolume: new BigNumber(30000000),
     });
 
-    const tracer = new TelemetryTracer();
-    const res = await orchestrator.execute(adapter, 'fetchTicker', (a) => a.fetchTicker('BTC/USDT'), tracer);
+    const res = await orchestrator.execute(adapter, 'fetchTicker', (a) => a.fetchTicker('BTC/USDT'));
 
     expect(res.isSuccess).toBe(true);
     if (res.isSuccess) {

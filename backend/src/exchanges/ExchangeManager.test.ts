@@ -54,12 +54,16 @@ describe('Exchange Connectivity Module Fixes Unit Tests', () => {
     // Binance circuit is open
     const binanceRes = await orchestrator.execute(binance, 'testOp', async () => 'ok');
     expect(binanceRes.isFailure).toBe(true);
-    expect(binanceRes.error.code).toBe('CIRCUIT_OPEN');
+    if (binanceRes.isFailure) {
+      expect(binanceRes.error.code).toBe('CIRCUIT_OPEN');
+    }
 
     // KuCoin circuit remains closed and healthy
     const kucoinRes = await orchestrator.execute(kucoin, 'testOp', async () => 'success');
     expect(kucoinRes.isSuccess).toBe(true);
-    expect(kucoinRes.value).toBe('success');
+    if (kucoinRes.isSuccess) {
+      expect(kucoinRes.value).toBe('success');
+    }
   });
 
   it('EC-H3: fetchWithTimeout formats dynamic timeoutMs in error message', async () => {
