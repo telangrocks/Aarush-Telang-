@@ -38,8 +38,8 @@ describe('MarketDataEngine', () => {
     const snapshot = await engine.getSnapshot('BTCUSDT', timeframes);
 
     expect(mockProvider.fetchTicker).toHaveBeenCalledWith('BTCUSDT');
-    expect(mockProvider.fetchCandles).toHaveBeenCalledWith('BTCUSDT', '15m');
-    expect(mockProvider.fetchCandles).toHaveBeenCalledWith('BTCUSDT', '1h');
+    expect(mockProvider.fetchCandles).toHaveBeenCalledWith('BTCUSDT', '15m', 200);
+    expect(mockProvider.fetchCandles).toHaveBeenCalledWith('BTCUSDT', '1h', 200);
 
     expect(snapshot.symbol).toBe('BTCUSDT');
     expect(snapshot.currentPrice).toBe(60000);

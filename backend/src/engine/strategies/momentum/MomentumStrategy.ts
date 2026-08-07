@@ -60,15 +60,16 @@ export class MomentumStrategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    // Default primary timeframe for momentum is usually larger, e.g. 15m or 1h
-    const primaryTimeframe = '1h';
+    // Fix SE-14: Derive primary timeframe from configuration or manifest default
+    const primaryTimeframe = (this.config.preferredTimeframes?.[0] || '1h') as import('../../market-data/Timeframe').Timeframe;
     
-    // Fallback if primary isn't available
-    const timeframeToUse = (context.marketSnapshot.candles[primaryTimeframe] 
+    // Fix SE-11: Fallback if primary isn't available
+    const availableTimeframes = Object.keys(context.marketSnapshot.candles || {});
+    const timeframeToUse = (context.marketSnapshot.candles?.[primaryTimeframe] 
       ? primaryTimeframe 
-      : Object.keys(context.marketSnapshot.candles)[0]) as import('../../market-data/Timeframe').Timeframe;
+      : availableTimeframes[0]) as import('../../market-data/Timeframe').Timeframe;
       
-    if (!timeframeToUse) {
+    if (!timeframeToUse || !context.marketSnapshot.candles?.[timeframeToUse]) {
       return {
         strategyId: MOMENTUM_STRATEGY_MANIFEST.id,
         timestamp: context.timestamp,
@@ -78,19 +79,36 @@ export class MomentumStrategy implements IStrategy {
       };
     }
 
-    const candles = context.marketSnapshot.candles[timeframeToUse];
-    const currentPrice = candles[candles.length - 1]?.close || 0;
+    const candles = context.marketSnapshot.candles[timeframeToUse] || [];
+    // Fix SE-9: Fall back to marketSnapshot.currentPrice if latest candle close is missing
+    const latestCandleClose = candles.length > 0 ? candles[candles.length - 1]?.close : 0;
+    const currentPrice = (latestCandleClose && latestCandleClose > 0) 
+      ? latestCandleClose 
+      : context.marketSnapshot.currentPrice || 0;
+
+    if (currentPrice <= 0) {
+      return {
+        strategyId: MOMENTUM_STRATEGY_MANIFEST.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: { reasoning: ['Invalid price data (currentPrice is zero or negative)'] }
+      };
+    }
     
     const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
-    const currentAtr = atrArray ? atrArray[atrArray.length - 1] : 0;
+    // Fix SE-10: Fall back to 1% of currentPrice if ATR is unavailable
+    const currentAtr = (atrArray && atrArray.length > 0 && atrArray[atrArray.length - 1] > 0)
+      ? atrArray[atrArray.length - 1]
+      : currentPrice * 0.01;
 
-    // 4. Risk
+    // 4. Risk (Fix SE-C2 & SE-8: Use context.accountBalance instead of hardcoded 1000)
     const riskContext: RiskContext = {
       timestamp: context.timestamp,
       currentPrice,
       currentAtr,
-      accountBalance: 1000 // Placeholder for standard calculation
+      accountBalance: context.accountBalance || 1000
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 

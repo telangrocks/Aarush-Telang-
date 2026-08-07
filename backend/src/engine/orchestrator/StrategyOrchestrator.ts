@@ -7,12 +7,14 @@ import { MarketDataEngine } from '../market-data/MarketDataEngine';
 import { Timeframe } from '../market-data/Timeframe';
 import { StrategyRegistry } from '../strategies/StrategyRegistry';
 import { MetricsEngine } from '../../telemetry/MetricsEngine';
+import { StructuredLogger } from '../../infrastructure/telemetry/Telemetry';
 import { OrchestratorCycleEvent, StrategyExecutionEvent, StrategyErrorEvent } from '../../telemetry/TelemetryEvents';
+import { UnifiedError } from '../../exchanges/models/UnifiedError';
 
 export class StrategyOrchestrator {
   private stateMachine: EngineStateMachine;
   private marketDataEngine: MarketDataEngine | null = null;
-  private requiredTimeframes: Timeframe[] = ['5m', '15m', '1h']; // Configurable based on strategies later
+  private logger = new StructuredLogger();
 
   constructor() {
     this.stateMachine = new EngineStateMachine();
@@ -22,7 +24,12 @@ export class StrategyOrchestrator {
     this.marketDataEngine = engine;
   }
 
-  public async executeCycle(symbol: string, strategyId?: string, config?: any): Promise<EvaluationResult[]> {
+  public async executeCycle(
+    symbol: string,
+    strategyId?: string,
+    config?: Record<string, any>,
+    accountBalance: number = 1000
+  ): Promise<EvaluationResult[]> {
     const cycleStart = performance.now();
     let successfulEvaluations = 0;
     let failedEvaluations = 0;
@@ -31,64 +38,95 @@ export class StrategyOrchestrator {
     let holdSignals = 0;
 
     try {
+      // Fix SE-3: Recovery path for ERROR state
+      const currentState = this.stateMachine.getState();
+      if (currentState === EngineState.ERROR) {
+        this.logger.warn(`[StrategyOrchestrator] Recovering from ERROR state to INITIALIZING for cycle on ${symbol}`);
+        this.stateMachine = new EngineStateMachine();
+      }
+
       if (this.stateMachine.getState() === EngineState.INITIALIZING || this.stateMachine.getState() === EngineState.WAITING) {
         this.stateMachine.transition(EngineState.COLLECTING_DATA);
       }
 
-      console.log('[Orchestrator] Collecting Data...');
+      this.logger.info(`[Orchestrator] Collecting Data for ${symbol}...`);
       if (!this.marketDataEngine) {
-        throw new Error('MarketDataEngine is not configured on the StrategyOrchestrator');
+        throw new UnifiedError('MarketDataEngine is not configured on the StrategyOrchestrator', 'UNSUPPORTED_OPERATION');
       }
 
-      const snapshot = await this.marketDataEngine.getSnapshot(symbol, this.requiredTimeframes);
+      const registry = StrategyRegistry.getInstance();
+      let targetTimeframes: Timeframe[] = ['15m', '1h', '4h'];
+      let candleLimit = 200;
+
+      // Fix SE-C1 & SE-C3: Resolve timeframes and candle limit dynamically based on strategies
+      if (strategyId) {
+        const strategy = registry.createStrategy(strategyId, config);
+        // Fix SE-2: Throw error when strategyId is unregistered
+        if (!strategy) {
+          throw new UnifiedError(`Strategy '${strategyId}' is not registered in StrategyRegistry.`, 'UNSUPPORTED_OPERATION');
+        }
+        if (strategy.manifest?.supportedTimeframes) {
+          targetTimeframes = strategy.manifest.supportedTimeframes as Timeframe[];
+        }
+        if (strategy.manifest?.minimumCandles) {
+          candleLimit = Math.max(candleLimit, strategy.manifest.minimumCandles);
+        }
+      } else {
+        // Evaluate all strategies — union required timeframes and maximum minimumCandles
+        const allManifests = registry.getAllManifests();
+        const tfSet = new Set<Timeframe>();
+        for (const m of allManifests) {
+          if (Array.isArray(m.supportedTimeframes)) {
+            m.supportedTimeframes.forEach(tf => tfSet.add(tf as Timeframe));
+          }
+          if (m.minimumCandles) {
+            candleLimit = Math.max(candleLimit, m.minimumCandles);
+          }
+        }
+        if (tfSet.size > 0) {
+          targetTimeframes = Array.from(tfSet);
+        }
+      }
+
+      const snapshot = await this.marketDataEngine.getSnapshot(symbol, targetTimeframes, candleLimit);
       
       this.stateMachine.transition(EngineState.EVALUATING);
       
-      const context = new StrategyContext(snapshot);
+      // Fix SE-C2: Pass accountBalance to StrategyContext
+      const context = new StrategyContext(snapshot, accountBalance);
       const frozenContext = context.freeze();
 
       const results: EvaluationResult[] = [];
-      const registry = StrategyRegistry.getInstance();
       const metrics = MetricsEngine.getInstance();
-      
-      if (strategyId) {
-        const strategy = registry.createStrategy(strategyId, config);
-        if (strategy) {
-          console.log(`[Orchestrator] Evaluating strategy: ${strategyId} (with config overrides)`);
-          const { result, success } = this.evaluateWithTelemetry(strategy, strategyId, symbol, frozenContext);
-          if (result) results.push(result);
-          if (success) {
-            successfulEvaluations++;
-            if (result?.hasSignal) {
-              const sigType = result.metadata?.signal?.type;
-              if (sigType === 'BUY') buySignals++;
-              else if (sigType === 'SELL') sellSignals++;
-              else holdSignals++;
-            } else {
-              holdSignals++;
-            }
+
+      const tallySignal = (result: EvaluationResult | null, success: boolean) => {
+        if (success) {
+          successfulEvaluations++;
+          if (result?.hasSignal) {
+            const sigType = result.metadata?.signal?.type;
+            if (sigType === 'BUY') buySignals++;
+            else if (sigType === 'SELL') sellSignals++;
+            else holdSignals++;
           } else {
-            failedEvaluations++;
+            holdSignals++;
           }
+        } else {
+          failedEvaluations++;
         }
+      };
+
+      if (strategyId) {
+        const strategy = registry.createStrategy(strategyId, config)!;
+        this.logger.info(`[Orchestrator] Evaluating strategy: ${strategyId} (with config overrides)`);
+        const { result, success } = this.evaluateWithTelemetry(strategy, strategyId, symbol, frozenContext);
+        if (result) results.push(result);
+        tallySignal(result, success);
       } else {
         for (const [id, strategy] of registry.getAllStrategies()) {
-          console.log(`[Orchestrator] Evaluating strategy: ${id}`);
+          this.logger.info(`[Orchestrator] Evaluating strategy: ${id}`);
           const { result, success } = this.evaluateWithTelemetry(strategy, id, symbol, frozenContext);
           if (result) results.push(result);
-          if (success) {
-            successfulEvaluations++;
-            if (result?.hasSignal) {
-              const sigType = result.metadata?.signal?.type;
-              if (sigType === 'BUY') buySignals++;
-              else if (sigType === 'SELL') sellSignals++;
-              else holdSignals++;
-            } else {
-              holdSignals++;
-            }
-          } else {
-            failedEvaluations++;
-          }
+          tallySignal(result, success);
         }
       }
 
@@ -113,17 +151,14 @@ export class StrategyOrchestrator {
       return results;
 
     } catch (e) {
-      console.error('[Orchestrator] Fatal error during cycle execution', e);
-      this.stateMachine.transition(EngineState.ERROR);
+      this.logger.error('[Orchestrator] Fatal error during cycle execution', { symbol, error: e instanceof Error ? e.message : String(e) });
+      try {
+        this.stateMachine.transition(EngineState.ERROR);
+      } catch (_) {}
       throw e;
     }
   }
 
-  /**
-   * Wraps a single strategy evaluation with timing and telemetry.
-   * Ensures that a failure in one plugin never propagates to terminate the pipeline.
-   * No trading logic is altered — this is purely observability wrapping.
-   */
   private evaluateWithTelemetry(
     strategy: IStrategy,
     id: string,
@@ -154,7 +189,7 @@ export class StrategyOrchestrator {
       return { result, success: true };
     } catch (e: any) {
       const durationMs = performance.now() - evalStart;
-      console.error(`[Orchestrator] Strategy ${id} evaluation failed (${durationMs.toFixed(1)}ms):`, e);
+      this.logger.error(`[Orchestrator] Strategy ${id} evaluation failed (${durationMs.toFixed(1)}ms):`, { id, symbol, error: e?.message ?? String(e) });
 
       const errorEvent: StrategyErrorEvent = {
         type: 'STRATEGY_ERROR',

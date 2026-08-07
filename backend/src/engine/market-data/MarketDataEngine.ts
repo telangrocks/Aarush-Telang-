@@ -23,7 +23,7 @@ export class MarketDataEngine {
    * Orchestrates the collection, normalization, and validation of market data across multiple timeframes.
    * Ensures MarketDataEngine receives identical object structure from every exchange.
    */
-  public async getSnapshot(symbol: string, timeframes: Timeframe[]): Promise<MarketSnapshot> {
+  public async getSnapshot(symbol: string, timeframes: Timeframe[], limit: number = 200): Promise<MarketSnapshot> {
     if (!timeframes || timeframes.length === 0) {
       throw new Error('At least one timeframe must be specified');
     }
@@ -53,7 +53,7 @@ export class MarketDataEngine {
     // Fetch and validate candles concurrently using Promise.allSettled
     const fetchPromises = timeframes.map(async (tf) => {
       try {
-        const rawCandles = await this.provider.fetchCandles(symbol, tf);
+        const rawCandles = await this.provider.fetchCandles(symbol, tf, limit);
         const cleanCandles = CandleValidator.sanitizeAndSortCandles(rawCandles);
 
         const gaps = CandleValidator.detectMissingCandles(cleanCandles, tf);

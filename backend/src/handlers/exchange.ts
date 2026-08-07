@@ -761,7 +761,9 @@ export async function handleGetTechnicalAnalysis(
       || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase()) 
       || manifests[0];
 
-    const results = await orchestrator.executeCycle(symbol, normalizedId, config);
+    const balanceResult = await adapter.fetchBalance().catch(() => null);
+    const accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
+    const results = await orchestrator.executeCycle(symbol, normalizedId, config, accountBalance);
     const evalResult = results[0] || {
       strategyId: manifest.id,
       timestamp: Date.now(),

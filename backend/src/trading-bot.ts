@@ -1248,8 +1248,10 @@ export class TradingBot {
             const dataEngine = new MarketDataEngine(provider);
             this.orchestrator.setMarketDataEngine(dataEngine);
 
-            const strategyConfig = await this.state.storage.get('strategyConfig');
-            const results = await this.orchestrator.executeCycle(coinId, strategy, strategyConfig);
+            const strategyConfig = (await this.state.storage.get('strategyConfig')) as Record<string, any> | undefined;
+            const balanceResult = await adapter.fetchBalance().catch(() => null);
+            const accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
+            const results = await this.orchestrator.executeCycle(coinId, strategy, strategyConfig, accountBalance);
             const currentState = this.orchestrator.getCurrentState();
             await this.state.storage.put('engineState', currentState);
         
