@@ -3,6 +3,8 @@ import { Env } from "../index";
 import { encrypt, decrypt, cleanCredential } from "../crypto";
 import { ExchangeManager, ExchangeName, ExchangeEnvironment, type ExchangeRegion } from "../exchanges";
 import { FRIENDLY_MESSAGES, classifyException, type ExchangeErrorCode } from "../exchanges/errors";
+import { StructuredLogger } from "../infrastructure/telemetry/Telemetry";
+import { UnifiedError } from "../exchanges/models/UnifiedError";
 import { analyzeMarket } from "../market-analysis";
 
 /**
@@ -758,8 +760,12 @@ export async function handleGetTechnicalAnalysis(
     const normalizedId = registry.normalizeStrategyId(strategy);
     const manifests = registry.getAllManifests();
     const manifest = registry.getManifest(normalizedId) 
-      || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase()) 
-      || manifests[0];
+      || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
+    if (!manifest) {
+      const logger = new StructuredLogger();
+      logger.warn(`[StrategyOrchestrator] Strategy '${strategy}' not found. Available: ${manifests.map(m => m.id).join(', ')}`);
+      throw new UnifiedError(`Strategy '${strategy}' is not registered.`, 'UNSUPPORTED_OPERATION');
+    }
 
     const balanceResult = await adapter.fetchBalance().catch(() => null);
     const accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;

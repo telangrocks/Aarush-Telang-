@@ -11,6 +11,8 @@ import { StrategyOrchestrator, MarketDataEngine, AdapterCandleProvider } from '.
 import { EngineAPIService, AnalysisSnapshotMapper } from './api/engine';
 import { StrategyRegistry } from './engine/strategies/StrategyRegistry';
 import { MarketRegimeEngine } from './engine/regime/MarketRegimeEngine';
+import { StructuredLogger } from './infrastructure/telemetry/Telemetry';
+import { UnifiedError } from './exchanges/models/UnifiedError';
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment,
  * defaulting to "mainnet" unless "testnet" is explicitly stored.
@@ -590,7 +592,12 @@ export class TradingBot {
 
         const registry = StrategyRegistry.getInstance();
         const normalizedId = registry.normalizeStrategyId(strategy);
-        const manifest = registry.getManifest(normalizedId) || registry.getAllManifests()[0];
+        const manifests = registry.getAllManifests();
+        const manifest = registry.getManifest(normalizedId) || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
+        if (!manifest) {
+          new StructuredLogger().warn(`[StrategyOrchestrator] Strategy '${strategy}' not found. Available: ${manifests.map(m => m.id).join(', ')}`);
+          throw new UnifiedError(`Strategy '${strategy}' is not registered.`, 'UNSUPPORTED_OPERATION');
+        }
 
         const fallbackResult = {
           strategyId: manifest.id,
@@ -1258,7 +1265,12 @@ export class TradingBot {
             // Phase 1: Android Contract Integration (Harmonized AnalysisSnapshotMapper)
             const registry = StrategyRegistry.getInstance();
             const normalizedId = registry.normalizeStrategyId(strategy);
-            const manifest = registry.getManifest(normalizedId) || registry.getAllManifests()[0];
+            const manifests = registry.getAllManifests();
+            const manifest = registry.getManifest(normalizedId) || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
+            if (!manifest) {
+              new StructuredLogger().warn(`[StrategyOrchestrator] Strategy '${strategy}' not found. Available: ${manifests.map(m => m.id).join(', ')}`);
+              throw new UnifiedError(`Strategy '${strategy}' is not registered.`, 'UNSUPPORTED_OPERATION');
+            }
             const snapshot = await dataEngine.getSnapshot(coinId, manifest.supportedTimeframes || ['5m']);
             const primaryResult = results.length > 0 ? results[0] : {
               strategyId: manifest.id,
