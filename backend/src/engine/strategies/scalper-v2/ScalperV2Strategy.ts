@@ -19,12 +19,12 @@ export class ScalperV2Strategy implements IStrategy {
     version: '2.0.0',
     category: 'Scalping',
     riskProfile: 'High',
-    supportedMarkets: ['CRYPTO', 'FOREX'],
-    supportedTimeframes: ['5m', '15m'],
-    minimumCandles: 50,
+    supportedMarkets: ['CRYPTO'],
+    supportedTimeframes: ['5m', '15m', '30m'],
+    minimumCandles: 200,
     defaultConfiguration: DEFAULT_SCALPER_CONFIG,
     supportsLong: true,
-    supportsShort: false, // We haven't implemented shorting logic explicitly yet
+    supportsShort: false,
     supportsPaperTrading: true,
     supportsLiveTrading: true,
     status: 'ACTIVE',
@@ -59,17 +59,18 @@ export class ScalperV2Strategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    // Default primary timeframe for scalping is 5m
-    const primaryTimeframe = '5m';
+    // Fix SE-S4: Derive primary timeframe from configuration or default
+    const primaryTimeframe = (this.config.preferredTimeframes?.[0] || '5m') as import('../../market-data/Timeframe').Timeframe;
     
-    // Fallback if 5m isn't available
-    const timeframeToUse = (context.marketSnapshot.candles[primaryTimeframe] 
+    // Fix SE-S8: Fallback if primary isn't available
+    const availableTimeframes = Object.keys(context.marketSnapshot.candles || {});
+    const timeframeToUse = (context.marketSnapshot.candles?.[primaryTimeframe] 
       ? primaryTimeframe 
-      : Object.keys(context.marketSnapshot.candles)[0]) as import('../../market-data/Timeframe').Timeframe;
+      : availableTimeframes[0]) as import('../../market-data/Timeframe').Timeframe;
       
-    if (!timeframeToUse) {
+    if (!timeframeToUse || !context.marketSnapshot.candles?.[timeframeToUse]) {
       return {
-        strategyId: 'scalper-v2',
+        strategyId: this.manifest.id,
         timestamp: context.timestamp,
         confidenceScore: 0,
         hasSignal: false,
@@ -77,8 +78,44 @@ export class ScalperV2Strategy implements IStrategy {
       };
     }
 
-    const candles = context.marketSnapshot.candles[timeframeToUse];
-    const currentPrice = candles[candles.length - 1]?.close || 0;
+    // Fix SE-S11: Check empty candles array
+    const candles = context.marketSnapshot.candles[timeframeToUse] || [];
+    if (candles.length === 0) {
+      return {
+        strategyId: this.manifest.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: { reasoning: [`No candle data for timeframe ${timeframeToUse}`] }
+      };
+    }
+
+    // Fix SE-S6: Guard against currentPrice <= 0
+    const latestCandleClose = candles[candles.length - 1]?.close || 0;
+    const currentPrice = (latestCandleClose > 0) 
+      ? latestCandleClose 
+      : context.marketSnapshot.currentPrice || 0;
+
+    if (currentPrice <= 0) {
+      return {
+        strategyId: this.manifest.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: { reasoning: ['Invalid current price (zero or negative)'] }
+      };
+    }
+
+    // Fix SE-S7: Guard against accountBalance <= 0
+    if (!context.accountBalance || context.accountBalance <= 0) {
+      return {
+        strategyId: this.manifest.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: { reasoning: ['Account balance not available — cannot calculate position size'] }
+      };
+    }
     
     const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
@@ -118,7 +155,7 @@ export class ScalperV2Strategy implements IStrategy {
       timestamp: context.timestamp,
       currentPrice,
       currentAtr,
-      accountBalance: context.accountBalance || 1000
+      accountBalance: context.accountBalance
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 

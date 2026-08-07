@@ -1,11 +1,11 @@
 export const SCALPER_V2_MANIFEST = {
-  id: 'scalper_v2',
+  id: 'ScalperV2',
   name: 'High-Frequency Scalper',
   version: '2.0.0',
   author: 'System',
-  category: 'SCALP',
-  supportedExchanges: ['binance', 'kucoin'],
-  supportedMarkets: ['USDT-M', 'SPOT'],
-  baseTimeframe: '1m',
-  macroTimeframes: ['5m', '15m']
+  category: 'Scalping',
+  supportedExchanges: ['binance', 'kucoin', 'bybit'],
+  supportedMarkets: ['CRYPTO'],
+  baseTimeframe: '5m',
+  macroTimeframes: ['15m', '30m']
 };

@@ -16,8 +16,15 @@ function applyConfigOverrides<T extends Record<string, any>>(defaultConfig: T, o
   if (!overrides || typeof overrides !== 'object' || Object.keys(overrides).length === 0) {
     return defaultConfig;
   }
+  if (overrides.confidenceWeights && typeof overrides.confidenceWeights === 'object') {
+    const sum = Object.values(overrides.confidenceWeights).reduce((a: any, b: any) => Number(a) + Number(b), 0);
+    if (sum !== 100) {
+      throw new Error(`confidenceWeights must sum to 100, got ${sum}`);
+    }
+  }
+
   const merged = JSON.parse(JSON.stringify(defaultConfig));
-  
+
   if (overrides.risk_level || overrides.riskLevel) {
     const risk = String(overrides.risk_level || overrides.riskLevel).toUpperCase();
     if (['LOW', 'MEDIUM', 'HIGH'].includes(risk)) {
