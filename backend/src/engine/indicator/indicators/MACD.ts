@@ -24,7 +24,8 @@ export function calculateMACD(candles: NormalizedCandle[], fastPeriod: number, s
   // Signal Line = EMA of MACD Line
   // To calculate EMA of MACD line, we construct a fake candle array
   const macdCandles: NormalizedCandle[] = macdLines.map((val, i) => ({
-    timestamp: candles[i].timestamp,
+    openTime: candles[i].openTime ?? candles[i].timestamp ?? 0,
+    timestamp: candles[i].timestamp ?? candles[i].openTime ?? 0,
     open: val,
     high: val,
     low: val,

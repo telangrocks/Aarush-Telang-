@@ -4,7 +4,7 @@ import { Timeframe } from './Timeframe';
  * A normalized candle (OHLCV) independent of any specific exchange format.
  */
 export interface NormalizedCandle {
-  openTime: number;
+  openTime?: number;
   timestamp?: number;
   open: number;
   high: number;

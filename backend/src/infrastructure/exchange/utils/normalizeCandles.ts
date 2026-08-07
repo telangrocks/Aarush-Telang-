@@ -54,5 +54,5 @@ export function normalizeCandles(rawCandles: any[]): NormalizedCandle[] {
     map.set(openTime, candle);
   }
 
-  return Array.from(map.values()).sort((a, b) => a.openTime - b.openTime);
+  return Array.from(map.values()).sort((a, b) => (a.openTime ?? a.timestamp ?? 0) - (b.openTime ?? b.timestamp ?? 0));
 }

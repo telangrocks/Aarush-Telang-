@@ -3,7 +3,7 @@ export interface ProviderConfig {
   secret?: string;
   password?: string;
   passphrase?: string;
-  environment: 'Production' | 'Testing' | 'mainnet' | 'testnet';
+  environment: 'Production' | 'Testing' | 'mainnet' | 'testnet' | 'sandbox';
 }
 
 export interface ExchangeCapabilities {

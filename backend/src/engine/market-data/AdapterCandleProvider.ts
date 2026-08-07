@@ -2,6 +2,7 @@ import { ICandleProvider } from './CandleProvider';
 import { Timeframe } from './Timeframe';
 import { NormalizedCandle } from './MarketSnapshot';
 import { IExchangeAdapter } from '../../infrastructure/exchange/types';
+import { IExchangeProvider } from '../../exchanges/IExchangeProvider';
 import { Ticker } from '../../exchanges/models/NormalizedDomain';
 import { CandleValidator } from '../../infrastructure/exchange/CandleValidator';
 import { StructuredLogger } from '../../infrastructure/telemetry/Telemetry';
@@ -10,7 +11,7 @@ import { UnifiedError } from '../../exchanges/models/UnifiedError';
 export class AdapterCandleProvider implements ICandleProvider {
   private logger = new StructuredLogger();
 
-  constructor(private adapter: IExchangeAdapter) {}
+  constructor(private adapter: IExchangeProvider | IExchangeAdapter) {}
 
   async fetchCandles(symbol: string, timeframe: Timeframe, limit: number = 100): Promise<NormalizedCandle[]> {
     const klines = await this.withRetry(
