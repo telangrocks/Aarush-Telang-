@@ -28,7 +28,7 @@ describe('MarketDataEngine', () => {
 
   const mockProvider: ICandleProvider = {
     fetchTicker: vi.fn().mockResolvedValue(mockTicker),
-    fetchCandles: vi.fn().mockResolvedValue([mockCandle, mockCandle])
+    fetchCandles: vi.fn().mockResolvedValue([mockCandle, { ...mockCandle, timestamp: 1234567890 + 900000 }])
   };
 
   it('should fetch snapshot with requested timeframes', async () => {

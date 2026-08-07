@@ -28,7 +28,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
     },
   };
 
-  private getHost(): string {
+  public getHost(): string {
     const isTestnet = this.config?.environment === 'testnet' || this.config?.environment === 'Testing' || (this.config?.environment as string) === 'sandbox';
     if (isTestnet) {
       return (process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '');
@@ -37,6 +37,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   }
 
   private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', path: string, params: Record<string, any> = {}): Promise<any> {
+    const startTime = Date.now();
     const cleanKey = (this.config?.apiKey || '').trim();
     const cleanSec = (this.config?.secret || '').trim();
     if (!cleanKey || !cleanSec) {
@@ -55,26 +56,53 @@ export class BinanceAdapter extends BaseExchangeAdapter {
     const signature = await WebCryptoSigner.hmacSha256Hex(cleanSec, queryString);
     const url = `${host}${path}?${queryString}&signature=${signature}`;
 
-    const res = await globalThis.fetch(url, {
-      method,
-      headers: {
-        'X-MBX-APIKEY': cleanKey,
-        'Accept': 'application/json',
-        'User-Agent': 'CryptoPulse/1.0',
-      },
-    });
-
-    const errText = await res.text();
-    if (!res.ok) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
-    }
-
+    let status = 0;
     try {
-      return JSON.parse(errText);
-    } catch (_) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
+      const res = await this.fetchWithTimeout(url, {
+        method,
+        headers: {
+          'X-MBX-APIKEY': cleanKey,
+          'Accept': 'application/json',
+          'User-Agent': 'CryptoPulse/1.0',
+        },
+      });
+
+      status = res.status;
+      const errText = await res.text();
+
+      this.logger.logExchangeRequest({
+        exchange: this.exchangeId,
+        endpoint: path,
+        requestUrl: url,
+        symbol: params.symbol,
+        latencyMs: Date.now() - startTime,
+        status: status,
+      });
+
+      if (!res.ok) {
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+        throw new UnifiedError(classified.friendlyMessage, classified.code);
+      }
+
+      try {
+        return JSON.parse(errText);
+      } catch (_) {
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+        throw new UnifiedError(classified.friendlyMessage, classified.code);
+      }
+    } catch (err: any) {
+      if (!(err instanceof UnifiedError)) {
+        this.logger.logExchangeRequest({
+          exchange: this.exchangeId,
+          endpoint: path,
+          requestUrl: url,
+          symbol: params.symbol,
+          latencyMs: Date.now() - startTime,
+          status: status || 500,
+          failures: 1,
+        });
+      }
+      throw err;
     }
   }
 
@@ -97,12 +125,23 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchTicker(symbol: string): Promise<Ticker> {
-    const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const host = this.getHost();
     const url = `${host}/api/v3/ticker/24hr?symbol=${rawSymbol}`;
+    const startTime = Date.now();
 
-    const res = await globalThis.fetch(url, {
+    const res = await this.fetchWithTimeout(url, {
       headers: { 'User-Agent': 'CryptoPulse/1.0' },
+    });
+
+    this.logger.logExchangeRequest({
+      exchange: this.exchangeId,
+      endpoint: '/api/v3/ticker/24hr',
+      requestUrl: url,
+      symbol: canonicalSymbol,
+      latencyMs: Date.now() - startTime,
+      status: res.status,
     });
 
     const errText = await res.text();
@@ -121,7 +160,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
 
     const px = new BigNumber(data.lastPrice || data.price || 0);
     return {
-      symbol,
+      symbol: canonicalSymbol,
       timestamp: Date.now(),
       last: px,
       bid: new BigNumber(data.bidPrice || px.toString()),
@@ -134,11 +173,13 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchKlines(symbol: string, interval: string, limit = 100): Promise<any[]> {
-    const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const host = this.getHost();
     const url = `${host}/api/v3/klines?symbol=${rawSymbol}&interval=${interval}&limit=${limit}`;
+    const startTime = Date.now();
 
-    const res = await globalThis.fetch(url, {
+    const res = await this.fetchWithTimeout(url, {
       headers: { 'User-Agent': 'CryptoPulse/1.0' },
     });
 
@@ -156,6 +197,17 @@ export class BinanceAdapter extends BaseExchangeAdapter {
       throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
 
+    this.logger.logExchangeRequest({
+      exchange: this.exchangeId,
+      endpoint: '/api/v3/klines',
+      requestUrl: url,
+      symbol: canonicalSymbol,
+      timeframe: interval,
+      latencyMs: Date.now() - startTime,
+      status: res.status,
+      candleCount: data.length,
+    });
+
     return data.map(k => ({
       openTime: k[0],
       open: parseFloat(k[1]),
@@ -163,15 +215,25 @@ export class BinanceAdapter extends BaseExchangeAdapter {
       low: parseFloat(k[3]),
       close: parseFloat(k[4]),
       volume: parseFloat(k[5]),
+      closeTime: k[6],
     }));
   }
 
   public async fetchMarkets(): Promise<Market[]> {
     const host = this.getHost();
     const url = `${host}/api/v3/exchangeInfo`;
+    const startTime = Date.now();
 
-    const res = await globalThis.fetch(url, {
+    const res = await this.fetchWithTimeout(url, {
       headers: { 'User-Agent': 'CryptoPulse/1.0' },
+    });
+
+    this.logger.logExchangeRequest({
+      exchange: this.exchangeId,
+      endpoint: '/api/v3/exchangeInfo',
+      requestUrl: url,
+      latencyMs: Date.now() - startTime,
+      status: res.status,
     });
 
     const errText = await res.text();
@@ -234,7 +296,8 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   }
 
   public async createOrder(order: OrderRequest): Promise<Order> {
-    const rawSymbol = order.symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(order.symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const params: Record<string, any> = {
       symbol: rawSymbol,
       side: order.side.toUpperCase(),
@@ -250,7 +313,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
     return {
       id: String(data.orderId),
       clientOrderId: data.clientOrderId,
-      symbol: order.symbol,
+      symbol: canonicalSymbol,
       side: order.side,
       type: order.type,
       status: data.status === 'FILLED' ? 'closed' : data.status === 'CANCELED' ? 'canceled' : 'open',
@@ -263,18 +326,20 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   }
 
   public async cancelOrder(orderId: string, symbol: string): Promise<boolean> {
-    const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     await this.makeSignedRequest('DELETE', '/api/v3/order', { symbol: rawSymbol, orderId });
     return true;
   }
 
   public async fetchOrder(orderId: string, symbol: string): Promise<Order> {
-    const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const data = await this.makeSignedRequest('GET', '/api/v3/order', { symbol: rawSymbol, orderId });
     return {
       id: String(data.orderId),
       clientOrderId: data.clientOrderId,
-      symbol,
+      symbol: canonicalSymbol,
       side: data.side.toLowerCase() as 'buy' | 'sell',
       type: data.type.toLowerCase() as 'limit' | 'market',
       status: data.status === 'FILLED' ? 'closed' : data.status === 'CANCELED' ? 'canceled' : 'open',
@@ -288,13 +353,13 @@ export class BinanceAdapter extends BaseExchangeAdapter {
 
   public async fetchOpenOrders(symbol?: string): Promise<Order[]> {
     const params: Record<string, any> = {};
-    if (symbol) params.symbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    if (symbol) params.symbol = this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase();
     const data = await this.makeSignedRequest('GET', '/api/v3/openOrders', params);
 
     return (Array.isArray(data) ? data : []).map(item => ({
       id: String(item.orderId),
       clientOrderId: item.clientOrderId,
-      symbol: item.symbol,
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       type: item.type.toLowerCase() as 'limit' | 'market',
       status: 'open',
@@ -308,13 +373,13 @@ export class BinanceAdapter extends BaseExchangeAdapter {
 
   public async fetchClosedOrders(symbol?: string): Promise<Order[]> {
     const params: Record<string, any> = {};
-    if (symbol) params.symbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    if (symbol) params.symbol = this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase();
     const data = await this.makeSignedRequest('GET', '/api/v3/allOrders', params);
 
     return (Array.isArray(data) ? data : []).map(item => ({
       id: String(item.orderId),
       clientOrderId: item.clientOrderId,
-      symbol: item.symbol,
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       type: item.type.toLowerCase() as 'limit' | 'market',
       status: item.status === 'FILLED' ? 'closed' : 'canceled',
@@ -328,13 +393,13 @@ export class BinanceAdapter extends BaseExchangeAdapter {
 
   public async fetchMyTrades(symbol?: string): Promise<Trade[]> {
     const params: Record<string, any> = {};
-    if (symbol) params.symbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    if (symbol) params.symbol = this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase();
     const data = await this.makeSignedRequest('GET', '/api/v3/myTrades', params);
 
     return (Array.isArray(data) ? data : []).map(item => ({
       id: String(item.id),
       orderId: String(item.orderId),
-      symbol: item.symbol,
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.isBuyer ? 'buy' : 'sell',
       price: new BigNumber(item.price || 0),
       amount: new BigNumber(item.qty || 0),

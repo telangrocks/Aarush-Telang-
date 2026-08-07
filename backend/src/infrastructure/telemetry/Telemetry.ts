@@ -25,6 +25,21 @@ export class StructuredLogger {
   public error(message: string, context: Record<string, unknown> = {}): void {
     console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', message, context: this.sanitize(context) }));
   }
+
+  public logExchangeRequest(req: {
+    exchange: string;
+    endpoint: string;
+    requestUrl: string;
+    symbol?: string;
+    timeframe?: string;
+    latencyMs: number;
+    status: number | string;
+    candleCount?: number;
+    retryAttempts?: number;
+    failures?: number;
+  }): void {
+    this.info(`[Exchange API] ${req.exchange.toUpperCase()} ${req.endpoint}`, req as Record<string, unknown>);
+  }
 }
 
 export class MetricsCollector {

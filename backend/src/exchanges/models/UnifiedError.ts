@@ -18,4 +18,8 @@ export class UnifiedError extends Error {
     this.originalExchangeErrorCode = originalExchangeErrorCode;
     this.originalExchangeErrorMessage = originalExchangeErrorMessage;
   }
+
+  public get code(): string {
+    return this.mappedInternalErrorCode;
+  }
 }

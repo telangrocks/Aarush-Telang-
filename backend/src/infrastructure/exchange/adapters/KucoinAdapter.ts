@@ -5,6 +5,7 @@ import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapab
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';
 import { UnifiedError } from '../../../exchanges/models/UnifiedError';
 import { ExchangeErrorClassifier } from '../../../exchanges/ExchangeErrorClassifier';
+import { CandleValidator } from '../CandleValidator';
 import BigNumber from 'bignumber.js';
 
 export class KucoinAdapter extends BaseExchangeAdapter {
@@ -29,13 +30,15 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   };
 
   public override async connect(config: ProviderConfig): Promise<void> {
-    if (config.environment === 'testnet' || config.environment === 'Testing' || (config.environment as string) === 'sandbox') {
+    const env = (config?.environment || '').toString().toLowerCase();
+    if (env === 'testnet' || env === 'testing' || env === 'sandbox') {
       throw new UnifiedError('KuCoin Sandbox is officially deprecated and offline.', 'UNSUPPORTED_OPERATION');
     }
     await super.connect(config);
   }
 
   private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', endpoint: string, bodyObj?: Record<string, any>): Promise<any> {
+    const startTime = Date.now();
     const cleanKey = (this.config?.apiKey || '').trim();
     const cleanSec = (this.config?.secret || '').trim();
     const cleanPass = (this.config?.password || this.config?.passphrase || '').trim();
@@ -65,32 +68,57 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     }
 
     const url = `https://openapi-v2.kucoin.com${endpoint}`;
-    const res = await globalThis.fetch(url, {
-      method,
-      headers,
-      body: bodyObj ? bodyStr : undefined,
-    });
-
-    const errText = await res.text();
-    if (!res.ok) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
-    }
-
-    let json: any = {};
+    let status = 0;
     try {
-      json = JSON.parse(errText);
-    } catch (_) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
-    }
+      const res = await this.fetchWithTimeout(url, {
+        method,
+        headers,
+        body: bodyObj ? bodyStr : undefined,
+      });
 
-    if (json.code !== '200000') {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage || json.msg, classified.code);
-    }
+      status = res.status;
+      const errText = await res.text();
 
-    return json.data;
+      this.logger.logExchangeRequest({
+        exchange: this.exchangeId,
+        endpoint,
+        requestUrl: url,
+        latencyMs: Date.now() - startTime,
+        status: status,
+      });
+
+      if (!res.ok) {
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
+        throw new UnifiedError(classified.friendlyMessage, classified.code);
+      }
+
+      let json: any = {};
+      try {
+        json = JSON.parse(errText);
+      } catch (_) {
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
+        throw new UnifiedError(classified.friendlyMessage, classified.code);
+      }
+
+      if (json.code !== '200000') {
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
+        throw new UnifiedError(classified.friendlyMessage || json.msg, classified.code);
+      }
+
+      return json.data;
+    } catch (err: any) {
+      if (!(err instanceof UnifiedError)) {
+        this.logger.logExchangeRequest({
+          exchange: this.exchangeId,
+          endpoint,
+          requestUrl: url,
+          latencyMs: Date.now() - startTime,
+          status: status || 500,
+          failures: 1,
+        });
+      }
+      throw err;
+    }
   }
 
   public async fetchBalance(): Promise<Balance[]> {
@@ -112,10 +140,22 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchTicker(symbol: string): Promise<Ticker> {
-    const rawSymbol = symbol.replace('/', '-').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '-').toUpperCase();
     const url = `https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawSymbol}`;
-    const res = await globalThis.fetch(url, {
+    const startTime = Date.now();
+
+    const res = await this.fetchWithTimeout(url, {
       headers: { 'User-Agent': 'CryptoPulse/1.0' },
+    });
+
+    this.logger.logExchangeRequest({
+      exchange: this.exchangeId,
+      endpoint: '/api/v1/market/orderbook/level1',
+      requestUrl: url,
+      symbol: canonicalSymbol,
+      latencyMs: Date.now() - startTime,
+      status: res.status,
     });
 
     const errText = await res.text();
@@ -139,7 +179,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
 
     const px = new BigNumber(json.data.price || json.data.bestBid || 0);
     return {
-      symbol,
+      symbol: canonicalSymbol,
       timestamp: json.data.time || Date.now(),
       last: px,
       bid: new BigNumber(json.data.bestBid || px.toString()),
@@ -152,11 +192,31 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchKlines(symbol: string, interval: string, limit = 100): Promise<any[]> {
-    const rawSymbol = symbol.replace('/', '-').toUpperCase();
-    const kcType = interval === '1m' ? '1min' : interval === '5m' ? '5min' : interval === '15m' ? '15min' : interval === '1h' ? '1hour' : '1min';
-    const url = `https://openapi-v2.kucoin.com/api/v1/market/candles?symbol=${rawSymbol}&type=${kcType}`;
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '-').toUpperCase();
 
-    const res = await globalThis.fetch(url, {
+    const kcMap: Record<string, string> = {
+      '1m': '1min',
+      '3m': '3min',
+      '5m': '5min',
+      '15m': '15min',
+      '30m': '30min',
+      '1h': '1hour',
+      '2h': '2hour',
+      '4h': '4hour',
+      '6h': '6hour',
+      '8h': '8hour',
+      '12h': '12hour',
+      '1d': '1day',
+      '1w': '1week',
+    };
+    const kcType = kcMap[interval] || '15min';
+    const tfMs = CandleValidator.timeframeToMs(interval);
+
+    const url = `https://openapi-v2.kucoin.com/api/v1/market/candles?symbol=${rawSymbol}&type=${kcType}`;
+    const startTime = Date.now();
+
+    const res = await this.fetchWithTimeout(url, {
       headers: { 'User-Agent': 'CryptoPulse/1.0' },
     });
 
@@ -179,20 +239,49 @@ export class KucoinAdapter extends BaseExchangeAdapter {
       throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
 
-    return json.data.slice(0, limit).map((k: any) => ({
-      openTime: parseInt(k[0], 10) * 1000,
-      open: parseFloat(k[1]),
-      close: parseFloat(k[2]),
-      high: parseFloat(k[3]),
-      low: parseFloat(k[4]),
-      volume: parseFloat(k[5]),
-    }));
+    this.logger.logExchangeRequest({
+      exchange: this.exchangeId,
+      endpoint: '/api/v1/market/candles',
+      requestUrl: url,
+      symbol: canonicalSymbol,
+      timeframe: interval,
+      latencyMs: Date.now() - startTime,
+      status: res.status,
+      candleCount: Math.min(json.data.length, limit),
+    });
+
+    // KuCoin returns [time, open, close, high, low, volume, amount] descending
+    const parsed = json.data.slice(0, limit).map((k: any) => {
+      const openTime = parseInt(k[0], 10) * 1000;
+      return {
+        openTime,
+        open: parseFloat(k[1]),
+        close: parseFloat(k[2]),
+        high: parseFloat(k[3]),
+        low: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+        closeTime: openTime + tfMs - 1,
+      };
+    });
+
+    // Sort ascending by openTime
+    return parsed.sort((a: any, b: any) => a.openTime - b.openTime);
   }
 
   public async fetchMarkets(): Promise<Market[]> {
     const url = `https://openapi-v2.kucoin.com/api/v1/symbols`;
-    const res = await globalThis.fetch(url, {
+    const startTime = Date.now();
+
+    const res = await this.fetchWithTimeout(url, {
       headers: { 'User-Agent': 'CryptoPulse/1.0' },
+    });
+
+    this.logger.logExchangeRequest({
+      exchange: this.exchangeId,
+      endpoint: '/api/v1/symbols',
+      requestUrl: url,
+      latencyMs: Date.now() - startTime,
+      status: res.status,
     });
 
     const errText = await res.text();
@@ -242,7 +331,8 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   }
 
   public async createOrder(order: OrderRequest): Promise<Order> {
-    const rawSymbol = order.symbol.replace('/', '-').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(order.symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '-').toUpperCase();
     const clientOid = crypto.randomUUID();
     const params = {
       clientOid,
@@ -257,7 +347,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     return {
       id: data.orderId,
       clientOrderId: clientOid,
-      symbol: order.symbol,
+      symbol: canonicalSymbol,
       side: order.side,
       type: order.type,
       status: 'open',
@@ -275,11 +365,12 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchOrder(orderId: string, symbol: string): Promise<Order> {
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const data = await this.makeSignedRequest('GET', `/api/v1/orders/${orderId}`);
     return {
       id: data.id,
       clientOrderId: data.clientOid,
-      symbol,
+      symbol: canonicalSymbol,
       side: data.side.toLowerCase() as 'buy' | 'sell',
       type: data.type.toLowerCase() as 'limit' | 'market',
       status: data.isActive ? 'open' : data.cancelExist ? 'canceled' : 'closed',
@@ -292,14 +383,14 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchOpenOrders(symbol?: string): Promise<Order[]> {
-    const rawSymbol = symbol ? symbol.replace('/', '-').toUpperCase() : undefined;
+    const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '-').toUpperCase() : undefined;
     const endpoint = `/api/v1/orders?status=active${rawSymbol ? `&symbol=${rawSymbol}` : ''}`;
     const data = await this.makeSignedRequest('GET', endpoint);
 
     return (data?.items || []).map((item: any) => ({
       id: item.id,
       clientOrderId: item.clientOid,
-      symbol: item.symbol,
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       type: item.type.toLowerCase() as 'limit' | 'market',
       status: 'open',
@@ -312,14 +403,14 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchClosedOrders(symbol?: string): Promise<Order[]> {
-    const rawSymbol = symbol ? symbol.replace('/', '-').toUpperCase() : undefined;
+    const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '-').toUpperCase() : undefined;
     const endpoint = `/api/v1/orders?status=done${rawSymbol ? `&symbol=${rawSymbol}` : ''}`;
     const data = await this.makeSignedRequest('GET', endpoint);
 
     return (data?.items || []).map((item: any) => ({
       id: item.id,
       clientOrderId: item.clientOid,
-      symbol: item.symbol,
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       type: item.type.toLowerCase() as 'limit' | 'market',
       status: item.cancelExist ? 'canceled' : 'closed',
@@ -332,14 +423,14 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchMyTrades(symbol?: string): Promise<Trade[]> {
-    const rawSymbol = symbol ? symbol.replace('/', '-').toUpperCase() : undefined;
+    const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '-').toUpperCase() : undefined;
     const endpoint = `/api/v1/fills${rawSymbol ? `?symbol=${rawSymbol}` : ''}`;
     const data = await this.makeSignedRequest('GET', endpoint);
 
     return (data?.items || []).map((item: any) => ({
       id: item.tradeId,
       orderId: item.orderId,
-      symbol: item.symbol,
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       price: new BigNumber(item.price || 0),
       amount: new BigNumber(item.size || 0),

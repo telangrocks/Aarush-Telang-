@@ -5,6 +5,7 @@ import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapab
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';
 import { UnifiedError } from '../../../exchanges/models/UnifiedError';
 import { ExchangeErrorClassifier } from '../../../exchanges/ExchangeErrorClassifier';
+import { CandleValidator } from '../CandleValidator';
 import BigNumber from 'bignumber.js';
 
 export class BybitAdapter extends BaseExchangeAdapter {
@@ -28,8 +29,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
     },
   };
 
-  private getHost(): string {
-    const isTestnet = this.config?.environment === 'testnet' || this.config?.environment === 'Testing' || (this.config?.environment as string) === 'sandbox';
+  public getHost(): string {
+    const env = (this.config?.environment || '').toString().toLowerCase();
+    const isTestnet = env === 'testnet' || env === 'testing' || env === 'sandbox';
     if (isTestnet) {
       return (process.env.BYBIT_TESTNET_URL || 'https://api-testnet.bybit.com').replace(/\/$/, '');
     }
@@ -37,6 +39,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   private async makeRequest(method: 'GET' | 'POST', path: string, params: Record<string, any> = {}, isPrivate = false): Promise<any> {
+    const startTime = Date.now();
     const host = this.getHost();
     const cleanKey = (this.config?.apiKey || '').trim();
     const cleanSec = (this.config?.secret || '').trim();
@@ -79,42 +82,69 @@ export class BybitAdapter extends BaseExchangeAdapter {
       headers['Content-Type'] = 'application/json';
     }
 
-    const res = await globalThis.fetch(url, {
-      method,
-      headers,
-      body: method === 'POST' ? bodyStr : undefined,
-    });
-
-    const errText = await res.text();
-
-    if (!res.ok) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
-    }
-
-    let json: any = {};
+    let status = 0;
+    let errText = '';
     try {
-      json = JSON.parse(errText);
-    } catch (_) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
-    }
+      const res = await this.fetchWithTimeout(url, {
+        method,
+        headers,
+        body: method === 'POST' ? bodyStr : undefined,
+      });
 
-    if (json.retCode !== 0 && json.ret_code !== 0) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage || json.retMsg || 'Exchange returned error', classified.code);
-    }
+      status = res.status;
+      errText = await res.text();
 
-    return json.result;
+      this.logger.logExchangeRequest({
+        exchange: this.exchangeId,
+        endpoint: path,
+        requestUrl: url,
+        symbol: params.symbol,
+        timeframe: params.interval,
+        latencyMs: Date.now() - startTime,
+        status: status,
+      });
+
+      if (!res.ok) {
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
+        throw new UnifiedError(classified.friendlyMessage, classified.code);
+      }
+
+      let json: any = {};
+      try {
+        json = JSON.parse(errText);
+      } catch (_) {
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
+        throw new UnifiedError(classified.friendlyMessage, classified.code);
+      }
+
+      if (json.retCode !== 0 && json.ret_code !== 0) {
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
+        throw new UnifiedError(classified.friendlyMessage || json.retMsg || json.ret_msg || 'Exchange returned error', classified.code);
+      }
+
+      return json.result;
+    } catch (err: any) {
+      if (!(err instanceof UnifiedError)) {
+        this.logger.logExchangeRequest({
+          exchange: this.exchangeId,
+          endpoint: path,
+          requestUrl: url,
+          symbol: params.symbol,
+          timeframe: params.interval,
+          latencyMs: Date.now() - startTime,
+          status: status || 500,
+          failures: 1,
+        });
+      }
+      throw err;
+    }
   }
 
   public async fetchBalance(): Promise<Balance[]> {
-    // Attempt UNIFIED wallet balance first
     let result: any;
     try {
       result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: 'UNIFIED' }, true);
     } catch (err) {
-      // Fall back to SPOT if account is non-unified
       result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: 'SPOT' }, true);
     }
 
@@ -138,7 +168,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchTicker(symbol: string): Promise<Ticker> {
-    const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     let result: any;
     try {
       result = await this.makeRequest('GET', '/v5/market/tickers', { category: 'linear', symbol: rawSymbol }, false);
@@ -160,7 +191,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const quoteVolume = new BigNumber(item.turnover24h || volume.multipliedBy(px));
 
     return {
-      symbol,
+      symbol: canonicalSymbol,
       timestamp: Date.now(),
       last: px,
       bid,
@@ -173,7 +204,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchKlines(symbol: string, interval: string, limit = 200): Promise<any[]> {
-    const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const intervalMap: Record<string, string> = {
       '1m': '1',
       '3m': '3',
@@ -187,8 +219,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
       '12h': '720',
       '1d': 'D',
       '1w': 'W',
+      '1M': 'M',
     };
     const bybitInterval = intervalMap[interval] || '15';
+    const tfMs = CandleValidator.timeframeToMs(interval);
 
     let result: any;
     try {
@@ -198,14 +232,22 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
 
     const list = result?.list || [];
-    return list.map((k: any[]) => ({
-      openTime: parseInt(k[0], 10),
-      open: parseFloat(k[1]),
-      high: parseFloat(k[2]),
-      low: parseFloat(k[3]),
-      close: parseFloat(k[4]),
-      volume: parseFloat(k[5]),
-    }));
+    // Bybit V5 returns klines in descending order [openTime, open, high, low, close, volume, turnover]
+    const parsed = list.map((k: any[]) => {
+      const openTime = parseInt(k[0], 10);
+      return {
+        openTime,
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4]),
+        volume: parseFloat(k[5]),
+        closeTime: openTime + tfMs - 1,
+      };
+    });
+
+    // Sort ascending by openTime
+    return parsed.sort((a: any, b: any) => a.openTime - b.openTime);
   }
 
   public async fetchMarkets(): Promise<Market[]> {
@@ -252,8 +294,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
       const size = new BigNumber(p.size || 0);
       if (size.isZero()) continue;
 
+      const { canonicalSymbol } = this.normalizeSymbol(p.symbol);
       positions.push({
-        symbol: p.symbol,
+        symbol: canonicalSymbol,
         side: p.side === 'Buy' ? 'long' : 'short',
         entryPrice: new BigNumber(p.avgPrice || p.entryPrice || 0),
         markPrice: new BigNumber(p.markPrice || 0),
@@ -266,7 +309,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async createOrder(order: OrderRequest): Promise<Order> {
-    const rawSymbol = order.symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(order.symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const params = {
       category: 'linear',
       symbol: rawSymbol,
@@ -281,7 +325,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return {
       id: result?.orderId || '',
       clientOrderId: result?.orderLinkId || '',
-      symbol: order.symbol,
+      symbol: canonicalSymbol,
       side: order.side,
       type: order.type,
       status: 'open',
@@ -294,7 +338,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async cancelOrder(orderId: string, symbol: string): Promise<boolean> {
-    const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const params = {
       category: 'linear',
       symbol: rawSymbol,
@@ -305,7 +350,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchOrder(orderId: string, symbol: string): Promise<Order> {
-    const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const result = await this.makeRequest('GET', '/v5/order/realtime', { category: 'linear', symbol: rawSymbol, orderId }, true);
     const item = result?.list?.[0];
 
@@ -316,7 +362,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return {
       id: item.orderId,
       clientOrderId: item.orderLinkId,
-      symbol: symbol,
+      symbol: canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       type: item.orderType.toLowerCase() as 'limit' | 'market',
       status: item.orderStatus === 'Filled' ? 'closed' : item.orderStatus === 'Cancelled' ? 'canceled' : 'open',
@@ -329,7 +375,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchOpenOrders(symbol?: string): Promise<Order[]> {
-    const rawSymbol = symbol ? symbol.replace(/[/\s_-]/g, '').toUpperCase() : undefined;
+    const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase() : undefined;
     const params: Record<string, any> = { category: 'linear', settleCoin: 'USDT' };
     if (rawSymbol) params.symbol = rawSymbol;
 
@@ -339,7 +385,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return list.map((item: any) => ({
       id: item.orderId,
       clientOrderId: item.orderLinkId,
-      symbol: item.symbol,
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       type: item.orderType.toLowerCase() as 'limit' | 'market',
       status: 'open',
@@ -352,7 +398,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchClosedOrders(symbol?: string): Promise<Order[]> {
-    const rawSymbol = symbol ? symbol.replace(/[/\s_-]/g, '').toUpperCase() : undefined;
+    const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase() : undefined;
     const params: Record<string, any> = { category: 'linear', settleCoin: 'USDT' };
     if (rawSymbol) params.symbol = rawSymbol;
 
@@ -362,7 +408,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return list.map((item: any) => ({
       id: item.orderId,
       clientOrderId: item.orderLinkId,
-      symbol: item.symbol,
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       type: item.orderType.toLowerCase() as 'limit' | 'market',
       status: item.orderStatus === 'Filled' ? 'closed' : 'canceled',
@@ -375,7 +421,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchMyTrades(symbol?: string): Promise<Trade[]> {
-    const rawSymbol = symbol ? symbol.replace(/[/\s_-]/g, '').toUpperCase() : undefined;
+    const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase() : undefined;
     const params: Record<string, any> = { category: 'linear', settleCoin: 'USDT' };
     if (rawSymbol) params.symbol = rawSymbol;
 
@@ -385,7 +431,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return list.map((item: any) => ({
       id: item.execId,
       orderId: item.orderId,
-      symbol: item.symbol,
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       price: new BigNumber(item.execPrice || 0),
       amount: new BigNumber(item.execQty || 0),
