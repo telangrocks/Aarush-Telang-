@@ -1,5 +1,4 @@
 import { BaseExchangeAdapter } from './BaseExchangeAdapter';
-import { ProviderConfig } from '../../../exchanges/models/ConnectionConfig';
 import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade } from '../../../exchanges/models/NormalizedDomain';
 import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapabilities';
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';
@@ -36,6 +35,29 @@ export class BybitAdapter extends BaseExchangeAdapter {
       return (process.env.BYBIT_TESTNET_URL || 'https://api-testnet.bybit.com').replace(/\/$/, '');
     }
     return 'https://api.bybit.com';
+  }
+
+  public normalizeInterval(interval: string): string {
+    const intervalMap: Record<string, string> = {
+      '1m': '1',
+      '3m': '3',
+      '5m': '5',
+      '15m': '15',
+      '30m': '30',
+      '1h': '60',
+      '2h': '120',
+      '4h': '240',
+      '6h': '360',
+      '12h': '720',
+      '1d': 'D',
+      '1w': 'W',
+      '1M': 'M',
+    };
+    const mapped = intervalMap[interval];
+    if (!mapped) {
+      throw new UnifiedError(`Unsupported interval: ${interval}`, 'UNSUPPORTED_OPERATION');
+    }
+    return mapped;
   }
 
   private async makeRequest(method: 'GET' | 'POST', path: string, params: Record<string, any> = {}, isPrivate = false): Promise<any> {
@@ -206,22 +228,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
   public async fetchKlines(symbol: string, interval: string, limit = 200): Promise<any[]> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
-    const intervalMap: Record<string, string> = {
-      '1m': '1',
-      '3m': '3',
-      '5m': '5',
-      '15m': '15',
-      '30m': '30',
-      '1h': '60',
-      '2h': '120',
-      '4h': '240',
-      '6h': '360',
-      '12h': '720',
-      '1d': 'D',
-      '1w': 'W',
-      '1M': 'M',
-    };
-    const bybitInterval = intervalMap[interval] || '15';
+    const bybitInterval = this.normalizeInterval(interval);
     const tfMs = CandleValidator.timeframeToMs(interval);
 
     let result: any;
@@ -246,8 +253,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
       };
     });
 
-    // Sort ascending by openTime
-    return parsed.sort((a: any, b: any) => a.openTime - b.openTime);
+    // Create a copy before sorting to avoid mutating original array (Fix L5)
+    return [...parsed].sort((a: any, b: any) => a.openTime - b.openTime);
   }
 
   public async fetchMarkets(): Promise<Market[]> {

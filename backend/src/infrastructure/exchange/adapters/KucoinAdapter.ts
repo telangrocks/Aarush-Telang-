@@ -37,6 +37,39 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     await super.connect(config);
   }
 
+  public override normalizeSymbol(symbol: string): { base: string; quote: string; canonicalSymbol: string } {
+    if (!symbol) return { base: '', quote: '', canonicalSymbol: '' };
+    const clean = symbol.trim().toUpperCase().replace(/[/]/g, '-');
+    if (clean.includes('-')) {
+      const [base, quote] = clean.split('-');
+      return { base, quote, canonicalSymbol: `${base}/${quote}` };
+    }
+    return super.normalizeSymbolBase(symbol);
+  }
+
+  public normalizeInterval(interval: string): string {
+    const kcMap: Record<string, string> = {
+      '1m': '1min',
+      '3m': '3min',
+      '5m': '5min',
+      '15m': '15min',
+      '30m': '30min',
+      '1h': '1hour',
+      '2h': '2hour',
+      '4h': '4hour',
+      '6h': '6hour',
+      '8h': '8hour',
+      '12h': '12hour',
+      '1d': '1day',
+      '1w': '1week',
+    };
+    const mapped = kcMap[interval];
+    if (!mapped) {
+      throw new UnifiedError(`Unsupported interval: ${interval}`, 'UNSUPPORTED_OPERATION');
+    }
+    return mapped;
+  }
+
   private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', endpoint: string, bodyObj?: Record<string, any>): Promise<any> {
     const startTime = Date.now();
     const cleanKey = (this.config?.apiKey || '').trim();
@@ -142,7 +175,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   public async fetchTicker(symbol: string): Promise<Ticker> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '-').toUpperCase();
-    const url = `https://openapi-v2.kucoin.com/api/v1/market/orderbook/level1?symbol=${rawSymbol}`;
+    const url = `https://openapi-v2.kucoin.com/api/v1/market/stats?symbol=${rawSymbol}`;
     const startTime = Date.now();
 
     const res = await this.fetchWithTimeout(url, {
@@ -151,7 +184,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
 
     this.logger.logExchangeRequest({
       exchange: this.exchangeId,
-      endpoint: '/api/v1/market/orderbook/level1',
+      endpoint: '/api/v1/market/stats',
       requestUrl: url,
       symbol: canonicalSymbol,
       latencyMs: Date.now() - startTime,
@@ -177,40 +210,26 @@ export class KucoinAdapter extends BaseExchangeAdapter {
       throw new UnifiedError(classified.friendlyMessage, classified.code);
     }
 
-    const px = new BigNumber(json.data.price || json.data.bestBid || 0);
+    const data = json.data;
+    const px = new BigNumber(data.last || data.buy || data.sell || 0);
+
     return {
       symbol: canonicalSymbol,
-      timestamp: json.data.time || Date.now(),
+      timestamp: data.time || Date.now(),
       last: px,
-      bid: new BigNumber(json.data.bestBid || px.toString()),
-      ask: new BigNumber(json.data.bestAsk || px.toString()),
-      high: px.multipliedBy(1.01),
-      low: px.multipliedBy(0.99),
-      volume: new BigNumber(json.data.size || 0),
-      quoteVolume: px.multipliedBy(json.data.size || 0),
+      bid: new BigNumber(data.buy || px.toString()),
+      ask: new BigNumber(data.sell || px.toString()),
+      high: new BigNumber(data.high || px.toString()),
+      low: new BigNumber(data.low || px.toString()),
+      volume: new BigNumber(data.vol || 0),
+      quoteVolume: new BigNumber(data.volValue || 0),
     };
   }
 
   public async fetchKlines(symbol: string, interval: string, limit = 100): Promise<any[]> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '-').toUpperCase();
-
-    const kcMap: Record<string, string> = {
-      '1m': '1min',
-      '3m': '3min',
-      '5m': '5min',
-      '15m': '15min',
-      '30m': '30min',
-      '1h': '1hour',
-      '2h': '2hour',
-      '4h': '4hour',
-      '6h': '6hour',
-      '8h': '8hour',
-      '12h': '12hour',
-      '1d': '1day',
-      '1w': '1week',
-    };
-    const kcType = kcMap[interval] || '15min';
+    const kcType = this.normalizeInterval(interval);
     const tfMs = CandleValidator.timeframeToMs(interval);
 
     const url = `https://openapi-v2.kucoin.com/api/v1/market/candles?symbol=${rawSymbol}&type=${kcType}`;

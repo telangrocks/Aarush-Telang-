@@ -1,4 +1,5 @@
 import { NormalizedCandle } from '../../engine/market-data/MarketSnapshot';
+import { normalizeCandles } from './utils/normalizeCandles';
 
 export interface CandleValidationResult {
   isValid: boolean;
@@ -49,10 +50,11 @@ export class CandleValidator {
       return { isValid: false, reason: 'Candle object is null or undefined' };
     }
 
-    const { timestamp, open, high, low, close, volume } = candle;
+    const { openTime, timestamp, open, high, low, close, volume } = candle;
+    const ts = typeof openTime === 'number' && !isNaN(openTime) ? openTime : timestamp;
 
-    if (typeof timestamp !== 'number' || isNaN(timestamp) || timestamp <= 0) {
-      return { isValid: false, reason: 'Invalid or non-positive timestamp' };
+    if (typeof ts !== 'number' || isNaN(ts) || ts <= 0) {
+      return { isValid: false, reason: 'Invalid or non-positive timestamp/openTime' };
     }
     if (typeof open !== 'number' || isNaN(open) || open < 0) {
       return { isValid: false, reason: 'Invalid open price' };
@@ -81,34 +83,10 @@ export class CandleValidator {
   }
 
   /**
-   * Sanitizes, deduplicates, and sorts a list of candles in ascending order of timestamp.
+   * Sanitizes, deduplicates, and sorts a list of candles in ascending order of openTime.
    */
   public static sanitizeAndSortCandles(rawCandles: any[]): NormalizedCandle[] {
-    if (!Array.isArray(rawCandles) || rawCandles.length === 0) {
-      return [];
-    }
-
-    const map = new Map<number, NormalizedCandle>();
-
-    for (const raw of rawCandles) {
-      const ts = typeof raw.timestamp === 'number' ? raw.timestamp : typeof raw.openTime === 'number' ? raw.openTime : 0;
-      const candle: NormalizedCandle = {
-        timestamp: ts,
-        open: typeof raw.open === 'number' ? raw.open : parseFloat(raw.open || 0),
-        high: typeof raw.high === 'number' ? raw.high : parseFloat(raw.high || 0),
-        low: typeof raw.low === 'number' ? raw.low : parseFloat(raw.low || 0),
-        close: typeof raw.close === 'number' ? raw.close : parseFloat(raw.close || 0),
-        volume: typeof raw.volume === 'number' ? raw.volume : parseFloat(raw.volume || 0),
-      };
-
-      const validation = this.validateCandleStructure(candle);
-      if (validation.isValid) {
-        map.set(ts, candle); // Deduplicate by timestamp
-      }
-    }
-
-    const sorted = Array.from(map.values()).sort((a, b) => a.timestamp - b.timestamp);
-    return sorted;
+    return normalizeCandles(rawCandles);
   }
 
   /**
@@ -124,11 +102,13 @@ export class CandleValidator {
     let missingIntervalsCount = 0;
 
     for (let i = 1; i < candles.length; i++) {
-      const diff = candles[i].timestamp - candles[i - 1].timestamp;
+      const prevTs = candles[i - 1].openTime ?? candles[i - 1].timestamp ?? 0;
+      const currTs = candles[i].openTime ?? candles[i].timestamp ?? 0;
+      const diff = currTs - prevTs;
       if (diff > tfMs * 1.5) {
         const missingCount = Math.round(diff / tfMs) - 1;
         missingIntervalsCount += missingCount;
-        gapStartTimes.push(candles[i - 1].timestamp);
+        gapStartTimes.push(prevTs);
       }
     }
 
@@ -152,15 +132,16 @@ export class CandleValidator {
     }
 
     const lastCandle = candles[candles.length - 1];
+    const ts = lastCandle.openTime ?? lastCandle.timestamp ?? 0;
     const tfMs = this.timeframeToMs(timeframe);
     const maxAgeMs = tfMs * maxAllowedMultiplier;
     const now = Date.now();
-    const ageMs = now - lastCandle.timestamp;
+    const ageMs = now - ts;
 
     return {
       isFresh: ageMs <= maxAgeMs,
       ageMs,
-      lastCandleTime: lastCandle.timestamp,
+      lastCandleTime: ts,
     };
   }
 }

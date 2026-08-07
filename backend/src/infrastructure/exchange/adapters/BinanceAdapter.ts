@@ -1,5 +1,4 @@
 import { BaseExchangeAdapter } from './BaseExchangeAdapter';
-import { ProviderConfig } from '../../../exchanges/models/ConnectionConfig';
 import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade } from '../../../exchanges/models/NormalizedDomain';
 import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapabilities';
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';

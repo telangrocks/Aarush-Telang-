@@ -1,13 +1,23 @@
-import { ICandleProvider } from './CandleProvider';
+import { ICandleProvider } from '../../infrastructure/exchange/types';
 import { MarketSnapshot } from './MarketSnapshot';
 import { Timeframe } from './Timeframe';
 import { CandleValidator } from '../../infrastructure/exchange/CandleValidator';
 import { StructuredLogger } from '../../infrastructure/telemetry/Telemetry';
 
+export interface MarketDataEngineOptions {
+  minCandlesRequired?: number;
+}
+
 export class MarketDataEngine {
   private logger = new StructuredLogger();
+  private minCandlesRequired: number;
 
-  constructor(private provider: ICandleProvider) {}
+  constructor(
+    private provider: ICandleProvider,
+    options?: MarketDataEngineOptions
+  ) {
+    this.minCandlesRequired = options?.minCandlesRequired ?? 10;
+  }
 
   /**
    * Orchestrates the collection, normalization, and validation of market data across multiple timeframes.
@@ -37,11 +47,11 @@ export class MarketDataEngine {
         priceChangePercent24h: toNum((ticker as any).priceChangePercent24h ?? 0),
         highPrice24h: toNum(ticker.high ?? (ticker as any).highPrice24h),
         lowPrice24h: toNum(ticker.low ?? (ticker as any).lowPrice24h),
-      }
+      },
     };
 
-    // Fetch and validate candles concurrently
-    const promises = timeframes.map(async (tf) => {
+    // Fetch and validate candles concurrently using Promise.allSettled
+    const fetchPromises = timeframes.map(async (tf) => {
       try {
         const rawCandles = await this.provider.fetchCandles(symbol, tf);
         const cleanCandles = CandleValidator.sanitizeAndSortCandles(rawCandles);
@@ -66,18 +76,53 @@ export class MarketDataEngine {
           });
         }
 
-        snapshot.candles[tf] = cleanCandles;
+        return { tf, cleanCandles };
       } catch (e) {
         this.logger.error(`[MarketDataEngine] Failed to fetch candles for ${symbol} at ${tf}`, {
           symbol,
           timeframe: tf,
           error: e instanceof Error ? e.message : String(e),
         });
-        throw new Error(`Failed to retrieve authentic market candle statistics for ${symbol} (${tf}): ${e instanceof Error ? e.message : String(e)}`);
+        throw new Error(`Failed to fetch candles for ${symbol} (${tf}): ${e instanceof Error ? e.message : String(e)}`);
       }
     });
 
-    await Promise.all(promises);
+    const results = await Promise.allSettled(fetchPromises);
+
+    let successCount = 0;
+    let lastError: any;
+
+    for (let i = 0; i < timeframes.length; i++) {
+      const tf = timeframes[i];
+      const result = results[i];
+
+      if (result.status === 'fulfilled') {
+        snapshot.candles[tf] = result.value.cleanCandles;
+        successCount++;
+      } else {
+        snapshot.candles[tf] = [];
+        lastError = result.reason;
+        this.logger.warn('[MarketDataEngine] Timeframe failed, using empty candles', {
+          symbol,
+          timeframe: tf,
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        });
+      }
+    }
+
+    if (successCount === 0) {
+      throw new Error(
+        `All timeframes failed for ${symbol}: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+      );
+    }
+
+    if (successCount < timeframes.length) {
+      this.logger.warn('[MarketDataEngine] Partial snapshot', {
+        symbol,
+        requested: timeframes.length,
+        succeeded: successCount,
+      });
+    }
 
     return snapshot;
   }

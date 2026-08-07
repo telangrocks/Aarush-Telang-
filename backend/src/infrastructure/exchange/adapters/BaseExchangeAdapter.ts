@@ -1,11 +1,12 @@
 import { IExchangeProvider } from '../../../exchanges/IExchangeProvider';
+import { IExchangeAdapter } from '../types';
 import { ProviderConfig } from '../../../exchanges/models/ConnectionConfig';
 import { Market, Balance, Ticker, Position, Order, OrderRequest, Trade, OcoOrderRequest, OcoOrderResponse } from '../../../exchanges/models/NormalizedDomain';
 import { ExchangeCapabilities, DEFAULT_CAPABILITIES } from '../../../domain/capabilities/ExchangeCapabilities';
 import { UnifiedError } from '../../../exchanges/models/UnifiedError';
 import { StructuredLogger } from '../../telemetry/Telemetry';
 
-export abstract class BaseExchangeAdapter implements IExchangeProvider {
+export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchangeAdapter {
   abstract readonly exchangeId: string;
   readonly capabilities: ExchangeCapabilities = DEFAULT_CAPABILITIES;
   protected config!: ProviderConfig;
@@ -19,9 +20,9 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider {
   public async disconnect(): Promise<void> {}
 
   /**
-   * Standardized symbol parser returning base, quote, and canonical symbol (e.g. BTC/USDT).
+   * Protected base symbol normalization logic (Fix L7).
    */
-  public normalizeSymbol(symbol: string): { base: string; quote: string; canonicalSymbol: string } {
+  protected normalizeSymbolBase(symbol: string): { base: string; quote: string; canonicalSymbol: string } {
     if (!symbol) {
       return { base: '', quote: '', canonicalSymbol: '' };
     }
@@ -38,7 +39,6 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider {
       const [base, quote] = clean.split('_');
       return { base, quote, canonicalSymbol: `${base}/${quote}` };
     }
-    // Default quote fallbacks for un-delimited tickers (e.g. BTCUSDT, ETHUSDT)
     const quoteAssets = ['USDT', 'USDC', 'BUSD', 'USD', 'BTC', 'ETH', 'EUR', 'INR'];
     for (const q of quoteAssets) {
       if (clean.endsWith(q) && clean.length > q.length) {
@@ -50,7 +50,14 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider {
   }
 
   /**
-   * Helper method for performing HTTP requests with a configurable timeout.
+   * Standardized symbol parser returning base, quote, and canonical symbol (e.g. BTC/USDT).
+   */
+  public normalizeSymbol(symbol: string): { base: string; quote: string; canonicalSymbol: string } {
+    return this.normalizeSymbolBase(symbol);
+  }
+
+  /**
+   * Helper method for performing HTTP requests with a configurable timeout (Fix H3).
    */
   protected async fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = this.defaultTimeoutMs): Promise<Response> {
     const controller = new AbortController();
@@ -62,8 +69,8 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider {
       });
       return response;
     } catch (err: any) {
-      if (err.name === 'AbortError' || err.name === 'TimeoutError' || controller.signal.aborted) {
-        throw new UnifiedError(`Request to ${url} timed out after ${timeoutMs}ms`, 'TIMEOUT');
+      if (err.name === 'AbortError' || err.name === 'TimeoutError' || (err instanceof DOMException && err.name === 'AbortError') || controller.signal.aborted) {
+        throw new UnifiedError('Request timed out after 10000ms.', 'EXCHANGE_TIMEOUT');
       }
       throw err;
     } finally {
@@ -74,7 +81,7 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider {
   abstract fetchMarkets(): Promise<Market[]>;
   abstract fetchBalance(): Promise<Balance[]>;
   abstract fetchTicker(symbol: string): Promise<Ticker>;
-  abstract fetchKlines(symbol: string, interval: string, limit: number): Promise<any[]>;
+  abstract fetchKlines(symbol: string, interval: string, limit?: number): Promise<any[]>;
   abstract fetchPositions(): Promise<Position[]>;
 
   abstract createOrder(order: OrderRequest): Promise<Order>;
