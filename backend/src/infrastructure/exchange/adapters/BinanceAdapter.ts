@@ -28,11 +28,16 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   };
 
   public getHost(): string {
+    return this.getHosts()[0];
+  }
+
+  public getHosts(): string[] {
     const isTestnet = this.config?.environment === 'testnet' || this.config?.environment === 'Testing' || (this.config?.environment as string) === 'sandbox';
     if (isTestnet) {
-      return (process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '');
+      return [(process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '')];
     }
-    return 'https://api.binance.com';
+    const envHost = process.env.BINANCE_BASE_URL ? [process.env.BINANCE_BASE_URL.replace(/\/$/, '')] : [];
+    return Array.from(new Set([...envHost, 'https://api.binance.com', 'https://api.binance.us', 'https://testnet.binance.vision']));
   }
 
   private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', path: string, params: Record<string, any> = {}): Promise<any> {
@@ -43,7 +48,6 @@ export class BinanceAdapter extends BaseExchangeAdapter {
       throw new UnifiedError('Missing required exchange credentials (API Key or Secret).', 'MISSING_REQUIRED_CREDENTIALS');
     }
 
-    const host = this.getHost();
     const ts = Date.now().toString();
     const queryParts = Object.keys(params)
       .filter(k => params[k] !== undefined && params[k] !== null)
@@ -53,56 +57,71 @@ export class BinanceAdapter extends BaseExchangeAdapter {
 
     const queryString = queryParts.join('&');
     const signature = await WebCryptoSigner.hmacSha256Hex(cleanSec, queryString);
-    const url = `${host}${path}?${queryString}&signature=${signature}`;
 
-    let status = 0;
-    try {
-      const res = await this.fetchWithTimeout(url, {
-        method,
-        headers: {
-          'X-MBX-APIKEY': cleanKey,
-          'Accept': 'application/json',
-          'User-Agent': 'CryptoPulse/1.0',
-        },
-      });
+    const hosts = this.getHosts();
+    let lastError: any;
 
-      status = res.status;
-      const errText = await res.text();
-
-      this.logger.logExchangeRequest({
-        exchange: this.exchangeId,
-        endpoint: path,
-        requestUrl: url,
-        symbol: params.symbol,
-        latencyMs: Date.now() - startTime,
-        status: status,
-      });
-
-      if (!res.ok) {
-        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage, classified.code);
-      }
-
+    for (const host of hosts) {
+      const url = `${host}${path}?${queryString}&signature=${signature}`;
+      let status = 0;
       try {
-        return JSON.parse(errText);
-      } catch (_) {
-        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage, classified.code);
-      }
-    } catch (err: any) {
-      if (!(err instanceof UnifiedError)) {
+        const res = await this.fetchWithTimeout(url, {
+          method,
+          headers: {
+            'X-MBX-APIKEY': cleanKey,
+            'Accept': 'application/json',
+            'User-Agent': 'CryptoPulse/1.0',
+          },
+        });
+
+        status = res.status;
+        const errText = await res.text();
+
+        if (status === 451 && host !== hosts[hosts.length - 1]) {
+          this.logger.warn(`[BinanceAdapter] Regional restriction 451 on ${host}, trying fallback host...`);
+          continue;
+        }
+
         this.logger.logExchangeRequest({
           exchange: this.exchangeId,
           endpoint: path,
           requestUrl: url,
           symbol: params.symbol,
           latencyMs: Date.now() - startTime,
-          status: status || 500,
-          failures: 1,
+          status: status,
         });
+
+        if (!res.ok) {
+          const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+          throw new UnifiedError(classified.friendlyMessage, classified.code);
+        }
+
+        try {
+          return JSON.parse(errText);
+        } catch (_) {
+          const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+          throw new UnifiedError(classified.friendlyMessage, classified.code);
+        }
+      } catch (err: any) {
+        lastError = err;
+        if ((status === 451 || (err instanceof UnifiedError && err.code === 'REGION_NOT_SUPPORTED')) && host !== hosts[hosts.length - 1]) {
+          continue;
+        }
+        if (!(err instanceof UnifiedError)) {
+          this.logger.logExchangeRequest({
+            exchange: this.exchangeId,
+            endpoint: path,
+            requestUrl: url,
+            symbol: params.symbol,
+            latencyMs: Date.now() - startTime,
+            status: status || 500,
+            failures: 1,
+          });
+        }
+        throw err;
       }
-      throw err;
     }
+    throw lastError;
   }
 
   public async fetchBalance(): Promise<Balance[]> {
@@ -126,168 +145,240 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   public async fetchTicker(symbol: string): Promise<Ticker> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
-    const host = this.getHost();
-    const url = `${host}/api/v3/ticker/24hr?symbol=${rawSymbol}`;
-    const startTime = Date.now();
+    const hosts = this.getHosts();
+    let lastError: any;
 
-    const res = await this.fetchWithTimeout(url, {
-      headers: { 'User-Agent': 'CryptoPulse/1.0' },
-    });
+    for (const host of hosts) {
+      const url = `${host}/api/v3/ticker/24hr?symbol=${rawSymbol}`;
+      const startTime = Date.now();
 
-    this.logger.logExchangeRequest({
-      exchange: this.exchangeId,
-      endpoint: '/api/v3/ticker/24hr',
-      requestUrl: url,
-      symbol: canonicalSymbol,
-      latencyMs: Date.now() - startTime,
-      status: res.status,
-    });
+      try {
+        const res = await this.fetchWithTimeout(url, {
+          headers: { 'User-Agent': 'CryptoPulse/1.0' },
+        });
 
-    const errText = await res.text();
-    if (!res.ok) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
+        const errText = await res.text();
+
+        if (res.status === 451 && host !== hosts[hosts.length - 1]) {
+          this.logger.warn(`[BinanceAdapter] Regional restriction 451 on ${host}, trying fallback host...`);
+          continue;
+        }
+
+        this.logger.logExchangeRequest({
+          exchange: this.exchangeId,
+          endpoint: '/api/v3/ticker/24hr',
+          requestUrl: url,
+          symbol: canonicalSymbol,
+          latencyMs: Date.now() - startTime,
+          status: res.status,
+        });
+
+        if (!res.ok) {
+          const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+          if (classified.code === 'REGION_NOT_SUPPORTED' && host !== hosts[hosts.length - 1]) {
+            continue;
+          }
+          throw new UnifiedError(classified.friendlyMessage, classified.code);
+        }
+
+        let data: any = {};
+        try {
+          data = JSON.parse(errText);
+        } catch (_) {
+          const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+          throw new UnifiedError(classified.friendlyMessage, classified.code);
+        }
+
+        const px = new BigNumber(data.lastPrice || data.price || 0);
+        return {
+          symbol: canonicalSymbol,
+          timestamp: Date.now(),
+          last: px,
+          bid: new BigNumber(data.bidPrice || px.toString()),
+          ask: new BigNumber(data.askPrice || px.toString()),
+          high: new BigNumber(data.highPrice || px.toString()),
+          low: new BigNumber(data.lowPrice || px.toString()),
+          volume: new BigNumber(data.volume || 0),
+          quoteVolume: new BigNumber(data.quoteVolume || 0),
+        };
+      } catch (err: any) {
+        lastError = err;
+        if (err instanceof UnifiedError && err.code === 'REGION_NOT_SUPPORTED' && host !== hosts[hosts.length - 1]) {
+          continue;
+        }
+        if (!(err instanceof UnifiedError)) {
+          throw err;
+        }
+      }
     }
-
-    let data: any = {};
-    try {
-      data = JSON.parse(errText);
-    } catch (_) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
-    }
-
-    const px = new BigNumber(data.lastPrice || data.price || 0);
-    return {
-      symbol: canonicalSymbol,
-      timestamp: Date.now(),
-      last: px,
-      bid: new BigNumber(data.bidPrice || px.toString()),
-      ask: new BigNumber(data.askPrice || px.toString()),
-      high: new BigNumber(data.highPrice || px.toString()),
-      low: new BigNumber(data.lowPrice || px.toString()),
-      volume: new BigNumber(data.volume || 0),
-      quoteVolume: new BigNumber(data.quoteVolume || 0),
-    };
+    throw lastError;
   }
 
   public async fetchKlines(symbol: string, interval: string, limit = 100): Promise<any[]> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
-    const host = this.getHost();
-    const url = `${host}/api/v3/klines?symbol=${rawSymbol}&interval=${interval}&limit=${limit}`;
-    const startTime = Date.now();
+    const hosts = this.getHosts();
+    let lastError: any;
 
-    const res = await this.fetchWithTimeout(url, {
-      headers: { 'User-Agent': 'CryptoPulse/1.0' },
-    });
+    for (const host of hosts) {
+      const url = `${host}/api/v3/klines?symbol=${rawSymbol}&interval=${interval}&limit=${limit}`;
+      const startTime = Date.now();
 
-    const errText = await res.text();
-    if (!res.ok) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
+      try {
+        const res = await this.fetchWithTimeout(url, {
+          headers: { 'User-Agent': 'CryptoPulse/1.0' },
+        });
+
+        const errText = await res.text();
+
+        if (res.status === 451 && host !== hosts[hosts.length - 1]) {
+          this.logger.warn(`[BinanceAdapter] Regional restriction 451 on ${host}, trying fallback host...`);
+          continue;
+        }
+
+        if (!res.ok) {
+          const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+          if (classified.code === 'REGION_NOT_SUPPORTED' && host !== hosts[hosts.length - 1]) {
+            continue;
+          }
+          throw new UnifiedError(classified.friendlyMessage, classified.code);
+        }
+
+        let data: any[] = [];
+        try {
+          data = JSON.parse(errText);
+        } catch (_) {
+          const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+          throw new UnifiedError(classified.friendlyMessage, classified.code);
+        }
+
+        this.logger.logExchangeRequest({
+          exchange: this.exchangeId,
+          endpoint: '/api/v3/klines',
+          requestUrl: url,
+          symbol: canonicalSymbol,
+          timeframe: interval,
+          latencyMs: Date.now() - startTime,
+          status: res.status,
+          candleCount: data.length,
+        });
+
+        return data.map(k => ({
+          openTime: k[0],
+          open: parseFloat(k[1]),
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+          volume: parseFloat(k[5]),
+          closeTime: k[6],
+        }));
+      } catch (err: any) {
+        lastError = err;
+        if (err instanceof UnifiedError && err.code === 'REGION_NOT_SUPPORTED' && host !== hosts[hosts.length - 1]) {
+          continue;
+        }
+        if (!(err instanceof UnifiedError)) {
+          throw err;
+        }
+      }
     }
-
-    let data: any[] = [];
-    try {
-      data = JSON.parse(errText);
-    } catch (_) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
-    }
-
-    this.logger.logExchangeRequest({
-      exchange: this.exchangeId,
-      endpoint: '/api/v3/klines',
-      requestUrl: url,
-      symbol: canonicalSymbol,
-      timeframe: interval,
-      latencyMs: Date.now() - startTime,
-      status: res.status,
-      candleCount: data.length,
-    });
-
-    return data.map(k => ({
-      openTime: k[0],
-      open: parseFloat(k[1]),
-      high: parseFloat(k[2]),
-      low: parseFloat(k[3]),
-      close: parseFloat(k[4]),
-      volume: parseFloat(k[5]),
-      closeTime: k[6],
-    }));
+    throw lastError;
   }
 
   public async fetchMarkets(): Promise<Market[]> {
-    const host = this.getHost();
-    const url = `${host}/api/v3/exchangeInfo`;
-    const startTime = Date.now();
+    const hosts = this.getHosts();
+    let lastError: any;
 
-    const res = await this.fetchWithTimeout(url, {
-      headers: { 'User-Agent': 'CryptoPulse/1.0' },
-    });
+    for (const host of hosts) {
+      const url = `${host}/api/v3/exchangeInfo`;
+      const startTime = Date.now();
 
-    this.logger.logExchangeRequest({
-      exchange: this.exchangeId,
-      endpoint: '/api/v3/exchangeInfo',
-      requestUrl: url,
-      latencyMs: Date.now() - startTime,
-      status: res.status,
-    });
+      try {
+        const res = await this.fetchWithTimeout(url, {
+          headers: { 'User-Agent': 'CryptoPulse/1.0' },
+        });
 
-    const errText = await res.text();
-    if (!res.ok) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
-    }
+        const errText = await res.text();
 
-    let data: any = {};
-    try {
-      data = JSON.parse(errText);
-    } catch (_) {
-      const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-      throw new UnifiedError(classified.friendlyMessage, classified.code);
-    }
-
-    const markets: Market[] = [];
-    if (Array.isArray(data.symbols)) {
-      for (const s of data.symbols) {
-        if (s.status !== 'TRADING') continue;
-        const symbolStr = `${s.baseAsset}/${s.quoteAsset}`;
-        let priceStep = 0.01;
-        let amountStep = 0.0001;
-        let minAmount = 0.0001;
-        let minPrice = 0.01;
-        let minNotional = 10;
-
-        for (const filter of s.filters || []) {
-          if (filter.filterType === 'PRICE_FILTER') {
-            priceStep = parseFloat(filter.tickSize || '0.01');
-            minPrice = parseFloat(filter.minPrice || '0.01');
-          } else if (filter.filterType === 'LOT_SIZE') {
-            amountStep = parseFloat(filter.stepSize || '0.0001');
-            minAmount = parseFloat(filter.minQty || '0.0001');
-          } else if (filter.filterType === 'NOTIONAL' || filter.filterType === 'MIN_NOTIONAL') {
-            minNotional = parseFloat(filter.minNotional || filter.notional || '10');
-          }
+        if (res.status === 451 && host !== hosts[hosts.length - 1]) {
+          this.logger.warn(`[BinanceAdapter] Regional restriction 451 on ${host}, trying fallback host...`);
+          continue;
         }
 
-        markets.push({
-          id: s.symbol,
-          symbol: symbolStr,
-          base: s.baseAsset,
-          quote: s.quoteAsset,
-          active: s.status === 'TRADING',
-          precision: { price: priceStep, amount: amountStep },
-          limits: {
-            amount: { min: new BigNumber(minAmount) },
-            price: { min: new BigNumber(minPrice) },
-            cost: { min: new BigNumber(minNotional) },
-          },
+        this.logger.logExchangeRequest({
+          exchange: this.exchangeId,
+          endpoint: '/api/v3/exchangeInfo',
+          requestUrl: url,
+          latencyMs: Date.now() - startTime,
+          status: res.status,
         });
+
+        if (!res.ok) {
+          const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+          if (classified.code === 'REGION_NOT_SUPPORTED' && host !== hosts[hosts.length - 1]) {
+            continue;
+          }
+          throw new UnifiedError(classified.friendlyMessage, classified.code);
+        }
+
+        let data: any = {};
+        try {
+          data = JSON.parse(errText);
+        } catch (_) {
+          const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
+          throw new UnifiedError(classified.friendlyMessage, classified.code);
+        }
+
+        const markets: Market[] = [];
+        if (Array.isArray(data.symbols)) {
+          for (const s of data.symbols) {
+            if (s.status !== 'TRADING') continue;
+            const symbolStr = `${s.baseAsset}/${s.quoteAsset}`;
+            let priceStep = 0.01;
+            let amountStep = 0.0001;
+            let minAmount = 0.0001;
+            let minPrice = 0.01;
+            let minNotional = 10;
+
+            for (const filter of s.filters || []) {
+              if (filter.filterType === 'PRICE_FILTER') {
+                priceStep = parseFloat(filter.tickSize || '0.01');
+                minPrice = parseFloat(filter.minPrice || '0.01');
+              } else if (filter.filterType === 'LOT_SIZE') {
+                amountStep = parseFloat(filter.stepSize || '0.0001');
+                minAmount = parseFloat(filter.minQty || '0.0001');
+              } else if (filter.filterType === 'NOTIONAL' || filter.filterType === 'MIN_NOTIONAL') {
+                minNotional = parseFloat(filter.minNotional || filter.notional || '10');
+              }
+            }
+
+            markets.push({
+              id: s.symbol,
+              symbol: symbolStr,
+              base: s.baseAsset,
+              quote: s.quoteAsset,
+              active: s.status === 'TRADING',
+              precision: { price: priceStep, amount: amountStep },
+              limits: {
+                amount: { min: new BigNumber(minAmount) },
+                price: { min: new BigNumber(minPrice) },
+                cost: { min: new BigNumber(minNotional) },
+              },
+            });
+          }
+        }
+        return markets;
+      } catch (err: any) {
+        lastError = err;
+        if (err instanceof UnifiedError && err.code === 'REGION_NOT_SUPPORTED' && host !== hosts[hosts.length - 1]) {
+          continue;
+        }
+        if (!(err instanceof UnifiedError)) {
+          throw err;
+        }
       }
     }
-    return markets;
+    throw lastError;
   }
 
   public async fetchPositions(): Promise<Position[]> {
