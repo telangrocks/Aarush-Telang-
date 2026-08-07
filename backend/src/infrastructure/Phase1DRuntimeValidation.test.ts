@@ -11,6 +11,7 @@ import { CircuitBreaker } from './orchestrator/CircuitBreaker';
 import { RateLimiter } from './orchestrator/RateLimiter';
 import { EventBus, DomainEvent } from '../domain/events/EventBus';
 import { StructuredLogger, TelemetryTracer } from './telemetry/Telemetry';
+import { Ticker } from '../exchanges/models/NormalizedDomain';
 import { WebCryptoSigner } from './crypto/WebCryptoSigner';
 import BigNumber from 'bignumber.js';
 
@@ -60,8 +61,9 @@ describe('Phase 1D – Production Stabilization & Runtime Validation Suite', () 
 
     expect(res.isSuccess).toBe(true);
     if (res.isSuccess) {
-      expect(res.value.symbol).toBe('BTC/USDT');
-      expect(res.value.last.toNumber()).toBe(60000);
+      const ticker = res.value as Ticker;
+      expect(ticker.symbol).toBe('BTC/USDT');
+      expect(ticker.last.toNumber()).toBe(60000);
     }
   });
 

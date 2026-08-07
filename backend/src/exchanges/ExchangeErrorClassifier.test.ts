@@ -61,11 +61,11 @@ describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests
     expect(res.code).toBe('IP_NOT_WHITELISTED');
   });
 
-  it('9. Should classify HTTP 403 HTML Cloudflare WAF challenge page as BINANCE_WAF_BLOCKED', () => {
+  it('9. Should classify HTTP 403 HTML Cloudflare WAF challenge page as WAF_BLOCKED', () => {
     const htmlBody = '<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Cloudflare Ray ID: 8abc123</body></html>';
     const headers = { 'content-type': 'text/html; charset=UTF-8', 'server': 'cloudflare', 'cf-ray': '8abc123' };
     const res = classifier.classifyResponse('binance', 403, headers, htmlBody);
-    expect(res.code).toBe('BINANCE_WAF_BLOCKED');
+    expect(res.code).toBe('WAF_BLOCKED');
   });
 
   it('10. Should classify HTTP 451 WITH explicit legal restriction payload as REGION_NOT_SUPPORTED', () => {
@@ -104,7 +104,7 @@ describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests
 
   it('16. Should handle malformed JSON body gracefully without throwing', () => {
     const res = classifier.classifyResponse('binance', 400, { 'content-type': 'application/json' }, 'NOT_JSON{{{');
-    expect(res.code).toBe('AUTHENTICATION_FAILED');
+    expect(res.code).toBe('INVALID_REQUEST');
   });
 
   it('17. Should look up ExchangeSpecification cleanly from ExchangeSpecificationRegistry', () => {

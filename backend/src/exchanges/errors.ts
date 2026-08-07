@@ -33,6 +33,13 @@ export type ExchangeErrorCode =
   | "UPSTREAM_PROVIDER_BLOCKED"
   | "INSUFFICIENT_BALANCE"
   | "NETWORK_ERROR"
+  | "WAF_BLOCKED"
+  | "INVALID_REQUEST"
+  | "NOT_CONNECTED"
+  | "DATABASE_ERROR"
+  | "UNSUPPORTED_OPERATION"
+  | "CIRCUIT_OPEN"
+  | "EXCHANGE_TIMEOUT"
   | "UNKNOWN_EXCHANGE_ERROR";
 
 export interface ExchangeErrorInfo {
@@ -177,6 +184,41 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
     code: "MISSING_REQUIRED_CREDENTIALS",
     friendlyMessage: "Required exchange credentials (API Key or Secret) are missing.",
     hint: "Please provide all required fields before connecting your exchange.",
+  },
+  WAF_BLOCKED: {
+    code: "WAF_BLOCKED",
+    friendlyMessage: "Connection temporarily blocked by exchange firewall/WAF.",
+    hint: "This is a server-side connectivity restriction by the exchange. Our team is actively monitoring this.",
+  },
+  INVALID_REQUEST: {
+    code: "INVALID_REQUEST",
+    friendlyMessage: "The request sent to the exchange was malformed or invalid.",
+    hint: "Verify your request parameters, symbol format, and payload parameters.",
+  },
+  NOT_CONNECTED: {
+    code: "NOT_CONNECTED",
+    friendlyMessage: "Exchange adapter is not connected.",
+    hint: "Please call connect() with valid credentials before executing operations.",
+  },
+  DATABASE_ERROR: {
+    code: "DATABASE_ERROR",
+    friendlyMessage: "An internal database error occurred while processing the request.",
+    hint: "This is an internal system error. Please try again or contact support.",
+  },
+  UNSUPPORTED_OPERATION: {
+    code: "UNSUPPORTED_OPERATION",
+    friendlyMessage: "The requested operation is not supported by this exchange or adapter.",
+    hint: "Verify that the exchange supports this feature or order type.",
+  },
+  CIRCUIT_OPEN: {
+    code: "CIRCUIT_OPEN",
+    friendlyMessage: "Requests to this exchange are temporarily paused by safety circuit breaker.",
+    hint: "Please wait a moment while the circuit breaker resets before retrying.",
+  },
+  EXCHANGE_TIMEOUT: {
+    code: "EXCHANGE_TIMEOUT",
+    friendlyMessage: "Request to the exchange timed out.",
+    hint: "Check your connection latency or retry the request.",
   },
   UNKNOWN_EXCHANGE_ERROR: {
     code: "UNKNOWN_EXCHANGE_ERROR",

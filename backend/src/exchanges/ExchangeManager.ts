@@ -9,6 +9,8 @@ import { BybitAdapter } from '../infrastructure/exchange/adapters/BybitAdapter';
 import { ProviderPool } from '../infrastructure/cache/ProviderPool';
 import { ExchangeOrchestrator } from '../infrastructure/orchestrator/ExchangeOrchestrator';
 import { Result } from '../domain/types/Result';
+import { WebCryptoSigner } from '../infrastructure/crypto/WebCryptoSigner';
+import { UnifiedError } from './models/UnifiedError';
 
 // Bootstrap registration of polymorphic adapters
 ExchangeRegistry.register({ exchangeId: 'binance', factory: () => new BinanceAdapter() });
@@ -16,19 +18,30 @@ ExchangeRegistry.register({ exchangeId: 'kucoin', factory: () => new KucoinAdapt
 ExchangeRegistry.register({ exchangeId: 'bybit', factory: () => new BybitAdapter() });
 
 export class ExchangeManager {
+  /**
+   * Note (Fix EC-M1): ProviderPool and ExchangeOrchestrator are intentionally static for
+   * single-tenant Worker execution where shared caching and global telemetry are desired.
+   */
   private static pool = new ProviderPool(50, 15 * 60 * 1000);
   private static orchestrator = new ExchangeOrchestrator();
+
+  private static async getHashedCacheKey(exchangeId: string, config: ProviderConfig): Promise<string> {
+    const rawCreds = `${config.apiKey || ''}:${config.secret || ''}`;
+    const credHash = rawCreds !== ':' ? await WebCryptoSigner.hashSha256(rawCreds) : '';
+    return this.pool.generateCacheKey(
+      exchangeId,
+      config.environment,
+      credHash,
+      ''
+    );
+  }
 
   /**
    * Retrieves a connected Exchange Provider from the bounded ProviderPool.
    */
   public static async getProvider(exchangeId: string, config: ProviderConfig): Promise<IExchangeProvider> {
-    const cacheKey = await this.pool.generateCacheKey(
-      exchangeId,
-      config.environment,
-      config.apiKey || '',
-      config.secret || ''
-    );
+    // Fix EC-M2: Hash credentials before generating cache key
+    const cacheKey = await this.getHashedCacheKey(exchangeId, config);
 
     const cached = this.pool.get(cacheKey);
     if (cached) {
@@ -36,22 +49,18 @@ export class ExchangeManager {
     }
 
     const provider = ExchangeRegistry.create(exchangeId);
-    try {
-      await this.orchestrator.execute(provider, 'connect', async (p) => {
-        await p.connect(config);
-      });
+    // Fix EC-C1 & EC-C2: Check Result return from orchestrator.execute()
+    const res = await this.orchestrator.execute(provider, 'connect', async (p) => {
+      await p.connect(config);
+    });
 
-      this.pool.set(cacheKey, provider);
-      return provider;
-    } catch (error) {
-      try {
-        await provider.disconnect();
-      } catch (_) {
-        // Disconnect error ignored during teardown
-      }
+    if (res.isFailure) {
       this.pool.delete(cacheKey);
-      throw error;
+      throw new Error(res.error.message);
     }
+
+    this.pool.set(cacheKey, provider);
+    return provider;
   }
 
   /**
@@ -69,15 +78,16 @@ export class ExchangeManager {
   }
 
   /**
-   * Disconnects and removes a provider from the pool.
+   * Disconnects and removes a provider from the pool (Fix EC-H5 & EC-L2).
    */
   public static async disconnectProvider(exchangeId: string, config: ProviderConfig): Promise<void> {
-    const cacheKey = await this.pool.generateCacheKey(
-      exchangeId,
-      config.environment,
-      config.apiKey || '',
-      config.secret || ''
-    );
+    const cacheKey = await this.getHashedCacheKey(exchangeId, config);
+    const cached = this.pool.get(cacheKey);
+    if (cached) {
+      try {
+        await cached.disconnect();
+      } catch (_) {}
+    }
     this.pool.delete(cacheKey);
   }
 
@@ -93,8 +103,11 @@ export class ExchangeManager {
     if (provider instanceof BaseExchangeAdapter) {
       return this.orchestrator.execute(provider, operationName, operation);
     }
-    const res = await operation(provider as any);
-    return { isSuccess: true, isFailure: false, value: res } as any;
+    // Fix EC-M3: Throw UNSUPPORTED_OPERATION if not BaseExchangeAdapter
+    throw new UnifiedError(
+      `Provider for operations must be an instance of BaseExchangeAdapter. Received: ${typeof provider}`,
+      'UNSUPPORTED_OPERATION'
+    );
   }
 
   public static async executeIdempotentOrder(provider: IExchangeProvider, request: OrderRequest): Promise<Order> {

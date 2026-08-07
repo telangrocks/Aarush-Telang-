@@ -60,6 +60,6 @@ describe("Exchange Error Classifier", () => {
   it("classifies Binance Cloudflare WAF block (403 HTML) correctly", () => {
     const htmlBody = "<html><head><title>403 Forbidden</title></head><body>Request blocked by Cloudflare WAF</body></html>";
     const result = classifyExchangeResponse(403, htmlBody, "binance");
-    expect(result.code).toBe("BINANCE_WAF_BLOCKED");
+    expect(result.code).toBe("WAF_BLOCKED");
   });
 });

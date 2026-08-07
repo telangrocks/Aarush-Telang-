@@ -37,12 +37,12 @@ export class ExchangeErrorClassifier {
     const serverHeader = (normHeaders['server'] || '').toLowerCase();
     const isHtml = contentType.includes('text/html') || (bodyText || '').trim().toLowerCase().startsWith('<!doctype html') || (bodyText || '').trim().toLowerCase().startsWith('<html');
 
-    // 1. Content-Type & Edge Security Inspection (Cloudflare WAF / CDN Page)
+    // 1. Content-Type & Edge Security Inspection (Cloudflare WAF / CDN Page) (Fix EC-C3)
     if (status === 403 && (isHtml || serverHeader.includes('cloudflare') || normHeaders['cf-ray'])) {
-      return this.mk('BINANCE_WAF_BLOCKED', technicalDetail, correlationId);
+      return this.mk('WAF_BLOCKED', technicalDetail, correlationId);
     }
     if (isHtml && status >= 400) {
-      return this.mk('BINANCE_WAF_BLOCKED', technicalDetail, correlationId);
+      return this.mk('WAF_BLOCKED', technicalDetail, correlationId);
     }
 
     // 2. Delegate to ExchangeSpecification error mapper
@@ -54,8 +54,11 @@ export class ExchangeErrorClassifier {
       }
     }
 
-    // 3. HTTP Status Code Classification Rules
-    if (status === 400 || status === 401 || status === 403) {
+    // 3. HTTP Status Code Classification Rules (Fix EC-H2)
+    if (status === 400) {
+      return this.mk('INVALID_REQUEST', technicalDetail, correlationId);
+    }
+    if (status === 401 || status === 403) {
       return this.mk('AUTHENTICATION_FAILED', technicalDetail, correlationId);
     }
     if (status === 404) {
@@ -101,8 +104,9 @@ export class ExchangeErrorClassifier {
     const technicalDetail = `exchange=${exchangeId} exception=${message.slice(0, 500)}`;
 
     const lower = message.toLowerCase();
+    // Fix EC-M7: Map D1/SQLite errors to DATABASE_ERROR
     if (lower.includes('no such column') || lower.includes('d1_error') || lower.includes('sqlite')) {
-      return this.mk('UNKNOWN_EXCHANGE_ERROR', technicalDetail, correlationId);
+      return this.mk('DATABASE_ERROR', technicalDetail, correlationId);
     }
 
     if (errObj?.mappedInternalErrorCode && FRIENDLY_MESSAGES[errObj.mappedInternalErrorCode as ExchangeErrorCode]) {
@@ -125,7 +129,16 @@ export class ExchangeErrorClassifier {
       return this.mk('EXCHANGE_NOT_REACHABLE', technicalDetail, correlationId);
     }
 
-    if (lower.includes('401') || lower.includes('403') || lower.includes('auth') || lower.includes('credential')) {
+    // Fix EC-H4: Specific auth terms matching instead of broad "auth" substring
+    if (
+      lower.includes('401') ||
+      lower.includes('403') ||
+      lower.includes('unauthorized') ||
+      lower.includes('invalid api key') ||
+      lower.includes('invalid signature') ||
+      lower.includes('authentication failed') ||
+      lower.includes('credential')
+    ) {
       return this.mk('AUTHENTICATION_FAILED', technicalDetail, correlationId);
     }
 

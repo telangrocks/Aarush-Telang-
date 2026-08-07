@@ -9,24 +9,44 @@ import { StructuredLogger } from '../../telemetry/Telemetry';
 export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchangeAdapter {
   abstract readonly exchangeId: string;
   readonly capabilities: ExchangeCapabilities = DEFAULT_CAPABILITIES;
-  protected config!: ProviderConfig;
+  protected config: ProviderConfig | null = null;
   protected logger = new StructuredLogger();
   protected defaultTimeoutMs = 10000;
+  protected static readonly DEFAULT_QUOTE_ASSETS = ['USDT', 'USDC', 'BUSD', 'USD', 'BTC', 'ETH', 'EUR', 'INR'];
 
   public async connect(config: ProviderConfig): Promise<void> {
     this.config = config;
   }
 
-  public async disconnect(): Promise<void> {}
+  public async disconnect(): Promise<void> {
+    // Fix EC-H5: Clear config credentials on disconnect
+    this.config = null;
+  }
 
   /**
-   * Protected base symbol normalization logic (Fix L7).
+   * Protected helper to enforce connected state before accessing config (Fix EC-M6).
+   */
+  protected getConfig(): ProviderConfig {
+    if (!this.config) {
+      throw new UnifiedError('Adapter not connected. Call connect() first.', 'NOT_CONNECTED');
+    }
+    return this.config;
+  }
+
+  /**
+   * Protected base symbol normalization logic (Fix L7 & EC-M5).
    */
   protected normalizeSymbolBase(symbol: string): { base: string; quote: string; canonicalSymbol: string } {
     if (!symbol) {
       return { base: '', quote: '', canonicalSymbol: '' };
     }
     const clean = symbol.trim().toUpperCase();
+
+    // Fix EC-M5: Validate symbol does not contain multiple separators
+    if ((clean.match(/[/]/g) || []).length > 1 || (clean.match(/[-]/g) || []).length > 1 || (clean.match(/[_]/g) || []).length > 1) {
+      throw new UnifiedError(`Invalid symbol format with multiple separators: ${symbol}`, 'INVALID_REQUEST');
+    }
+
     if (clean.includes('/')) {
       const [base, quote] = clean.split('/');
       return { base, quote, canonicalSymbol: `${base}/${quote}` };
@@ -39,8 +59,9 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
       const [base, quote] = clean.split('_');
       return { base, quote, canonicalSymbol: `${base}/${quote}` };
     }
-    const quoteAssets = ['USDT', 'USDC', 'BUSD', 'USD', 'BTC', 'ETH', 'EUR', 'INR'];
-    for (const q of quoteAssets) {
+
+    // Fix EC-L8: Use static DEFAULT_QUOTE_ASSETS constant
+    for (const q of BaseExchangeAdapter.DEFAULT_QUOTE_ASSETS) {
       if (clean.endsWith(q) && clean.length > q.length) {
         const base = clean.slice(0, clean.length - q.length);
         return { base, quote: q, canonicalSymbol: `${base}/${q}` };
@@ -57,7 +78,7 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
   }
 
   /**
-   * Helper method for performing HTTP requests with a configurable timeout (Fix H3).
+   * Helper method for performing HTTP requests with a configurable timeout (Fix H3 & EC-H3).
    */
   protected async fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = this.defaultTimeoutMs): Promise<Response> {
     const controller = new AbortController();
@@ -70,7 +91,7 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
       return response;
     } catch (err: any) {
       if (err.name === 'AbortError' || err.name === 'TimeoutError' || (err instanceof DOMException && err.name === 'AbortError') || controller.signal.aborted) {
-        throw new UnifiedError('Request timed out after 10000ms.', 'EXCHANGE_TIMEOUT');
+        throw new UnifiedError(`Request timed out after ${timeoutMs}ms.`, 'EXCHANGE_TIMEOUT');
       }
       throw err;
     } finally {
