@@ -80,20 +80,45 @@ export class ScalperV2Strategy implements IStrategy {
     const candles = context.marketSnapshot.candles[timeframeToUse];
     const currentPrice = candles[candles.length - 1]?.close || 0;
     
-    // Safely retrieve ATR, assuming it was calculated
     const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
-    const currentAtr = atrArray ? atrArray[atrArray.length - 1] : 0;
+    const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
+
+    if (!currentAtr || currentAtr <= 0) {
+      const holdSignal = {
+        symbol: context.marketSnapshot.symbol,
+        timeframe: timeframeToUse,
+        type: SignalType.HOLD,
+        confidenceScore: 0,
+        riskAssessment: null,
+        signalPrice: currentPrice,
+        targetEntryPrice: null,
+        entryPrice: null,
+        stopLoss: null,
+        takeProfit: null,
+        reasoning: ['ATR is zero or unavailable — cannot calculate risk parameters'],
+        timestamp: context.timestamp
+      };
+      return {
+        strategyId: this.manifest.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: {
+          reasoning: holdSignal.reasoning,
+          signal: holdSignal,
+          indicatorSnapshot,
+          conditionResult
+        }
+      };
+    }
 
     // 4. Risk
     const riskContext: RiskContext = {
       timestamp: context.timestamp,
       currentPrice,
       currentAtr,
-      // For this stateless evaluation, assume a dummy account balance 
-      // or pass it through a modified context if it existed. 
-      // Since context currently only has marketSnapshot, we use a default
-      accountBalance: 1000 
+      accountBalance: context.accountBalance || 1000
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 

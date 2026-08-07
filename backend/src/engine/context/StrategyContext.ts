@@ -1,32 +1,32 @@
 import { MarketSnapshot } from '../market-data/MarketSnapshot';
 
+export function deepFreeze<T>(obj: T): T {
+  if (obj === null || typeof obj !== 'object') return obj;
+  Object.freeze(obj);
+  Object.getOwnPropertyNames(obj).forEach((prop) => {
+    const val = (obj as any)[prop];
+    if (typeof val === 'object' && val !== null && !Object.isFrozen(val)) {
+      deepFreeze(val);
+    }
+  });
+  return obj;
+}
+
 export class StrategyContext {
   public readonly timestamp: number;
   public readonly marketSnapshot: Readonly<MarketSnapshot>;
   public readonly accountBalance: number;
 
   constructor(marketSnapshot: MarketSnapshot, accountBalance: number = 1000) {
-    // Fix SE-16: Assign timestamp from snapshot timestamp
-    this.timestamp = marketSnapshot.timestamp || Date.now();
-    this.accountBalance = accountBalance > 0 ? accountBalance : 1000;
-
-    // Fix SE-C4 & SE-15: Deep freeze snapshot and nested candle arrays
-    if (marketSnapshot && marketSnapshot.candles) {
-      for (const candleArray of Object.values(marketSnapshot.candles)) {
-        if (Array.isArray(candleArray)) {
-          for (const candle of candleArray) {
-            Object.freeze(candle);
-          }
-          Object.freeze(candleArray);
-        }
-      }
-      Object.freeze(marketSnapshot.candles);
+    if (!marketSnapshot || !marketSnapshot.timestamp) {
+      throw new Error('MarketSnapshot must have a valid timestamp');
     }
-    this.marketSnapshot = Object.freeze(marketSnapshot);
+    this.timestamp = marketSnapshot.timestamp;
+    this.accountBalance = accountBalance > 0 ? accountBalance : 1000;
+    this.marketSnapshot = deepFreeze(marketSnapshot);
   }
 
-  // Prevents any modification to the context object after creation (Fix SE-17)
   public freeze(): Readonly<StrategyContext> {
-    return Object.freeze(this);
+    return deepFreeze(this);
   }
 }

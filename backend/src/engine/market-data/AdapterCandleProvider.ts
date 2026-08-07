@@ -13,7 +13,7 @@ export class AdapterCandleProvider implements ICandleProvider {
 
   constructor(private adapter: IExchangeProvider | IExchangeAdapter) {}
 
-  async fetchCandles(symbol: string, timeframe: Timeframe, limit: number = 100): Promise<NormalizedCandle[]> {
+  async fetchCandles(symbol: string, timeframe: Timeframe, limit: number = 200): Promise<NormalizedCandle[]> {
     const klines = await this.withRetry(
       () => this.adapter.fetchKlines(symbol, timeframe, limit),
       'fetchKlines',

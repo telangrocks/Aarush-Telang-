@@ -98,10 +98,36 @@ export class MomentumStrategy implements IStrategy {
     
     const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
-    // Fix SE-10: Fall back to 1% of currentPrice if ATR is unavailable
-    const currentAtr = (atrArray && atrArray.length > 0 && atrArray[atrArray.length - 1] > 0)
-      ? atrArray[atrArray.length - 1]
-      : currentPrice * 0.01;
+    const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
+
+    if (!currentAtr || currentAtr <= 0) {
+      const holdSignal = {
+        symbol: context.marketSnapshot.symbol,
+        timeframe: timeframeToUse,
+        type: SignalType.HOLD,
+        confidenceScore: 0,
+        riskAssessment: null,
+        signalPrice: currentPrice,
+        targetEntryPrice: null,
+        entryPrice: null,
+        stopLoss: null,
+        takeProfit: null,
+        reasoning: ['ATR is zero or unavailable — cannot calculate risk parameters'],
+        timestamp: context.timestamp
+      };
+      return {
+        strategyId: MOMENTUM_STRATEGY_MANIFEST.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: {
+          reasoning: holdSignal.reasoning,
+          signal: holdSignal,
+          indicatorSnapshot,
+          conditionResult
+        }
+      };
+    }
 
     // 4. Risk (Fix SE-C2 & SE-8: Use context.accountBalance instead of hardcoded 1000)
     const riskContext: RiskContext = {

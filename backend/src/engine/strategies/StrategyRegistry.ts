@@ -133,16 +133,34 @@ export class StrategyRegistry {
     return this.strategies;
   }
 
+  private strategyCache = new Map<string, IStrategy>();
+
+  public clearCache(): void {
+    this.strategyCache.clear();
+  }
+
   public createStrategy(id: string, configOverrides?: any): IStrategy | undefined {
     const normalizedId = this.normalizeStrategyId(id);
-    switch (normalizedId) {
-      case 'ScalperV2': return new ScalperV2Strategy(applyConfigOverrides(DEFAULT_SCALPER_CONFIG, configOverrides));
-      case 'Momentum': return new MomentumStrategy(applyConfigOverrides(DEFAULT_MOMENTUM_CONFIG, configOverrides));
-      case 'Breakout': return new BreakoutStrategy(applyConfigOverrides(DEFAULT_BREAKOUT_CONFIG, configOverrides));
-      case 'MeanReversion': return new MeanReversionStrategy(applyConfigOverrides(DEFAULT_MEAN_REVERSION_CONFIG, configOverrides));
-      case 'VWAP': return new VWAPStrategy(applyConfigOverrides(DEFAULT_VWAP_CONFIG, configOverrides));
-      default: return undefined;
+    const cacheKey = `${normalizedId}:${JSON.stringify(configOverrides || {})}`;
+
+    if (this.strategyCache.has(cacheKey)) {
+      return this.strategyCache.get(cacheKey);
     }
+
+    let strategy: IStrategy | undefined;
+    switch (normalizedId) {
+      case 'ScalperV2': strategy = new ScalperV2Strategy(applyConfigOverrides(DEFAULT_SCALPER_CONFIG, configOverrides)); break;
+      case 'Momentum': strategy = new MomentumStrategy(applyConfigOverrides(DEFAULT_MOMENTUM_CONFIG, configOverrides)); break;
+      case 'Breakout': strategy = new BreakoutStrategy(applyConfigOverrides(DEFAULT_BREAKOUT_CONFIG, configOverrides)); break;
+      case 'MeanReversion': strategy = new MeanReversionStrategy(applyConfigOverrides(DEFAULT_MEAN_REVERSION_CONFIG, configOverrides)); break;
+      case 'VWAP': strategy = new VWAPStrategy(applyConfigOverrides(DEFAULT_VWAP_CONFIG, configOverrides)); break;
+      default: strategy = undefined;
+    }
+
+    if (strategy) {
+      this.strategyCache.set(cacheKey, strategy);
+    }
+    return strategy;
   }
 }
 

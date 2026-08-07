@@ -63,7 +63,9 @@ export class StrategyOrchestrator {
         const strategy = registry.createStrategy(strategyId, config);
         // Fix SE-2: Throw error when strategyId is unregistered
         if (!strategy) {
-          throw new UnifiedError(`Strategy '${strategyId}' is not registered in StrategyRegistry.`, 'UNSUPPORTED_OPERATION');
+          const availableStrats = registry.getAvailableStrategies().join(', ');
+          this.logger.warn(`[StrategyOrchestrator] Strategy '${strategyId}' not found. Available: ${availableStrats}`);
+          throw new UnifiedError(`Strategy '${strategyId}' is not registered.`, 'UNSUPPORTED_OPERATION');
         }
         if (strategy.manifest?.supportedTimeframes) {
           targetTimeframes = strategy.manifest.supportedTimeframes as Timeframe[];

@@ -58,6 +58,6 @@ describe('MomentumStrategy', () => {
 
     expect(result.hasSignal).toBe(false);
     expect(result.metadata.signal.type).toBe('HOLD');
-    expect(result.metadata.reasoning.some((r: string) => r.includes('No strong directional bias') || r.includes('Confidence score'))).toBe(true);
+    expect(result.metadata.reasoning.some((r: string) => r.includes('No strong directional bias') || r.includes('Confidence score') || r.includes('ATR is zero'))).toBe(true);
   });
 });

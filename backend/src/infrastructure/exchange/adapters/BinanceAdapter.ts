@@ -214,7 +214,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
     throw lastError;
   }
 
-  public async fetchKlines(symbol: string, interval: string, limit = 100): Promise<any[]> {
+  public async fetchKlines(symbol: string, interval: string, limit = 200): Promise<any[]> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const hosts = this.getHosts();
