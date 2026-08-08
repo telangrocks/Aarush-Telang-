@@ -393,18 +393,22 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   public async createOrder(order: OrderRequest): Promise<Order> {
     const { canonicalSymbol } = this.normalizeSymbol(order.symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
+    const qtyBN = new BigNumber(order.amount);
+    const qtyStr = qtyBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+
     const params: Record<string, any> = {
       symbol: rawSymbol,
       side: order.side.toUpperCase(),
       type: order.type.toUpperCase(),
-      quantity: order.amount.toString(),
+      quantity: qtyStr,
     };
     if (order.clientOrderId) {
       const cleanId = order.clientOrderId.replace(/[^a-zA-Z0-9-_]/g, '');
       params.newClientOrderId = cleanId.length > 36 ? cleanId.slice(-36) : cleanId;
     }
-    if (order.type.toUpperCase() === 'LIMIT') {
-      params.price = order.price?.toString();
+    if (order.type.toUpperCase() === 'LIMIT' && order.price) {
+      const priceBN = new BigNumber(order.price);
+      params.price = priceBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
       params.timeInForce = 'GTC';
     }
 
