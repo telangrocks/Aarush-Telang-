@@ -63,8 +63,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
     let lastError: any;
 
     for (const host of hosts) {
-      const isPostOrDelete = method === 'POST' || method === 'DELETE';
-      const url = isPostOrDelete ? `${host}${path}` : `${host}${path}?${fullPayload}`;
+      const url = `${host}${path}?${fullPayload}`;
 
       const headers: Record<string, string> = {
         'X-MBX-APIKEY': cleanKey,
