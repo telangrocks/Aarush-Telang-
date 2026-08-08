@@ -34,37 +34,29 @@ export class ConfidenceEngine {
     
     // Trend Scoring
     let trendScore = 0;
-    if (conditions.trend.priceAboveEMA) {
-      trendScore += 50;
+    if (conditions.trend.priceAboveEMA && conditions.trend.emaCrossoverState === 'BULLISH') {
+      trendScore = 100;
+      explanation.push('Price is above EMA with Bullish Crossover.');
+    } else if (conditions.trend.priceAboveEMA && conditions.trend.trendDirection === 'UP') {
+      trendScore = 75;
+      explanation.push('Price is above EMA with UP trend.');
+    } else if (conditions.trend.priceAboveEMA) {
+      trendScore = 50;
       explanation.push('Price is above EMA.');
     } else {
-      explanation.push('Price is below EMA.');
-    }
-
-    if (conditions.trend.emaCrossoverState !== 'NONE') {
-      trendScore += 50;
-      explanation.push(`EMA Crossover is ${conditions.trend.emaCrossoverState}.`);
-    } else if (conditions.trend.trendDirection !== 'SIDEWAYS') {
-      trendScore += 25;
-      explanation.push(`Trend direction is ${conditions.trend.trendDirection}.`);
-    } else {
-      explanation.push('Trend is SIDEWAYS.');
+      explanation.push('Trend is Bearish or Sideways.');
     }
 
     // Momentum Scoring
     let momentumScore = 0;
-    if (conditions.momentum.rsiState !== 'NEUTRAL') {
-      momentumScore += 50;
-      explanation.push(`RSI is ${conditions.momentum.rsiState}.`);
+    if (conditions.momentum.macdDirection === 'BULLISH' && (conditions.momentum.rsiState === 'NEUTRAL' || conditions.momentum.rsiState === 'OVERBOUGHT')) {
+      momentumScore = 100;
+      explanation.push('Strong Bullish Momentum (MACD & RSI aligned).');
+    } else if (conditions.momentum.macdDirection === 'BULLISH' || conditions.momentum.rsiState === 'OVERBOUGHT') {
+      momentumScore = 50;
+      explanation.push('Partial Bullish Momentum.');
     } else {
-      explanation.push('RSI is NEUTRAL.');
-    }
-
-    if (conditions.momentum.macdDirection !== 'NEUTRAL') {
-      momentumScore += 50;
-      explanation.push(`MACD direction is ${conditions.momentum.macdDirection}.`);
-    } else {
-      explanation.push('MACD is NEUTRAL.');
+      explanation.push('Momentum is Neutral or Bearish.');
     }
 
     // Volatility Scoring
@@ -72,27 +64,20 @@ export class ConfidenceEngine {
     if (conditions.volatility.atrState === 'EXPANDING') {
       volatilityScore = 100;
       explanation.push('Volatility is EXPANDING.');
-    } else if (conditions.volatility.atrState === 'CONTRACTING') {
-      volatilityScore = 50;
-      explanation.push('Volatility is CONTRACTING.');
     } else {
-      explanation.push('Volatility is NEUTRAL.');
+      explanation.push('Volatility is Contracting or Neutral.');
     }
 
     // Volume Scoring
     let volumeScore = 0;
-    if (conditions.volume.volumeConfirmation) {
-      volumeScore += 50;
+    if (conditions.volume.volumeConfirmation && conditions.volume.volumeTrend === 'INCREASING') {
+      volumeScore = 100;
+      explanation.push('Volume breakout confirmed with increasing trend.');
+    } else if (conditions.volume.volumeConfirmation) {
+      volumeScore = 50;
       explanation.push('Volume breakout confirmed.');
     } else {
-      explanation.push('No volume breakout.');
-    }
-
-    if (conditions.volume.volumeTrend !== 'NEUTRAL') {
-      volumeScore += 50;
-      explanation.push(`Volume is ${conditions.volume.volumeTrend}.`);
-    } else {
-      explanation.push('Volume trend is NEUTRAL.');
+      explanation.push('No volume confirmation.');
     }
 
     const factors: ConfidenceFactors = {

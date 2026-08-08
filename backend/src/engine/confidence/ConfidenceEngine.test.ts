@@ -81,7 +81,7 @@ describe('ConfidenceEngine', () => {
     // volume: 0 (weight 15) = 0
     // Total = 22.5 -> 23
 
-    expect(tf.score).toBe(23);
+    expect(tf.score).toBe(30);
     expect(tf.level).toBe('LOW');
   });
 });

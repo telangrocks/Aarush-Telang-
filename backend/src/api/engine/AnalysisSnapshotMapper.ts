@@ -288,6 +288,13 @@ export class AnalysisSnapshotMapper {
     const sig = result.metadata?.signal;
     const type = result.hasSignal ? (sig?.type || 'BUY') : 'HOLD';
 
+    const riskClassification = (
+      sig?.riskAssessment?.riskClassification ||
+      (result.metadata as any)?.riskAssessment?.riskClassification ||
+      manifest.riskProfile?.toUpperCase() ||
+      'LOW'
+    );
+
     return {
       type: type as 'BUY' | 'SELL' | 'HOLD',
       entryContext: sig?.side || sig?.timeframe || 'LONG',
@@ -295,7 +302,7 @@ export class AnalysisSnapshotMapper {
       targetEntryPrice: sig?.targetEntryPrice ?? sig?.currentPrice ?? null,
       stopLoss: sig?.stopLoss ?? null,
       takeProfit: sig?.takeProfit ?? null,
-      riskClassification: manifest.riskProfile?.toUpperCase() || 'LOW',
+      riskClassification,
       reasoning: result.metadata?.reasoning || [],
     };
   }
