@@ -763,26 +763,50 @@ export class TradingBot {
                 }
 
                 const positionSizeUsdt = target.positionSize || 100;
+                let stepSize = 0.00001;
+                let tickSize = 0.01;
+                let minNotional = 5;
+                let minQty = 0.00001;
+
+                try {
+                  const markets = await adapter.fetchMarkets();
+                  const matched = markets.find(m => m.symbol === orderSymbol || m.id === orderSymbol.replace('/', ''));
+                  if (matched) {
+                    if (matched.precision?.amount) stepSize = matched.precision.amount;
+                    if (matched.precision?.price) tickSize = matched.precision.price;
+                    if (matched.limits?.cost?.min) {
+                      const costMin = matched.limits.cost.min as any;
+                      minNotional = typeof costMin?.toNumber === 'function' ? costMin.toNumber() : (typeof costMin === 'number' ? costMin : 5);
+                    }
+                    if (matched.limits?.amount?.min) {
+                      const amtMin = matched.limits.amount.min as any;
+                      minQty = typeof amtMin?.toNumber === 'function' ? amtMin.toNumber() : (typeof amtMin === 'number' ? amtMin : 0.00001);
+                    }
+                  }
+                } catch (mErr: any) {
+                  console.warn('[trading-bot] Failed to fetch markets for precision rules, using defaults:', mErr?.message);
+                }
+
                 const rulesRes = TradeValidator.validate({
                   symbol: orderSymbol,
                   entryPrice: limitPrice || currentPrice,
                   tradeValueUsdt: positionSizeUsdt
-                }, ticker ? {
+                }, {
                   schemaVersion: "2.0",
-                  symbol: ticker.symbol,
+                  symbol: orderSymbol,
                   exchange: userKeys.exchange_name || "binance",
-                  baseAsset: ticker.symbol,
-                  quoteAsset: "USDT",
-                  minNotional: 0,
-                  minQty: 0,
+                  baseAsset: orderSymbol.split('/')[0] || "BTC",
+                  quoteAsset: orderSymbol.split('/')[1] || "USDT",
+                  minNotional: minNotional,
+                  minQty: minQty,
                   maxQty: 999999,
-                  stepSize: 0,
-                  tickSize: 0,
+                  stepSize: stepSize,
+                  tickSize: tickSize,
                   minPrice: 0,
                   maxPrice: 999999999,
                   contractSize: 1,
                   lastUpdated: Date.now()
-                } : null);
+                });
 
                 if (!rulesRes.isValid) {
                   console.error(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_FAILED] errorCode=${rulesRes.errorCode} errorMessage=${rulesRes.errorMessage}`);
