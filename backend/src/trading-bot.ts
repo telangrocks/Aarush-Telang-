@@ -714,7 +714,8 @@ export class TradingBot {
             if (pending.length > 0) {
               target = pending[pending.length - 1];
             } else {
-              const positionSize = (await this.state.storage.get('positionSize')) as number || 100;
+              const storedSize = (await this.state.storage.get('positionSize')) as number;
+              const positionSize = (storedSize && storedSize > 0) ? storedSize : 10;
               const targetEntryPrice = (await this.state.storage.get('targetEntryPrice')) as number || 64500;
               target = {
                 id: `alert_${crypto.randomUUID()}`,
