@@ -400,7 +400,8 @@ export class BinanceAdapter extends BaseExchangeAdapter {
       quantity: order.amount.toString(),
     };
     if (order.clientOrderId) {
-      params.newClientOrderId = order.clientOrderId;
+      const cleanId = order.clientOrderId.replace(/[^a-zA-Z0-9-_]/g, '');
+      params.newClientOrderId = cleanId.length > 36 ? cleanId.slice(-36) : cleanId;
     }
     if (order.type.toUpperCase() === 'LIMIT') {
       params.price = order.price?.toString();
