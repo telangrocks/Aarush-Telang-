@@ -71,16 +71,11 @@ export class BinanceAdapter extends BaseExchangeAdapter {
         'User-Agent': 'CryptoPulse/1.0',
       };
 
-      if (isPostOrDelete) {
-        headers['Content-Type'] = 'application/x-www-form-urlencoded';
-      }
-
       let status = 0;
       try {
         const res = await this.fetchWithTimeout(url, {
           method,
           headers,
-          body: isPostOrDelete ? fullPayload : undefined,
         });
 
         status = res.status;
