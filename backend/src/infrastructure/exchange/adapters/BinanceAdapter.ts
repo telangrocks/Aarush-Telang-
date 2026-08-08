@@ -102,6 +102,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
         });
 
         if (!res.ok) {
+          console.error(`[BINANCE_API_ERROR] host=${host} path=${path} status=${res.status} body=${errText}`);
           const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
           throw new UnifiedError(classified.friendlyMessage, classified.code);
         }
