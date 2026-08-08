@@ -734,7 +734,8 @@ export class TradingBot {
               alerts.push(target);
             }
             const side: 'BUY' | 'SELL' = target.side || 'BUY';
-            const orderSymbol = coinId || target.symbol || 'BTC/USDT';
+            const rawSymbol = coinId || target.symbol || 'BTC/USDT';
+            const orderSymbol = rawSymbol.includes('/') ? rawSymbol : `${rawSymbol}/USDT`;
             const clientOrderId = target.id;
 
             console.log(`[DIAGNOSTIC] [STAGE: PENDING_ALERT_FOUND] targetAlertId=${target.id} symbol=${orderSymbol} side=${side} positionSize=${target.positionSize}`);

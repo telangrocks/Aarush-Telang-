@@ -67,7 +67,7 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
         return { base, quote: q, canonicalSymbol: `${base}/${q}` };
       }
     }
-    return { base: clean, quote: '', canonicalSymbol: clean };
+    return { base: clean, quote: 'USDT', canonicalSymbol: `${clean}/USDT` };
   }
 
   /**

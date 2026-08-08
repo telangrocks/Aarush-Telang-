@@ -63,8 +63,8 @@ export class BinanceErrorMapper implements IExchangeErrorMapper {
       [-1007]: 'NETWORK_TIMEOUT', // Timeout waiting for response
       [-1101]: 'UNKNOWN_EXCHANGE_ERROR', // Unknown endpoint
       [1101]: 'UNKNOWN_EXCHANGE_ERROR',
-      [-1102]: 'INVALID_SIGNATURE', // Malformed/empty mandatory parameter
-      [-1121]: 'INVALID_SIGNATURE', // Invalid symbol
+      [-1102]: 'INVALID_REQUEST', // Malformed/empty mandatory parameter
+      [-1121]: 'INVALID_REQUEST', // Invalid symbol
       [-1010]: 'INSUFFICIENT_PERMISSIONS', // Customer's permissions don't match required API security
       [-2010]: 'INSUFFICIENT_PERMISSIONS', // Account has insufficient permission
       [-2027]: 'SPOT_TRADING_NOT_ENABLED', // Futures/Margin trading not enabled
