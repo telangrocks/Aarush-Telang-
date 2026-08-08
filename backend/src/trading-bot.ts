@@ -875,13 +875,13 @@ export class TradingBot {
                 };
               }
             } catch (e: any) {
-              console.error(`[DIAGNOSTIC] [STAGE: ORDER_FAILED] exceptionMessage=${e.message} exceptionName=${e.name} code=${e.code} status=${e.status} stack=${e.stack}`);
+              console.error(`[DIAGNOSTIC] [STAGE: ORDER_FAILED] exceptionMessage=${e.message} exceptionName=${e.name} code=${e.code} status=${e.status} techDetail=${e.technicalDetail} stack=${e.stack}`);
               orderResult = {
                 success: false,
                 code: "EXCHANGE_REJECTED",
                 exchangeCode: e.code || e.status || -1,
                 message: e.message || 'Trade execution failed',
-                details: e.details || String(e)
+                details: e.technicalDetail || e.details || String(e)
               };
             }
 
