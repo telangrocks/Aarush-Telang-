@@ -60,10 +60,11 @@ class FcmService : FirebaseMessagingService() {
     }
 
     private fun handleDataPayload(data: Map<String, String>) {
-        val alertType = data["type"]
-        if (alertType == "TRADE_ALERT") {
+        val alertType = data["type"] ?: data["alertType"]
+        if (alertType.equals("TRADE_ALERT", ignoreCase = true) || alertType.equals("trade_alert", ignoreCase = true)) {
+            val alertId = data["id"] ?: data["alertId"] ?: ""
             val alertData = mapOf<String, Any>(
-                "id" to (data["id"] ?: ""),
+                "id" to alertId,
                 "symbol" to (data["symbol"] ?: ""),
                 "entryPrice" to (data["entryPrice"]?.toDoubleOrNull() ?: 0.0),
                 "stopLoss" to (data["stopLoss"]?.toDoubleOrNull() ?: 0.0),

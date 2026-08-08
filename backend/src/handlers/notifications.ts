@@ -177,7 +177,9 @@ export async function sendTradeNotification(
   const body = `${opportunity.side} ${opportunity.symbol} | Strategy: ${opportunity.strategy} | Entry: $${opportunity.entryPrice.toFixed(4)} | SL: $${opportunity.stopLoss.toFixed(4)} | TP: $${opportunity.takeProfit.toFixed(4)}`;
 
   const dataPayload: Record<string, string> = {
-    type: "trade_alert",
+    type: "TRADE_ALERT",
+    alertType: "TRADE_ALERT",
+    id: alertId,
     alertId: alertId,
     symbol: opportunity.symbol,
     side: opportunity.side,
@@ -219,6 +221,7 @@ export async function sendTradeNotification(
           android: {
             notification: {
               sound: "default",
+              channel_id: "trading_bot_channel",
             },
             priority: "high",
           },
