@@ -42,8 +42,8 @@ export class BinanceAdapter extends BaseExchangeAdapter {
 
   private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', path: string, params: Record<string, any> = {}): Promise<any> {
     const startTime = Date.now();
-    const cleanKey = (this.config?.apiKey || '').trim();
-    const cleanSec = (this.config?.secret || '').trim();
+    const cleanKey = (this.config?.apiKey || '').replace(/[\u200B-\u200D\uFEFF]/g, "").trim().replace(/^["']|["']$/g, "").trim();
+    const cleanSec = (this.config?.secret || '').replace(/[\u200B-\u200D\uFEFF]/g, "").trim().replace(/^["']|["']$/g, "").trim();
     if (!cleanKey || !cleanSec) {
       throw new UnifiedError('Missing required exchange credentials (API Key or Secret).', 'MISSING_REQUIRED_CREDENTIALS');
     }
@@ -57,21 +57,31 @@ export class BinanceAdapter extends BaseExchangeAdapter {
 
     const queryString = queryParts.join('&');
     const signature = await WebCryptoSigner.hmacSha256Hex(cleanSec, queryString);
+    const fullPayload = `${queryString}&signature=${signature}`;
 
     const hosts = this.getHosts();
     let lastError: any;
 
     for (const host of hosts) {
-      const url = `${host}${path}?${queryString}&signature=${signature}`;
+      const isPostOrDelete = method === 'POST' || method === 'DELETE';
+      const url = isPostOrDelete ? `${host}${path}` : `${host}${path}?${fullPayload}`;
+
+      const headers: Record<string, string> = {
+        'X-MBX-APIKEY': cleanKey,
+        'Accept': 'application/json',
+        'User-Agent': 'CryptoPulse/1.0',
+      };
+
+      if (isPostOrDelete) {
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      }
+
       let status = 0;
       try {
         const res = await this.fetchWithTimeout(url, {
           method,
-          headers: {
-            'X-MBX-APIKEY': cleanKey,
-            'Accept': 'application/json',
-            'User-Agent': 'CryptoPulse/1.0',
-          },
+          headers,
+          body: isPostOrDelete ? fullPayload : undefined,
         });
 
         status = res.status;
@@ -394,6 +404,9 @@ export class BinanceAdapter extends BaseExchangeAdapter {
       type: order.type.toUpperCase(),
       quantity: order.amount.toString(),
     };
+    if (order.clientOrderId) {
+      params.newClientOrderId = order.clientOrderId;
+    }
     if (order.type.toUpperCase() === 'LIMIT') {
       params.price = order.price?.toString();
       params.timeInForce = 'GTC';
