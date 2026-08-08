@@ -685,8 +685,8 @@ export class TradingBot {
             }
 
             const userKeys = await this.env.DB.prepare(
-              'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
-            ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_api_passphrase_iv: string | null; exchange_api_passphrase_encrypted: string | null; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
+              'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_name, exchange_environment, exchange_region, fcm_token FROM users WHERE id = ?'
+            ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_api_passphrase_iv: string | null; exchange_api_passphrase_encrypted: string | null; exchange_name: string; exchange_environment: string | null; exchange_region: string | null; fcm_token: string | null }>();
 
             if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
               return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
@@ -865,14 +865,15 @@ export class TradingBot {
 
                 const filledQty = rawOrder.filled?.toNumber() || (rawOrder.status === 'closed' ? rawOrder.amount.toNumber() : 0);
                 const orderStatus = rawOrder.status === 'open' ? 'open' : 'filled';
+                const effectiveQty = filledQty > 0 ? filledQty : executionSnapshot.quantizedQuantity;
 
                 let ocoResult: any = null;
-                if (writeProvider.supportsOco() && executionSnapshot.takeProfit && executionSnapshot.stopLoss && filledQty > 0) {
-                  console.log(`[DIAGNOSTIC] Submitting post-fill Spot OCO protection for filledQty=${filledQty}...`);
+                if (writeProvider.supportsOco() && executionSnapshot.takeProfit && executionSnapshot.stopLoss && effectiveQty > 0) {
+                  console.log(`[DIAGNOSTIC] Submitting post-fill Spot OCO protection for effectiveQty=${effectiveQty}...`);
                   const ocoReq = {
                     symbol: executionSnapshot.symbol,
                     side: (executionSnapshot.side === 'BUY' ? 'sell' : 'buy') as 'buy' | 'sell',
-                    amount: new BigNumber(filledQty),
+                    amount: new BigNumber(effectiveQty),
                     price: new BigNumber(executionSnapshot.takeProfit),
                     stopPrice: new BigNumber(executionSnapshot.stopLoss),
                     stopLimitPrice: new BigNumber(executionSnapshot.stopLoss * 0.999),
@@ -943,7 +944,30 @@ export class TradingBot {
                 averageFillPrice = (typeof fallbackTicker?.last?.toNumber === 'function' ? fallbackTicker.last.toNumber() : (typeof fallbackTicker?.last === 'number' ? fallbackTicker.last : 0)) || refPrice;
               }
 
-              await this.logAuditEvent(snapshot.userId, 'TRADE_FILLED', { symbol: snapshot.symbol, side: snapshot.side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, strategy: snapshot.strategy });
+              const currentStatus = orderResult.status === 'open' ? 'open' : 'filled';
+              const actionType = currentStatus === 'open' ? 'TRADE_SUBMITTED' : 'TRADE_FILLED';
+              await this.logAuditEvent(snapshot.userId, actionType, { symbol: snapshot.symbol, side: snapshot.side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, strategy: snapshot.strategy });
+              
+              // FCM Push Notification for Trade Execution
+              try {
+                if (snapshot.userId) {
+                  await sendTradeNotification(this.env, snapshot.userId, orderResult.orderId || snapshot.alertId, {
+                    symbol: snapshot.symbol,
+                    side: snapshot.side,
+                    entryPrice: averageFillPrice,
+                    targetEntryPrice: snapshot.targetEntryPrice || snapshot.signalPrice,
+                    signalPrice: snapshot.signalPrice,
+                    stopLoss: snapshot.stopLoss || 0,
+                    takeProfit: snapshot.takeProfit || 0,
+                    estimatedPnl: 3.0,
+                    positionSize: snapshot.positionSizeUsdt,
+                    strategy: snapshot.strategy,
+                  });
+                  await this.logAuditEvent(snapshot.userId, 'FCM_NOTIFICATION_SENT', { orderId: orderResult.orderId, action: actionType });
+                }
+              } catch (fcmErr: any) {
+                console.error('[trading-bot] FCM execution notification error:', fcmErr?.message || String(fcmErr));
+              }
               await this.state.storage.put('tradeActive', true);
               await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
               await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
