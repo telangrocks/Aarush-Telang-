@@ -120,7 +120,9 @@ export class ExchangeManager {
         return p.createOrder(idempotentRequest);
       });
       if (res.isFailure) {
-        throw new Error(res.error.message);
+        const err = new Error(res.error.message);
+        (err as any).technicalDetail = res.error.details?.technicalDetail;
+        throw err;
       }
       return res.value;
     }

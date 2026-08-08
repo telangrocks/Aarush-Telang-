@@ -100,7 +100,7 @@ export class ExchangeOrchestrator {
       MetricsCollector.increment(`orchestrator_error_${exchangeId}`, 1);
 
       const classified = ExchangeErrorClassifier.getInstance().classifyException(err, exchangeId);
-      return fail(createDomainError(classified.code as any, classified.friendlyMessage));
+      return fail(createDomainError(classified.code as any, classified.friendlyMessage, { technicalDetail: classified.technicalDetail }));
     }
   }
 }
