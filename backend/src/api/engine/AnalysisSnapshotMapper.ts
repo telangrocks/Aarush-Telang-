@@ -80,9 +80,9 @@ export class AnalysisSnapshotMapper {
       rsi: this.extractRsiValue(result) ?? 50.0,
       macd: this.extractMacdValue(result) ?? 0.0,
       macdSignal: 0.0,
-      ema20: snapshot.currentPrice,
-      ema50: snapshot.currentPrice,
-      sma200: snapshot.currentPrice,
+      ema20: this.extractEmaValue(result, 20) ?? this.extractEmaValue(result, 9) ?? null,
+      ema50: this.extractEmaValue(result, 50) ?? this.extractEmaValue(result, 21) ?? null,
+      sma200: this.extractSmaValue(result, 200) ?? null,
       atr: this.extractAtrValue(result) ?? 0.0,
     };
 
@@ -212,6 +212,14 @@ export class AnalysisSnapshotMapper {
       }
     }
 
+    if (summaries.length === 0) {
+      summaries.push({
+        name: 'Data Status',
+        value: 'Insufficient',
+        signal: 'NEUTRAL',
+      });
+    }
+
     return summaries;
   }
 
@@ -316,6 +324,34 @@ export class AnalysisSnapshotMapper {
             const val = series?.slice(-1)[0]?.macdLine;
             if (val !== undefined && val !== null && !isNaN(val)) return val;
           }
+        }
+      }
+    }
+    return null;
+  }
+
+  private static extractEmaValue(result: EvaluationResult, period: number): number | null {
+    const tfData = result.metadata?.indicatorSnapshot?.timeframes as Record<string, TimeframeIndicators> | undefined;
+    if (tfData) {
+      for (const tfIndicators of Object.values(tfData)) {
+        if (tfIndicators?.ema?.[period]) {
+          const series = tfIndicators.ema[period];
+          const val = series?.slice(-1)[0];
+          if (val !== undefined && val !== null && !isNaN(val)) return val;
+        }
+      }
+    }
+    return null;
+  }
+
+  private static extractSmaValue(result: EvaluationResult, period: number): number | null {
+    const tfData = result.metadata?.indicatorSnapshot?.timeframes as Record<string, TimeframeIndicators> | undefined;
+    if (tfData) {
+      for (const tfIndicators of Object.values(tfData)) {
+        if (tfIndicators?.sma?.[period]) {
+          const series = tfIndicators.sma[period];
+          const val = series?.slice(-1)[0];
+          if (val !== undefined && val !== null && !isNaN(val)) return val;
         }
       }
     }

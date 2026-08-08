@@ -23,7 +23,7 @@ export class VWAPStrategy implements IStrategy {
     riskProfile: VWAP_STRATEGY_MANIFEST.riskProfile,
     supportedMarkets: ['CRYPTO'],
     supportedTimeframes: VWAP_STRATEGY_MANIFEST.supportedTimeframes as Timeframe[],
-    minimumCandles: 50,
+    minimumCandles: 200,
     defaultConfiguration: DEFAULT_VWAP_CONFIG,
     supportsLong: true,
     supportsShort: true,
@@ -61,30 +61,42 @@ export class VWAPStrategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    // Dynamic timeframe selection
-    const primaryTimeframe = this.config.preferredTimeframes[0] as Timeframe;
-    const timeframeToUse = (context.marketSnapshot.candles[primaryTimeframe]
+    // Guard C — Dynamic timeframe selection & candle validation
+    const primaryTimeframe = (this.config.preferredTimeframes?.[0] || '15m') as Timeframe;
+    const availableTimeframes = Object.keys(context.marketSnapshot.candles || {});
+    const timeframeToUse = (context.marketSnapshot.candles?.[primaryTimeframe]
       ? primaryTimeframe
-      : Object.keys(context.marketSnapshot.candles)[0]) as Timeframe;
+      : availableTimeframes[0]) as Timeframe;
 
-    if (!timeframeToUse) {
-      return this.createHoldResult(context, ['No market data timeframes available']);
+    if (!timeframeToUse || !context.marketSnapshot.candles?.[timeframeToUse] || context.marketSnapshot.candles[timeframeToUse].length === 0) {
+      return this.createHoldResult(context, ['No candle data available for any timeframe'], indicatorSnapshot, conditionResult);
     }
 
     const candles = context.marketSnapshot.candles[timeframeToUse];
     if (candles.length < 2) {
-      return this.createHoldResult(context, ['Insufficient candles for evaluation']);
+      return this.createHoldResult(context, ['Insufficient candle data for analysis'], indicatorSnapshot, conditionResult);
     }
 
     const currentCandle = candles[candles.length - 1];
     const previousCandle = candles[candles.length - 2];
-    const currentPrice = currentCandle.close;
-    const previousPrice = previousCandle.close;
+
+    // Guard A — Current price validation
+    const currentPrice = currentCandle?.close || context.marketSnapshot.currentPrice || 0;
+    const previousPrice = previousCandle?.close || currentPrice;
+
+    if (!currentPrice || currentPrice <= 0) {
+      return this.createHoldResult(context, ['Invalid or missing current price'], indicatorSnapshot, conditionResult);
+    }
+
+    // Guard B — Account balance validation
+    if (!context.accountBalance || context.accountBalance <= 0) {
+      return this.createHoldResult(context, ['Account balance is zero or unconfigured'], indicatorSnapshot, conditionResult);
+    }
 
     // Retrieve standard indicators needed for Risk evaluation
     const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
     if (!tfIndicators) {
-      return this.createHoldResult(context, ['Indicators failed to calculate']);
+      return this.createHoldResult(context, ['Indicators failed to calculate'], indicatorSnapshot, conditionResult);
     }
     const atrArray = tfIndicators.atr[this.config.conditionConfig.atrPeriod];
     const currentAtr = atrArray ? atrArray[atrArray.length - 1] : 0;
@@ -97,27 +109,25 @@ export class VWAPStrategy implements IStrategy {
     // Distance from VWAP Check (Over-extension)
     const deviationPercent = Math.abs(currentPrice - currentVwap) / currentVwap * 100;
     if (deviationPercent > this.config.vwapRules.maxDeviationThresholdPercent) {
-      return this.createHoldResult(context, ['Price excessively extended away from VWAP']);
+      return this.createHoldResult(context, ['Price excessively extended away from VWAP'], indicatorSnapshot, conditionResult);
     }
 
     // Sideways Chop Check (Minimum Displacement)
     const displacementPercent = Math.abs(currentPrice - previousPrice) / previousPrice * 100;
     if (displacementPercent < this.config.vwapRules.minSidewaysDisplacementPercent) {
-      return this.createHoldResult(context, ['No meaningful VWAP displacement (sideways market)']);
+      return this.createHoldResult(context, ['No meaningful VWAP displacement (sideways market)'], indicatorSnapshot, conditionResult);
     }
 
     // Volume Confirmation Check
-    // Get average volume from IndicatorSnapshot if available and valid
     let avgVolume = 0;
     if (tfIndicators.volume && tfIndicators.volume.length > 0 && !isNaN(tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume)) {
       avgVolume = tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume;
     } else {
-      // Fallback if not enough candles for moving average
       avgVolume = candles.reduce((sum, c) => sum + c.volume, 0) / candles.length;
     }
 
     if (currentCandle.volume < avgVolume * this.config.vwapRules.minVolumeMultiplier) {
-      return this.createHoldResult(context, ['Low volume rejection (volume confirmation not met)']);
+      return this.createHoldResult(context, ['Low volume rejection (volume confirmation not met)'], indicatorSnapshot, conditionResult);
     }
 
     // Identify interactions with VWAP (Crossovers)
@@ -129,7 +139,7 @@ export class VWAPStrategy implements IStrategy {
       timestamp: context.timestamp,
       currentPrice,
       currentAtr,
-      accountBalance: 1000 // Stateless engine evaluation default
+      accountBalance: context.accountBalance
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 
@@ -161,7 +171,7 @@ export class VWAPStrategy implements IStrategy {
         reasoning.push('VWAP: Bearish setup detected but shorting is disabled');
       }
     } else {
-      return this.createHoldResult(context, ['No definitive VWAP crossover']);
+      return this.createHoldResult(context, ['No definitive VWAP crossover'], indicatorSnapshot, conditionResult);
     }
 
     if (confidenceScore.overallScore < this.config.signalRules.minConfidenceScore) {
@@ -187,13 +197,22 @@ export class VWAPStrategy implements IStrategy {
     };
   }
 
-  private createHoldResult(context: Readonly<StrategyContext>, reasoning: string[]): EvaluationResult {
+  private createHoldResult(
+    context: Readonly<StrategyContext>,
+    reasoning: string[],
+    indicatorSnapshot?: any,
+    conditionResult?: any
+  ): EvaluationResult {
     return {
       strategyId: this.manifest.id,
       timestamp: context.timestamp,
       confidenceScore: 0,
       hasSignal: false,
-      metadata: { reasoning }
+      metadata: {
+        reasoning,
+        indicatorSnapshot: indicatorSnapshot || { timestamp: context.timestamp, timeframes: {} },
+        conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] }
+      }
     };
   }
 }

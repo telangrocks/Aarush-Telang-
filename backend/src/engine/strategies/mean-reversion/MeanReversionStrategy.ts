@@ -60,27 +60,38 @@ export class MeanReversionStrategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    // Dynamic timeframe selection
-    const primaryTimeframe = this.config.preferredTimeframes[0] as Timeframe;
-    const timeframeToUse = (context.marketSnapshot.candles[primaryTimeframe]
+    // Guard C — Dynamic timeframe selection & candle validation
+    const primaryTimeframe = (this.config.preferredTimeframes?.[0] || '15m') as Timeframe;
+    const availableTimeframes = Object.keys(context.marketSnapshot.candles || {});
+    const timeframeToUse = (context.marketSnapshot.candles?.[primaryTimeframe]
       ? primaryTimeframe
-      : Object.keys(context.marketSnapshot.candles)[0]) as Timeframe;
+      : availableTimeframes[0]) as Timeframe;
 
-    if (!timeframeToUse) {
-      return this.createHoldResult(context, ['No market data timeframes available']);
+    if (!timeframeToUse || !context.marketSnapshot.candles?.[timeframeToUse] || context.marketSnapshot.candles[timeframeToUse].length === 0) {
+      return this.createHoldResult(context, ['No candle data available for any timeframe'], indicatorSnapshot, conditionResult);
     }
 
     const candles = context.marketSnapshot.candles[timeframeToUse];
     if (candles.length < 2) {
-      return this.createHoldResult(context, ['Insufficient candles for 2-step confirmation']);
+      return this.createHoldResult(context, ['Insufficient candle data for analysis'], indicatorSnapshot, conditionResult);
     }
 
+    // Guard A — Current price validation
     const currentCandle = candles[candles.length - 1];
-    const currentPrice = currentCandle.close;
+    const currentPrice = currentCandle?.close || context.marketSnapshot.currentPrice || 0;
+
+    if (!currentPrice || currentPrice <= 0) {
+      return this.createHoldResult(context, ['Invalid or missing current price'], indicatorSnapshot, conditionResult);
+    }
+
+    // Guard B — Account balance validation
+    if (!context.accountBalance || context.accountBalance <= 0) {
+      return this.createHoldResult(context, ['Account balance is zero or unconfigured'], indicatorSnapshot, conditionResult);
+    }
 
     const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
     if (!tfIndicators) {
-      return this.createHoldResult(context, ['Indicators failed to calculate']);
+      return this.createHoldResult(context, ['Indicators failed to calculate'], indicatorSnapshot, conditionResult);
     }
 
     // -- Strategy Specific Logic: Trend Strength Filter --
@@ -91,7 +102,7 @@ export class MeanReversionStrategy implements IStrategy {
     const atrArray = tfIndicators.atr[this.config.conditionConfig.atrPeriod];
 
     if (!emaFast || !emaSlow || !rsi || !atrArray) {
-      return this.createHoldResult(context, ['Required indicators missing']);
+      return this.createHoldResult(context, ['Required indicators missing'], indicatorSnapshot, conditionResult);
     }
 
     const currentEmaFast = emaFast[emaFast.length - 1];
@@ -102,7 +113,7 @@ export class MeanReversionStrategy implements IStrategy {
 
     const emaSeparation = Math.abs(currentEmaFast - currentEmaSlow) / currentEmaSlow * 100;
     if (emaSeparation > this.config.trendFilter.maxEmaSeparationPercent) {
-      return this.createHoldResult(context, ['Strong trend detected (EMA separation too large)']);
+      return this.createHoldResult(context, ['Strong trend detected (EMA separation too large)'], indicatorSnapshot, conditionResult);
     }
 
     // -- Strategy Specific Logic: 2-Step Confirmation --
@@ -119,13 +130,13 @@ export class MeanReversionStrategy implements IStrategy {
       isReversingFromOverbought = wasOverbought && currentRsi < previousRsi;
       
       if (!isReversingFromOversold && !isReversingFromOverbought) {
-        return this.createHoldResult(context, ['No reversal confirmation (2-step check failed)']);
+        return this.createHoldResult(context, ['No reversal confirmation (2-step check failed)'], indicatorSnapshot, conditionResult);
       }
     } else {
       isReversingFromOversold = currentRsi <= this.config.conditionConfig.rsiOversold;
       isReversingFromOverbought = currentRsi >= this.config.conditionConfig.rsiOverbought;
       if (!isReversingFromOversold && !isReversingFromOverbought) {
-        return this.createHoldResult(context, ['RSI not at extremes']);
+        return this.createHoldResult(context, ['RSI not at extremes'], indicatorSnapshot, conditionResult);
       }
     }
 
@@ -134,7 +145,7 @@ export class MeanReversionStrategy implements IStrategy {
       timestamp: context.timestamp,
       currentPrice,
       currentAtr,
-      accountBalance: 1000 // Stateless engine evaluation default
+      accountBalance: context.accountBalance
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 
@@ -194,13 +205,22 @@ export class MeanReversionStrategy implements IStrategy {
     };
   }
 
-  private createHoldResult(context: Readonly<StrategyContext>, reasoning: string[]): EvaluationResult {
+  private createHoldResult(
+    context: Readonly<StrategyContext>,
+    reasoning: string[],
+    indicatorSnapshot?: any,
+    conditionResult?: any
+  ): EvaluationResult {
     return {
       strategyId: this.manifest.id,
       timestamp: context.timestamp,
       confidenceScore: 0,
       hasSignal: false,
-      metadata: { reasoning }
+      metadata: {
+        reasoning,
+        indicatorSnapshot: indicatorSnapshot || { timestamp: context.timestamp, timeframes: {} },
+        conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] }
+      }
     };
   }
 }

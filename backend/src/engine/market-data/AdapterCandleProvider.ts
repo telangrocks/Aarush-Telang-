@@ -13,7 +13,15 @@ export class AdapterCandleProvider implements ICandleProvider {
 
   constructor(private adapter: IExchangeProvider | IExchangeAdapter) {}
 
+  private cache: Map<string, { data: any; expiresAt: number }> = new Map();
+
   async fetchCandles(symbol: string, timeframe: Timeframe, limit: number = 200): Promise<NormalizedCandle[]> {
+    const key = `candles_${symbol}_${timeframe}_${limit}`;
+    const cached = this.cache.get(key);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.data;
+    }
+
     const klines = await this.withRetry(
       () => this.adapter.fetchKlines(symbol, timeframe, limit),
       'fetchKlines',
@@ -30,15 +38,27 @@ export class AdapterCandleProvider implements ICandleProvider {
       volume: typeof k.volume === 'number' ? k.volume : parseFloat(k.volume || 0),
     }));
 
-    return CandleValidator.sanitizeAndSortCandles(mapped);
+    const result = CandleValidator.sanitizeAndSortCandles(mapped);
+    this.cache.set(key, { data: result, expiresAt: Date.now() + 10000 });
+    return result;
   }
 
   async fetchTicker(symbol: string): Promise<Ticker | null> {
-    return this.withRetry(
+    const key = `ticker_${symbol}`;
+    const cached = this.cache.get(key);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.data;
+    }
+
+    const ticker = await this.withRetry(
       () => this.adapter.fetchTicker(symbol),
       'fetchTicker',
       symbol,
     );
+    if (ticker) {
+      this.cache.set(key, { data: ticker, expiresAt: Date.now() + 10000 });
+    }
+    return ticker;
   }
 
   private async withRetry<T>(

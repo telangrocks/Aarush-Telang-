@@ -762,9 +762,11 @@ export async function handleGetTechnicalAnalysis(
     const manifest = registry.getManifest(normalizedId) 
       || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
     if (!manifest) {
-      const logger = new StructuredLogger();
-      logger.warn(`[StrategyOrchestrator] Strategy '${strategy}' not found. Available: ${manifests.map(m => m.id).join(', ')}`);
-      throw new UnifiedError(`Strategy '${strategy}' is not registered.`, 'UNSUPPORTED_OPERATION');
+      c.status(400);
+      return c.json({ 
+        error: `Strategy '${strategy}' is not registered.`, 
+        availableStrategies: registry.getAllManifests().map(m => m.id) 
+      });
     }
 
     const balanceResult = await adapter.fetchBalance().catch(() => null);
@@ -784,8 +786,13 @@ export async function handleGetTechnicalAnalysis(
     return c.json(snapshotDto);
   } catch (e: unknown) {
     const error = e as Error;
+    const msg = error?.message || String(e);
+    if (msg.includes('is not registered') || msg.includes('required') || msg.includes('Invalid symbol') || msg.includes('not available')) {
+      c.status(400);
+      return c.json({ error: "Error processing technical analysis", message: msg });
+    }
     c.status(500);
-    return c.json({ error: "Error processing technical analysis", message: error.message });
+    return c.json({ error: "Error processing technical analysis", message: msg });
   }
 }
 

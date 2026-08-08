@@ -23,35 +23,23 @@ export class MarketDataEngine {
    * Orchestrates the collection, normalization, and validation of market data across multiple timeframes.
    * Ensures MarketDataEngine receives identical object structure from every exchange.
    */
+  private cache: Map<string, { snapshot: MarketSnapshot; expiresAt: number }> = new Map();
+
   public async getSnapshot(symbol: string, timeframes: Timeframe[], limit: number = 200): Promise<MarketSnapshot> {
     if (!timeframes || timeframes.length === 0) {
       throw new Error('At least one timeframe must be specified');
     }
 
-    const ticker = await this.provider.fetchTicker(symbol);
-    if (!ticker) {
-      throw new Error(`Failed to fetch market ticker for symbol: ${symbol}`);
+    const cacheKey = `${symbol}_${timeframes.slice().sort().join(',')}_${limit}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.snapshot;
     }
 
-    const toNum = (v: any) => (v && typeof v.toNumber === 'function' ? v.toNumber() : typeof v === 'number' ? v : 0);
+    // Parallel fetch: fetch ticker and all candle timeframes concurrently
+    const tickerPromise = this.provider.fetchTicker(symbol);
 
-    const snapshot: MarketSnapshot = {
-      symbol: ticker.symbol,
-      timestamp: Date.now(),
-      currentPrice: toNum(ticker.last ?? (ticker as any).price),
-      volume24h: toNum(ticker.volume ?? (ticker as any).volume24h),
-      quoteVolume24h: toNum(ticker.quoteVolume ?? (ticker as any).quoteVolume24h),
-      candles: {} as MarketSnapshot['candles'],
-      metadata: {
-        priceChange24h: toNum((ticker as any).priceChange24h ?? 0),
-        priceChangePercent24h: toNum((ticker as any).priceChangePercent24h ?? 0),
-        highPrice24h: toNum(ticker.high ?? (ticker as any).highPrice24h),
-        lowPrice24h: toNum(ticker.low ?? (ticker as any).lowPrice24h),
-      },
-    };
-
-    // Fetch and validate candles concurrently using Promise.allSettled
-    const fetchPromises = timeframes.map(async (tf) => {
+    const candlePromises = timeframes.map(async (tf) => {
       try {
         const rawCandles = await this.provider.fetchCandles(symbol, tf, limit);
         const cleanCandles = CandleValidator.sanitizeAndSortCandles(rawCandles);
@@ -87,14 +75,39 @@ export class MarketDataEngine {
       }
     });
 
-    const results = await Promise.allSettled(fetchPromises);
+    const [tickerResult, candleResults] = await Promise.all([
+      tickerPromise,
+      Promise.allSettled(candlePromises),
+    ]);
+
+    if (!tickerResult) {
+      throw new Error(`Failed to fetch market ticker for symbol: ${symbol}`);
+    }
+
+    const ticker = tickerResult;
+    const toNum = (v: any) => (v && typeof v.toNumber === 'function' ? v.toNumber() : typeof v === 'number' ? v : 0);
+
+    const snapshot: MarketSnapshot = {
+      symbol: ticker.symbol,
+      timestamp: Date.now(),
+      currentPrice: toNum(ticker.last ?? (ticker as any).price),
+      volume24h: toNum(ticker.volume ?? (ticker as any).volume24h),
+      quoteVolume24h: toNum(ticker.quoteVolume ?? (ticker as any).quoteVolume24h),
+      candles: {} as MarketSnapshot['candles'],
+      metadata: {
+        priceChange24h: toNum((ticker as any).priceChange24h ?? 0),
+        priceChangePercent24h: toNum((ticker as any).priceChangePercent24h ?? 0),
+        highPrice24h: toNum(ticker.high ?? (ticker as any).highPrice24h),
+        lowPrice24h: toNum(ticker.low ?? (ticker as any).lowPrice24h),
+      },
+    };
 
     let successCount = 0;
     let lastError: any;
 
     for (let i = 0; i < timeframes.length; i++) {
       const tf = timeframes[i];
-      const result = results[i];
+      const result = candleResults[i];
 
       if (result.status === 'fulfilled') {
         snapshot.candles[tf] = result.value.cleanCandles;
@@ -124,6 +137,7 @@ export class MarketDataEngine {
       });
     }
 
+    this.cache.set(cacheKey, { snapshot, expiresAt: Date.now() + 5000 });
     return snapshot;
   }
 }

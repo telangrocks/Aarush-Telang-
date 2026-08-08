@@ -22,7 +22,7 @@ export class BreakoutStrategy implements IStrategy {
     riskProfile: BREAKOUT_STRATEGY_MANIFEST.riskProfile,
     supportedMarkets: ['CRYPTO'],
     supportedTimeframes: BREAKOUT_STRATEGY_MANIFEST.supportedTimeframes as Timeframe[],
-    minimumCandles: 100,
+    minimumCandles: 200,
     defaultConfiguration: DEFAULT_BREAKOUT_CONFIG,
     supportsLong: true,
     supportsShort: false,
@@ -60,24 +60,36 @@ export class BreakoutStrategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    // Fallback to highest timeframe available if preferred isn't there, or use 1h for breakout as baseline
-    const primaryTimeframe = '1h';
-    const timeframeToUse = (context.marketSnapshot.candles[primaryTimeframe]
+    // Guard C — Candle timeframe resolution and candle availability check
+    const primaryTimeframe = (this.config.preferredTimeframes?.[0] || '1h') as Timeframe;
+    const availableTimeframes = Object.keys(context.marketSnapshot.candles || {});
+    const timeframeToUse = (context.marketSnapshot.candles?.[primaryTimeframe]
       ? primaryTimeframe
-      : Object.keys(context.marketSnapshot.candles)[0]) as Timeframe;
+      : availableTimeframes[0]) as Timeframe;
 
-    if (!timeframeToUse) {
-      return {
-        strategyId: this.manifest.id,
-        timestamp: context.timestamp,
-        confidenceScore: 0,
-        hasSignal: false,
-        metadata: { reasoning: ['No market data timeframes available'] }
-      };
+    if (!timeframeToUse || !context.marketSnapshot.candles?.[timeframeToUse] || context.marketSnapshot.candles[timeframeToUse].length === 0) {
+      return this.createHoldResult(context, ['No candle data available for any timeframe'], indicatorSnapshot, conditionResult);
     }
 
     const candles = context.marketSnapshot.candles[timeframeToUse];
-    const currentPrice = candles[candles.length - 1]?.close || 0;
+    if (candles.length < 2) {
+      return this.createHoldResult(context, ['Insufficient candle data for analysis'], indicatorSnapshot, conditionResult);
+    }
+
+    // Guard A — Current price validation
+    const latestCandleClose = candles[candles.length - 1]?.close || 0;
+    const currentPrice = (latestCandleClose > 0)
+      ? latestCandleClose
+      : context.marketSnapshot.currentPrice || 0;
+
+    if (!currentPrice || currentPrice <= 0) {
+      return this.createHoldResult(context, ['Invalid or missing current price'], indicatorSnapshot, conditionResult);
+    }
+
+    // Guard B — Account balance validation
+    if (!context.accountBalance || context.accountBalance <= 0) {
+      return this.createHoldResult(context, ['Account balance is zero or unconfigured'], indicatorSnapshot, conditionResult);
+    }
 
     const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
@@ -88,7 +100,7 @@ export class BreakoutStrategy implements IStrategy {
       timestamp: context.timestamp,
       currentPrice,
       currentAtr,
-      accountBalance: 1000 // Stateless engine evaluation default
+      accountBalance: context.accountBalance
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 
@@ -116,6 +128,25 @@ export class BreakoutStrategy implements IStrategy {
         signal: tradingSignal,
         indicatorSnapshot,
         conditionResult
+      }
+    };
+  }
+
+  private createHoldResult(
+    context: Readonly<StrategyContext>,
+    reasoning: string[],
+    indicatorSnapshot?: any,
+    conditionResult?: any
+  ): EvaluationResult {
+    return {
+      strategyId: this.manifest.id,
+      timestamp: context.timestamp,
+      confidenceScore: 0,
+      hasSignal: false,
+      metadata: {
+        reasoning,
+        indicatorSnapshot: indicatorSnapshot || { timestamp: context.timestamp, timeframes: {} },
+        conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] }
       }
     };
   }

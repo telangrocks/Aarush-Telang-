@@ -22,7 +22,7 @@ describe('MeanReversionStrategy', () => {
     const result = strategy.evaluate(emptyContext);
     expect(result.strategyId).toBe('MeanReversion');
     expect(result.hasSignal).toBe(false);
-    expect(result.metadata?.reasoning).toContain('Insufficient candles for 2-step confirmation');
+    expect(result.metadata?.reasoning[0]).toMatch(/candle data/i);
   });
 
   it('should hold during a strong trend (EMA separation too large)', () => {

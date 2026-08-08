@@ -180,7 +180,9 @@ describe('AnalysisSnapshotMapper Unit Tests', () => {
     expect(dto.symbol).toBe('ETHUSDT');
     expect(dto.price).toBe(3000.0);
     expect(dto.change24h).toBe(0);
-    expect(dto.marketAnalysis.indicatorSummary).toEqual([]);
+    expect(dto.marketAnalysis.indicatorSummary).toEqual([
+      { name: 'Data Status', value: 'Insufficient', signal: 'NEUTRAL' }
+    ]);
     expect(dto.marketAnalysis.conditionSummary).toEqual([]);
     expect(dto.tradingSignal.type).toBe('HOLD');
     expect(dto.opportunity).toBeNull();
