@@ -331,23 +331,62 @@ export class BybitAdapter extends BaseExchangeAdapter {
   public async createOrder(order: OrderRequest): Promise<Order> {
     const { canonicalSymbol } = this.normalizeSymbol(order.symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
-    const params = {
-      category: 'linear',
+    const isBuy = order.side.toLowerCase() === 'buy';
+    const isLimit = order.type.toLowerCase() === 'limit';
+    
+    const qtyBN = new BigNumber(order.amount);
+    const qtyStr = qtyBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+
+    const category = ((this.config?.environment as string) === 'futures' || order.symbol.includes(':')) ? 'linear' : 'spot';
+
+    const params: Record<string, any> = {
+      category,
       symbol: rawSymbol,
-      side: order.side === 'buy' ? 'Buy' : 'Sell',
-      orderType: order.type === 'limit' ? 'Limit' : 'Market',
-      qty: order.amount.toString(),
-      price: order.price ? order.price.toString() : undefined,
+      side: isBuy ? 'Buy' : 'Sell',
+      orderType: isLimit ? 'Limit' : 'Market',
+      qty: qtyStr,
       timeInForce: 'GTC',
     };
 
-    const result = await this.makeRequest('POST', '/v5/order/create', params, true);
+    if (order.clientOrderId) {
+      const cleanId = order.clientOrderId.replace(/[^a-zA-Z0-9-_]/g, '');
+      params.orderLinkId = cleanId.length > 36 ? cleanId.slice(-36) : cleanId;
+    }
+
+    if (isLimit && order.price) {
+      const priceBN = new BigNumber(order.price);
+      params.price = priceBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+    }
+
+    if ((order as any).takeProfit) {
+      const tpBN = new BigNumber((order as any).takeProfit);
+      params.takeProfit = tpBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+    }
+
+    if ((order as any).stopLoss) {
+      const slBN = new BigNumber((order as any).stopLoss);
+      params.stopLoss = slBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+    }
+
+    let result: any;
+    try {
+      result = await this.makeRequest('POST', '/v5/order/create', params, true);
+    } catch (err: any) {
+      // Fallback to linear category if spot returns invalid category
+      if (err?.message?.includes('category') || err?.message?.includes('10001')) {
+        params.category = 'linear';
+        result = await this.makeRequest('POST', '/v5/order/create', params, true);
+      } else {
+        throw err;
+      }
+    }
+
     return {
       id: result?.orderId || '',
-      clientOrderId: result?.orderLinkId || '',
+      clientOrderId: result?.orderLinkId || params.orderLinkId || '',
       symbol: canonicalSymbol,
-      side: order.side,
-      type: order.type,
+      side: isBuy ? 'buy' : 'sell',
+      type: isLimit ? 'limit' : 'market',
       status: 'open',
       price: order.price || new BigNumber(0),
       amount: order.amount,

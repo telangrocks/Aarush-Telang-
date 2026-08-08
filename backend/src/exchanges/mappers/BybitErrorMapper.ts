@@ -13,13 +13,15 @@ export class BybitErrorMapper implements IExchangeErrorMapper {
     if (!bodyText) return null;
 
     let retCode: number | undefined;
+    let retMsg: string | undefined;
     try {
       const raw = bodyText.includes('{')
         ? bodyText.slice(bodyText.indexOf('{'), bodyText.lastIndexOf('}') + 1)
         : bodyText;
-      const parsed = JSON.parse(raw) as { retCode?: number; ret_code?: number };
+      const parsed = JSON.parse(raw) as { retCode?: number; ret_code?: number; retMsg?: string; ret_msg?: string };
       if (typeof parsed.retCode === 'number') retCode = parsed.retCode;
       else if (typeof parsed.ret_code === 'number') retCode = parsed.ret_code;
+      retMsg = parsed.retMsg || parsed.ret_msg;
     } catch {
       const match = bodyText.match(/"retCode"\s*:\s*(-?\d+)/) || bodyText.match(/"ret_code"\s*:\s*(-?\d+)/);
       if (match) retCode = parseInt(match[1], 10);
@@ -44,6 +46,16 @@ export class BybitErrorMapper implements IExchangeErrorMapper {
     const targetCode = codeMap[retCode];
     if (targetCode) {
       return this.mk(targetCode, technicalDetail);
+    }
+
+    if (retMsg) {
+      return {
+        code: 'INVALID_REQUEST',
+        friendlyMessage: `Bybit Error [${retCode}]: ${retMsg}`,
+        hint: `Bybit API returned code ${retCode}: ${retMsg}`,
+        technicalDetail,
+        version: '1.0'
+      };
     }
 
     return null;
