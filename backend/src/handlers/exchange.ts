@@ -14,6 +14,9 @@ import { analyzeMarket } from "../market-analysis";
 function normalizeEnvironment(value: unknown): ExchangeEnvironment {
   if (typeof value === "string") {
     const lower = value.toLowerCase();
+    if (lower === "demo") {
+      return "demo" as ExchangeEnvironment;
+    }
     if (lower === "testnet" || lower === "testing" || lower === "sandbox") {
       return "testnet";
     }
