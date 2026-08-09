@@ -4,6 +4,7 @@ export interface ProviderConfig {
   password?: string;
   passphrase?: string;
   environment: 'Production' | 'Testing' | 'mainnet' | 'testnet' | 'sandbox';
+  region?: string;
 }
 
 export interface ExchangeCapabilities {

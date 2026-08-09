@@ -38,7 +38,7 @@ export class ReconciliationEngine {
     }
     try {
       return await decrypt(
-        { iv: this.userKeys.exchange_api_secret_iv, encrypted: this.userKeys.exchange_api_secret_encrypted },
+        { iv: this.userKeys.exchange_api_secret_iv, encrypted: this.userKeys.exchange_api_secret_encrypted, salt: this.userKeys.exchange_api_secret_salt },
         this.env.ENCRYPTION_KEY
       );
     } catch (e) {
@@ -53,7 +53,7 @@ export class ReconciliationEngine {
     }
     try {
       return await decrypt(
-        { iv: this.userKeys.exchange_api_passphrase_iv, encrypted: this.userKeys.exchange_api_passphrase_encrypted },
+        { iv: this.userKeys.exchange_api_passphrase_iv, encrypted: this.userKeys.exchange_api_passphrase_encrypted, salt: this.userKeys.exchange_api_passphrase_salt },
         this.env.ENCRYPTION_KEY
       );
     } catch (e) {

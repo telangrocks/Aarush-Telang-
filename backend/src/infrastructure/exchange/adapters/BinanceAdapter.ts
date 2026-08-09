@@ -37,7 +37,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
       return [(process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '')];
     }
     const envHost = process.env.BINANCE_BASE_URL ? [process.env.BINANCE_BASE_URL.replace(/\/$/, '')] : [];
-    return Array.from(new Set([...envHost, 'https://api.binance.com']));
+    return Array.from(new Set([...envHost, 'https://api.binance.com', 'https://api.binance.us']));
   }
 
   private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', path: string, params: Record<string, any> = {}): Promise<any> {
