@@ -122,10 +122,12 @@ export class BybitAdapter extends BaseExchangeAdapter {
       status = res.status;
       errText = await res.text();
 
+      const safeLogUrl = `${host}${path}${queryString ? '?params=[REDACTED]' : ''}`;
+
       this.logger.logExchangeRequest({
         exchange: this.exchangeId,
         endpoint: path,
-        requestUrl: url,
+        requestUrl: safeLogUrl,
         symbol: params.symbol,
         timeframe: params.interval,
         latencyMs: Date.now() - startTime,
@@ -153,10 +155,11 @@ export class BybitAdapter extends BaseExchangeAdapter {
       return json.result;
     } catch (err: any) {
       if (!(err instanceof UnifiedError)) {
+        const safeLogUrl = `${host}${path}${queryString ? '?params=[REDACTED]' : ''}`;
         this.logger.logExchangeRequest({
           exchange: this.exchangeId,
           endpoint: path,
-          requestUrl: url,
+          requestUrl: safeLogUrl,
           symbol: params.symbol,
           timeframe: params.interval,
           latencyMs: Date.now() - startTime,

@@ -32,12 +32,20 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   }
 
   public getHosts(): string[] {
-    const isTestnet = this.config?.environment === 'testnet' || this.config?.environment === 'Testing' || (this.config?.environment as string) === 'sandbox';
+    const env = (this.config?.environment || '').toString().toLowerCase();
+    if (env === 'demo') {
+      throw new UnifiedError('Binance does not support demo environment.', 'UNSUPPORTED_OPERATION');
+    }
+    const isTestnet = env === 'testnet' || env === 'testing' || env === 'sandbox';
     if (isTestnet) {
       return [(process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '')];
     }
     const envHost = process.env.BINANCE_BASE_URL ? [process.env.BINANCE_BASE_URL.replace(/\/$/, '')] : [];
-    return Array.from(new Set([...envHost, 'https://api.binance.com', 'https://api.binance.us']));
+    const region = (this.config?.region || '').toString().toLowerCase();
+    const regionHosts = region === 'india' 
+      ? ['https://api.binance.com', 'https://api.binance.us'] 
+      : ['https://api.binance.com', 'https://api.binance.us'];
+    return Array.from(new Set([...envHost, ...regionHosts]));
   }
 
   private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', path: string, params: Record<string, any> = {}): Promise<any> {
@@ -64,6 +72,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
 
     for (const host of hosts) {
       const url = `${host}${path}?${fullPayload}`;
+      const safeLogUrl = `${host}${path}?params=[REDACTED]`;
 
       const headers: Record<string, string> = {
         'X-MBX-APIKEY': cleanKey,
@@ -89,7 +98,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
         this.logger.logExchangeRequest({
           exchange: this.exchangeId,
           endpoint: path,
-          requestUrl: url,
+          requestUrl: safeLogUrl,
           symbol: params.symbol,
           latencyMs: Date.now() - startTime,
           status: status,
@@ -116,7 +125,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
           this.logger.logExchangeRequest({
             exchange: this.exchangeId,
             endpoint: path,
-            requestUrl: url,
+            requestUrl: safeLogUrl,
             symbol: params.symbol,
             latencyMs: Date.now() - startTime,
             status: status || 500,

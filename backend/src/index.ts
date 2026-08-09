@@ -235,7 +235,6 @@ const PUBLIC_AUTH_PATHS = new Set([
   "/api/login",
   "/api/resend-verification",
   "/api/verify-email",
-  "/api/exchange/validate",
   "/api/refresh",
   "/api/forgot-password",
   "/api/reset-password",

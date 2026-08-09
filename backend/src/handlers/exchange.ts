@@ -6,27 +6,16 @@ import { FRIENDLY_MESSAGES, classifyException, type ExchangeErrorCode } from "..
 import { StructuredLogger } from "../infrastructure/telemetry/Telemetry";
 import { UnifiedError } from "../exchanges/models/UnifiedError";
 import { analyzeMarket } from "../market-analysis";
+import { normalizeEnvironment as normEnvUtil, isEnvironmentSupported, getSupportedEnvironmentsList, CanonicalEnvironment } from "../utils/environment";
+import { normalizeRegion } from "../utils/region";
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
- * Anything other than the explicit string "testnet" falls back to "mainnet".
+ * Returns null for unrecognized values.
  */
-function normalizeEnvironment(value: unknown): ExchangeEnvironment {
-  if (typeof value === "string") {
-    const lower = value.toLowerCase();
-    if (lower === "demo") {
-      return "demo" as ExchangeEnvironment;
-    }
-    if (lower === "testnet" || lower === "testing" || lower === "sandbox") {
-      return "testnet";
-    }
-  }
-  return "mainnet";
+function normalizeEnvironment(value: unknown): ExchangeEnvironment | null {
+  return normEnvUtil(value) as ExchangeEnvironment | null;
 }
-
-
-
-
 
 export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
@@ -37,7 +26,10 @@ export async function handleValidateExchange(
   const cfCountry = c.req.header("cf-ipcountry") || "unknown";
 
   try {
-    const { exchangeName, apiKey, apiSecret, apiPassphrase, environment } = await c.req.json<{
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    const userId = payload?.sub;
+
+    const { exchangeName, apiKey, apiSecret, apiPassphrase, environment, region } = await c.req.json<{
       exchangeName: ExchangeName;
       apiKey: string;
       apiSecret: string;
@@ -51,8 +43,7 @@ export async function handleValidateExchange(
     const cleanApiSecret = cleanCredential(apiSecret);
     const cleanApiPassphrase = cleanCredential(apiPassphrase);
 
-    const redactedApiKey = cleanApiKey ? `${cleanApiKey.slice(0, 4)}...${cleanApiKey.slice(-4)}` : "[MISSING]";
-    console.log(`[EXCHANGE_VALIDATE_START] correlationId=${correlationId} exchange=${exchangeName} env=${environment} key=${redactedApiKey} cfRay=${cfRay} cfCountry=${cfCountry}`);
+    console.log(`[EXCHANGE_VALIDATE_START] correlationId=${correlationId} exchange=${exchangeName} env=${environment} key=[REDACTED] cfRay=${cfRay} cfCountry=${cfCountry}`);
 
     if (!exchangeName || !cleanApiKey || !cleanApiSecret) {
       c.status(400);
@@ -64,50 +55,61 @@ export async function handleValidateExchange(
       });
     }
 
-    // DIAGNOSTIC 1: Direct native fetch to Binance Testnet ping & time inside Cloudflare Worker
-    let directPingResult: any = null;
-    let directTimeResult: any = null;
-    if (exchangeName === 'binance' && normalizeEnvironment(environment) === 'testnet') {
-      try {
-        const pingRes = await globalThis.fetch('https://testnet.binance.vision/api/v3/ping');
-        directPingResult = { status: pingRes.status, text: await pingRes.text() };
-      } catch (directErr: any) {
-        directPingResult = { error: directErr?.message || String(directErr), name: directErr?.name, cause: String(directErr?.cause || '') };
-      }
-      try {
-        const timeRes = await globalThis.fetch('https://testnet.binance.vision/api/v3/time');
-        directTimeResult = { status: timeRes.status, text: await timeRes.text() };
-      } catch (directErr: any) {
-        directTimeResult = { error: directErr?.message || String(directErr), name: directErr?.name, cause: String(directErr?.cause || '') };
-      }
+    const normEnv = normalizeEnvironment(environment);
+    if (!normEnv) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_REQUEST" as ExchangeErrorCode,
+        message: "Invalid environment. Supported values: mainnet, testnet, demo.",
+        hint: "Supported environment values are mainnet, testnet, or demo.",
+        version: "1.0",
+        correlationId,
+      });
     }
+
+    if (!isEnvironmentSupported(exchangeName, normEnv as CanonicalEnvironment)) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "UNSUPPORTED_OPERATION" as ExchangeErrorCode,
+        message: `${exchangeName} does not support the '${normEnv}' environment. Supported: ${getSupportedEnvironmentsList(exchangeName)}.`,
+        hint: `Please select a supported environment for ${exchangeName}: ${getSupportedEnvironmentsList(exchangeName)}.`,
+        version: "1.0",
+        correlationId,
+      });
+    }
+
+    const resolvedRegion = normalizeRegion(region);
 
     let provider;
     try {
       provider = await ExchangeManager.createUncachedProvider(exchangeName as ExchangeName, {
-        environment: normalizeEnvironment(environment),
+        environment: normEnv,
         apiKey: cleanApiKey,
         secret: cleanApiSecret,
-        password: cleanApiPassphrase
+        password: cleanApiPassphrase,
+        region: resolvedRegion,
       });
       await provider.fetchBalance();
       console.log(`[EXCHANGE_VALIDATE_SUCCESS] correlationId=${correlationId} exchange=${exchangeName} cfRay=${cfRay}`);
-      return c.json({ success: true, message: "Credentials verified. You're all set.", version: "1.0", correlationId, directPingResult, directTimeResult });
+      return c.json({ success: true, message: "Credentials verified. You're all set.", version: "1.0", correlationId });
     } catch (valErr: unknown) {
       const classified = classifyException(valErr, exchangeName, correlationId);
       console.error(`[EXCHANGE_VALIDATE_FAILED] correlationId=${correlationId} exchange=${exchangeName} code=${classified.code} msg="${classified.friendlyMessage}" cfRay=${cfRay} (${classified.technicalDetail}):`, valErr);
       c.status(400);
+      let hint = classified.hint;
+      if (classified.code === "AUTHENTICATION_FAILED" && normEnv !== "mainnet") {
+        hint = `Authentication failed. Please verify that your API key is for the '${normEnv}' environment.`;
+      }
       return c.json({
         success: false,
         code: classified.code,
         message: classified.friendlyMessage,
-        hint: classified.hint,
+        hint: hint,
         version: classified.version || "1.0",
         correlationId,
         detail: classified.technicalDetail,
-        rawError: valErr instanceof Error ? `${valErr.message} | ${valErr.stack}` : String(valErr),
-        directPingResult,
-        directTimeResult
       });
     } finally {
       if (provider) {
@@ -130,7 +132,6 @@ export async function handleValidateExchange(
       version: classified.version || "1.0",
       correlationId,
       detail: classified.technicalDetail,
-      rawError: e instanceof Error ? `${e.message} | ${e.stack}` : String(e),
     });
   }
 }
@@ -167,14 +168,36 @@ export async function handleConnectExchange(
       });
     }
 
-    const resolvedEnvironment = normalizeEnvironment(environment);
+    const normEnv = normalizeEnvironment(environment);
+    if (!normEnv) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_REQUEST" as ExchangeErrorCode,
+        message: "Invalid environment. Supported values: mainnet, testnet, demo.",
+        hint: "Supported environment values are mainnet, testnet, or demo.",
+      });
+    }
+
+    if (!isEnvironmentSupported(exchangeName, normEnv as CanonicalEnvironment)) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "UNSUPPORTED_OPERATION" as ExchangeErrorCode,
+        message: `${exchangeName} does not support the '${normEnv}' environment. Supported: ${getSupportedEnvironmentsList(exchangeName)}.`,
+        hint: `Please select a supported environment for ${exchangeName}: ${getSupportedEnvironmentsList(exchangeName)}.`,
+      });
+    }
+
+    const resolvedRegion = normalizeRegion(region);
 
     try {
       const provider = await ExchangeManager.getProvider(exchangeName as ExchangeName, {
-        environment: resolvedEnvironment,
+        environment: normEnv,
         apiKey: cleanApiKey,
         secret: cleanApiSecret,
-        password: cleanApiPassphrase
+        password: cleanApiPassphrase,
+        region: resolvedRegion,
       });
       await provider.fetchBalance();
       console.log(`[exchange-auth] connect validation successful for ${exchangeName}`);
@@ -182,11 +205,15 @@ export async function handleConnectExchange(
       const classified = classifyException(valErr, exchangeName);
       console.error(`[exchange-auth] connect validation failed for ${exchangeName} (${classified.technicalDetail}):`, valErr);
       c.status(400);
+      let hint = classified.hint;
+      if (classified.code === "AUTHENTICATION_FAILED" && normEnv !== "mainnet") {
+        hint = `Authentication failed. Please verify that your API key is for the '${normEnv}' environment.`;
+      }
       return c.json({
         success: false,
         code: classified.code,
         message: classified.friendlyMessage,
-        hint: classified.hint,
+        hint: hint,
       });
     }
 
@@ -203,16 +230,14 @@ export async function handleConnectExchange(
       encryptedPassphraseSalt = encryptedPhraseObj.salt;
     }
 
-    const resolvedRegion = region === "india" ? "india" : "global";
-
+    // Set plaintext exchange_api_key to NULL to eliminate plaintext storage
     await c.env.DB.prepare(
-      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_key_iv = ?, exchange_api_key_encrypted = ?, exchange_api_key_salt = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_secret_salt = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ?, exchange_api_passphrase_salt = ? WHERE id = ?`,
+      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = NULL, exchange_api_key_iv = ?, exchange_api_key_encrypted = ?, exchange_api_key_salt = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_secret_salt = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ?, exchange_api_passphrase_salt = ? WHERE id = ?`,
     )
       .bind(
         exchangeName,
-        resolvedEnvironment,
+        normEnv,
         resolvedRegion,
-        cleanApiKey, // Retained for dual-read compatibility during 48h migration phase
         encryptedKey.iv,
         encryptedKey.encrypted,
         encryptedKey.salt,
@@ -237,7 +262,7 @@ export async function handleConnectExchange(
       console.warn(`[exchange-auth] Failed to reset bot state on reconnection:`, err);
     }
 
-    return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: resolvedEnvironment, region: resolvedRegion });
+    return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: normEnv, region: resolvedRegion });
   } catch (e: unknown) {
     const classified = classifyException(e, exchangeNameForLog);
     console.error(`[exchange-auth] connect outer exception (${classified.technicalDetail}):`, e);
@@ -259,14 +284,13 @@ export async function handleGetExchangeStatus(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_encrypted, exchange_api_secret_encrypted, exchange_api_secret_iv FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_encrypted, exchange_api_secret_encrypted, exchange_api_secret_iv FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
         exchange_region: string | null;
-        exchange_api_key: string | null;
         exchange_api_key_encrypted: string | null;
         exchange_api_secret_encrypted: string | null;
         exchange_api_secret_iv: string | null;
@@ -274,7 +298,7 @@ export async function handleGetExchangeStatus(
 
     const isConnected = Boolean(
       user?.exchange_name &&
-      (user?.exchange_api_key_encrypted || user?.exchange_api_key) &&
+      user?.exchange_api_key_encrypted &&
       user?.exchange_api_secret_encrypted &&
       user?.exchange_api_secret_iv
     );
@@ -300,14 +324,13 @@ export async function handleGetExchangeBalances(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
         exchange_region: string | null;
-        exchange_api_key: string | null;
         exchange_api_key_iv: string | null;
         exchange_api_key_encrypted: string | null;
         exchange_api_key_salt: string | null;
@@ -319,8 +342,7 @@ export async function handleGetExchangeBalances(
         exchange_api_passphrase_salt: string | null;
       }>();
 
-    const hasApiKey = Boolean(user?.exchange_api_key_encrypted || user?.exchange_api_key);
-    if (!user?.exchange_name || !hasApiKey || !user?.exchange_api_secret_encrypted || !user?.exchange_api_secret_iv) {
+    if (!user?.exchange_name || !user?.exchange_api_key_encrypted || !user?.exchange_api_key_iv || !user?.exchange_api_secret_encrypted || !user?.exchange_api_secret_iv) {
       return c.json({
         success: false,
         code: "NO_EXCHANGE_CONNECTED",
@@ -329,14 +351,20 @@ export async function handleGetExchangeBalances(
       });
     }
 
-    let decryptedKey: string | undefined = undefined;
-    if (user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
+    let decryptedKey: string;
+    try {
       decryptedKey = await decrypt(
         { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
         c.env.ENCRYPTION_KEY,
       );
-    } else {
-      decryptedKey = user.exchange_api_key ?? undefined;
+    } catch (_) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_CREDENTIALS",
+        message: "Exchange credentials need to be re-connected.",
+        hint: "Please re-connect your exchange API credentials in settings.",
+      });
     }
 
     const decryptedSecret = await decrypt(
@@ -352,7 +380,7 @@ export async function handleGetExchangeBalances(
       );
     }
 
-    const environment = normalizeEnvironment(user.exchange_environment);
+    const environment = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment,
       apiKey: decryptedKey,
@@ -419,7 +447,7 @@ export async function handleGetPersonalizedMarketCandidates(
     let user: any = null;
     try {
       user = await c.env.DB.prepare(
-        "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
+        "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
       )
         .bind(userId)
         .first();
@@ -474,11 +502,8 @@ export async function handleGetPersonalizedMarketCandidates(
         );
         cleanKey = cleanCredential(decryptedKey);
       } catch (decKeyErr: any) {
-        console.warn("[DIAGNOSTIC] API key decryption failed, falling back to legacy key:", decKeyErr?.message);
+        console.warn("[DIAGNOSTIC] API key decryption failed:", decKeyErr?.message);
       }
-    }
-    if (!cleanKey && user.exchange_api_key) {
-      cleanKey = cleanCredential(user.exchange_api_key);
     }
 
     let cleanSecret: string | undefined = undefined;
@@ -502,7 +527,7 @@ export async function handleGetPersonalizedMarketCandidates(
     let adapter: any = null;
     try {
       adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-        environment: normalizeEnvironment(user.exchange_environment),
+        environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
         apiKey: cleanKey,
         secret: cleanSecret
       });
@@ -675,14 +700,13 @@ export async function handleGetTicker(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
         exchange_region: string | null;
-        exchange_api_key: string | null;
         exchange_api_key_iv: string | null;
         exchange_api_key_encrypted: string | null;
         exchange_api_key_salt: string | null;
@@ -691,14 +715,14 @@ export async function handleGetTicker(
         exchange_api_secret_salt: string | null;
       }>();
 
-    const hasApiKey = Boolean(user?.exchange_api_key_encrypted || user?.exchange_api_key);
+    const hasApiKey = Boolean(user?.exchange_api_key_encrypted);
     if (!user?.exchange_name || !hasApiKey || !user?.exchange_api_secret_encrypted) {
       c.status(400);
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment)
+      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet"
     });
     const ticker = await adapter.fetchTicker(symbol);
 
@@ -758,7 +782,7 @@ export async function handleGetKlines(
     }
 
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment)
+      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet"
     });
     const klines = await adapter.fetchKlines(symbol, interval, limit);
 
@@ -789,14 +813,13 @@ export async function handleGetTechnicalAnalysis(
     }
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
         exchange_region: string | null;
-        exchange_api_key: string | null;
         exchange_api_key_iv: string | null;
         exchange_api_key_encrypted: string | null;
         exchange_api_key_salt: string | null;
@@ -805,14 +828,14 @@ export async function handleGetTechnicalAnalysis(
         exchange_api_secret_salt: string | null;
       }>();
 
-    const hasApiKey = Boolean(user?.exchange_api_key_encrypted || user?.exchange_api_key);
+    const hasApiKey = Boolean(user?.exchange_api_key_encrypted);
     if (!user?.exchange_name || !hasApiKey || !user?.exchange_api_secret_encrypted) {
       c.status(400);
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment)
+      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet"
     });
     const ticker = await adapter.fetchTicker(symbol);
 

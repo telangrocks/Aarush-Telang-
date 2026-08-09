@@ -1,6 +1,6 @@
 export type ExchangeName = "binance" | "bybit" | "kucoin" | "delta";
 
-export type ExchangeEnvironment = "mainnet" | "testnet";
+export type ExchangeEnvironment = "mainnet" | "testnet" | "demo";
 
 export enum ValidationErrorReason {
   EXCHANGE_METADATA_UNAVAILABLE = "EXCHANGE_METADATA_UNAVAILABLE",

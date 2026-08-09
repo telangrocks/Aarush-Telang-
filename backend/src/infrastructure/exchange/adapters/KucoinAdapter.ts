@@ -31,6 +31,9 @@ export class KucoinAdapter extends BaseExchangeAdapter {
 
   public override async connect(config: ProviderConfig): Promise<void> {
     const env = (config?.environment || '').toString().toLowerCase();
+    if (env === 'demo') {
+      throw new UnifiedError('KuCoin does not support demo environment.', 'UNSUPPORTED_OPERATION');
+    }
     if (env === 'testnet' || env === 'testing' || env === 'sandbox') {
       throw new UnifiedError('KuCoin Sandbox is officially deprecated and offline.', 'UNSUPPORTED_OPERATION');
     }
