@@ -503,7 +503,7 @@ export class TradingBot {
         
         // Phase 1 Integration: Strategy is selected from registry implicitly via strategyId
         
-        const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
+        const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?').bind(userId).first<any>();
 
         const setupSnapshot: TradeSetupSnapshot = Object.freeze({
           userId,
@@ -518,7 +518,37 @@ export class TradingBot {
         await this.state.storage.put('setupSnapshot', setupSnapshot);
 
         if (user?.exchange_name) {
-          const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment) });
+          let apiKey: string | undefined = undefined;
+          if (user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
+            try {
+              apiKey = await decrypt({ iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt }, this.env.ENCRYPTION_KEY);
+            } catch (_) {}
+          }
+          if (!apiKey && user.exchange_api_key) {
+            apiKey = user.exchange_api_key;
+          }
+
+          let secret: string | undefined = undefined;
+          if (user.exchange_api_secret_iv && user.exchange_api_secret_encrypted) {
+            try {
+              secret = await decrypt({ iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
+            } catch (_) {}
+          }
+
+          let password: string | undefined = undefined;
+          if (user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
+            try {
+              password = await decrypt({ iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt }, this.env.ENCRYPTION_KEY);
+            } catch (_) {}
+          }
+
+          const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
+            environment: normalizeEnvironment(user.exchange_environment),
+            apiKey,
+            secret,
+            password,
+            region: user.exchange_region ?? undefined,
+          });
           const provider = new AdapterCandleProvider(adapter);
           const dataEngine = new MarketDataEngine(provider);
           this.orchestrator.setMarketDataEngine(dataEngine);
@@ -686,27 +716,44 @@ export class TradingBot {
             }
 
             const userKeys = await this.env.DB.prepare(
-              'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_name, exchange_environment, exchange_region, fcm_token FROM users WHERE id = ?'
-            ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_api_passphrase_iv: string | null; exchange_api_passphrase_encrypted: string | null; exchange_name: string; exchange_environment: string | null; exchange_region: string | null; fcm_token: string | null }>();
+              'SELECT exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt, exchange_name, exchange_environment, exchange_region, fcm_token FROM users WHERE id = ?'
+            ).bind(userId).first<any>();
 
-            if (!userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) {
+            const hasApiKey = Boolean(userKeys?.exchange_api_key_encrypted || userKeys?.exchange_api_key);
+            if (!userKeys?.exchange_name || !hasApiKey || !userKeys?.exchange_api_secret_encrypted) {
               return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
             }
 
+            let decryptedApiKey: string | undefined = undefined;
+            if (userKeys.exchange_api_key_iv && userKeys.exchange_api_key_encrypted) {
+              decryptedApiKey = await decrypt(
+                { iv: userKeys.exchange_api_key_iv, encrypted: userKeys.exchange_api_key_encrypted, salt: userKeys.exchange_api_key_salt },
+                this.env.ENCRYPTION_KEY,
+              );
+            } else {
+              decryptedApiKey = userKeys.exchange_api_key ?? undefined;
+            }
+
             const decryptedSecret = await decrypt(
-              { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted },
+              { iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted, salt: userKeys.exchange_api_secret_salt },
               this.env.ENCRYPTION_KEY,
             );
 
             let decryptedPassphrase = undefined;
             if (userKeys.exchange_api_passphrase_iv && userKeys.exchange_api_passphrase_encrypted) {
               decryptedPassphrase = await decrypt(
-                { iv: userKeys.exchange_api_passphrase_iv, encrypted: userKeys.exchange_api_passphrase_encrypted },
+                { iv: userKeys.exchange_api_passphrase_iv, encrypted: userKeys.exchange_api_passphrase_encrypted, salt: userKeys.exchange_api_passphrase_salt },
                 this.env.ENCRYPTION_KEY,
               );
             }
 
-            const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, { environment: normalizeEnvironment(userKeys.exchange_environment) });
+            const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, {
+              environment: normalizeEnvironment(userKeys.exchange_environment),
+              apiKey: decryptedApiKey,
+              secret: decryptedSecret,
+              password: decryptedPassphrase,
+              region: userKeys.exchange_region ?? undefined,
+            });
             const coinId = (await this.state.storage.get('coinId')) as string;
 
             const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
@@ -1268,40 +1315,81 @@ export class TradingBot {
          try {
            const userId = await this.state.storage.get('userId') as string;
            if (userId) {
-             const userKeys = await this.env.DB.prepare('SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_api_passphrase_iv: string | null; exchange_api_passphrase_encrypted: string | null; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
-             if (userKeys?.exchange_name && userKeys.exchange_api_secret_encrypted) {
-               const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted }, this.env.ENCRYPTION_KEY);
-               let decryptedPassphrase = undefined;
-               if (userKeys.exchange_api_passphrase_iv && userKeys.exchange_api_passphrase_encrypted) {
-                 decryptedPassphrase = await decrypt({ iv: userKeys.exchange_api_passphrase_iv, encrypted: userKeys.exchange_api_passphrase_encrypted }, this.env.ENCRYPTION_KEY);
-               }
-               // Reconciliation makes authenticated calls (fetchOrder) — pass full credentials
-               const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, {
-                 environment: normalizeEnvironment(userKeys.exchange_environment),
-                 apiKey: userKeys.exchange_api_key,
-                 secret: decryptedSecret,
-                 password: decryptedPassphrase,
-               });
-               
-               const reconciliationEngine = new ReconciliationEngine(this.state.storage, this.env, userId, adapter, userKeys);
-               await reconciliationEngine.runReconciliationSweep();
+           const userKeys = await this.env.DB.prepare('SELECT exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<any>();
+           if (userKeys?.exchange_name && userKeys.exchange_api_secret_encrypted) {
+             let apiKey: string | undefined = undefined;
+             if (userKeys.exchange_api_key_iv && userKeys.exchange_api_key_encrypted) {
+               try {
+                 apiKey = await decrypt({ iv: userKeys.exchange_api_key_iv, encrypted: userKeys.exchange_api_key_encrypted, salt: userKeys.exchange_api_key_salt }, this.env.ENCRYPTION_KEY);
+               } catch (_) {}
              }
-           }
-         } catch (e) {
-           console.error("Reconciliation sweep failed:", e);
-         }
-      }
+             if (!apiKey && userKeys.exchange_api_key) {
+               apiKey = userKeys.exchange_api_key;
+             }
 
-      // Sprint 10 Phase 1 Integration
-      try {
-        const coinId = await this.state.storage.get('coinId') as string;
-        const userId = await this.state.storage.get('userId') as string;
-        const strategy = await this.state.storage.get('strategy') as string;
-        
-        if (coinId && userId) {
-          const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
-          if (user?.exchange_name) {
-            const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment) });
+             const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted, salt: userKeys.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
+             let decryptedPassphrase = undefined;
+             if (userKeys.exchange_api_passphrase_iv && userKeys.exchange_api_passphrase_encrypted) {
+               decryptedPassphrase = await decrypt({ iv: userKeys.exchange_api_passphrase_iv, encrypted: userKeys.exchange_api_passphrase_encrypted, salt: userKeys.exchange_api_passphrase_salt }, this.env.ENCRYPTION_KEY);
+             }
+             // Reconciliation makes authenticated calls (fetchOrder) — pass full credentials
+             const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, {
+               environment: normalizeEnvironment(userKeys.exchange_environment),
+               apiKey,
+               secret: decryptedSecret,
+               password: decryptedPassphrase,
+               region: userKeys.exchange_region ?? undefined,
+             });
+             
+             const reconciliationEngine = new ReconciliationEngine(this.state.storage, this.env, userId, adapter, userKeys);
+             await reconciliationEngine.runReconciliationSweep();
+           }
+         }
+       } catch (e) {
+         console.error("Reconciliation sweep failed:", e);
+       }
+    }
+
+    // Sprint 10 Phase 1 Integration
+    try {
+      const coinId = await this.state.storage.get('coinId') as string;
+      const userId = await this.state.storage.get('userId') as string;
+      const strategy = await this.state.storage.get('strategy') as string;
+      
+      if (coinId && userId) {
+        const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?').bind(userId).first<any>();
+        if (user?.exchange_name) {
+          let apiKey: string | undefined = undefined;
+          if (this.env.ENCRYPTION_KEY && user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
+            try {
+              apiKey = await decrypt({ iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt }, this.env.ENCRYPTION_KEY);
+            } catch (_) {}
+          }
+          if (!apiKey && user.exchange_api_key) {
+            apiKey = user.exchange_api_key;
+          }
+
+          let secret: string | undefined = undefined;
+          if (this.env.ENCRYPTION_KEY && user.exchange_api_secret_iv && user.exchange_api_secret_encrypted) {
+            try {
+              secret = await decrypt({ iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
+            } catch (_) {}
+          }
+
+          let password: string | undefined = undefined;
+          if (this.env.ENCRYPTION_KEY && user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
+            try {
+              password = await decrypt({ iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt }, this.env.ENCRYPTION_KEY);
+            } catch (_) {}
+          }
+
+          const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
+            environment: normalizeEnvironment(user.exchange_environment),
+            apiKey,
+            secret,
+            password,
+            region: user.exchange_region ?? undefined,
+          });
             const provider = new AdapterCandleProvider(adapter);
             const dataEngine = new MarketDataEngine(provider);
             this.orchestrator.setMarketDataEngine(dataEngine);

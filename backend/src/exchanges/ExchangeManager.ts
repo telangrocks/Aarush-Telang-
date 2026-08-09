@@ -55,6 +55,7 @@ export class ExchangeManager {
     });
 
     if (res.isFailure) {
+      try { await provider.disconnect(); } catch (_) {}
       this.pool.delete(cacheKey);
       throw new Error(res.error.message);
     }

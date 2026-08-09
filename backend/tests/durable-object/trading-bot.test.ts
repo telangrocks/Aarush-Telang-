@@ -15,6 +15,8 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
       getProvider: vi.fn().mockResolvedValue({
         fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', last: 50100, bid: 50090, ask: 50110, high: 51000, low: 49000, volume: 100, quoteVolume: 5010000 }),
         fetchKlines: vi.fn().mockResolvedValue([{ openTime: Date.now(), open: 50000, high: 51000, low: 49000, close: 50500, volume: 100 }]),
+        fetchBalance: vi.fn().mockResolvedValue([]),
+        fetchMarkets: vi.fn().mockResolvedValue([]),
         createOrder: vi.fn().mockResolvedValue({ id: 'ord-123', status: 'closed', filled: { toNumber: () => 0.02 }, amount: { toNumber: () => 0.02 }, average: { toNumber: () => 50100 } }),
         supportsOco: vi.fn().mockReturnValue(false),
         createOcoOrder: vi.fn()

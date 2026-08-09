@@ -190,22 +190,40 @@ export async function handleConnectExchange(
       });
     }
 
+    const encryptedKey = await encrypt(cleanApiKey, c.env.ENCRYPTION_KEY);
     const encryptedSecret = await encrypt(cleanApiSecret, c.env.ENCRYPTION_KEY);
     
     let encryptedPassphraseIv = null;
     let encryptedPassphrase = null;
+    let encryptedPassphraseSalt = null;
     if (cleanApiPassphrase) {
       const encryptedPhraseObj = await encrypt(cleanApiPassphrase, c.env.ENCRYPTION_KEY);
       encryptedPassphraseIv = encryptedPhraseObj.iv;
       encryptedPassphrase = encryptedPhraseObj.encrypted;
+      encryptedPassphraseSalt = encryptedPhraseObj.salt;
     }
 
     const resolvedRegion = region === "india" ? "india" : "global";
 
     await c.env.DB.prepare(
-      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ? WHERE id = ?`,
+      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = ?, exchange_api_key_iv = ?, exchange_api_key_encrypted = ?, exchange_api_key_salt = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_secret_salt = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ?, exchange_api_passphrase_salt = ? WHERE id = ?`,
     )
-      .bind(exchangeName, resolvedEnvironment, resolvedRegion, cleanApiKey, encryptedSecret.iv, encryptedSecret.encrypted, encryptedPassphraseIv, encryptedPassphrase, userId)
+      .bind(
+        exchangeName,
+        resolvedEnvironment,
+        resolvedRegion,
+        cleanApiKey, // Retained for dual-read compatibility during 48h migration phase
+        encryptedKey.iv,
+        encryptedKey.encrypted,
+        encryptedKey.salt,
+        encryptedSecret.iv,
+        encryptedSecret.encrypted,
+        encryptedSecret.salt,
+        encryptedPassphraseIv,
+        encryptedPassphrase,
+        encryptedPassphraseSalt,
+        userId
+      )
       .run();
 
     // Reset bot state and clear instrument locking upon exchange connection/reconnection
@@ -241,7 +259,7 @@ export async function handleGetExchangeStatus(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_encrypted, exchange_api_secret_encrypted, exchange_api_secret_iv FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
@@ -249,9 +267,17 @@ export async function handleGetExchangeStatus(
         exchange_environment: string | null;
         exchange_region: string | null;
         exchange_api_key: string | null;
+        exchange_api_key_encrypted: string | null;
+        exchange_api_secret_encrypted: string | null;
+        exchange_api_secret_iv: string | null;
       }>();
 
-    const isConnected = user?.exchange_name !== null && user?.exchange_api_key !== null;
+    const isConnected = Boolean(
+      user?.exchange_name &&
+      (user?.exchange_api_key_encrypted || user?.exchange_api_key) &&
+      user?.exchange_api_secret_encrypted &&
+      user?.exchange_api_secret_iv
+    );
 
     return c.json({
       isConnected,
@@ -274,7 +300,7 @@ export async function handleGetExchangeBalances(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
@@ -282,30 +308,46 @@ export async function handleGetExchangeBalances(
         exchange_environment: string | null;
         exchange_region: string | null;
         exchange_api_key: string | null;
+        exchange_api_key_iv: string | null;
+        exchange_api_key_encrypted: string | null;
+        exchange_api_key_salt: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
+        exchange_api_secret_salt: string | null;
         exchange_api_passphrase_iv: string | null;
         exchange_api_passphrase_encrypted: string | null;
+        exchange_api_passphrase_salt: string | null;
       }>();
 
-    if (!user?.exchange_name || !user?.exchange_api_key || !user?.exchange_api_secret_encrypted || !user?.exchange_api_secret_iv) {
+    const hasApiKey = Boolean(user?.exchange_api_key_encrypted || user?.exchange_api_key);
+    if (!user?.exchange_name || !hasApiKey || !user?.exchange_api_secret_encrypted || !user?.exchange_api_secret_iv) {
       return c.json({
         success: false,
         code: "NO_EXCHANGE_CONNECTED",
         message: "No exchange account is connected.",
-        hint: "Connect your Binance account in settings.",
+        hint: "Connect your exchange account in settings to view balances.",
       });
     }
 
+    let decryptedKey: string | undefined = undefined;
+    if (user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
+      decryptedKey = await decrypt(
+        { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
+        c.env.ENCRYPTION_KEY,
+      );
+    } else {
+      decryptedKey = user.exchange_api_key ?? undefined;
+    }
+
     const decryptedSecret = await decrypt(
-      { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted },
+      { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt },
       c.env.ENCRYPTION_KEY,
     );
 
     let decryptedPassphrase = undefined;
     if (user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
       decryptedPassphrase = await decrypt(
-        { iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted },
+        { iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt },
         c.env.ENCRYPTION_KEY,
       );
     }
@@ -313,7 +355,7 @@ export async function handleGetExchangeBalances(
     const environment = normalizeEnvironment(user.exchange_environment);
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment,
-      apiKey: user.exchange_api_key ?? undefined,
+      apiKey: decryptedKey,
       secret: decryptedSecret,
       password: decryptedPassphrase,
     });
@@ -377,7 +419,7 @@ export async function handleGetPersonalizedMarketCandidates(
     let user: any = null;
     try {
       user = await c.env.DB.prepare(
-        "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+        "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
       )
         .bind(userId)
         .first();
@@ -423,12 +465,27 @@ export async function handleGetPersonalizedMarketCandidates(
 
     // Stage 4: Secret decrypted
     currentStage = "4. Secret decrypted";
-    const cleanKey = user.exchange_api_key ? cleanCredential(user.exchange_api_key) : undefined;
+    let cleanKey: string | undefined = undefined;
+    if (user.exchange_api_key_encrypted && user.exchange_api_key_iv && c.env.ENCRYPTION_KEY) {
+      try {
+        const decryptedKey = await decrypt(
+          { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
+          c.env.ENCRYPTION_KEY
+        );
+        cleanKey = cleanCredential(decryptedKey);
+      } catch (decKeyErr: any) {
+        console.warn("[DIAGNOSTIC] API key decryption failed, falling back to legacy key:", decKeyErr?.message);
+      }
+    }
+    if (!cleanKey && user.exchange_api_key) {
+      cleanKey = cleanCredential(user.exchange_api_key);
+    }
+
     let cleanSecret: string | undefined = undefined;
     if (user.exchange_api_secret_encrypted && user.exchange_api_secret_iv && c.env.ENCRYPTION_KEY) {
       try {
         const decrypted = await decrypt(
-          { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted },
+          { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt },
           c.env.ENCRYPTION_KEY
         );
         cleanSecret = cleanCredential(decrypted);
@@ -618,7 +675,7 @@ export async function handleGetTicker(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
@@ -626,11 +683,16 @@ export async function handleGetTicker(
         exchange_environment: string | null;
         exchange_region: string | null;
         exchange_api_key: string | null;
+        exchange_api_key_iv: string | null;
+        exchange_api_key_encrypted: string | null;
+        exchange_api_key_salt: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
+        exchange_api_secret_salt: string | null;
       }>();
 
-    if (!user?.exchange_name || !user?.exchange_api_key || !user?.exchange_api_secret_encrypted) {
+    const hasApiKey = Boolean(user?.exchange_api_key_encrypted || user?.exchange_api_key);
+    if (!user?.exchange_name || !hasApiKey || !user?.exchange_api_secret_encrypted) {
       c.status(400);
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
@@ -727,7 +789,7 @@ export async function handleGetTechnicalAnalysis(
     }
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
@@ -735,11 +797,16 @@ export async function handleGetTechnicalAnalysis(
         exchange_environment: string | null;
         exchange_region: string | null;
         exchange_api_key: string | null;
+        exchange_api_key_iv: string | null;
+        exchange_api_key_encrypted: string | null;
+        exchange_api_key_salt: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
+        exchange_api_secret_salt: string | null;
       }>();
 
-    if (!user?.exchange_name || !user?.exchange_api_key || !user?.exchange_api_secret_encrypted) {
+    const hasApiKey = Boolean(user?.exchange_api_key_encrypted || user?.exchange_api_key);
+    if (!user?.exchange_name || !hasApiKey || !user?.exchange_api_secret_encrypted) {
       c.status(400);
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }

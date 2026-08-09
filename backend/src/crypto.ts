@@ -26,12 +26,10 @@ async function getKey(secret: string, salt: BufferSource): Promise<CryptoKey> {
   );
 }
 
-export async function encrypt(text: string, secret: string): Promise<{ iv: string; encrypted: string }> {
-  // A fresh, random 12-byte IV is generated per encryption and is reused as the
-  // PBKDF2 salt. This guarantees a unique derived key for every ciphertext
-  // (unlike a fixed salt) while requiring no extra stored column.
+export async function encrypt(text: string, secret: string): Promise<{ iv: string; encrypted: string; salt: string }> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await getKey(secret, iv);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await getKey(secret, salt);
   const encoded = new TextEncoder().encode(text);
 
   const encryptedContent = await crypto.subtle.encrypt(
@@ -42,13 +40,17 @@ export async function encrypt(text: string, secret: string): Promise<{ iv: strin
 
   const encryptedBase64 = btoa(String.fromCharCode(...new Uint8Array(encryptedContent)));
   const ivBase64 = btoa(String.fromCharCode(...iv));
+  const saltBase64 = btoa(String.fromCharCode(...salt));
 
-  return { iv: ivBase64, encrypted: encryptedBase64 };
+  return { iv: ivBase64, encrypted: encryptedBase64, salt: saltBase64 };
 }
 
-export async function decrypt(encryptedData: { iv: string; encrypted: string }, secret: string): Promise<string> {
+export async function decrypt(encryptedData: { iv: string; encrypted: string; salt?: string | null }, secret: string): Promise<string> {
   const iv = new Uint8Array(Array.from(atob(encryptedData.iv), c => c.charCodeAt(0)));
-  const key = await getKey(secret, iv);
+  const salt = encryptedData.salt
+    ? new Uint8Array(Array.from(atob(encryptedData.salt), c => c.charCodeAt(0)))
+    : iv;
+  const key = await getKey(secret, salt);
 
   const encrypted = new Uint8Array(Array.from(atob(encryptedData.encrypted), c => c.charCodeAt(0)));
 
@@ -63,3 +65,4 @@ export async function decrypt(encryptedData: { iv: string; encrypted: string }, 
 
   return new TextDecoder().decode(decryptedContent);
 }
+

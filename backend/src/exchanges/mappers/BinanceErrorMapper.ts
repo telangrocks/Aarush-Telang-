@@ -76,16 +76,6 @@ export class BinanceErrorMapper implements IExchangeErrorMapper {
       return this.mk(targetCode, technicalDetail);
     }
 
-    if (msg) {
-      return {
-        code: 'INVALID_REQUEST',
-        friendlyMessage: `Binance Error [${code}]: ${msg}`,
-        hint: `Binance API returned code ${code}: ${msg}`,
-        technicalDetail,
-        version: '1.0'
-      };
-    }
-
     return null;
   }
 
