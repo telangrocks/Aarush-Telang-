@@ -30,9 +30,15 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
   public getHost(): string {
     const env = (this.config?.environment || '').toString().toLowerCase();
+    if (env === 'demo') {
+      return 'https://api-demo.bybit.com';
+    }
     const isTestnet = env === 'testnet' || env === 'testing' || env === 'sandbox';
     if (isTestnet) {
-      return (process.env.BYBIT_TESTNET_URL || 'https://api-testnet.bybit.com').replace(/\/$/, '');
+      if (process.env.BYBIT_TESTNET_URL) {
+        return process.env.BYBIT_TESTNET_URL.replace(/\/$/, '');
+      }
+      return 'https://api-testnet.bybit.com';
     }
     return 'https://api.bybit.com';
   }
