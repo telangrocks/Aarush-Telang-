@@ -62,6 +62,27 @@ export class ReconciliationEngine {
     }
   }
 
+  private async getDecryptedApiKey(): Promise<string> {
+    if (!this.userKeys || (!this.userKeys.exchange_api_key_encrypted && !this.userKeys.exchange_api_key)) {
+      return "";
+    }
+    if (this.userKeys.exchange_api_key_encrypted && this.userKeys.exchange_api_key_iv) {
+      try {
+        return await decrypt(
+          {
+            iv: this.userKeys.exchange_api_key_iv,
+            encrypted: this.userKeys.exchange_api_key_encrypted,
+            salt: this.userKeys.exchange_api_key_salt
+          },
+          this.env.ENCRYPTION_KEY
+        );
+      } catch (e) {
+        console.error("[ReconciliationEngine] Failed to decrypt user API key:", e);
+      }
+    }
+    return this.userKeys.exchange_api_key || "";
+  }
+
   private async logDecision(action: string, metadata: any) {
     try {
       const id = crypto.randomUUID();
@@ -255,7 +276,8 @@ export class ReconciliationEngine {
       } else if (tx.type === 'ORDER') {
         try {
           if ((this.adapter as any).cancelOrder && apiSecret) {
-             const res = await (this.adapter as any).cancelOrder(tx.id.replace('ord_', ''), tx.symbol, this.userKeys.exchange_api_key, apiSecret, apiPassphrase);
+             const apiKey = await this.getDecryptedApiKey();
+             const res = await (this.adapter as any).cancelOrder(tx.id.replace('ord_', ''), tx.symbol, apiKey, apiSecret, apiPassphrase);
              if (res.success) {
                tx.status = 'RECOVERY_COMPLETED';
                await this.logDecision('RECOVERY_COMPLETED', { txId: tx.id, symbol: tx.symbol, action: 'CANCELLED' });

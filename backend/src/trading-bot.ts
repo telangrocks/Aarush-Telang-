@@ -890,7 +890,7 @@ export class TradingBot {
                 // Re-fetch provider with full keys for write
                 const writeProvider = await ExchangeManager.getProvider(executionSnapshot.exchangeName, {
                    environment: normalizeEnvironment(executionSnapshot.environment),
-                   apiKey: userKeys.exchange_api_key,
+                   apiKey: decryptedApiKey,
                    secret: decryptedSecret,
                    password: decryptedPassphrase
                 });
@@ -1564,10 +1564,11 @@ export class TradingBot {
       if (!results || results.length === 0) return;
 
       const userKeys = await this.env.DB.prepare(
-        'SELECT exchange_api_key, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
-      ).bind(userId).first<{ exchange_api_key: string; exchange_api_secret_iv: string; exchange_api_secret_encrypted: string; exchange_name: string; exchange_environment: string | null; exchange_region: string | null }>();
+        'SELECT exchange_api_key, exchange_api_key_encrypted, exchange_api_key_iv, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
+      ).bind(userId).first<any>();
 
-      if (!userKeys?.exchange_name || !userKeys?.exchange_api_key || !userKeys?.exchange_api_secret_encrypted) return;
+      const hasApiKey = Boolean(userKeys?.exchange_api_key_encrypted || userKeys?.exchange_api_key);
+      if (!userKeys?.exchange_name || !hasApiKey || !userKeys?.exchange_api_secret_encrypted) return;
 
 
       const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, { environment: normalizeEnvironment(userKeys.exchange_environment) });
