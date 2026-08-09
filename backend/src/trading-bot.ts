@@ -14,11 +14,12 @@ import { MarketRegimeEngine } from './engine/regime/MarketRegimeEngine';
 import { StructuredLogger } from './infrastructure/telemetry/Telemetry';
 import { UnifiedError } from './exchanges/models/UnifiedError';
 /**
- * Normalize an untrusted environment value into a valid ExchangeEnvironment,
- * defaulting to "mainnet" unless "testnet" is explicitly stored.
+ * Normalize an untrusted environment value into a valid ExchangeEnvironment.
  */
 function normalizeEnvironment(value: unknown): ExchangeEnvironment {
-  return value === 'testnet' ? 'testnet' : 'mainnet';
+  if (value === 'demo') return 'demo' as ExchangeEnvironment;
+  if (value === 'testnet' || value === 'testing' || value === 'sandbox') return 'testnet';
+  return 'mainnet';
 }
 
 /**
