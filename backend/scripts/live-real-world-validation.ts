@@ -62,7 +62,8 @@ async function runLiveValidation() {
   // -------------------------------------------------------------------
   console.log('\n[2] Testing Live KuCoin API with Invalid Credentials...');
   try {
-    const res = await globalThis.fetch('https://openapi-v2.kucoin.com/api/v1/accounts?type=trade', {
+    const res = await globalThis.fetch('https://api.kucoin.com/api/v1/accounts?type=trade', {
+
       headers: {
         'KC-API-KEY': 'invalid_kucoin_key_99999',
         'KC-API-SIGN': 'invalid_sig',

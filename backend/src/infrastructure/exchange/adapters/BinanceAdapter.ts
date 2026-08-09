@@ -4,6 +4,7 @@ import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapab
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';
 import { UnifiedError } from '../../../exchanges/models/UnifiedError';
 import { ExchangeErrorClassifier } from '../../../exchanges/ExchangeErrorClassifier';
+import { ExchangeRoutingResolver } from '../../../exchanges/routing/ExchangeRoutingResolver';
 import BigNumber from 'bignumber.js';
 
 export class BinanceAdapter extends BaseExchangeAdapter {
@@ -32,21 +33,15 @@ export class BinanceAdapter extends BaseExchangeAdapter {
   }
 
   public getHosts(): string[] {
-    const env = (this.config?.environment || '').toString().toLowerCase();
-    if (env === 'demo') {
-      throw new UnifiedError('Binance does not support demo environment.', 'UNSUPPORTED_OPERATION');
-    }
-    const isTestnet = env === 'testnet' || env === 'testing' || env === 'sandbox';
-    if (isTestnet) {
-      return [(process.env.BINANCE_TESTNET_URL || 'https://testnet.binance.vision').replace(/\/$/, '')];
-    }
-    const envHost = process.env.BINANCE_BASE_URL ? [process.env.BINANCE_BASE_URL.replace(/\/$/, '')] : [];
-    const region = (this.config?.region || '').toString().toLowerCase();
-    const regionHosts = region === 'india' 
-      ? ['https://api.binance.com', 'https://api.binance.us'] 
-      : ['https://api.binance.com', 'https://api.binance.us'];
-    return Array.from(new Set([...envHost, ...regionHosts]));
+    const config = this.getConfig();
+    return ExchangeRoutingResolver.getRestUrls({
+      exchange: 'binance',
+      environment: config.environment,
+      product: config.product || 'spot',
+      region: config.region,
+    });
   }
+
 
   private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', path: string, params: Record<string, any> = {}): Promise<any> {
     const startTime = Date.now();

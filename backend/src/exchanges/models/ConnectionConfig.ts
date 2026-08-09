@@ -5,7 +5,9 @@ export interface ProviderConfig {
   passphrase?: string;
   environment: 'Production' | 'Testing' | 'mainnet' | 'testnet' | 'sandbox' | 'demo';
   region?: string;
+  product?: 'spot' | 'linear' | 'inverse' | 'option' | 'futures';
 }
+
 
 export interface ExchangeCapabilities {
   hasSandbox: boolean;

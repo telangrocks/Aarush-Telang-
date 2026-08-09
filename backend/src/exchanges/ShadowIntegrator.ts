@@ -1,10 +1,12 @@
 import { ExchangeManager } from './ExchangeManager';
 import { ProviderConfig } from './models/ConnectionConfig';
+import { resolveCanonicalRoutingRegion } from '../utils/region';
 
 export class ShadowIntegrator {
   public static async compareBalances(exchangeId: string, config: ProviderConfig, legacyBalances: any) {
     try {
-      const provider = await ExchangeManager.getProvider(exchangeId, config);
+      const fullConfig = { ...config, region: resolveCanonicalRoutingRegion(config.region) };
+      const provider = await ExchangeManager.getProvider(exchangeId, fullConfig);
       const start = Date.now();
       const ccxtBalances = await provider.fetchBalance();
       const duration = Date.now() - start;
@@ -34,7 +36,8 @@ export class ShadowIntegrator {
 
   public static async compareTicker(exchangeId: string, config: ProviderConfig, symbol: string, legacyTicker: any) {
     try {
-      const provider = await ExchangeManager.getProvider(exchangeId, config);
+      const fullConfig = { ...config, region: resolveCanonicalRoutingRegion(config.region) };
+      const provider = await ExchangeManager.getProvider(exchangeId, fullConfig);
       const start = Date.now();
       const ccxtTicker = await provider.fetchTicker(symbol);
       const duration = Date.now() - start;
@@ -51,7 +54,8 @@ export class ShadowIntegrator {
 
   public static async compareMarkets(exchangeId: string, config: ProviderConfig, legacyTickersLength: number) {
     try {
-      const provider = await ExchangeManager.getProvider(exchangeId, config);
+      const fullConfig = { ...config, region: resolveCanonicalRoutingRegion(config.region) };
+      const provider = await ExchangeManager.getProvider(exchangeId, fullConfig);
       const start = Date.now();
       const markets = await provider.fetchMarkets();
       const duration = Date.now() - start;
@@ -62,3 +66,4 @@ export class ShadowIntegrator {
     }
   }
 }
+

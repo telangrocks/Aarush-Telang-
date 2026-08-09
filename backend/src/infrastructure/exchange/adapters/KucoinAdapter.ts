@@ -5,6 +5,7 @@ import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapab
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';
 import { UnifiedError } from '../../../exchanges/models/UnifiedError';
 import { ExchangeErrorClassifier } from '../../../exchanges/ExchangeErrorClassifier';
+import { ExchangeRoutingResolver } from '../../../exchanges/routing/ExchangeRoutingResolver';
 import { CandleValidator } from '../CandleValidator';
 import BigNumber from 'bignumber.js';
 
@@ -28,6 +29,16 @@ export class KucoinAdapter extends BaseExchangeAdapter {
       supportsSelfTradePrevention: false,
     },
   };
+
+  public getHost(): string {
+    const config = this.getConfig();
+    return ExchangeRoutingResolver.getRestUrl({
+      exchange: 'kucoin',
+      environment: config.environment,
+      product: config.product || 'spot',
+      region: config.region,
+    });
+  }
 
   public override async connect(config: ProviderConfig): Promise<void> {
     const env = (config?.environment || '').toString().toLowerCase();
@@ -103,7 +114,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
       headers['Content-Type'] = 'application/json';
     }
 
-    const url = `https://openapi-v2.kucoin.com${endpoint}`;
+    const url = `${this.getHost()}${endpoint}`;
     let status = 0;
     try {
       const res = await this.fetchWithTimeout(url, {
@@ -178,7 +189,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   public async fetchTicker(symbol: string): Promise<Ticker> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '-').toUpperCase();
-    const url = `https://openapi-v2.kucoin.com/api/v1/market/stats?symbol=${rawSymbol}`;
+    const url = `${this.getHost()}/api/v1/market/stats?symbol=${rawSymbol}`;
     const startTime = Date.now();
 
     const res = await this.fetchWithTimeout(url, {
@@ -235,7 +246,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     const kcType = this.normalizeInterval(interval);
     const tfMs = CandleValidator.timeframeToMs(interval);
 
-    const url = `https://openapi-v2.kucoin.com/api/v1/market/candles?symbol=${rawSymbol}&type=${kcType}`;
+    const url = `${this.getHost()}/api/v1/market/candles?symbol=${rawSymbol}&type=${kcType}`;
     const startTime = Date.now();
 
     const res = await this.fetchWithTimeout(url, {
@@ -291,7 +302,8 @@ export class KucoinAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchMarkets(): Promise<Market[]> {
-    const url = `https://openapi-v2.kucoin.com/api/v1/symbols`;
+    const url = `${this.getHost()}/api/v1/symbols`;
+
     const startTime = Date.now();
 
     const res = await this.fetchWithTimeout(url, {

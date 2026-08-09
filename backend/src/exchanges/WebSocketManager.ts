@@ -1,4 +1,7 @@
 import { ExchangeName, ExchangeEnvironment } from "./types";
+import { ExchangeRoutingResolver, BybitWsPurpose, KuCoinWsPurpose, KuCoinBulletTokenResponse } from "./routing/ExchangeRoutingResolver";
+import { WebCryptoSigner } from "../infrastructure/crypto/WebCryptoSigner";
+import { UnifiedError } from "./models/UnifiedError";
 
 export interface ExchangeEvent {
   eventId: string;
@@ -14,6 +17,7 @@ export interface ExchangeEvent {
   averageFillPrice: number;
   eventTime: number;
 }
+
 
 export class EventDeduplicator {
   private processedEvents = new Set<string>();
@@ -133,28 +137,99 @@ export class WebSocketManager {
     exchange: ExchangeName,
     environment: ExchangeEnvironment = "mainnet",
     _region: "global" | "india" = "global",
-    listenKey?: string
+    listenKey?: string,
+    bybitPurpose: BybitWsPurpose = "linear"
   ): string {
     if (exchange === "binance") {
-      const baseUrl = environment === "testnet"
-        ? "wss://testnet.binance.vision/ws"
-        : "wss://stream.binance.com:9443/ws";
-      return listenKey ? `${baseUrl}/${listenKey}` : baseUrl;
+      return ExchangeRoutingResolver.getBinanceWebSocketUrl(environment, listenKey);
     }
 
     if (exchange === "bybit") {
-      const baseUrl = environment === "testnet"
-        ? "wss://stream-testnet.bybit.com/v5/public/linear"
-        : "wss://stream.bybit.com/v5/public/linear";
-      return listenKey ? `${baseUrl}?listenKey=${listenKey}` : baseUrl;
+      const url = ExchangeRoutingResolver.getBybitWebSocketUrl(environment, bybitPurpose);
+      return listenKey ? `${url}?listenKey=${listenKey}` : url;
     }
 
     if (exchange === "kucoin") {
-      return "wss://ws-api-spot.kucoin.com/endpoint";
+      throw new UnifiedError("KuCoin WebSocket requires dynamic token acquisition. Use getKuCoinWebSocketUrl() instead.", "UNSUPPORTED_OPERATION");
     }
 
-    throw new Error(`Unsupported exchange: ${exchange}`);
+    throw new UnifiedError(`Unsupported exchange: ${exchange}`, "INVALID_INPUT_PARAMETERS");
   }
+
+  /**
+   * KuCoin Dynamic WebSocket Token Acquisition Flow (Bullet Token + instanceServers).
+   * Reuses WebCryptoSigner and KuCoin API v2 HMAC signature logic.
+   */
+  public async fetchKuCoinBulletToken(
+    restHost: string,
+    purpose: KuCoinWsPurpose,
+    apiKey?: string,
+    apiSecret?: string,
+    passphrase?: string
+  ): Promise<KuCoinBulletTokenResponse> {
+    if (purpose === "private") {
+      if (!apiKey || !apiSecret || !passphrase) {
+        throw new UnifiedError("Missing required KuCoin credentials for private WebSocket feed.", "MISSING_REQUIRED_CREDENTIALS");
+      }
+    }
+
+    const isPrivate = purpose === "private";
+    const endpoint = isPrivate ? "/api/v1/bullet-private" : "/api/v1/bullet-public";
+    const url = `${restHost}${endpoint}`;
+
+    const headers: Record<string, string> = {
+      "Accept": "application/json",
+      "User-Agent": "CryptoPulse/1.0",
+    };
+
+    if (isPrivate) {
+      const ts = Date.now().toString();
+      const cleanSec = apiSecret!.trim();
+      const cleanPass = passphrase!.trim();
+      const passHmac = await WebCryptoSigner.hmacSha256Base64(cleanSec, cleanPass);
+      const strToSign = ts + "POST" + endpoint;
+      const sig = await WebCryptoSigner.hmacSha256Base64(cleanSec, strToSign);
+
+      headers["KC-API-KEY"] = apiKey!.trim();
+      headers["KC-API-SIGN"] = sig;
+      headers["KC-API-TIMESTAMP"] = ts;
+      headers["KC-API-PASSPHRASE"] = passHmac;
+      headers["KC-API-KEY-VERSION"] = "2";
+      headers["Content-Type"] = "application/json";
+    }
+
+    const res = await fetch(url, { method: "POST", headers });
+    if (!res.ok) {
+      throw new UnifiedError(`KuCoin bullet token request failed with status ${res.status}`, "EXCHANGE_NOT_REACHABLE");
+    }
+
+    const json = await res.json() as any;
+    if (json.code !== "200000" || !json.data?.token || !Array.isArray(json.data?.instanceServers) || json.data.instanceServers.length === 0) {
+      throw new UnifiedError(`KuCoin returned invalid bullet token payload: ${json.msg || 'Unknown error'}`, "EXCHANGE_NOT_REACHABLE");
+    }
+
+    return json.data;
+  }
+
+  /**
+   * Dynamically constructs the KuCoin WebSocket URL containing both token and connectId.
+   */
+  public async getKuCoinWebSocketUrl(
+    restHost: string,
+    purpose: KuCoinWsPurpose,
+    apiKey?: string,
+    apiSecret?: string,
+    passphrase?: string
+  ): Promise<string> {
+    const bulletData = await this.fetchKuCoinBulletToken(restHost, purpose, apiKey, apiSecret, passphrase);
+    const server = bulletData.instanceServers[0];
+    if (!server?.endpoint) {
+      throw new UnifiedError("KuCoin bullet response contained no instanceServer endpoint", "EXCHANGE_NOT_REACHABLE");
+    }
+    const connectId = crypto.randomUUID();
+    return `${server.endpoint}?token=${bulletData.token}&connectId=${connectId}`;
+  }
+
 
   public getSubscriptionPayload(exchange: ExchangeName, symbol: string, channel = "ticker"): string {
     const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();

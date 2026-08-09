@@ -142,7 +142,8 @@ async function runLiveVerification() {
 
   const kucoin = new KucoinAdapter();
   await kucoin.connect({ environment: 'mainnet' });
-  console.log(`[KuCoin Mainnet] Hostname: https://openapi-v2.kucoin.com`);
+  console.log(`[KuCoin Mainnet] Hostname: ${kucoin.getHost()}`);
+
 
   try {
     const startTicker = Date.now();

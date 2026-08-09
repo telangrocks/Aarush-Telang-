@@ -4,6 +4,7 @@ import { ExchangeCapabilities } from '../../../domain/capabilities/ExchangeCapab
 import { WebCryptoSigner } from '../../crypto/WebCryptoSigner';
 import { UnifiedError } from '../../../exchanges/models/UnifiedError';
 import { ExchangeErrorClassifier } from '../../../exchanges/ExchangeErrorClassifier';
+import { ExchangeRoutingResolver } from '../../../exchanges/routing/ExchangeRoutingResolver';
 import { CandleValidator } from '../CandleValidator';
 import BigNumber from 'bignumber.js';
 
@@ -29,19 +30,15 @@ export class BybitAdapter extends BaseExchangeAdapter {
   };
 
   public getHost(): string {
-    const env = (this.config?.environment || '').toString().toLowerCase();
-    if (env === 'demo') {
-      return 'https://api-demo.bybit.com';
-    }
-    const isTestnet = env === 'testnet' || env === 'testing' || env === 'sandbox';
-    if (isTestnet) {
-      if (process.env.BYBIT_TESTNET_URL) {
-        return process.env.BYBIT_TESTNET_URL.replace(/\/$/, '');
-      }
-      return 'https://api-testnet.bybit.com';
-    }
-    return 'https://api.bybit.com';
+    const config = this.getConfig();
+    return ExchangeRoutingResolver.getRestUrl({
+      exchange: 'bybit',
+      environment: config.environment,
+      product: config.product || 'spot',
+      region: config.region,
+    });
   }
+
 
   public normalizeInterval(interval: string): string {
     const intervalMap: Record<string, string> = {

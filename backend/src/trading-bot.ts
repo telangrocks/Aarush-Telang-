@@ -13,6 +13,8 @@ import { StrategyRegistry } from './engine/strategies/StrategyRegistry';
 import { MarketRegimeEngine } from './engine/regime/MarketRegimeEngine';
 import { StructuredLogger } from './infrastructure/telemetry/Telemetry';
 import { UnifiedError } from './exchanges/models/UnifiedError';
+import { resolveCanonicalRoutingRegion } from './utils/region';
+
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
  */
@@ -547,8 +549,9 @@ export class TradingBot {
             apiKey,
             secret,
             password,
-            region: user.exchange_region ?? undefined,
+            region: resolveCanonicalRoutingRegion(user.exchange_region),
           });
+
           const provider = new AdapterCandleProvider(adapter);
           const dataEngine = new MarketDataEngine(provider);
           this.orchestrator.setMarketDataEngine(dataEngine);
@@ -752,8 +755,9 @@ export class TradingBot {
               apiKey: decryptedApiKey,
               secret: decryptedSecret,
               password: decryptedPassphrase,
-              region: userKeys.exchange_region ?? undefined,
+              region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
             });
+
             const coinId = (await this.state.storage.get('coinId')) as string;
 
             const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
@@ -892,8 +896,10 @@ export class TradingBot {
                    environment: normalizeEnvironment(executionSnapshot.environment),
                    apiKey: decryptedApiKey,
                    secret: decryptedSecret,
-                   password: decryptedPassphrase
+                   password: decryptedPassphrase,
+                   region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
                 });
+
 
                 const req: any = {
                    symbol: executionSnapshot.symbol,
@@ -1144,7 +1150,8 @@ export class TradingBot {
         const user = userId
           ? await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>()
           : null;
-        const adapter = user?.exchange_name ? await ExchangeManager.getProvider(user.exchange_name, { environment: normalizeEnvironment(user.exchange_environment) }) : null;
+        const adapter = user?.exchange_name ? await ExchangeManager.getProvider(user.exchange_name, { environment: normalizeEnvironment(user.exchange_environment), region: resolveCanonicalRoutingRegion(user.exchange_region) }) : null;
+
 
         const ticker = adapter ? await adapter.fetchTicker(coinId).catch(() => null) : null;
         const currentPrice = ticker?.last?.toNumber() || 0.0725;
@@ -1201,7 +1208,8 @@ export class TradingBot {
           if (userId) {
             const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
             if (user?.exchange_name) {
-              const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment) });
+              const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment), region: resolveCanonicalRoutingRegion(user.exchange_region) });
+
               if ((adapter as any).cacheMetrics) {
                 adapterMetrics = { ... (adapter as any).cacheMetrics };
                 if (typeof adapterMetrics.circuitBreakerStatus === 'function') {
@@ -1338,7 +1346,7 @@ export class TradingBot {
                apiKey,
                secret: decryptedSecret,
                password: decryptedPassphrase,
-               region: userKeys.exchange_region ?? undefined,
+               region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
              });
              
              const reconciliationEngine = new ReconciliationEngine(this.state.storage, this.env, userId, adapter, userKeys);
@@ -1388,8 +1396,9 @@ export class TradingBot {
             apiKey,
             secret,
             password,
-            region: user.exchange_region ?? undefined,
+            region: resolveCanonicalRoutingRegion(user.exchange_region),
           });
+
             const provider = new AdapterCandleProvider(adapter);
             const dataEngine = new MarketDataEngine(provider);
             this.orchestrator.setMarketDataEngine(dataEngine);
@@ -1571,7 +1580,8 @@ export class TradingBot {
       if (!userKeys?.exchange_name || !hasApiKey || !userKeys?.exchange_api_secret_encrypted) return;
 
 
-      const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, { environment: normalizeEnvironment(userKeys.exchange_environment) });
+      const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, { environment: normalizeEnvironment(userKeys.exchange_environment), region: resolveCanonicalRoutingRegion(userKeys.exchange_region) });
+
       
       for (const position of results as any[]) {
         try {

@@ -23,6 +23,14 @@ export function normalizeEnvironment(value: unknown): CanonicalEnvironment | nul
 }
 
 /**
+ * Resolves an environment string into a guaranteed CanonicalEnvironment, defaulting to "mainnet".
+ */
+export function resolveCanonicalEnvironment(value: unknown): CanonicalEnvironment {
+  return normalizeEnvironment(value) ?? "mainnet";
+}
+
+
+/**
  * Supported environments per exchange registry.
  */
 const SUPPORTED_ENVIRONMENTS: Record<string, CanonicalEnvironment[]> = {

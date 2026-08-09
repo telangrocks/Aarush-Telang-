@@ -7,7 +7,8 @@ import { StructuredLogger } from "../infrastructure/telemetry/Telemetry";
 import { UnifiedError } from "../exchanges/models/UnifiedError";
 import { analyzeMarket } from "../market-analysis";
 import { normalizeEnvironment as normEnvUtil, isEnvironmentSupported, getSupportedEnvironmentsList, CanonicalEnvironment } from "../utils/environment";
-import { normalizeRegion } from "../utils/region";
+import { normalizeRegion, resolveCanonicalRoutingRegion } from "../utils/region";
+
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
@@ -386,7 +387,9 @@ export async function handleGetExchangeBalances(
       apiKey: decryptedKey,
       secret: decryptedSecret,
       password: decryptedPassphrase,
+      region: resolveCanonicalRoutingRegion(user.exchange_region),
     });
+
     const balanceRes = await adapter.fetchBalance();
     const formattedBalances = balanceRes.map(b => ({
       asset: b.currency,
@@ -529,8 +532,10 @@ export async function handleGetPersonalizedMarketCandidates(
       adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
         environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
         apiKey: cleanKey,
-        secret: cleanSecret
+        secret: cleanSecret,
+        region: resolveCanonicalRoutingRegion(user.exchange_region),
       });
+
       console.log(`[DIAGNOSTIC] Stage 5: CCXT client created for provider=${user.exchange_name}`);
     } catch (provErr: any) {
       console.error("[EXCHANGE_PROVIDER_ERROR] Provider creation failed:", provErr?.message);
@@ -722,8 +727,10 @@ export async function handleGetTicker(
     }
 
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet"
+      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
+      region: resolveCanonicalRoutingRegion(user.exchange_region),
     });
+
     const ticker = await adapter.fetchTicker(symbol);
 
     if (!ticker) {
@@ -782,8 +789,10 @@ export async function handleGetKlines(
     }
 
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet"
+      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
+      region: resolveCanonicalRoutingRegion(user.exchange_region),
     });
+
     const klines = await adapter.fetchKlines(symbol, interval, limit);
 
     return c.json(klines);
@@ -835,8 +844,10 @@ export async function handleGetTechnicalAnalysis(
     }
 
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet"
+      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
+      region: resolveCanonicalRoutingRegion(user.exchange_region),
     });
+
     const ticker = await adapter.fetchTicker(symbol);
 
     if (!ticker) {

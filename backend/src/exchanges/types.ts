@@ -200,7 +200,7 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
   {
     name: "binance",
     displayName: "Binance",
-    defaultRegion: "global",
+    defaultRegion: "india",
     regionUrls: {
       global: "https://api.binance.com",
       india: "https://api.binance.com",
@@ -211,22 +211,35 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
     },
   },
   {
-    name: "kucoin",
-    displayName: "KuCoin",
-    defaultRegion: "global",
+    name: "bybit",
+    displayName: "Bybit",
+    defaultRegion: "india",
     regionUrls: {
-      global: "https://openapi-v2.kucoin.com",
-      india: "https://openapi-v2.kucoin.com",
+      global: "https://api.bybit.com",
+      india: "https://api.bybit.com",
     },
     regionTestnetUrls: {
-      global: "https://openapi-sandbox.kucoin.com",
-      india: "https://openapi-sandbox.kucoin.com",
+      global: "https://api-testnet.bybit.com",
+      india: "https://api-testnet.bybit.com",
+    },
+  },
+  {
+    name: "kucoin",
+    displayName: "KuCoin",
+    defaultRegion: "india",
+    regionUrls: {
+      global: "https://api.kucoin.com",
+      india: "https://api.kucoin.com",
+    },
+    regionTestnetUrls: {
+      global: "https://api.kucoin.com",
+      india: "https://api.kucoin.com",
     },
   },
   {
     name: "delta",
     displayName: "Delta Exchange",
-    defaultRegion: "global",
+    defaultRegion: "india",
     regionUrls: {
       global: "https://api.delta.exchange",
       india: "https://api.delta.exchange",
@@ -237,3 +250,4 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
     },
   },
 ];
+

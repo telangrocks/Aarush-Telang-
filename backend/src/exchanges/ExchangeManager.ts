@@ -11,6 +11,7 @@ import { ExchangeOrchestrator } from '../infrastructure/orchestrator/ExchangeOrc
 import { Result } from '../domain/types/Result';
 import { WebCryptoSigner } from '../infrastructure/crypto/WebCryptoSigner';
 import { UnifiedError } from './models/UnifiedError';
+import { ExchangeRoutingResolver } from './routing/ExchangeRoutingResolver';
 
 // Bootstrap registration of polymorphic adapters
 ExchangeRegistry.register({ exchangeId: 'binance', factory: () => new BinanceAdapter() });
@@ -26,15 +27,20 @@ export class ExchangeManager {
   private static orchestrator = new ExchangeOrchestrator();
 
   private static async getHashedCacheKey(exchangeId: string, config: ProviderConfig): Promise<string> {
-    const rawCreds = `${config.apiKey || ''}:${config.secret || ''}`;
-    const credHash = rawCreds !== ':' ? await WebCryptoSigner.hashSha256(rawCreds) : '';
-    return this.pool.generateCacheKey(
-      exchangeId,
-      config.environment,
-      credHash,
-      ''
-    );
+    const cleanKey = (config.apiKey || '').trim();
+    const cleanSec = (config.secret || '').trim();
+    const cleanPass = (config.passphrase || config.password || '').trim();
+
+    const rawCreds = `${cleanKey}:${cleanSec}:${cleanPass}`;
+    const credHash = rawCreds !== '::' ? await WebCryptoSigner.hashSha256(rawCreds) : 'public';
+
+    const canonicalEnv = ExchangeRoutingResolver.getCanonicalEnvironment(config.environment);
+    const canonicalReg = ExchangeRoutingResolver.getCanonicalRegion(config.region);
+    const product = config.product || 'spot';
+
+    return `${exchangeId.toLowerCase()}:${product}:${canonicalEnv}:${canonicalReg}:${credHash}`;
   }
+
 
   /**
    * Retrieves a connected Exchange Provider from the bounded ProviderPool.

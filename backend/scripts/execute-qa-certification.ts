@@ -60,8 +60,9 @@ async function executeQASuite() {
         const url = exId === 'binance'
           ? (envStr === 'testnet' ? 'https://testnet.binance.vision/api/v3/account' : 'https://api.binance.com/api/v3/account')
           : exId === 'kucoin'
-          ? 'https://openapi-v2.kucoin.com/api/v1/accounts?type=trade'
+          ? 'https://api.kucoin.com/api/v1/accounts?type=trade'
           : 'https://api.bybit.com/v5/account/wallet-balance';
+
 
         const res = await globalThis.fetch(url, {
           headers: {
@@ -265,7 +266,8 @@ async function executeQASuite() {
         targetExchange: target.exchange,
         environment: target.env,
         operationName: '6. WebSocket Streaming & Recovery',
-        endpoint: exId === 'binance' ? 'wss://stream.binance.com' : exId === 'kucoin' ? 'wss://ws-api-spot.kucoin.com' : 'wss://stream.bybit.com',
+        endpoint: exId === 'binance' ? 'wss://stream.binance.com' : exId === 'kucoin' ? 'kucoin-bullet-dynamic-ws' : 'wss://stream.bybit.com',
+
         httpStatus: 101,
         requestId: reqId,
         correlationId: corrId,

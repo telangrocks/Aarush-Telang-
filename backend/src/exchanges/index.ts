@@ -7,3 +7,5 @@ export * from './models/NormalizedDomain';
 export * from './models/ConnectionConfig';
 export { UnifiedError } from './models/UnifiedError';
 export { ProviderFactory } from './ProviderFactory';
+export * from './routing/ExchangeRoutingResolver';
+
