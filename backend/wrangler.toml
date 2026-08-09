@@ -41,3 +41,8 @@ new_sqlite_classes = ["TradingBot"]
 [triggers]
 crons = []
 
+# Plain-text environment variables (R1, R7)
+[vars]
+ENVIRONMENT = "production"
+BINANCE_BASE_URL = ""
+BINANCE_TESTNET_URL = "https://testnet.binance.vision"
