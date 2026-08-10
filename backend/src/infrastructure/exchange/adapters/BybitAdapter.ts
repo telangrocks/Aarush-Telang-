@@ -170,10 +170,22 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
   public async fetchBalance(): Promise<Balance[]> {
     let result: any;
-    try {
-      result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: 'UNIFIED' }, true);
-    } catch (err) {
-      result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: 'SPOT' }, true);
+    const requestedAccountType = (this.config as any)?.accountType ? String((this.config as any).accountType).toUpperCase() : null;
+
+    if (requestedAccountType) {
+      result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: requestedAccountType }, true);
+    } else {
+      try {
+        result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: 'UNIFIED' }, true);
+      } catch (firstErr: any) {
+        // Fall back to SPOT if UNIFIED is rejected by edge routing or unsupported by account
+        try {
+          result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: 'SPOT' }, true);
+        } catch (secondErr: any) {
+          // Prefer application layer error from SPOT request if available
+          throw secondErr || firstErr;
+        }
+      }
     }
 
     const balances: Balance[] = [];

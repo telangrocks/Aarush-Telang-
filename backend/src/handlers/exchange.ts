@@ -103,6 +103,8 @@ export async function handleValidateExchange(
       if (classified.code === "AUTHENTICATION_FAILED" && normEnv !== "mainnet") {
         hint = `Authentication failed. Please verify that your API key is for the '${normEnv}' environment.`;
       }
+      const origCode = valErr instanceof UnifiedError ? valErr.originalExchangeErrorCode : undefined;
+      const origStatus = valErr instanceof UnifiedError ? valErr.status : undefined;
       return c.json({
         success: false,
         code: classified.code,
@@ -111,6 +113,8 @@ export async function handleValidateExchange(
         version: classified.version || "1.0",
         correlationId,
         detail: classified.technicalDetail,
+        exchangeCode: origCode,
+        httpStatus: origStatus,
       });
     } finally {
       if (provider) {
@@ -210,11 +214,16 @@ export async function handleConnectExchange(
       if (classified.code === "AUTHENTICATION_FAILED" && normEnv !== "mainnet") {
         hint = `Authentication failed. Please verify that your API key is for the '${normEnv}' environment.`;
       }
+      const origCode = valErr instanceof UnifiedError ? valErr.originalExchangeErrorCode : undefined;
+      const origStatus = valErr instanceof UnifiedError ? valErr.status : undefined;
       return c.json({
         success: false,
         code: classified.code,
         message: classified.friendlyMessage,
         hint: hint,
+        detail: classified.technicalDetail,
+        exchangeCode: origCode,
+        httpStatus: origStatus,
       });
     }
 

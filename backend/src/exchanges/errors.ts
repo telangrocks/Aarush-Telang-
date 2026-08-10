@@ -7,6 +7,7 @@ import { ExchangeErrorClassifier } from './ExchangeErrorClassifier';
 
 export type ExchangeErrorCode =
   | "INVALID_API_KEY"
+  | "INVALID_API_KEY_OR_IP_OR_PERMISSION"
   | "INVALID_API_SECRET"
   | "INVALID_PASSPHRASE"
   | "IP_NOT_WHITELISTED"
@@ -53,6 +54,11 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
     code: "INVALID_API_KEY",
     friendlyMessage: "The API Key you entered isn't recognised by the exchange.",
     hint: "Double-check the key for typos, or generate a fresh one in your exchange account settings.",
+  },
+  INVALID_API_KEY_OR_IP_OR_PERMISSION: {
+    code: "INVALID_API_KEY_OR_IP_OR_PERMISSION",
+    friendlyMessage: "Binance rejected authentication. This can be caused by an invalid API key, IP whitelist restriction, or missing API permissions.",
+    hint: "Verify your API Key/Secret, check if IP whitelisting is enabled on Binance, and ensure 'Enable Reading' permission is checked.",
   },
   INVALID_API_SECRET: {
     code: "INVALID_API_SECRET",

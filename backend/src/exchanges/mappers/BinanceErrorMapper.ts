@@ -50,7 +50,7 @@ export class BinanceErrorMapper implements IExchangeErrorMapper {
           version: '1.0',
         };
       }
-      return this.mk('INVALID_API_KEY', technicalDetail);
+      return this.mk('INVALID_API_KEY_OR_IP_OR_PERMISSION', technicalDetail);
     }
 
     const codeMap: Record<number, ExchangeErrorCode> = {

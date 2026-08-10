@@ -182,7 +182,7 @@ class ExchangeViewModel @Inject constructor(
         Log.e(TAG, "[DIAGNOSTIC] Error | Endpoint: $endpointName | Exception Class: ${exception::class.java.name} | Message: ${exception.message}", exception)
 
         if (exception is DomainException) {
-            return exception.message to exception.code
+            return exception.message to (exception.hint ?: exception.code)
         }
 
         val exMsgPair = when (exception) {

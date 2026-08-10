@@ -7,6 +7,15 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 import kotlinx.coroutines.CancellationException
 
+data class ParsedErrorInfo(
+    val message: String,
+    val hint: String? = null,
+    val errorCode: String? = null,
+    val exchangeCode: String? = null,
+    val correlationId: String? = null,
+    val detail: String? = null
+)
+
 suspend fun <T> safeApiCall(apiCall: suspend () -> retrofit2.Response<T>): NetworkResult<T> {
     return try {
         val response = apiCall()
@@ -18,12 +27,20 @@ suspend fun <T> safeApiCall(apiCall: suspend () -> retrofit2.Response<T>): Netwo
                 NetworkResult.Error(NetworkError.Unknown(Exception("Empty response body")))
             }
         } else {
-            val (errorMsg, hint) = extractErrorAndHint(response.errorBody()?.string(), response.message())
+            val info = extractErrorInfo(response.errorBody()?.string(), response.message())
             val error = when (response.code()) {
                 401 -> NetworkError.Unauthorized
                 403 -> NetworkError.Forbidden
                 404 -> NetworkError.NotFound
-                else -> NetworkError.HttpError(response.code(), errorMsg, hint)
+                else -> NetworkError.HttpError(
+                    code = response.code(),
+                    message = info.message,
+                    hint = info.hint,
+                    errorCode = info.errorCode,
+                    exchangeCode = info.exchangeCode,
+                    correlationId = info.correlationId,
+                    detail = info.detail
+                )
             }
             NetworkResult.Error(error)
         }
@@ -34,12 +51,20 @@ suspend fun <T> safeApiCall(apiCall: suspend () -> retrofit2.Response<T>): Netwo
             is IOException -> NetworkResult.Error(NetworkError.Unknown(e))
             is HttpException -> {
                 val code = e.code()
-                val (errorMsg, hint) = extractErrorAndHint(e.response()?.errorBody()?.string(), e.message())
+                val info = extractErrorInfo(e.response()?.errorBody()?.string(), e.message())
                 val error = when (code) {
                     401 -> NetworkError.Unauthorized
                     403 -> NetworkError.Forbidden
                     404 -> NetworkError.NotFound
-                    else -> NetworkError.HttpError(code, errorMsg, hint)
+                    else -> NetworkError.HttpError(
+                        code = code,
+                        message = info.message,
+                        hint = info.hint,
+                        errorCode = info.errorCode,
+                        exchangeCode = info.exchangeCode,
+                        correlationId = info.correlationId,
+                        detail = info.detail
+                    )
                 }
                 NetworkResult.Error(error)
             }
@@ -48,9 +73,9 @@ suspend fun <T> safeApiCall(apiCall: suspend () -> retrofit2.Response<T>): Netwo
     }
 }
 
-private fun extractErrorAndHint(errorBody: String?, fallbackMessage: String?): Pair<String, String?> {
+private fun extractErrorInfo(errorBody: String?, fallbackMessage: String?): ParsedErrorInfo {
     val fallback = if (fallbackMessage.isNullOrBlank()) "Unknown Error" else fallbackMessage
-    if (errorBody.isNullOrBlank()) return fallback to null
+    if (errorBody.isNullOrBlank()) return ParsedErrorInfo(message = fallback)
     return try {
         val json = JSONObject(errorBody)
         val message = if (json.has("message")) {
@@ -61,8 +86,19 @@ private fun extractErrorAndHint(errorBody: String?, fallbackMessage: String?): P
             fallback
         }
         val hint = if (json.has("hint")) json.getString("hint") else null
-        message to hint
+        val errorCode = if (json.has("code")) json.getString("code") else null
+        val exchangeCode = if (json.has("exchangeCode")) json.get("exchangeCode").toString() else null
+        val correlationId = if (json.has("correlationId")) json.getString("correlationId") else null
+        val detail = if (json.has("detail")) json.getString("detail") else null
+        ParsedErrorInfo(
+            message = message,
+            hint = hint,
+            errorCode = errorCode,
+            exchangeCode = exchangeCode,
+            correlationId = correlationId,
+            detail = detail
+        )
     } catch (e: Exception) {
-        fallback to null
+        ParsedErrorInfo(message = fallback)
     }
 }

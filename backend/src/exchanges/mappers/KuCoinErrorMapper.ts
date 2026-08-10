@@ -40,6 +40,7 @@ export class KuCoinErrorMapper implements IExchangeErrorMapper {
     const codeMap: Record<string, ExchangeErrorCode> = {
       '400100': 'INVALID_SIGNATURE',
       '400001': 'INVALID_API_KEY',
+      '400002': 'TIMESTAMP_OUT_OF_SYNC',
       '400004': 'INVALID_PASSPHRASE',
       '400005': 'TIMESTAMP_OUT_OF_SYNC',
       '400006': 'INVALID_API_VERSION',

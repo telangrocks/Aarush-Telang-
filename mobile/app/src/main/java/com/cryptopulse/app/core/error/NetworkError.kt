@@ -1,7 +1,15 @@
 package com.cryptopulse.app.core.error
 
 sealed interface NetworkError {
-    data class HttpError(val code: Int, val message: String, val hint: String? = null) : NetworkError
+    data class HttpError(
+        val code: Int,
+        val message: String,
+        val hint: String? = null,
+        val errorCode: String? = null,
+        val exchangeCode: String? = null,
+        val correlationId: String? = null,
+        val detail: String? = null
+    ) : NetworkError
     object Unauthorized : NetworkError
     object Forbidden : NetworkError
     object NotFound : NetworkError

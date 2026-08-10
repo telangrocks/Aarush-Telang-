@@ -5,11 +5,11 @@ import { ExchangeSpecificationRegistry } from './registry/ExchangeSpecificationR
 describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests', () => {
   const classifier = ExchangeErrorClassifier.getInstance();
 
-  it('1. Should classify Binance -2015 invalid API key correctly', () => {
+  it('1. Should classify Binance -2015 generic error as INVALID_API_KEY_OR_IP_OR_PERMISSION', () => {
     const body = JSON.stringify({ code: -2015, msg: 'Invalid API-key, IP, or permissions for action.' });
     const res = classifier.classifyResponse('binance', 400, { 'content-type': 'application/json' }, body, 'corr-123');
-    expect(res.code).toBe('INVALID_API_KEY');
-    expect(res.friendlyMessage).toContain("API Key you entered isn't recognised");
+    expect(res.code).toBe('INVALID_API_KEY_OR_IP_OR_PERMISSION');
+    expect(res.friendlyMessage).toContain('Binance rejected authentication');
     expect(res.version).toBe('1.0');
     expect(res.correlationId).toBe('corr-123');
   });
@@ -49,10 +49,10 @@ describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests
     expect(res.code).toBe('INVALID_PASSPHRASE');
   });
 
-  it('7. Should classify Bybit 10003 invalid API key error', () => {
-    const body = JSON.stringify({ retCode: 10003, retMsg: 'Invalid ApiKey' });
+  it('7. Should classify Bybit 10003 permission denied error', () => {
+    const body = JSON.stringify({ retCode: 10003, retMsg: 'You are not authorized to execute this request.' });
     const res = classifier.classifyResponse('bybit', 400, { 'content-type': 'application/json' }, body);
-    expect(res.code).toBe('INVALID_API_KEY');
+    expect(res.code).toBe('INSUFFICIENT_PERMISSIONS');
   });
 
   it('8. Should classify Bybit 10010 IP not whitelisted error', () => {

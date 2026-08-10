@@ -84,7 +84,35 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     return mapped;
   }
 
-  private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', endpoint: string, bodyObj?: Record<string, any>): Promise<any> {
+  private serverTimeOffsetMs: number = 0;
+  private lastTimeSyncMs: number = 0;
+
+  private async fetchServerTimeOffset(): Promise<number> {
+    try {
+      const url = `${this.getHost()}/api/v1/timestamp`;
+      const res = await this.fetchWithTimeout(url, { headers: { 'User-Agent': 'CryptoPulse/1.0' } }, 5000);
+      if (res.ok) {
+        const json = await res.json() as any;
+        if (json?.data && typeof json.data === 'number') {
+          this.serverTimeOffsetMs = json.data - Date.now();
+          this.lastTimeSyncMs = Date.now();
+          return this.serverTimeOffsetMs;
+        }
+      }
+    } catch (_) {
+      // Ignore time sync fetch errors and fall back to local clock
+    }
+    return this.serverTimeOffsetMs;
+  }
+
+  private async getSyncedTimestamp(): Promise<string> {
+    if (!this.lastTimeSyncMs || (Date.now() - this.lastTimeSyncMs > 300000)) {
+      await this.fetchServerTimeOffset();
+    }
+    return (Date.now() + this.serverTimeOffsetMs).toString();
+  }
+
+  private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', endpoint: string, bodyObj?: Record<string, any>, isRetryOnTimeError = false): Promise<any> {
     const startTime = Date.now();
     const cleanKey = (this.config?.apiKey || '').trim();
     const cleanSec = (this.config?.secret || '').trim();
@@ -94,7 +122,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
       throw new UnifiedError('Missing required KuCoin credentials (API Key, Secret, or Passphrase).', 'MISSING_REQUIRED_CREDENTIALS');
     }
 
-    const ts = Date.now().toString();
+    const ts = await this.getSyncedTimestamp();
     const bodyStr = bodyObj ? JSON.stringify(bodyObj) : '';
     const passHmac = await WebCryptoSigner.hmacSha256Base64(cleanSec, cleanPass);
     const strToSign = ts + method + endpoint + bodyStr;
@@ -135,8 +163,15 @@ export class KucoinAdapter extends BaseExchangeAdapter {
       });
 
       if (!res.ok) {
+        let jsonErr: any = {};
+        try { jsonErr = JSON.parse(errText); } catch (_) {}
+        if (jsonErr.code === '400002' && !isRetryOnTimeError) {
+          this.lastTimeSyncMs = 0; // Invalidate cached offset
+          await this.fetchServerTimeOffset(); // Force time resync
+          return this.makeSignedRequest(method, endpoint, bodyObj, true);
+        }
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage, classified.code);
+        throw new UnifiedError(classified.friendlyMessage, classified.code, res.status, errText);
       }
 
       let json: any = {};
@@ -144,12 +179,17 @@ export class KucoinAdapter extends BaseExchangeAdapter {
         json = JSON.parse(errText);
       } catch (_) {
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage, classified.code);
+        throw new UnifiedError(classified.friendlyMessage, classified.code, res.status, errText);
       }
 
       if (json.code !== '200000') {
+        if (json.code === '400002' && !isRetryOnTimeError) {
+          this.lastTimeSyncMs = 0;
+          await this.fetchServerTimeOffset();
+          return this.makeSignedRequest(method, endpoint, bodyObj, true);
+        }
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage || json.msg, classified.code);
+        throw new UnifiedError(classified.friendlyMessage || json.msg, classified.code, res.status, errText);
       }
 
       return json.data;

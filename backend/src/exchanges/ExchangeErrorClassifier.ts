@@ -109,8 +109,9 @@ export class ExchangeErrorClassifier {
       return this.mk('DATABASE_ERROR', technicalDetail, correlationId);
     }
 
-    if (errObj?.mappedInternalErrorCode && FRIENDLY_MESSAGES[errObj.mappedInternalErrorCode as ExchangeErrorCode]) {
-      return this.mk(errObj.mappedInternalErrorCode as ExchangeErrorCode, technicalDetail, correlationId);
+    const targetCode = errObj?.mappedInternalErrorCode || errObj?.code;
+    if (targetCode && FRIENDLY_MESSAGES[targetCode as ExchangeErrorCode]) {
+      return this.mk(targetCode as ExchangeErrorCode, technicalDetail, correlationId);
     }
 
     const body = errObj?.responseBody || errObj?.originalExchangeErrorMessage || message;

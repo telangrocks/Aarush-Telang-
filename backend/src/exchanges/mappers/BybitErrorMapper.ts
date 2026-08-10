@@ -32,9 +32,9 @@ export class BybitErrorMapper implements IExchangeErrorMapper {
     const codeMap: Record<number, ExchangeErrorCode> = {
       10001: 'INVALID_SIGNATURE', // Parameter error / invalid signature
       10002: 'INVALID_SIGNATURE', // Invalid request timestamp
-      10003: 'INVALID_API_KEY', // Invalid ApiKey
+      10003: 'INSUFFICIENT_PERMISSIONS', // You are not authorized to execute this request
       10004: 'INVALID_SIGNATURE', // Invalid sign
-      10005: 'AUTHENTICATION_FAILED', // Permission denied
+      10005: 'INSUFFICIENT_PERMISSIONS', // Permission denied
       10006: 'API_RATE_LIMIT_REACHED', // Too many requests
       10010: 'IP_NOT_WHITELISTED', // Unmatched IP address
       10014: 'INVALID_SIGNATURE', // Invalid parameter

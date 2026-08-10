@@ -20,7 +20,10 @@ inline fun <T> NetworkResult<T>.onFailure(action: (exception: Throwable) -> Unit
         val throwable = when (val error = this.error) {
             is NetworkError.HttpError -> DomainException(
                 message = error.message.ifBlank { "HTTP Error ${error.code}" },
-                code = error.hint
+                hint = error.hint,
+                code = error.errorCode,
+                details = error.detail,
+                exchangeCode = error.exchangeCode?.toIntOrNull()
             )
             is NetworkError.Unauthorized -> DomainException(message = "Session expired", code = "Unauthorized")
             is NetworkError.Unknown -> error.error
@@ -40,7 +43,10 @@ inline fun <T> NetworkResult<T>.exceptionOrNull(): Throwable? {
         return when (val error = this.error) {
             is NetworkError.HttpError -> DomainException(
                 message = error.message.ifBlank { "HTTP Error ${error.code}" },
-                code = error.hint
+                hint = error.hint,
+                code = error.errorCode,
+                details = error.detail,
+                exchangeCode = error.exchangeCode?.toIntOrNull()
             )
             is NetworkError.Unauthorized -> DomainException(message = "Session expired", code = "Unauthorized")
             is NetworkError.Unknown -> error.error
