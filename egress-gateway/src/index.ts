@@ -116,7 +116,10 @@ export function createEgressGatewayApp(proxySecret: string = process.env.EGRESS_
   return app;
 }
 
-const port = parseInt(process.env.PORT || "8080", 10);
-const app = createEgressGatewayApp();
-console.log(`[EGRESS GATEWAY] Server listening on port ${port}...`);
-serve({ fetch: app.fetch, port });
+// Start standalone server if executed directly
+if (process.argv[1] && process.argv[1].includes("index")) {
+  const port = parseInt(process.env.PORT || "8080", 10);
+  const app = createEgressGatewayApp();
+  console.log(`[EGRESS GATEWAY] Server listening on port ${port}...`);
+  serve({ fetch: app.fetch, port });
+}
