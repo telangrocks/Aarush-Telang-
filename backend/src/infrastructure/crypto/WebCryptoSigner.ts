@@ -35,6 +35,12 @@ export class WebCryptoSigner {
       ['sign']
     );
     const sigBuffer = await globalThis.crypto.subtle.sign('HMAC', key, payloadData);
-    return btoa(String.fromCharCode(...new Uint8Array(sigBuffer)));
+    const bytes = new Uint8Array(sigBuffer);
+    let binary = '';
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
   }
 }

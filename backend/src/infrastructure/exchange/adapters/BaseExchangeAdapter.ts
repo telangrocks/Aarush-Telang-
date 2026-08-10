@@ -84,6 +84,42 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
+      const proxyUrl = this.config?.egressProxyUrl;
+      const proxySecret = this.config?.egressProxySecret || "crypto-pulse-egress-secret-2026";
+
+      if (proxyUrl && proxyUrl.trim() !== "") {
+        const forwardUrl = `${proxyUrl.replace(/\/$/, "")}/forward`;
+        const rawHeaders = (options.headers as Record<string, string>) || {};
+        const bodyStr = options.body ? options.body.toString() : undefined;
+
+        const proxyResponse = await globalThis.fetch(forwardUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Egress-Auth-Token": proxySecret,
+          },
+          body: JSON.stringify({
+            targetUrl: url,
+            method: options.method || "GET",
+            headers: rawHeaders,
+            body: bodyStr,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!proxyResponse.ok) {
+          const errText = await proxyResponse.text();
+          throw new UnifiedError(`Egress proxy returned HTTP ${proxyResponse.status}: ${errText}`, "SERVICE_UNAVAILABLE");
+        }
+
+        const proxyJson: any = await proxyResponse.json();
+        const resHeaders = new Headers(proxyJson.headers || {});
+        return new Response(proxyJson.body, {
+          status: proxyJson.status || 200,
+          headers: resHeaders,
+        });
+      }
+
       const response = await globalThis.fetch(url, {
         ...options,
         signal: controller.signal,

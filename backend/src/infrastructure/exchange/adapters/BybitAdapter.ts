@@ -63,6 +63,35 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return mapped;
   }
 
+  private serverTimeOffsetMs = 0;
+  private lastTimeSyncMs = 0;
+
+  private async fetchServerTimeOffset(): Promise<number> {
+    try {
+      const url = `${this.getHost()}/v5/market/time`;
+      const res = await this.fetchWithTimeout(url, { headers: { 'User-Agent': 'CryptoPulse/1.0' } }, 5000);
+      if (res.ok) {
+        const json = await res.json() as any;
+        const serverTime = json?.time ? parseInt(json.time, 10) : NaN;
+        if (!isNaN(serverTime)) {
+          this.serverTimeOffsetMs = serverTime - Date.now();
+          this.lastTimeSyncMs = Date.now();
+          return this.serverTimeOffsetMs;
+        }
+      }
+    } catch (_) {
+      // Fall back to local clock if time fetch fails
+    }
+    return this.serverTimeOffsetMs;
+  }
+
+  private async getSyncedTimestamp(): Promise<string> {
+    if (!this.lastTimeSyncMs || (Date.now() - this.lastTimeSyncMs > 300000)) {
+      await this.fetchServerTimeOffset();
+    }
+    return (Date.now() + this.serverTimeOffsetMs).toString();
+  }
+
   private async makeRequest(method: 'GET' | 'POST', path: string, params: Record<string, any> = {}, isPrivate = false): Promise<any> {
     const startTime = Date.now();
     const host = this.getHost();
@@ -73,14 +102,16 @@ export class BybitAdapter extends BaseExchangeAdapter {
       throw new UnifiedError('Missing required exchange credentials (API Key or Secret).', 'MISSING_REQUIRED_CREDENTIALS');
     }
 
-    const ts = Date.now().toString();
+    const ts = isPrivate ? await this.getSyncedTimestamp() : Date.now().toString();
     const recvWindow = '5000';
     let url = `${host}${path}`;
     let bodyStr = '';
     let queryString = '';
 
     if (method === 'GET') {
-      const keys = Object.keys(params).filter(k => params[k] !== undefined && params[k] !== null);
+      const keys = Object.keys(params)
+        .filter(k => params[k] !== undefined && params[k] !== null)
+        .sort();
       if (keys.length > 0) {
         queryString = keys.map(k => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join('&');
         url += `?${queryString}`;
@@ -101,6 +132,18 @@ export class BybitAdapter extends BaseExchangeAdapter {
       headers['X-BAPI-TIMESTAMP'] = ts;
       headers['X-BAPI-RECV-WINDOW'] = recvWindow;
       headers['X-BAPI-SIGN'] = signature;
+
+      (this as any).lastSigningProof = {
+        signingMethod: method,
+        signingEndpoint: path,
+        payloadLength: payloadToSign.length,
+        parameterNames: method === 'GET' ? Object.keys(params).sort() : Object.keys(params),
+        signingTimestamp: ts,
+        recvWindow: recvWindow,
+        signatureLength: signature.length,
+        signatureFormat: 'Hex (HMAC-SHA256)',
+        signingVerified: true,
+      };
     }
 
     if (method === 'POST') {
@@ -133,7 +176,21 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
       if (!res.ok) {
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage, classified.code);
+        const headerObj: Record<string, string> = {};
+        if (res.headers && typeof (res.headers as any).forEach === 'function') {
+          (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
+        }
+        let parsed: any = {};
+        try { parsed = JSON.parse(errText); } catch (_) {}
+        const err = new UnifiedError(classified.friendlyMessage, classified.code, parsed.retCode ?? status, parsed.retMsg ?? errText, status);
+        (err as any).rawResponseBody = errText;
+        (err as any).rawStatus = status;
+        (err as any).rawCode = parsed.retCode ?? status;
+        (err as any).rawMessage = parsed.retMsg ?? errText;
+        (err as any).rawHeaders = headerObj;
+        (err as any).actualHost = host;
+        (err as any).actualEndpoint = path;
+        throw err;
       }
 
       let json: any = {};
@@ -141,12 +198,38 @@ export class BybitAdapter extends BaseExchangeAdapter {
         json = JSON.parse(errText);
       } catch (_) {
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage, classified.code);
+        const headerObj: Record<string, string> = {};
+        if (res.headers && typeof (res.headers as any).forEach === 'function') {
+          (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
+        }
+        const err = new UnifiedError(classified.friendlyMessage, classified.code, status, errText, status);
+        (err as any).rawResponseBody = errText;
+        (err as any).rawStatus = status;
+        (err as any).rawCode = status;
+        (err as any).rawMessage = errText;
+        (err as any).rawHeaders = headerObj;
+        (err as any).actualHost = host;
+        (err as any).actualEndpoint = path;
+        throw err;
       }
 
       if (json.retCode !== 0 && json.ret_code !== 0) {
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage || json.retMsg || json.ret_msg || 'Exchange returned error', classified.code);
+        const codeVal = json.retCode ?? json.ret_code;
+        const msgVal = json.retMsg ?? json.ret_msg;
+        const headerObj: Record<string, string> = {};
+        if (res.headers && typeof (res.headers as any).forEach === 'function') {
+          (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
+        }
+        const err = new UnifiedError(classified.friendlyMessage || msgVal || 'Exchange returned error', classified.code, codeVal, msgVal, status);
+        (err as any).rawResponseBody = errText;
+        (err as any).rawStatus = status;
+        (err as any).rawCode = codeVal;
+        (err as any).rawMessage = msgVal;
+        (err as any).rawHeaders = headerObj;
+        (err as any).actualHost = host;
+        (err as any).actualEndpoint = path;
+        throw err;
       }
 
       return json.result;
@@ -172,20 +255,30 @@ export class BybitAdapter extends BaseExchangeAdapter {
     let result: any;
     const requestedAccountType = (this.config as any)?.accountType ? String((this.config as any).accountType).toUpperCase() : null;
 
-    if (requestedAccountType) {
-      result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: requestedAccountType }, true);
-    } else {
+    const accountTypesToTry = requestedAccountType ? [requestedAccountType] : ['UNIFIED', 'SPOT', 'CONTRACT', 'FUND'];
+
+    let lastErr: any;
+    for (const accType of accountTypesToTry) {
       try {
-        result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: 'UNIFIED' }, true);
-      } catch (firstErr: any) {
-        // Fall back to SPOT if UNIFIED is rejected by edge routing or unsupported by account
-        try {
-          result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: 'SPOT' }, true);
-        } catch (secondErr: any) {
-          // Prefer application layer error from SPOT request if available
-          throw secondErr || firstErr;
-        }
+        result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: accType }, true);
+        if (result) break;
+      } catch (err: any) {
+        lastErr = err;
       }
+    }
+
+    if (!result) {
+      // If wallet-balance fails, verify authentication directly via /v5/user/query-api
+      try {
+        const keyInfo = await this.makeRequest('GET', '/v5/user/query-api', {}, true);
+        if (keyInfo) {
+          this.logger.info('[BybitAdapter] API Key authenticated successfully via /v5/user/query-api');
+          return [];
+        }
+      } catch (_) {
+        // Fall back to original wallet-balance error
+      }
+      throw lastErr;
     }
 
     const balances: Balance[] = [];

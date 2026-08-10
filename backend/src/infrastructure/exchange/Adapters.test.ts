@@ -33,8 +33,8 @@ describe('Exchange Adapters & Dynamic Self-Registration Registry Unit Tests', ()
     await expect(binance.fetchBalance()).rejects.toThrow('Missing required exchange credentials');
   });
 
-  it('KucoinAdapter rejects sandbox mode as deprecated', async () => {
+  it('KucoinAdapter rejects demo mode as unsupported', async () => {
     const kucoin = new KucoinAdapter();
-    await expect(kucoin.connect({ environment: 'testnet' })).rejects.toThrow('KuCoin Sandbox is officially deprecated');
+    await expect(kucoin.connect({ environment: 'demo' })).rejects.toThrow('KuCoin does not support demo environment');
   });
 });

@@ -36,7 +36,7 @@ export function resolveCanonicalEnvironment(value: unknown): CanonicalEnvironmen
 const SUPPORTED_ENVIRONMENTS: Record<string, CanonicalEnvironment[]> = {
   binance: ["mainnet", "testnet"],
   bybit: ["mainnet", "testnet", "demo"],
-  kucoin: ["mainnet"],
+  kucoin: ["mainnet", "testnet"],
 };
 
 /**

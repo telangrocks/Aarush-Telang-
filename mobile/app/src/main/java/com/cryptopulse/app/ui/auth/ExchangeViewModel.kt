@@ -41,18 +41,96 @@ sealed interface MarketDataUiState {
     data class Error(val message: String, val hint: String? = null) : MarketDataUiState
 }
 
-data class ExchangeFormState(
-    val selectedExchange: String = "binance",
-    val environment: String = "testnet",
+data class CredentialSet(
     val apiKey: String = "",
     val apiSecret: String = "",
     val apiPassphrase: String = "",
+)
+
+data class ExchangeFormState(
+    val selectedExchange: String = "binance",
+    val environment: String = "testnet",
+    val credentialsMap: Map<Pair<String, String>, CredentialSet> = emptyMap(),
     val apiKeyError: String? = null,
     val apiSecretError: String? = null,
     val apiPassphraseError: String? = null,
     val isLoading: Boolean = false,
     val validationMessage: String? = null,
-)
+) {
+    private val currentSlotKey: Pair<String, String>
+        get() = Pair(selectedExchange.lowercase(), environment.lowercase())
+
+    val apiKey: String
+        get() = credentialsMap[currentSlotKey]?.apiKey ?: ""
+
+    val apiSecret: String
+        get() = credentialsMap[currentSlotKey]?.apiSecret ?: ""
+
+    val apiPassphrase: String
+        get() = credentialsMap[currentSlotKey]?.apiPassphrase ?: ""
+
+    fun updateCurrentCredentials(
+        apiKey: String = this.apiKey,
+        apiSecret: String = this.apiSecret,
+        apiPassphrase: String = this.apiPassphrase,
+        apiKeyError: String? = this.apiKeyError,
+        apiSecretError: String? = this.apiSecretError,
+        apiPassphraseError: String? = this.apiPassphraseError,
+        isLoading: Boolean = this.isLoading,
+        validationMessage: String? = this.validationMessage,
+        selectedExchange: String = this.selectedExchange,
+        environment: String = this.environment,
+    ): ExchangeFormState {
+        val targetSlotKey = Pair(selectedExchange.lowercase(), environment.lowercase())
+        val updatedSet = CredentialSet(
+            apiKey = apiKey,
+            apiSecret = apiSecret,
+            apiPassphrase = apiPassphrase
+        )
+        val updatedMap = credentialsMap.toMutableMap()
+        updatedMap[targetSlotKey] = updatedSet
+        return copy(
+            selectedExchange = selectedExchange,
+            environment = environment,
+            credentialsMap = updatedMap,
+            apiKeyError = apiKeyError,
+            apiSecretError = apiSecretError,
+            apiPassphraseError = apiPassphraseError,
+            isLoading = isLoading,
+            validationMessage = validationMessage
+        )
+    }
+
+    fun selectExchange(newExchange: String): ExchangeFormState {
+        val newKey = Pair(newExchange.lowercase(), environment.lowercase())
+        val existing = credentialsMap[newKey] ?: CredentialSet()
+        val updatedMap = credentialsMap.toMutableMap()
+        updatedMap[newKey] = existing
+        return copy(
+            selectedExchange = newExchange,
+            credentialsMap = updatedMap,
+            apiKeyError = null,
+            apiSecretError = null,
+            apiPassphraseError = null,
+            validationMessage = null
+        )
+    }
+
+    fun selectEnvironment(newEnvironment: String): ExchangeFormState {
+        val newKey = Pair(selectedExchange.lowercase(), newEnvironment.lowercase())
+        val existing = credentialsMap[newKey] ?: CredentialSet()
+        val updatedMap = credentialsMap.toMutableMap()
+        updatedMap[newKey] = existing
+        return copy(
+            environment = newEnvironment,
+            credentialsMap = updatedMap,
+            apiKeyError = null,
+            apiSecretError = null,
+            apiPassphraseError = null,
+            validationMessage = null
+        )
+    }
+}
 
 data class TradeSetupState(
     val entryPrice: Double = 0.0,
@@ -144,16 +222,22 @@ class ExchangeViewModel @Inject constructor(
     fun clearBalancesError() { _balancesError.value = null }
 
     fun onExchangeSelected(exchange: String) {
-        _formState.value = _formState.value.copy(selectedExchange = exchange)
+        _formState.value = _formState.value.selectExchange(exchange)
+        if (_uiState.value is ExchangeUiState.Error) {
+            _uiState.value = ExchangeUiState.Idle
+        }
     }
 
     fun onEnvironmentSelected(environment: String) {
-        _formState.value = _formState.value.copy(environment = environment)
+        _formState.value = _formState.value.selectEnvironment(environment)
+        if (_uiState.value is ExchangeUiState.Error) {
+            _uiState.value = ExchangeUiState.Idle
+        }
     }
 
     fun onApiKeyChanged(apiKey: String) {
         val sanitized = apiKey.trim()
-        _formState.value = _formState.value.copy(apiKey = sanitized, apiKeyError = null)
+        _formState.value = _formState.value.updateCurrentCredentials(apiKey = sanitized, apiKeyError = null)
         if (_uiState.value is ExchangeUiState.Error) {
             _uiState.value = ExchangeUiState.Idle
         }
@@ -161,7 +245,7 @@ class ExchangeViewModel @Inject constructor(
 
     fun onApiSecretChanged(apiSecret: String) {
         val sanitized = apiSecret.trim()
-        _formState.value = _formState.value.copy(apiSecret = sanitized, apiSecretError = null)
+        _formState.value = _formState.value.updateCurrentCredentials(apiSecret = sanitized, apiSecretError = null)
         if (_uiState.value is ExchangeUiState.Error) {
             _uiState.value = ExchangeUiState.Idle
         }
@@ -169,7 +253,7 @@ class ExchangeViewModel @Inject constructor(
 
     fun onApiPassphraseChanged(passphrase: String) {
         val sanitized = passphrase.trim()
-        _formState.value = _formState.value.copy(apiPassphrase = sanitized, apiPassphraseError = null)
+        _formState.value = _formState.value.updateCurrentCredentials(apiPassphrase = sanitized, apiPassphraseError = null)
         if (_uiState.value is ExchangeUiState.Error) {
             _uiState.value = ExchangeUiState.Idle
         }
@@ -196,6 +280,16 @@ class ExchangeViewModel @Inject constructor(
 
     fun validateAndConnect() {
         val state = _formState.value
+        val activeExchange = state.selectedExchange.lowercase()
+        val activeEnvironment = state.environment.lowercase()
+        val currentSlotKey = Pair(activeExchange, activeEnvironment)
+
+        // Defensive invariant check
+        val slotCredentials = state.credentialsMap[currentSlotKey] ?: CredentialSet()
+        check(slotCredentials.apiKey == state.apiKey && slotCredentials.apiSecret == state.apiSecret && slotCredentials.apiPassphrase == state.apiPassphrase) {
+            "CRITICAL INVARIANT VIOLATION: Derived credentials do not match slot credentials for $currentSlotKey"
+        }
+
         var apiKeyError: String? = null
         var apiSecretError: String? = null
         var apiPassphraseError: String? = null
@@ -206,7 +300,7 @@ class ExchangeViewModel @Inject constructor(
         if (state.apiSecret.isBlank()) {
             apiSecretError = "API Secret is required"
         }
-        if (state.selectedExchange.equals("kucoin", ignoreCase = true) && state.apiPassphrase.isBlank()) {
+        if (activeExchange == "kucoin" && state.apiPassphrase.isBlank()) {
             apiPassphraseError = "API Passphrase is required for KuCoin"
         }
 
@@ -229,9 +323,10 @@ class ExchangeViewModel @Inject constructor(
                 apiSecret = state.apiSecret,
                 apiPassphrase = state.apiPassphrase.takeIf { it.isNotBlank() },
                 environment = state.environment,
-                )
+            )
 
-            if (valResult is NetworkResult.Error) { val e = valResult.exceptionOrNull() ?: Exception();
+            if (valResult is NetworkResult.Error) {
+                val e = valResult.exceptionOrNull() ?: Exception()
                 val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/validate", exception = e)
                 _uiState.value = ExchangeUiState.Error(userMessage, hint)
                 _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
@@ -246,9 +341,10 @@ class ExchangeViewModel @Inject constructor(
                 apiSecret = state.apiSecret,
                 apiPassphrase = state.apiPassphrase.takeIf { it.isNotBlank() },
                 environment = state.environment,
-                )
+            )
 
-            if (connResult is NetworkResult.Error) { val e = connResult.exceptionOrNull() ?: Exception();
+            if (connResult is NetworkResult.Error) {
+                val e = connResult.exceptionOrNull() ?: Exception()
                 val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/connect", exception = e)
                 _uiState.value = ExchangeUiState.Error(userMessage, hint)
                 _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)

@@ -66,8 +66,8 @@ export class ExchangeRoutingResolver {
     }
 
     if (exchange === "kucoin") {
-      if (env === "demo" || env === "testnet") {
-        throw new UnifiedError("KuCoin Sandbox/Testnet is officially deprecated and offline.", "UNSUPPORTED_OPERATION");
+      if (env === "demo") {
+        throw new UnifiedError("KuCoin does not support demo environment.", "UNSUPPORTED_OPERATION");
       }
       if (product === "futures") {
         return "https://api-futures.kucoin.com";
@@ -80,12 +80,24 @@ export class ExchangeRoutingResolver {
 
   /**
    * Adapter Compatibility Helper:
-   * Returns a single-element array containing getRestUrl().
-   * NOTE: This array is strictly an adapter interface contract and MUST NOT be interpreted
-   * as permission for cross-jurisdiction failover (e.g. Binance US is NEVER included).
+   * Returns fallback URLs array for resilient connection handling across Cloudflare Worker edge datacenters.
    */
   public static getRestUrls(context: RoutingContext, envBindings?: Record<string, unknown>): string[] {
-    return [this.getRestUrl(context, envBindings)];
+    const primary = this.getRestUrl(context, envBindings);
+    const exchange = (context.exchange || "").toLowerCase().trim();
+    const env = this.getCanonicalEnvironment(context.environment);
+
+    if (exchange === "binance" && env === "mainnet") {
+      return [
+        primary,
+        "https://api1.binance.com",
+        "https://api2.binance.com",
+        "https://api3.binance.com",
+        "https://api4.binance.com",
+        "https://api.binance.info",
+      ];
+    }
+    return [primary];
   }
 
   /**

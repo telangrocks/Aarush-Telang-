@@ -59,8 +59,8 @@ describe('ExchangeRoutingResolver & Routing Architecture Regression Suite', () =
     expect(url).toBe('https://api-futures.kucoin.com');
   });
 
-  it('10. KuCoin Deprecated Sandbox/Testnet throws UNSUPPORTED_OPERATION', () => {
-    expect(() => ExchangeRoutingResolver.getRestUrl({ exchange: 'kucoin', environment: 'testnet' })).toThrow(/deprecated/i);
+  it('10. KuCoin Demo environment throws UNSUPPORTED_OPERATION', () => {
+    expect(() => ExchangeRoutingResolver.getRestUrl({ exchange: 'kucoin', environment: 'demo' })).toThrow(/KuCoin does not support demo environment/i);
   });
 
   it('11. KuCoin Private WebSocket request without credentials throws MISSING_REQUIRED_CREDENTIALS', async () => {

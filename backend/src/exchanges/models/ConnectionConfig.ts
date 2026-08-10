@@ -6,6 +6,8 @@ export interface ProviderConfig {
   environment: 'Production' | 'Testing' | 'mainnet' | 'testnet' | 'sandbox' | 'demo';
   region?: string;
   product?: 'spot' | 'linear' | 'inverse' | 'option' | 'futures';
+  egressProxyUrl?: string;
+  egressProxySecret?: string;
 }
 
 

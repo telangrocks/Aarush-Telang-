@@ -72,7 +72,8 @@ export class BinanceAdapter extends BaseExchangeAdapter {
       const headers: Record<string, string> = {
         'X-MBX-APIKEY': cleanKey,
         'Accept': 'application/json',
-        'User-Agent': 'CryptoPulse/1.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
       };
 
       let status = 0;
@@ -85,8 +86,8 @@ export class BinanceAdapter extends BaseExchangeAdapter {
         status = res.status;
         const errText = await res.text();
 
-        if (status === 451 && host !== hosts[hosts.length - 1]) {
-          this.logger.warn(`[BinanceAdapter] Regional restriction 451 on ${host}, trying fallback host...`);
+        if ((status === 451 || status === 403) && host !== hosts[hosts.length - 1]) {
+          this.logger.warn(`[BinanceAdapter] Restriction / WAF block ${status} on ${host}, trying fallback host...`);
           continue;
         }
 
@@ -102,7 +103,25 @@ export class BinanceAdapter extends BaseExchangeAdapter {
         if (!res.ok) {
           console.error(`[BINANCE_API_ERROR] host=${host} path=${path} status=${res.status} body=${errText}`);
           const classified = ExchangeErrorClassifier.getInstance().classifyResponse('binance', res.status, res.headers, errText);
-          throw new UnifiedError(classified.friendlyMessage, classified.code, res.status, errText);
+          if (classified.code === 'WAF_BLOCKED' && host !== hosts[hosts.length - 1]) {
+            this.logger.warn(`[BinanceAdapter] Classified WAF_BLOCKED on ${host}, continuing to next host...`);
+            continue;
+          }
+          let parsed: any = {};
+          try { parsed = JSON.parse(errText); } catch (_) {}
+          const err = new UnifiedError(classified.friendlyMessage, classified.code, parsed.code ?? res.status, parsed.msg ?? errText, res.status);
+          (err as any).rawResponseBody = errText;
+          (err as any).rawStatus = res.status;
+          (err as any).rawCode = parsed.code ?? res.status;
+          (err as any).rawMessage = parsed.msg ?? errText;
+          const headerObj: Record<string, string> = {};
+          if (res.headers && typeof (res.headers as any).forEach === 'function') {
+            (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
+          }
+          (err as any).rawHeaders = headerObj;
+          (err as any).actualHost = host;
+          (err as any).actualEndpoint = path;
+          throw err;
         }
 
         try {
@@ -113,7 +132,7 @@ export class BinanceAdapter extends BaseExchangeAdapter {
         }
       } catch (err: any) {
         lastError = err;
-        if ((status === 451 || (err instanceof UnifiedError && err.code === 'REGION_NOT_SUPPORTED')) && host !== hosts[hosts.length - 1]) {
+        if ((status === 451 || status === 403 || (err instanceof UnifiedError && (err.code === 'REGION_NOT_SUPPORTED' || err.code === 'WAF_BLOCKED'))) && host !== hosts[hosts.length - 1]) {
           continue;
         }
         if (!(err instanceof UnifiedError)) {

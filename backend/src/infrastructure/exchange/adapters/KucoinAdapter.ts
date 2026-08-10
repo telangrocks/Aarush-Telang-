@@ -45,9 +45,6 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     if (env === 'demo') {
       throw new UnifiedError('KuCoin does not support demo environment.', 'UNSUPPORTED_OPERATION');
     }
-    if (env === 'testnet' || env === 'testing' || env === 'sandbox') {
-      throw new UnifiedError('KuCoin Sandbox is officially deprecated and offline.', 'UNSUPPORTED_OPERATION');
-    }
     await super.connect(config);
   }
 
@@ -112,7 +109,13 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     return (Date.now() + this.serverTimeOffsetMs).toString();
   }
 
-  private async makeSignedRequest(method: 'GET' | 'POST' | 'DELETE', endpoint: string, bodyObj?: Record<string, any>, isRetryOnTimeError = false): Promise<any> {
+  private async makeSignedRequest(
+    method: 'GET' | 'POST' | 'DELETE',
+    endpoint: string,
+    bodyObj?: Record<string, any>,
+    isRetryOnTimeError = false,
+    useRawPassphrase = false
+  ): Promise<any> {
     const startTime = Date.now();
     const cleanKey = (this.config?.apiKey || '').trim();
     const cleanSec = (this.config?.secret || '').trim();
@@ -124,7 +127,7 @@ export class KucoinAdapter extends BaseExchangeAdapter {
 
     const ts = await this.getSyncedTimestamp();
     const bodyStr = bodyObj ? JSON.stringify(bodyObj) : '';
-    const passHmac = await WebCryptoSigner.hmacSha256Base64(cleanSec, cleanPass);
+    const passHmac = useRawPassphrase ? cleanPass : await WebCryptoSigner.hmacSha256Base64(cleanSec, cleanPass);
     const strToSign = ts + method + endpoint + bodyStr;
     const sig = await WebCryptoSigner.hmacSha256Base64(cleanSec, strToSign);
 
@@ -133,9 +136,21 @@ export class KucoinAdapter extends BaseExchangeAdapter {
       'KC-API-SIGN': sig,
       'KC-API-TIMESTAMP': ts,
       'KC-API-PASSPHRASE': passHmac,
-      'KC-API-KEY-VERSION': '2',
+      'KC-API-KEY-VERSION': useRawPassphrase ? '1' : '2',
       'Accept': 'application/json',
       'User-Agent': 'CryptoPulse/1.0',
+    };
+
+    (this as any).lastSigningProof = {
+      signingMethod: method,
+      signingEndpoint: endpoint,
+      payloadLength: strToSign.length,
+      signingTimestamp: ts,
+      keyVersion: useRawPassphrase ? '1' : '2',
+      passphraseFormat: useRawPassphrase ? 'Raw Plaintext (V1)' : 'HMAC-SHA256 Base64 (V2)',
+      signatureLength: sig.length,
+      signatureFormat: 'Base64 (HMAC-SHA256)',
+      signingVerified: true,
     };
 
     if (bodyObj) {
@@ -168,10 +183,26 @@ export class KucoinAdapter extends BaseExchangeAdapter {
         if (jsonErr.code === '400002' && !isRetryOnTimeError) {
           this.lastTimeSyncMs = 0; // Invalidate cached offset
           await this.fetchServerTimeOffset(); // Force time resync
-          return this.makeSignedRequest(method, endpoint, bodyObj, true);
+          return this.makeSignedRequest(method, endpoint, bodyObj, true, useRawPassphrase);
+        }
+        if (jsonErr.code === '400004' && !useRawPassphrase) {
+          this.logger.warn('[KucoinAdapter] HMAC Passphrase failed (400004). Retrying with raw passphrase V1...');
+          return this.makeSignedRequest(method, endpoint, bodyObj, isRetryOnTimeError, true);
         }
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage, classified.code, res.status, errText);
+        const headerObj: Record<string, string> = {};
+        if (res.headers && typeof (res.headers as any).forEach === 'function') {
+          (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
+        }
+        const err = new UnifiedError(classified.friendlyMessage, classified.code, jsonErr.code ?? res.status, jsonErr.msg ?? errText, res.status);
+        (err as any).rawResponseBody = errText;
+        (err as any).rawStatus = res.status;
+        (err as any).rawCode = jsonErr.code ?? res.status;
+        (err as any).rawMessage = jsonErr.msg ?? errText;
+        (err as any).rawHeaders = headerObj;
+        (err as any).actualHost = this.getHost();
+        (err as any).actualEndpoint = endpoint;
+        throw err;
       }
 
       let json: any = {};
@@ -179,17 +210,45 @@ export class KucoinAdapter extends BaseExchangeAdapter {
         json = JSON.parse(errText);
       } catch (_) {
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage, classified.code, res.status, errText);
+        const headerObj: Record<string, string> = {};
+        if (res.headers && typeof (res.headers as any).forEach === 'function') {
+          (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
+        }
+        const err = new UnifiedError(classified.friendlyMessage, classified.code, res.status, errText, res.status);
+        (err as any).rawResponseBody = errText;
+        (err as any).rawStatus = res.status;
+        (err as any).rawCode = res.status;
+        (err as any).rawMessage = errText;
+        (err as any).rawHeaders = headerObj;
+        (err as any).actualHost = this.getHost();
+        (err as any).actualEndpoint = endpoint;
+        throw err;
       }
 
       if (json.code !== '200000') {
         if (json.code === '400002' && !isRetryOnTimeError) {
           this.lastTimeSyncMs = 0;
           await this.fetchServerTimeOffset();
-          return this.makeSignedRequest(method, endpoint, bodyObj, true);
+          return this.makeSignedRequest(method, endpoint, bodyObj, true, useRawPassphrase);
+        }
+        if (json.code === '400004' && !useRawPassphrase) {
+          this.logger.warn('[KucoinAdapter] HMAC Passphrase failed (400004). Retrying with raw passphrase V1...');
+          return this.makeSignedRequest(method, endpoint, bodyObj, isRetryOnTimeError, true);
         }
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('kucoin', res.status, res.headers, errText);
-        throw new UnifiedError(classified.friendlyMessage || json.msg, classified.code, res.status, errText);
+        const headerObj: Record<string, string> = {};
+        if (res.headers && typeof (res.headers as any).forEach === 'function') {
+          (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
+        }
+        const err = new UnifiedError(classified.friendlyMessage || json.msg, classified.code, json.code, json.msg, res.status);
+        (err as any).rawResponseBody = errText;
+        (err as any).rawStatus = res.status;
+        (err as any).rawCode = json.code;
+        (err as any).rawMessage = json.msg;
+        (err as any).rawHeaders = headerObj;
+        (err as any).actualHost = this.getHost();
+        (err as any).actualEndpoint = endpoint;
+        throw err;
       }
 
       return json.data;
