@@ -10,6 +10,7 @@ const ALLOWED_HOSTS = new Set([
   "testnet.binance.vision",
   "api.bybit.com",
   "api-testnet.bybit.com",
+  "api-demo.bybit.com",
   "api.kucoin.com",
   "api-futures.kucoin.com"
 ]);

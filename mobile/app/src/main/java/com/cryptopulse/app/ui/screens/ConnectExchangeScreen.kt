@@ -182,6 +182,7 @@ fun ConnectExchangeScreen(
                         AuthFieldLabel("ENVIRONMENT")
                         Spacer(Modifier.height(4.dp))
                         EnvironmentToggle(
+                            selectedExchange = formState.selectedExchange,
                             selectedEnvironment = formState.environment,
                             onEnvironmentSelected = viewModel::onEnvironmentSelected,
                         )
@@ -360,13 +361,22 @@ private fun ExchangeDropdown(
 
 @Composable
 private fun EnvironmentToggle(
+    selectedExchange: String,
     selectedEnvironment: String,
     onEnvironmentSelected: (String) -> Unit,
 ) {
-    val options = listOf(
-        "testnet" to "Testnet",
-        "mainnet" to "Mainnet",
-    )
+    val options = if (selectedExchange.equals("bybit", ignoreCase = true)) {
+        listOf(
+            "testnet" to "Testnet",
+            "demo" to "Demo",
+            "mainnet" to "Mainnet",
+        )
+    } else {
+        listOf(
+            "testnet" to "Testnet",
+            "mainnet" to "Mainnet",
+        )
+    }
 
     Row(
         modifier = Modifier
@@ -377,7 +387,7 @@ private fun EnvironmentToggle(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         options.forEach { (value, label) ->
-            val selected = selectedEnvironment == value
+            val selected = selectedEnvironment.equals(value, ignoreCase = true)
             Box(
                 modifier = Modifier
                     .weight(1f)

@@ -28,20 +28,15 @@ suspend fun <T> safeApiCall(apiCall: suspend () -> retrofit2.Response<T>): Netwo
             }
         } else {
             val info = extractErrorInfo(response.errorBody()?.string(), response.message())
-            val error = when (response.code()) {
-                401 -> NetworkError.Unauthorized
-                403 -> NetworkError.Forbidden
-                404 -> NetworkError.NotFound
-                else -> NetworkError.HttpError(
-                    code = response.code(),
-                    message = info.message,
-                    hint = info.hint,
-                    errorCode = info.errorCode,
-                    exchangeCode = info.exchangeCode,
-                    correlationId = info.correlationId,
-                    detail = info.detail
-                )
-            }
+            val error = NetworkError.HttpError(
+                code = response.code(),
+                message = info.message,
+                hint = info.hint,
+                errorCode = info.errorCode,
+                exchangeCode = info.exchangeCode,
+                correlationId = info.correlationId,
+                detail = info.detail
+            )
             NetworkResult.Error(error)
         }
     } catch (e: Exception) {
@@ -52,20 +47,15 @@ suspend fun <T> safeApiCall(apiCall: suspend () -> retrofit2.Response<T>): Netwo
             is HttpException -> {
                 val code = e.code()
                 val info = extractErrorInfo(e.response()?.errorBody()?.string(), e.message())
-                val error = when (code) {
-                    401 -> NetworkError.Unauthorized
-                    403 -> NetworkError.Forbidden
-                    404 -> NetworkError.NotFound
-                    else -> NetworkError.HttpError(
-                        code = code,
-                        message = info.message,
-                        hint = info.hint,
-                        errorCode = info.errorCode,
-                        exchangeCode = info.exchangeCode,
-                        correlationId = info.correlationId,
-                        detail = info.detail
-                    )
-                }
+                val error = NetworkError.HttpError(
+                    code = code,
+                    message = info.message,
+                    hint = info.hint,
+                    errorCode = info.errorCode,
+                    exchangeCode = info.exchangeCode,
+                    correlationId = info.correlationId,
+                    detail = info.detail
+                )
                 NetworkResult.Error(error)
             }
             else -> NetworkResult.Error(NetworkError.Unknown(e))
