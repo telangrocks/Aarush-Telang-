@@ -18,8 +18,8 @@ async function runLiveVerification() {
   const bybitTestnet = new BybitAdapter();
   await bybitTestnet.connect({
     environment: 'testnet',
-    apiKey: 't9XdpdQslLE1Nso87v',
-    secret: 'D0KZaIt3hmtR5oB30HineZPXzTVhdPThkzv0',
+    apiKey: process.env.TEST_BYBIT_API_KEY || '',
+    secret: process.env.TEST_BYBIT_API_SECRET || '',
   });
 
   console.log(`[Bybit Testnet] Hostname: ${bybitTestnet.getHost()}`);

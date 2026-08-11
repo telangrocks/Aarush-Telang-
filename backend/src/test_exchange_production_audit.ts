@@ -24,8 +24,8 @@ async function runProductionAudit() {
     const bybit = new BybitAdapter();
     await bybit.connect({
       environment: 'testnet',
-      apiKey: 't9XdpdQslLE1Nso87v',
-      secret: 'D0KZaIt3hmtR5oB30HineZPXzTVhdPThkzv0',
+      apiKey: process.env.TEST_BYBIT_API_KEY || '',
+      secret: process.env.TEST_BYBIT_API_SECRET || '',
     });
 
     // Test missing credentials protection
