@@ -137,9 +137,16 @@ object AppModule {
 
         if (BuildConfig.DEBUG) {
             val loggingInterceptor = HttpLoggingInterceptor { message ->
-                Log.d("OkHttpDiagnostics", message)
+                val redacted = message
+                    .replace(Regex("\"apiKey\"\\s*:\\s*\"[^\"]+\""), "\"apiKey\":\"[REDACTED]\"")
+                    .replace(Regex("\"apiSecret\"\\s*:\\s*\"[^\"]+\""), "\"apiSecret\":\"[REDACTED]\"")
+                    .replace(Regex("\"apiPassphrase\"\\s*:\\s*\"[^\"]+\""), "\"apiPassphrase\":\"[REDACTED]\"")
+                    .replace(Regex("Authorization: Bearer \\S+"), "Authorization: Bearer [REDACTED]")
+                    .replace(Regex("X-BAPI-API-KEY: \\S+"), "X-BAPI-API-KEY: [REDACTED]")
+                    .replace(Regex("X-BAPI-SIGN: \\S+"), "X-BAPI-SIGN: [REDACTED]")
+                Log.d("OkHttpDiagnostics", redacted)
             }.apply {
-                level = HttpLoggingInterceptor.Level.BODY
+                level = HttpLoggingInterceptor.Level.BASIC
             }
             builder.addInterceptor(loggingInterceptor)
         }

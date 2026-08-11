@@ -87,7 +87,7 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
       const proxyUrl = this.config?.egressProxyUrl;
       const proxySecret = this.config?.egressProxySecret || "crypto-pulse-egress-secret-2026";
 
-      if (proxyUrl && proxyUrl.trim() !== "") {
+      if (proxyUrl && proxyUrl.trim() !== "" && !proxyUrl.includes("localhost") && !proxyUrl.includes("127.0.0.1")) {
         const forwardUrl = `${proxyUrl.replace(/\/$/, "")}/forward`;
         const rawHeaders = (options.headers as Record<string, string>) || {};
         const bodyStr = options.body ? options.body.toString() : undefined;

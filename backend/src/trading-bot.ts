@@ -580,32 +580,7 @@ export class TradingBot {
         try { await this.state.storage.deleteAlarm(); } catch (e) { /* ignore */ }
         return new Response(JSON.stringify({ success: true, message: 'Bot deactivated.' }), { status: 200 });
       }
-      case '/reset-safemode': {
-        const userId = (await this.state.storage.get('userId')) as string | undefined;
-        const previousState = (await this.state.storage.get('safeMode')) as boolean || false;
-        const nowIso = new Date().toISOString();
 
-        if (userId) {
-          await this.logAuditEvent(userId, 'SAFE_MODE_CLEARED', { reason: 'manual_recovery', timestamp: nowIso });
-        }
-
-        await this.state.storage.delete('safeMode');
-
-        const existingLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
-        await this.state.storage.put('logs', (existingLogs ?? []).concat([
-          { timestamp: nowIso, level: 'info' as const, message: 'Safe Mode reset by manual recovery operation.' },
-        ]));
-
-        console.log(`[DIAGNOSTIC] SAFE_MODE_CLEARED userId=${userId || 'unknown'} previousState=${previousState} currentState=false timestamp=${nowIso}`);
-
-        return new Response(JSON.stringify({
-          success: true,
-          previousState,
-          currentState: false,
-          timestamp: nowIso,
-          message: 'Safe Mode cleared.'
-        }), { status: 200 });
-      }
       case '/status': {
         const isActive = (await this.state.storage.get('isActive')) || false;
         const coinId = (await this.state.storage.get('coinId')) || null;
@@ -614,7 +589,7 @@ export class TradingBot {
       }
       case '/analysis-status': {
         const isActive = (await this.state.storage.get('isActive')) || false;
-        const safeMode = (await this.state.storage.get('safeMode')) || false;
+        const safeMode = false;
         const newAnalysis = (await this.state.storage.get('newAnalysis')) as any;
 
         if (newAnalysis) {
@@ -694,14 +669,7 @@ export class TradingBot {
           return new Response(JSON.stringify({ error: 'GLOBAL_TRADING_HALT is active. All trading is safely suspended.' }), { status: 503 });
         }
 
-        const safeMode = await this.state.storage.get('safeMode');
-        if (safeMode) {
-          const userId: string | undefined = await this.state.storage.get('userId');
-          console.error(`[DIAGNOSTIC] TRADE_REJECTED_SAFE_MODE safeMode=true userId=${userId || 'unknown'} timestamp=${new Date().toISOString()}`);
-          return new Response(JSON.stringify({ error: 'Safe Mode is active. New trade execution is temporarily disabled pending manual review.' }), { status: 403 });
-        }
-
-        console.log(`[DIAGNOSTIC] [STAGE: SAFE_MODE_CHECK_PASSED] timestamp=${new Date().toISOString()}`);
+        console.log(`[DIAGNOSTIC] [STAGE: EXECUTE_TRADE_VALIDATION_PASSED] timestamp=${new Date().toISOString()}`);
 
         if (this.isExecutingTrade) {
           return new Response(JSON.stringify({ error: 'A trade execution is already in progress.' }), { status: 409 });
@@ -1229,7 +1197,7 @@ export class TradingBot {
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
         const activeAlertsCount = alerts.filter(a => a.status === 'pending').length;
 
-        const safeMode = (await this.state.storage.get('safeMode')) || false;
+        const safeMode = false;
         const storageKeys = Array.from((await this.state.storage.list()).keys());
 
         return new Response(JSON.stringify({

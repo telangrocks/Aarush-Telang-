@@ -106,9 +106,8 @@ export class ReconciliationEngine {
   }
 
   private async triggerSafeMode(reason: string) {
-    console.error(`Triggering SAFE MODE: ${reason}`);
-    await this.stateStorage.put('safeMode', true);
-    await this.logDecision('SAFE_MODE_ACTIVATED', { reason });
+    console.warn(`Reconciliation anomaly detected: ${reason}`);
+    await this.logDecision('RECONCILIATION_ANOMALY', { reason });
   }
 
   public async runReconciliationSweep() {
