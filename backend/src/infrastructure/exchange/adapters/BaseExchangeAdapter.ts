@@ -84,8 +84,15 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const proxyUrl = this.config?.egressProxyUrl;
-      const proxySecret = this.config?.egressProxySecret || "crypto-pulse-egress-secret-2026";
+      let proxyUrl = this.config?.egressProxyUrl;
+      let proxySecret = this.config?.egressProxySecret || "crypto-pulse-egress-secret-2026";
+
+      if (!proxyUrl || proxyUrl.trim() === "") {
+        const envProxy = (globalThis as any).process?.env?.EGRESS_PROXY_URL || (globalThis as any).EGRESS_PROXY_URL;
+        if (envProxy && typeof envProxy === "string") {
+          proxyUrl = envProxy;
+        }
+      }
 
       if (proxyUrl && proxyUrl.trim() !== "" && !proxyUrl.includes("localhost") && !proxyUrl.includes("127.0.0.1")) {
         const forwardUrl = `${proxyUrl.replace(/\/$/, "")}/forward`;

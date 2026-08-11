@@ -550,6 +550,8 @@ export class TradingBot {
             secret,
             password,
             region: resolveCanonicalRoutingRegion(user.exchange_region),
+            egressProxyUrl: this.env.EGRESS_PROXY_URL,
+            egressProxySecret: this.env.EGRESS_PROXY_SECRET,
           });
 
           const provider = new AdapterCandleProvider(adapter);
@@ -724,6 +726,8 @@ export class TradingBot {
               secret: decryptedSecret,
               password: decryptedPassphrase,
               region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
+              egressProxyUrl: this.env.EGRESS_PROXY_URL,
+              egressProxySecret: this.env.EGRESS_PROXY_SECRET,
             });
 
             const coinId = (await this.state.storage.get('coinId')) as string;
@@ -866,6 +870,8 @@ export class TradingBot {
                    secret: decryptedSecret,
                    password: decryptedPassphrase,
                    region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
+                   egressProxyUrl: this.env.EGRESS_PROXY_URL,
+                   egressProxySecret: this.env.EGRESS_PROXY_SECRET,
                 });
 
 

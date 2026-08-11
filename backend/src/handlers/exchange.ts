@@ -286,6 +286,8 @@ export async function handleConnectExchange(
         secret: cleanApiSecret,
         password: cleanApiPassphrase,
         region: resolvedRegion,
+        egressProxyUrl: c.env.EGRESS_PROXY_URL,
+        egressProxySecret: c.env.EGRESS_PROXY_SECRET,
       });
       await provider.fetchBalance();
       console.log(`[exchange-auth] connect validation successful for ${exchangeName}`);
@@ -480,6 +482,8 @@ export async function handleGetExchangeBalances(
       secret: decryptedSecret,
       password: decryptedPassphrase,
       region: resolveCanonicalRoutingRegion(user.exchange_region),
+      egressProxyUrl: c.env.EGRESS_PROXY_URL,
+      egressProxySecret: c.env.EGRESS_PROXY_SECRET,
     });
 
     const balanceRes = await adapter.fetchBalance();
@@ -626,6 +630,8 @@ export async function handleGetPersonalizedMarketCandidates(
         apiKey: cleanKey,
         secret: cleanSecret,
         region: resolveCanonicalRoutingRegion(user.exchange_region),
+        egressProxyUrl: c.env.EGRESS_PROXY_URL,
+        egressProxySecret: c.env.EGRESS_PROXY_SECRET,
       });
 
       console.log(`[DIAGNOSTIC] Stage 5: CCXT client created for provider=${user.exchange_name}`);
