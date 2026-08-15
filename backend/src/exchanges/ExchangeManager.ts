@@ -3,8 +3,6 @@ import { ProviderConfig } from './models/ConnectionConfig';
 import { Order, OrderRequest, OcoOrderRequest, OcoOrderResponse } from './models/NormalizedDomain';
 import { ExchangeRegistry } from '../infrastructure/exchange/registry/ExchangeRegistry';
 import { BaseExchangeAdapter } from '../infrastructure/exchange/adapters/BaseExchangeAdapter';
-import { BinanceAdapter } from '../infrastructure/exchange/adapters/BinanceAdapter';
-import { KucoinAdapter } from '../infrastructure/exchange/adapters/KucoinAdapter';
 import { BybitAdapter } from '../infrastructure/exchange/adapters/BybitAdapter';
 import { ProviderPool } from '../infrastructure/cache/ProviderPool';
 import { ExchangeOrchestrator } from '../infrastructure/orchestrator/ExchangeOrchestrator';
@@ -13,9 +11,7 @@ import { WebCryptoSigner } from '../infrastructure/crypto/WebCryptoSigner';
 import { UnifiedError } from './models/UnifiedError';
 import { ExchangeRoutingResolver } from './routing/ExchangeRoutingResolver';
 
-// Bootstrap registration of polymorphic adapters
-ExchangeRegistry.register({ exchangeId: 'binance', factory: () => new BinanceAdapter() });
-ExchangeRegistry.register({ exchangeId: 'kucoin', factory: () => new KucoinAdapter() });
+// Bootstrap registration of Bybit adapter
 ExchangeRegistry.register({ exchangeId: 'bybit', factory: () => new BybitAdapter() });
 
 export class ExchangeManager {

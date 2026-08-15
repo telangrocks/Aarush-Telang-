@@ -339,6 +339,10 @@ export class KucoinAdapter extends BaseExchangeAdapter {
     };
   }
 
+  public async fetchTickers(symbols?: string[]): Promise<Ticker[]> {
+    throw new UnifiedError("fetchTickers not implemented for Kucoin", "UNSUPPORTED_OPERATION");
+  }
+
   public async fetchKlines(symbol: string, interval: string, limit = 200): Promise<any[]> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '-').toUpperCase();

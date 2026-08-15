@@ -25,25 +25,17 @@ class MockOrderFilledEvent implements DomainEvent {
 describe('Phase 1D – Production Stabilization & Runtime Validation Suite', () => {
   beforeEach(() => {
     ExchangeRegistry.clear();
-    ExchangeRegistry.register({ exchangeId: 'binance', factory: () => new BinanceAdapter() });
-    ExchangeRegistry.register({ exchangeId: 'kucoin', factory: () => new KucoinAdapter() });
     ExchangeRegistry.register({ exchangeId: 'bybit', factory: () => new BybitAdapter() });
   });
 
-  it('1. Live/Mock Exchange Validation: Binance, KuCoin, Bybit capabilities & rules', async () => {
-    const binance = ExchangeRegistry.create('binance') as BinanceAdapter;
-    const kucoin = ExchangeRegistry.create('kucoin') as KucoinAdapter;
+  it('1. Live/Mock Exchange Validation: Bybit capabilities & rules', async () => {
     const bybit = ExchangeRegistry.create('bybit') as BybitAdapter;
-
-    expect(binance.capabilities.supportsOco).toBe(true);
-    expect(binance.capabilities.supportsNativeProxy).toBe(true);
-    expect(kucoin.capabilities.requiresPassphrase).toBe(true);
     expect(bybit.capabilities.supportsFutures).toBe(true);
   });
 
   it('2. ExchangeOrchestrator Pipeline: All requests flow through telemetry, breaker, and retries', async () => {
     const orchestrator = new ExchangeOrchestrator();
-    const adapter = ExchangeRegistry.create('binance');
+    const adapter = ExchangeRegistry.create('bybit');
     adapter.fetchTicker = async (sym: string) => ({
       symbol: sym,
       timestamp: Date.now(),
@@ -68,12 +60,12 @@ describe('Phase 1D – Production Stabilization & Runtime Validation Suite', () 
 
   it('3. ProviderPool Leak-Free Verification: SHA-256 keys, LRU eviction, and TTL expiration', async () => {
     const pool = new ProviderPool(2, 50); // Capacity 2, 50ms TTL
-    const key1 = await pool.generateCacheKey('binance', 'mainnet', 'keyA', 'secA');
-    const key2 = await pool.generateCacheKey('binance', 'mainnet', 'keyB', 'secB');
-    const key3 = await pool.generateCacheKey('binance', 'mainnet', 'keyC', 'secC');
+    const key1 = await pool.generateCacheKey('bybit', 'mainnet', 'keyA', 'secA');
+    const key2 = await pool.generateCacheKey('bybit', 'mainnet', 'keyB', 'secB');
+    const key3 = await pool.generateCacheKey('bybit', 'mainnet', 'keyC', 'secC');
 
-    const p1 = ExchangeRegistry.create('binance');
-    const p2 = ExchangeRegistry.create('kucoin');
+    const p1 = ExchangeRegistry.create('bybit');
+    const p2 = ExchangeRegistry.create('bybit');
     const p3 = ExchangeRegistry.create('bybit');
 
     pool.set(key1, p1);

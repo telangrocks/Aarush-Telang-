@@ -1,80 +1,43 @@
 import { describe, it, expect } from "vitest";
 import {
-  classifyBinanceCode,
   classifyByBodyText,
   classifyExchangeResponse,
 } from "../../src/exchanges/errors";
 import { ExchangeSpecificationRegistry } from "../../src/exchanges/registry/ExchangeSpecificationRegistry";
 
-const detail = (body: string, exchange = "binance") =>
+const detail = (body: string, exchange = "bybit") =>
   `exchange=${exchange} status=401 body=${body}`;
 
-describe("Binance structured error code classification", () => {
-  it("maps API-key format invalid (-2014) to INVALID_API_KEY", () => {
-    const err = classifyBinanceCode(
-      '{"code":-2014,"msg":"API-key format invalid."}',
-      detail('{"code":-2014,"msg":"API-key format invalid."}'),
-    );
-    expect(err?.code).toBe("INVALID_API_KEY");
+describe("Bybit structured error code classification", () => {
+  it("maps invalid API key (10002) to INVALID_API_KEY", () => {
+    const spec = ExchangeSpecificationRegistry.getInstance().getSpecification('bybit');
+    const mapped = spec?.mapper.mapErrorPayload(401, '{"retCode":10002,"retMsg":"invalid api_key"}', {}, detail('{"retCode":10002}'));
+    expect(mapped?.code).toBe("INVALID_API_KEY");
   });
 
-  it("maps -2015 (invalid key/IP/permissions) to INVALID_API_KEY", () => {
-    const err = classifyBinanceCode(
-      '{"code":-2015,"msg":"Invalid API-key, IP, or permissions."}',
-      detail('{"code":-2015,"msg":"Invalid API-key, IP, or permissions."}'),
-    );
-    expect(err?.code).toBe("INVALID_API_KEY");
+  it("maps invalid signature (10004) to INVALID_SIGNATURE", () => {
+    const spec = ExchangeSpecificationRegistry.getInstance().getSpecification('bybit');
+    const mapped = spec?.mapper.mapErrorPayload(400, '{"retCode":10004,"retMsg":"Error sign"}', {}, detail('{"retCode":10004}'));
+    expect(mapped?.code).toBe("INVALID_SIGNATURE");
   });
 
-  it("maps invalid signature (-1022) to INVALID_SIGNATURE", () => {
-    const err = classifyBinanceCode(
-      '{"code":-1022,"msg":"Signature for this request is not valid."}',
-      detail('{"code":-1022,"msg":"Signature for this request is not valid."}'),
-    );
-    expect(err?.code).toBe("INVALID_SIGNATURE");
+  it("maps timestamp out of recvWindow (10003) to TIMESTAMP_OUT_OF_SYNC", () => {
+    const spec = ExchangeSpecificationRegistry.getInstance().getSpecification('bybit');
+    const mapped = spec?.mapper.mapErrorPayload(400, '{"retCode":10003,"retMsg":"req timestamp exceeds recv_window"}', {}, detail('{"retCode":10003}'));
+    expect(mapped?.code).toBe("TIMESTAMP_OUT_OF_SYNC");
   });
 
-  it("maps timestamp out of recvWindow (-1021) to TIMESTAMP_OUT_OF_SYNC", () => {
-    const err = classifyBinanceCode(
-      '{"code":-1021,"msg":"Timestamp for this request was outside of the recvWindow."}',
-      detail('{"code":-1021,"msg":"Timestamp for this request was outside of the recvWindow."}'),
-    );
-    expect(err?.code).toBe("TIMESTAMP_OUT_OF_SYNC");
+  it("returns classified error DTO for unrecognised codes with fallback friendly message", () => {
+    const spec = ExchangeSpecificationRegistry.getInstance().getSpecification('bybit');
+    const mapped = spec?.mapper.mapErrorPayload(400, '{"retCode":-9999,"retMsg":"something odd"}', {}, 'tech');
+    expect(mapped?.code).toBe("INVALID_REQUEST");
   });
 
-  it("maps rate limit (-1003) to API_RATE_LIMIT_REACHED", () => {
-    const err = classifyBinanceCode(
-      '{"code":-1003,"msg":"Too much request weight used."}',
-      detail('{"code":-1003,"msg":"Too much request weight used."}'),
-    );
-    expect(err?.code).toBe("API_RATE_LIMIT_REACHED");
-  });
-
-  it("maps futures-not-enabled (-2027) to SPOT_TRADING_NOT_ENABLED", () => {
-    const err = classifyBinanceCode(
-      '{"code":-2027,"msg":"Futures trading is not enabled on this account."}',
-      detail('{"code":-2027,"msg":"Futures trading is not enabled on this account."}'),
-    );
-    expect(err?.code).toBe("SPOT_TRADING_NOT_ENABLED");
-  });
-
-  it("returns null for unrecognised codes so text heuristics can take over", () => {
-    const spec = ExchangeSpecificationRegistry.getInstance().getSpecification('binance');
-    const mapped = spec?.mapper.mapErrorPayload(400, '{"code":-9999,"msg":"something odd"}', {}, 'tech');
-    expect(mapped).toBeNull();
-  });
-
-  it("classifyByBodyText prefers the structured Binance code", () => {
-    const lower = '{"code":-2014,"msg":"api-key format invalid."}'.toLowerCase();
-    const err = classifyByBodyText(lower, detail('{"code":-2014,"msg":"API-key format invalid."}'), "binance");
-    expect(err.code).toBe("INVALID_API_KEY");
-  });
-
-  it("classifyExchangeResponse uses the Binance code for a 401", () => {
+  it("classifyExchangeResponse classifies 401 with invalid api key body as INVALID_API_KEY", () => {
     const err = classifyExchangeResponse(
       401,
-      '{"code":-2014,"msg":"API-key format invalid."}',
-      "binance",
+      '{"retCode":10002,"retMsg":"invalid api_key"}',
+      "bybit",
     );
     expect(err.code).toBe("INVALID_API_KEY");
   });

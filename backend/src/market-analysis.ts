@@ -3,7 +3,6 @@ import { type IExchangeProvider } from "./exchanges";
 export interface AnalysisCandidate {
   score: number;
   rank: number;
-  recommendedTimeframe: string;
   tradeSide: "BUY" | "SELL";
 }
 
@@ -85,12 +84,12 @@ export async function analyzeMarket(
   scored.sort((a, b) => (b.score || 0) - (a.score || 0));
   console.log(`[MARKET_ANALYSIS_SCORE] Scored ${scored.length} candidates. Top candidate: ${scored[0]?.symbol} (Score: ${scored[0]?.score}).`);
   
-  // Take top 5 candidates for intraday analysis to stay well within Cloudflare Worker subrequest and CPU limits
-  const top5 = scored.slice(0, 5);
+  // Take top 10 candidates for intraday analysis to stay well within Cloudflare Worker subrequest and CPU limits
+  const top10 = scored.slice(0, 10);
 
   // Evaluate intraday timeframes sequentially or safely to avoid subrequest burst limit
   const analyzed: any[] = [];
-  for (const candidate of top5) {
+  for (const candidate of top10) {
     try {
       let klines1h: any[] = [];
       let klines15m: any[] = [];
@@ -110,8 +109,7 @@ export async function analyzeMarket(
       if (!Array.isArray(klines1h) || !Array.isArray(klines15m) || klines1h.length < 20 || klines15m.length < 20) {
         analyzed.push({
           ...candidate,
-          recommendedTimeframe: "1h",
-          tradeSide: ((candidate.priceChangePercent24h || 0) > 0 ? "BUY" : "SELL") as "BUY" | "SELL",
+          tradeSide: "NEUTRAL" as any,
         });
         continue;
       }
@@ -137,26 +135,22 @@ export async function analyzeMarket(
       if (side1h !== "HOLD" && side1h === side15m) {
         analyzed.push({
           ...candidate,
-          recommendedTimeframe: "1h",
           tradeSide: side1h,
         });
       } else if (side1h !== "HOLD") {
         analyzed.push({
           ...candidate,
-          recommendedTimeframe: "1h",
           tradeSide: side1h,
         });
       } else if (side15m !== "HOLD") {
         analyzed.push({
           ...candidate,
-          recommendedTimeframe: "15m",
           tradeSide: side15m,
         });
       } else {
         analyzed.push({
           ...candidate,
-          recommendedTimeframe: "1h",
-          tradeSide: ((candidate.priceChangePercent24h || 0) > 0 ? "BUY" : "SELL") as "BUY" | "SELL",
+          tradeSide: "NEUTRAL" as any,
         });
       }
     } catch (err: any) {
@@ -164,7 +158,7 @@ export async function analyzeMarket(
       analyzed.push({
         ...candidate,
         recommendedTimeframe: "1h",
-        tradeSide: ((candidate?.priceChangePercent24h || 0) > 0 ? "BUY" : "SELL") as "BUY" | "SELL",
+        tradeSide: "NEUTRAL" as any,
       });
     }
   }

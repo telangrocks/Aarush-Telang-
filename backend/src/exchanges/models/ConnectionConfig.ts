@@ -8,6 +8,7 @@ export interface ProviderConfig {
   product?: 'spot' | 'linear' | 'inverse' | 'option' | 'futures';
   egressProxyUrl?: string;
   egressProxySecret?: string;
+  egressGatewayFetcher?: any;
 }
 
 

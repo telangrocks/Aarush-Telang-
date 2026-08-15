@@ -1,40 +1,27 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ExchangeRegistry } from './registry/ExchangeRegistry';
-import { BinanceAdapter } from './adapters/BinanceAdapter';
-import { KucoinAdapter } from './adapters/KucoinAdapter';
 import { BybitAdapter } from './adapters/BybitAdapter';
 
 describe('Exchange Adapters & Dynamic Self-Registration Registry Unit Tests', () => {
   beforeEach(() => {
     ExchangeRegistry.clear();
-    ExchangeRegistry.register({ exchangeId: 'binance', factory: () => new BinanceAdapter() });
-    ExchangeRegistry.register({ exchangeId: 'kucoin', factory: () => new KucoinAdapter() });
     ExchangeRegistry.register({ exchangeId: 'bybit', factory: () => new BybitAdapter() });
   });
 
-  it('ExchangeRegistry registers and instantiates adapters without branching', () => {
-    expect(ExchangeRegistry.has('binance')).toBe(true);
-    expect(ExchangeRegistry.has('kucoin')).toBe(true);
+  it('ExchangeRegistry registers and instantiates BybitAdapter without branching', () => {
     expect(ExchangeRegistry.has('bybit')).toBe(true);
+    expect(ExchangeRegistry.has('binance')).toBe(false);
+    expect(ExchangeRegistry.has('kucoin')).toBe(false);
     expect(ExchangeRegistry.has('unknown')).toBe(false);
 
-    const binance = ExchangeRegistry.create('binance');
-    expect(binance).toBeInstanceOf(BinanceAdapter);
-    expect(binance.capabilities.supportsOco).toBe(true);
-
-    const kucoin = ExchangeRegistry.create('kucoin');
-    expect(kucoin).toBeInstanceOf(KucoinAdapter);
-    expect(kucoin.capabilities.requiresPassphrase).toBe(true);
+    const bybit = ExchangeRegistry.create('bybit');
+    expect(bybit).toBeInstanceOf(BybitAdapter);
+    expect(bybit.capabilities.supportsFutures).toBe(true);
   });
 
-  it('BinanceAdapter rejects missing credentials', async () => {
-    const binance = new BinanceAdapter();
-    await binance.connect({ environment: 'testnet' });
-    await expect(binance.fetchBalance()).rejects.toThrow('Missing required exchange credentials');
-  });
-
-  it('KucoinAdapter rejects demo mode as unsupported', async () => {
-    const kucoin = new KucoinAdapter();
-    await expect(kucoin.connect({ environment: 'demo' })).rejects.toThrow('KuCoin does not support demo environment');
+  it('BybitAdapter rejects missing credentials', async () => {
+    const bybit = new BybitAdapter();
+    await bybit.connect({ environment: 'demo' });
+    await expect(bybit.fetchBalance()).rejects.toThrow('Missing required exchange credentials');
   });
 });

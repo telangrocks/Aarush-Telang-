@@ -62,8 +62,6 @@ export interface Env {
   GLOBAL_TRADING_HALT?: string;
   FCM_PRIVATE_KEY?: string;
   TRADING_BOTS: DurableObjectNamespace;
-  EGRESS_PROXY_URL?: string;
-  EGRESS_PROXY_SECRET?: string;
   /** Workers AI binding — used to call Moonshot AI Kimi K3 (moonshotai/kimi-k3). Optional so non-AI routes/tests don't require it. */
   AI?: Ai;
 }

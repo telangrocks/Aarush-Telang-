@@ -84,50 +84,9 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      let proxyUrl = this.config?.egressProxyUrl;
-      let proxySecret = this.config?.egressProxySecret || "crypto-pulse-egress-secret-2026";
-
-      if (!proxyUrl || proxyUrl.trim() === "") {
-        const envProxy = (globalThis as any).process?.env?.EGRESS_PROXY_URL || (globalThis as any).EGRESS_PROXY_URL;
-        if (envProxy && typeof envProxy === "string") {
-          proxyUrl = envProxy;
-        }
-      }
-
-      if (proxyUrl && proxyUrl.trim() !== "" && !proxyUrl.includes("localhost") && !proxyUrl.includes("127.0.0.1")) {
-        const forwardUrl = `${proxyUrl.replace(/\/$/, "")}/forward`;
-        const rawHeaders = (options.headers as Record<string, string>) || {};
-        const bodyStr = options.body ? options.body.toString() : undefined;
-
-        const proxyResponse = await globalThis.fetch(forwardUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Egress-Auth-Token": proxySecret,
-          },
-          body: JSON.stringify({
-            targetUrl: url,
-            method: options.method || "GET",
-            headers: rawHeaders,
-            body: bodyStr,
-          }),
-          signal: controller.signal,
-        });
-
-        if (!proxyResponse.ok) {
-          const errText = await proxyResponse.text();
-          throw new UnifiedError(`Egress proxy returned HTTP ${proxyResponse.status}: ${errText}`, "SERVICE_UNAVAILABLE");
-        }
-
-        const proxyJson: any = await proxyResponse.json();
-        const resHeaders = new Headers(proxyJson.headers || {});
-        return new Response(proxyJson.body, {
-          status: proxyJson.status || 200,
-          headers: resHeaders,
-        });
-      }
-
-      const response = await globalThis.fetch(url, {
+      // Direct Native Fetch (Direct Connection Architecture to api-demo.bybit.com / api.bybit.com)
+      const fetcher = this.config?.egressGatewayFetcher || globalThis;
+      const response = await fetcher.fetch(url, {
         ...options,
         signal: controller.signal,
       });
@@ -145,6 +104,7 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
   abstract fetchMarkets(): Promise<Market[]>;
   abstract fetchBalance(): Promise<Balance[]>;
   abstract fetchTicker(symbol: string): Promise<Ticker>;
+  abstract fetchTickers(symbols?: string[]): Promise<Ticker[]>;
   abstract fetchKlines(symbol: string, interval: string, limit?: number): Promise<any[]>;
   abstract fetchPositions(): Promise<Position[]>;
 

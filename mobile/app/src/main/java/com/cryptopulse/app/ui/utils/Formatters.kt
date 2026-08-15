@@ -41,4 +41,12 @@ object Formatters {
         if (amount.isNaN() || amount.isInfinite() || amount <= 0.0) return "$0.00"
         return String.format(DefaultLocale, "$%.2f", amount)
     }
+
+    fun formatConstraint(value: Double): String {
+        return if (value == value.toLong().toDouble()) {
+            value.toLong().toString()
+        } else {
+            java.math.BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()
+        }
+    }
 }

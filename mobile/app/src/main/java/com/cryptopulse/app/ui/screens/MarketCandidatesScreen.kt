@@ -47,12 +47,14 @@ data class MarketCandidate(
     val notations: Int = 0,
     val currentMarketPrice: Double = 0.0,
     val minNotional: Double = 0.0,
+    val minOrderQty: Double = 0.0,
+    val qtyStep: Double = 0.0,
+    val tickSize: Double = 0.0,
     val coinColor: Color = Color.Unspecified,
     val volume24h: Double = 0.0,
     val quoteVolume24h: Double = 0.0,
     val priceChangePercent24h: Double = 0.0,
     val score: Double = 0.0,
-    val recommendedTimeframe: String = "",
     val tradeSide: String = "",
     val formattedPrice: String = "",
     val formattedMinNotional: String = "",
@@ -68,9 +70,8 @@ fun MarketCandidate.toAccessibilityDescription(): String {
     val minStr = Formatters.formatMinNotional(minNotional)
     val scoreStr = Formatters.formatScore(score)
     val sideText = if (tradeSide.isNotBlank()) "$tradeSide." else ""
-    val tfText = if (recommendedTimeframe.isNotBlank()) "$recommendedTimeframe." else ""
     val directionText = if (priceChangePercent24h >= 0) "Up" else "Down"
-    return "Rank $rank. $pairName. $sideText $tfText Price $priceStr dollars. $directionText $pctStr. AI Score $scoreStr. 24 hour volume $volStr. Minimum order $minStr."
+    return "Rank $rank. $pairName. $sideText Price $priceStr dollars. $directionText $pctStr. AI Score $scoreStr. 24 hour volume $volStr. Minimum order $minStr."
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -522,49 +523,12 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                 letterSpacing = 0.1.sp,
             )
 
-            // 3. Buy/Sell Suggestion & Timeframe
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (candidate.tradeSide.isNotBlank()) {
-                    Box(
-                        modifier = Modifier
-                            .background(sideColor.copy(alpha = 0.18f), RoundedCornerShape(5.dp))
-                            .border(0.8.dp, sideColor.copy(alpha = 0.55f), RoundedCornerShape(5.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.5.dp)
-                    ) {
-                        Text(
-                            text = candidate.tradeSide.uppercase(),
-                            color = sideColor,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 0.5.sp,
-                        )
-                    }
-                }
-                if (candidate.recommendedTimeframe.isNotBlank()) {
-                    Box(
-                        modifier = Modifier
-                            .background(CyanPrimary.copy(alpha = 0.10f), RoundedCornerShape(5.dp))
-                            .border(0.8.dp, CyanPrimary.copy(alpha = 0.35f), RoundedCornerShape(5.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.5.dp)
-                    ) {
-                        Text(
-                            text = candidate.recommendedTimeframe.uppercase(),
-                            color = CyanPrimary,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.4.sp,
-                        )
-                    }
-                }
-            }
+
 
             // 4. AI Score
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "Score",
+                    text = "Technical Score",
                     color = TextMuted,
                     fontSize = 7.sp,
                     fontWeight = FontWeight.Medium,
@@ -578,20 +542,22 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                 )
             }
 
-            // 5. Minimum Notional
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // 5. Trading Constraints
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.Center) {
                 Text(
-                    text = "Min",
-                    color = TextMuted,
-                    fontSize = 7.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 0.3.sp,
+                    text = "Min Qty: ${Formatters.formatConstraint(candidate.minOrderQty)}",
+                    color = TextSecondary,
+                    fontSize = 10.sp,
                 )
                 Text(
-                    text = "\$${candidate.formattedMinNotional.ifEmpty { Formatters.formatMinNotional(candidate.minNotional) }}",
-                    color = TextPrimary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    text = "Qty Step: ${Formatters.formatConstraint(candidate.qtyStep)}",
+                    color = TextSecondary,
+                    fontSize = 10.sp,
+                )
+                Text(
+                    text = "Tick Size: ${Formatters.formatConstraint(candidate.tickSize)}",
+                    color = TextSecondary,
+                    fontSize = 10.sp,
                 )
             }
         }

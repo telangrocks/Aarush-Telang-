@@ -15,6 +15,8 @@ data class MarketCandidateDto(
     val lowPrice24h: Double? = null,
     val score: Double? = null,
     val minNotional: Double? = null,
-    val recommendedTimeframe: String? = null,
+    val minOrderQty: Double? = null,
+    val qtyStep: Double? = null,
+    val tickSize: Double? = null,
     val tradeSide: String? = null,
 )

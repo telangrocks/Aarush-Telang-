@@ -1,6 +1,4 @@
 import { ExchangeSpecification } from './ExchangeSpecification';
-import { BinanceErrorMapper } from '../mappers/BinanceErrorMapper';
-import { KuCoinErrorMapper } from '../mappers/KuCoinErrorMapper';
 import { BybitErrorMapper } from '../mappers/BybitErrorMapper';
 import { DEFAULT_CAPABILITIES } from '../../domain/capabilities/ExchangeCapabilities';
 
@@ -9,20 +7,6 @@ export class ExchangeSpecificationRegistry {
   private specifications = new Map<string, ExchangeSpecification>();
 
   private constructor() {
-    this.registerSpecification({
-      exchangeId: 'binance',
-      displayName: 'Binance',
-      mapper: new BinanceErrorMapper(),
-      defaultCapabilities: { ...DEFAULT_CAPABILITIES, supportsOco: true, supportsSandbox: true }
-    });
-
-    this.registerSpecification({
-      exchangeId: 'kucoin',
-      displayName: 'KuCoin',
-      mapper: new KuCoinErrorMapper(),
-      defaultCapabilities: { ...DEFAULT_CAPABILITIES, requiresPassphrase: true }
-    });
-
     this.registerSpecification({
       exchangeId: 'bybit',
       displayName: 'Bybit',

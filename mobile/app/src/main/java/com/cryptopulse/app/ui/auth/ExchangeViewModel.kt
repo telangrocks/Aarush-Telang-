@@ -48,8 +48,8 @@ data class CredentialSet(
 )
 
 data class ExchangeFormState(
-    val selectedExchange: String = "binance",
-    val environment: String = "testnet",
+    val selectedExchange: String = "bybit",
+    val environment: String = "demo",
     val credentialsMap: Map<Pair<String, String>, CredentialSet> = emptyMap(),
     val apiKeyError: String? = null,
     val apiSecretError: String? = null,
@@ -237,7 +237,17 @@ class ExchangeViewModel @Inject constructor(
 
     fun onApiKeyChanged(apiKey: String) {
         val sanitized = apiKey.trim()
-        _formState.value = _formState.value.updateCurrentCredentials(apiKey = sanitized, apiKeyError = null)
+        val currentState = _formState.value
+        val currentKey = currentState.apiKey
+        // If the API Key is modified, clear the secret in the active slot so a stale secret is never silently reused
+        val secretToUse = if (sanitized != currentKey && currentKey.isNotBlank()) "" else currentState.apiSecret
+        _formState.value = currentState.updateCurrentCredentials(
+            apiKey = sanitized,
+            apiSecret = secretToUse,
+            apiKeyError = null,
+            apiSecretError = if (sanitized != currentKey && currentKey.isNotBlank()) null else currentState.apiSecretError,
+            validationMessage = null
+        )
         if (_uiState.value is ExchangeUiState.Error) {
             _uiState.value = ExchangeUiState.Idle
         }
@@ -245,7 +255,12 @@ class ExchangeViewModel @Inject constructor(
 
     fun onApiSecretChanged(apiSecret: String) {
         val sanitized = apiSecret.trim()
-        _formState.value = _formState.value.updateCurrentCredentials(apiSecret = sanitized, apiSecretError = null)
+        val currentState = _formState.value
+        _formState.value = currentState.updateCurrentCredentials(
+            apiSecret = sanitized,
+            apiSecretError = null,
+            validationMessage = null
+        )
         if (_uiState.value is ExchangeUiState.Error) {
             _uiState.value = ExchangeUiState.Idle
         }
@@ -266,14 +281,16 @@ class ExchangeViewModel @Inject constructor(
         Log.e(TAG, "[DIAGNOSTIC] Error | Endpoint: $endpointName | Exception Class: ${exception::class.java.name} | Message: ${exception.message}", exception)
 
         if (exception is DomainException) {
-            return exception.message to (exception.hint ?: exception.code)
+            val userMsg = exception.message.ifBlank { "Authentication failed." }
+            val hintMsg = exception.hint ?: exception.code
+            return userMsg to hintMsg
         }
 
         val exMsgPair = when (exception) {
-            is SocketTimeoutException -> "Connection timeout. Please check your internet connection." to null
-            is UnknownHostException -> "No internet connection. Please check your network." to null
-            is IOException -> "Network error. Please check your internet connection." to null
-            else -> "An unexpected error occurred. Please try again." to null
+            is SocketTimeoutException -> "Connection timeout. Please check your internet connection." to "Verify network connection and try again."
+            is UnknownHostException -> "No internet connection. Please check your network." to "Ensure your device is connected to the internet."
+            is IOException -> "Network error. Please check your internet connection." to "Could not reach CryptoPulse server."
+            else -> (exception.localizedMessage?.takeIf { it.isNotBlank() } ?: exception.message?.takeIf { it.isNotBlank() } ?: "An unexpected error occurred. Please try again.") to null
         }
         return exMsgPair
     }
@@ -292,7 +309,6 @@ class ExchangeViewModel @Inject constructor(
 
         var apiKeyError: String? = null
         var apiSecretError: String? = null
-        var apiPassphraseError: String? = null
 
         if (state.apiKey.isBlank()) {
             apiKeyError = "API Key is required"
@@ -300,15 +316,11 @@ class ExchangeViewModel @Inject constructor(
         if (state.apiSecret.isBlank()) {
             apiSecretError = "API Secret is required"
         }
-        if (activeExchange == "kucoin" && state.apiPassphrase.isBlank()) {
-            apiPassphraseError = "API Passphrase is required for KuCoin"
-        }
-
-        if (apiKeyError != null || apiSecretError != null || apiPassphraseError != null) {
+        if (apiKeyError != null || apiSecretError != null) {
             _formState.value = state.copy(
                 apiKeyError = apiKeyError,
                 apiSecretError = apiSecretError,
-                apiPassphraseError = apiPassphraseError,
+                apiPassphraseError = null,
             )
             return
         }
@@ -379,9 +391,11 @@ class ExchangeViewModel @Inject constructor(
                         quoteVolume24h = domain.quoteVolume24h,
                         priceChangePercent24h = domain.priceChangePercent24h,
                         score = domain.score,
-                        recommendedTimeframe = domain.recommendedTimeframe,
                         tradeSide = domain.tradeSide,
                         minNotional = domain.minNotional,
+                        minOrderQty = domain.minOrderQty,
+                        qtyStep = domain.qtyStep,
+                        tickSize = domain.tickSize,
                         highPrice24h = domain.highPrice24h,
                         lowPrice24h = domain.lowPrice24h,
                         coinColor = androidx.compose.ui.graphics.Color.Gray
@@ -501,6 +515,7 @@ class ExchangeViewModel @Inject constructor(
             "stopLoss" to (alert.stopLoss ?: 0.0),
             "takeProfit" to (alert.takeProfit ?: 0.0),
             "estimatedPnl" to (alert.estimatedPnl ?: 0.0),
+            "positionSize" to (alert.positionSize ?: 0.0),
             "strategy" to (alert.strategy ?: ""),
             "side" to (alert.side ?: "BUY"),
         )

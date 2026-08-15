@@ -37,11 +37,9 @@ export class ExchangeErrorClassifier {
     const serverHeader = (normHeaders['server'] || '').toLowerCase();
     const isHtml = contentType.includes('text/html') || (bodyText || '').trim().toLowerCase().startsWith('<!doctype html') || (bodyText || '').trim().toLowerCase().startsWith('<html');
 
-    // 1. Content-Type & Edge Security Inspection (Cloudflare WAF / CDN Page) (Fix EC-C3)
-    if (status === 403 && (isHtml || serverHeader.includes('cloudflare') || normHeaders['cf-ray'])) {
-      return this.mk('WAF_BLOCKED', technicalDetail, correlationId);
-    }
-    if (isHtml && status >= 400) {
+    // 1. Content-Type & Edge Security Inspection (Cloudflare WAF / CDN Page)
+    const lowerBody = (bodyText || '').toLowerCase();
+    if (status === 403 && isHtml && (lowerBody.includes('cloudflare') || lowerBody.includes('waf') || lowerBody.includes('cf-challenge') || lowerBody.includes('attention required') || lowerBody.includes('just a moment'))) {
       return this.mk('WAF_BLOCKED', technicalDetail, correlationId);
     }
 

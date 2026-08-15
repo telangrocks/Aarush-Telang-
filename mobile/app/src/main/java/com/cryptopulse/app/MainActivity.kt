@@ -22,10 +22,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.remember
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.navigation
 import androidx.navigation.compose.rememberNavController
 import androidx.activity.viewModels
 import com.cryptopulse.app.data.local.TokenManager
@@ -72,6 +73,9 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var botRepository: com.cryptopulse.app.domain.repository.BotRepository
 
+    @Inject
+    lateinit var fcmRepository: com.cryptopulse.app.domain.repository.FcmRepository
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -83,18 +87,23 @@ class MainActivity : FragmentActivity() {
                     val navController = rememberNavController()
                     val token by tokenManager.tokenFlow.collectAsState(initial = null)
                     val startDestination = "splash"
-                    val exchangeViewModel = hiltViewModel<ExchangeViewModel>(this)
                     val coroutineScope = rememberCoroutineScope()
 
                     val performLogout: () -> Unit = {
+                        try {
+                            val entry = navController.getBackStackEntry("authenticated_flow")
+                            val viewModel = androidx.lifecycle.ViewModelProvider(entry)[ExchangeViewModel::class.java]
+                            viewModel.resetState()
+                        } catch (e: Exception) {
+                            // If authenticated_flow is not on backstack, state is already destroyed
+                        }
                         coroutineScope.launch {
                             authRepository.logout()
                             exchangeConnectionManager.clearConnection()
                             BackgroundMonitoringService.stopService(this@MainActivity)
                         }
-                        exchangeViewModel.resetState()
                         navController.navigate("onboarding") {
-                            popUpTo(navController.graph.id) {
+                            popUpTo("authenticated_flow") {
                                 inclusive = true
                             }
                         }
@@ -131,7 +140,7 @@ class MainActivity : FragmentActivity() {
                             AuthScreen(
                                 viewModel = viewModel,
                                 onAuthSuccess = {
-                                    navController.navigate("connect_exchange") {
+                                    navController.navigate("authenticated_flow") {
                                         popUpTo("auth") {
                                             inclusive = true
                                         }
@@ -139,197 +148,226 @@ class MainActivity : FragmentActivity() {
                                 }
                             )
                         }
-                        composable("connect_exchange") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            ConnectExchangeScreen(
-                                navController = navController,
-                                viewModel = viewModel
-                            )
-                        }
-                        composable("market_candidates") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                            MarketCandidatesScreen(
-                                onCandidateClick = { candidate ->
-                                    viewModel.selectCandidate(candidate)
-                                    navController.navigate("strategy_selection")
-                                },
-                                onBack = { navController.popBackStack() }
-                            )
-                        }
-                        composable("strategy_selection") {
-                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
-                            val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
+                        navigation(startDestination = "connect_exchange", route = "authenticated_flow") {
+                            composable("connect_exchange") { backStackEntry ->
+                                val parentEntry = remember(backStackEntry) {
+                                    navController.getBackStackEntry("authenticated_flow")
+                                }
+                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                ConnectExchangeScreen(
+                                    navController = navController,
+                                    viewModel = viewModel
+                                )
+                            }
+                            composable("market_candidates") { backStackEntry ->
+                                val parentEntry = remember(backStackEntry) {
+                                    navController.getBackStackEntry("authenticated_flow")
+                                }
+                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                                MarketCandidatesScreen(
+                                    viewModel = viewModel,
+                                    onCandidateClick = { candidate ->
+                                        viewModel.selectCandidate(candidate)
+                                        navController.navigate("strategy_selection")
+                                    },
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+                            composable("strategy_selection") { backStackEntry ->
+                                val parentEntry = remember(backStackEntry) {
+                                    navController.getBackStackEntry("authenticated_flow")
+                                }
+                                val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
+                                val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
 
-                            val candidate = selectedCandidate ?: MarketCandidate(
-                                rank = 1,
-                                symbol = "BTC",
-                                pairName = "BTC/USDT",
-                                coinName = "Bitcoin",
-                                notations = 100,
-                                currentMarketPrice = 50000.0,
-                                minNotional = 0.0,
-                                coinColor = Color(0xFFF7931A),
-                            )
+                                val candidate = selectedCandidate ?: MarketCandidate(
+                                    rank = 1,
+                                    symbol = "BTC",
+                                    pairName = "BTC/USDT",
+                                    coinName = "Bitcoin",
+                                    notations = 100,
+                                    currentMarketPrice = 50000.0,
+                                    minNotional = 0.0,
+                                    coinColor = Color(0xFFF7931A),
+                                )
 
-                            StrategySelectionScreen(
-                                candidate = candidate,
-                                onBack = { navController.popBackStack() },
-                                onProceedToTradeSetup = {
-                                    navController.navigate("trade_setup")
-                                },
-                                viewModel = strategyViewModel
-                            )
-                        }
+                                StrategySelectionScreen(
+                                    candidate = candidate,
+                                    onBack = { navController.popBackStack() },
+                                    onProceedToTradeSetup = {
+                                        navController.navigate("trade_setup")
+                                    },
+                                    viewModel = strategyViewModel
+                                )
+                            }
 
-                        composable("trade_setup") {
-                            val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>()
-                            val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
-                            val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
-                            val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
+                            composable("trade_setup") { backStackEntry ->
+                                val parentEntry = remember(backStackEntry) {
+                                    navController.getBackStackEntry("authenticated_flow")
+                                }
+                                val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>()
+                                val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
+                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
+                                val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
 
-                            val candidate = selectedCandidate ?: MarketCandidate(
-                                rank = 1,
-                                symbol = "BTC",
-                                pairName = "BTC/USDT",
-                                coinName = "Bitcoin",
-                                notations = 100,
-                                currentMarketPrice = 50000.0,
-                                minNotional = 0.0,
-                                coinColor = Color(0xFFF7931A),
-                            )
+                                val candidate = selectedCandidate ?: MarketCandidate(
+                                    rank = 1,
+                                    symbol = "BTC",
+                                    pairName = "BTC/USDT",
+                                    coinName = "Bitcoin",
+                                    notations = 100,
+                                    currentMarketPrice = 50000.0,
+                                    minNotional = 0.0,
+                                    coinColor = Color(0xFFF7931A),
+                                )
 
-                            TradeSetupScreen(
-                                candidate = candidate,
-                                onBack = { navController.popBackStack() },
-                                onProceedToAnalysis = {
-                                    val result = tradeSetupViewModel.buildConfig(candidate.symbol)
-                                    val strategyId = strategyViewModel.selectedStrategyId.value ?: "scalper-v2"
-                                    val config = if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) result.config else null
-                                    technicalAnalysisViewModel.activateBot(
-                                        symbol = candidate.symbol,
-                                        strategy = strategyId,
-                                        config = config,
-                                        onSuccess = {
-                                            com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
-                                            navController.navigate("technical_analysis") {
-                                                popUpTo("trade_setup") { inclusive = true }
+                                TradeSetupScreen(
+                                    candidate = candidate,
+                                    onBack = { navController.popBackStack() },
+                                    onProceedToAnalysis = {
+                                        val result = tradeSetupViewModel.buildConfig(candidate.symbol)
+                                        val strategyId = strategyViewModel.selectedStrategyId.value ?: "scalper-v2"
+                                        val config = if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) result.config else null
+                                        technicalAnalysisViewModel.activateBot(
+                                            symbol = candidate.symbol,
+                                            strategy = strategyId,
+                                            config = config,
+                                            onSuccess = {
+                                                com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
+                                                navController.navigate("technical_analysis") {
+                                                    popUpTo("trade_setup") { inclusive = true }
+                                                }
                                             }
-                                        }
-                                    )
-                                },
-                                viewModel = tradeSetupViewModel,
-                            )
-                        }
-
-                        composable("technical_analysis") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
-                            val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                            val analysisState by technicalAnalysisViewModel.analysisState.collectAsState()
-
-                            val candidate = selectedCandidate ?: MarketCandidate(
-                                rank = 1,
-                                symbol = "BTC",
-                                pairName = "BTC/USDT",
-                                coinName = "Bitcoin",
-                                notations = 100,
-                                currentMarketPrice = 50000.0,
-                                minNotional = 0.0,
-                                coinColor = Color(0xFFF7931A),
-                            )
-
-                            LaunchedEffect(candidate.symbol) {
-                                technicalAnalysisViewModel.loadPreviewAnalysis(candidate.symbol, "ScalperV2")
+                                        )
+                                    },
+                                    viewModel = tradeSetupViewModel,
+                                )
                             }
 
-                            LaunchedEffect(Unit) {
-                                AlertBus.alerts.collect { alert ->
-                                    viewModel.setPendingAlert(alert)
-                                    navController.navigate("trade_alert")
+                            composable("technical_analysis") { backStackEntry ->
+                                val parentEntry = remember(backStackEntry) {
+                                    navController.getBackStackEntry("authenticated_flow")
                                 }
-                            }
+                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
+                                val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                                val analysisState by technicalAnalysisViewModel.analysisState.collectAsState()
 
-                            TechnicalAnalysisScreen(
-                                candidate = candidate,
-                                analysisState = analysisState,
-                                onBack = { navController.popBackStack() },
-                                onExecuteMockTrade = { mockAlert ->
-                                    com.cryptopulse.app.service.TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(mockAlert)
+                                val candidate = selectedCandidate ?: MarketCandidate(
+                                    rank = 1,
+                                    symbol = "BTC",
+                                    pairName = "BTC/USDT",
+                                    coinName = "Bitcoin",
+                                    notations = 100,
+                                    currentMarketPrice = 50000.0,
+                                    minNotional = 0.0,
+                                    coinColor = Color(0xFFF7931A),
+                                )
+
+                                LaunchedEffect(candidate.symbol) {
+                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.symbol, "ScalperV2")
                                 }
-                            )
-                        }
 
-                        composable("live_analysis") {
-                            navController.navigate("technical_analysis") {
-                                popUpTo("live_analysis") { inclusive = true }
-                            }
-                        }
-
-                        composable("trade_alert") {
-                            val viewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
-                            val alert by viewModel.pendingAlert.collectAsState(initial = null)
-                            val candidate by viewModel.selectedCandidate.collectAsState(initial = null)
-
-                            val alertSymbol = (alert?.get("symbol") as? String) ?: candidate?.symbol ?: "BTC"
-                            val entryPrice = (alert?.get("entryPrice") as? Double)
-                                ?: candidate?.currentMarketPrice ?: 0.0
-                            val stopLossPrice = (alert?.get("stopLoss") as? Double)
-                                ?: (entryPrice * 0.99)
-                            val takeProfitPrice = (alert?.get("takeProfit") as? Double)
-                                ?: (entryPrice * 1.02)
-                            val signalPrice = (alert?.get("signalPrice") as? Double) ?: entryPrice
-                            val targetEntryPrice = (alert?.get("targetEntryPrice") as? Double)
-                            
-                            val positionSize = (alert?.get("positionSize") as? Double) ?: 0.0
-                            val refPrice = targetEntryPrice ?: signalPrice
-                            val quantity = if (refPrice > 0.0) positionSize / refPrice else 0.0
-                            val calculatedPnl = if (quantity > 0.0) {
-                                kotlin.math.abs(takeProfitPrice - signalPrice) * quantity
-                            } else {
-                                (alert?.get("estimatedPnl") as? Double) ?: 0.0
-                            }
-
-                            val marketCandidate = candidate ?: MarketCandidate(
-                                rank = 1,
-                                symbol = alertSymbol,
-                                pairName = "$alertSymbol/USDT",
-                                coinName = alertSymbol,
-                                notations = 100,
-                                currentMarketPrice = entryPrice,
-                                minNotional = 10.0,
-                                coinColor = Color(0xFFF7931A),
-                            )
-                            TradeAlertScreen(
-                                onBack = { navController.popBackStack() },
-                                onTradeExecuted = {
-                                    navController.navigate("portfolio") {
-                                        popUpTo("technical_analysis") { inclusive = false }
+                                LaunchedEffect(Unit) {
+                                    AlertBus.alerts.collect { alert ->
+                                        viewModel.setPendingAlert(alert)
+                                        navController.navigate("trade_alert")
                                     }
-                                },
-                                candidate = marketCandidate,
-                                entryPrice = entryPrice,
-                                stopLossPrice = stopLossPrice,
-                                takeProfitPrice = takeProfitPrice,
-                                estimatedPnl = calculatedPnl,
-                                signalPrice = signalPrice,
-                                targetEntryPrice = targetEntryPrice,
-                            )
-                        }
+                                }
 
-                        composable("portfolio") {
-                            PortfolioScreen(
-                                onBack = { navController.popBackStack() }
-                            )
+                                val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
+
+                                TechnicalAnalysisScreen(
+                                    candidate = candidate,
+                                    analysisState = analysisState,
+                                    tradeSetupConfig = tradeSetupConfig,
+                                    onBack = { navController.popBackStack() },
+                                    onExecuteMockTrade = { mockAlert ->
+                                        com.cryptopulse.app.service.TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(mockAlert)
+                                    }
+                                )
+                            }
+
+                            composable("live_analysis") {
+                                navController.navigate("technical_analysis") {
+                                    popUpTo("live_analysis") { inclusive = true }
+                                }
+                            }
+
+                            composable("trade_alert") { backStackEntry ->
+                                val parentEntry = remember(backStackEntry) {
+                                    navController.getBackStackEntry("authenticated_flow")
+                                }
+                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val alert by viewModel.pendingAlert.collectAsState(initial = null)
+                                val candidate by viewModel.selectedCandidate.collectAsState(initial = null)
+
+                                val alertSymbol = (alert?.get("symbol") as? String) ?: candidate?.symbol ?: "BTC"
+                                val entryPrice = (alert?.get("entryPrice") as? Double)
+                                    ?: candidate?.currentMarketPrice ?: 0.0
+                                val stopLossPrice = (alert?.get("stopLoss") as? Double)
+                                    ?: (entryPrice * 0.99)
+                                val takeProfitPrice = (alert?.get("takeProfit") as? Double)
+                                    ?: (entryPrice * 1.02)
+                                val signalPrice = (alert?.get("signalPrice") as? Double) ?: entryPrice
+                                val targetEntryPrice = (alert?.get("targetEntryPrice") as? Double)
+                                
+                                val positionSize = (alert?.get("positionSize") as? Double) ?: 0.0
+                                val refPrice = targetEntryPrice ?: signalPrice
+                                val quantity = if (refPrice > 0.0) positionSize / refPrice else 0.0
+                                val calculatedPnl = if (quantity > 0.0) {
+                                    kotlin.math.abs(takeProfitPrice - signalPrice) * quantity
+                                } else {
+                                    (alert?.get("estimatedPnl") as? Double) ?: 0.0
+                                }
+
+                                val marketCandidate = candidate ?: MarketCandidate(
+                                    rank = 1,
+                                    symbol = alertSymbol,
+                                    pairName = "$alertSymbol/USDT",
+                                    coinName = alertSymbol,
+                                    notations = 100,
+                                    currentMarketPrice = entryPrice,
+                                    minNotional = 10.0,
+                                    coinColor = Color(0xFFF7931A),
+                                )
+                                TradeAlertScreen(
+                                    onBack = { navController.popBackStack() },
+                                    onTradeExecuted = {
+                                        navController.navigate("portfolio") {
+                                            popUpTo("technical_analysis") { inclusive = false }
+                                        }
+                                    },
+                                    candidate = marketCandidate,
+                                    entryPrice = entryPrice,
+                                    stopLossPrice = stopLossPrice,
+                                    takeProfitPrice = takeProfitPrice,
+                                    estimatedPnl = calculatedPnl,
+                                    signalPrice = signalPrice,
+                                    targetEntryPrice = targetEntryPrice,
+                                    tradeAmountUsdt = positionSize,
+                                )
+                            }
+
+                            composable("portfolio") { backStackEntry ->
+                                val parentEntry = remember(backStackEntry) {
+                                    navController.getBackStackEntry("authenticated_flow")
+                                }
+                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                PortfolioScreen(
+                                    viewModel = viewModel,
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
                         }
                     }
                     }
                 }
             }
 
-            val exchangeViewModelForFcm = hiltViewModel<ExchangeViewModel>(LocalContext.current as ComponentActivity)
             LaunchedEffect(Unit) {
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                     if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -348,7 +386,7 @@ class MainActivity : FragmentActivity() {
                             }
                         }
                         if (!fcmToken.isNullOrEmpty()) {
-                            exchangeViewModelForFcm.registerFcmToken(fcmToken)
+                            fcmRepository.registerToken(fcmToken)
                         }
                     }
                 } catch (e: Exception) {

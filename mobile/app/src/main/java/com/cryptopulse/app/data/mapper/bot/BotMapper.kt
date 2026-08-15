@@ -14,7 +14,8 @@ fun BotAlertDto.toDomain(): BotAlert = BotAlert(
     side = side,
     timestamp = timestamp,
     signalPrice = signalPrice,
-    targetEntryPrice = targetEntryPrice
+    targetEntryPrice = targetEntryPrice,
+    positionSize = positionSize
 )
 
 fun AnalysisSnapshotDto.toDomain(): AnalysisSnapshot = AnalysisSnapshot(

@@ -8,22 +8,11 @@ export type ExchangeProductCategory = "spot" | "linear" | "inverse" | "option" |
 
 export type BybitWsPurpose = "spot" | "linear" | "inverse" | "option" | "private" | "trade";
 
-export type KuCoinWsPurpose = "public" | "private";
-
 export interface RoutingContext {
-  exchange: "binance" | "bybit" | "kucoin" | string;
+  exchange: "bybit" | string;
   product?: ExchangeProductCategory;
   environment: string;
   region?: string;
-}
-
-export interface KuCoinBulletTokenResponse {
-  token: string;
-  instanceServers: Array<{
-    endpoint: string;
-    pingInterval: number;
-    pingTimeout: number;
-  }>;
 }
 
 export class ExchangeRoutingResolver {
@@ -36,68 +25,27 @@ export class ExchangeRoutingResolver {
   }
 
   /**
-   * Primary REST URL resolution method returning a single authoritative endpoint string.
-   * Cloudflare Worker / Hono compatible via optional envBindings parameter.
+   * Primary REST URL resolution returning authoritative endpoint for Bybit Demo / Mainnet.
    */
   public static getRestUrl(context: RoutingContext, envBindings?: Record<string, unknown>): string {
     const exchange = (context.exchange || "").toLowerCase().trim();
+    if (exchange !== "bybit" && exchange !== "") {
+      // Legacy connection attempt -> throw invalidation error
+      throw new UnifiedError(`Exchange '${context.exchange}' is no longer supported. Please connect Bybit.`, "EXCHANGE_RECONNECT_REQUIRED");
+    }
+
     const env = this.getCanonicalEnvironment(context.environment);
-    const product = context.product || "spot";
-
-    if (exchange === "binance") {
-      if (env === "testnet") {
-        const customTestnet = envBindings?.BINANCE_TESTNET_URL as string;
-        return (customTestnet || "https://testnet.binance.vision").replace(/\/$/, "");
-      }
-      if (env === "demo") {
-        throw new UnifiedError("Binance does not support demo environment.", "UNSUPPORTED_OPERATION");
-      }
-      const customBase = envBindings?.BINANCE_BASE_URL as string;
-      return (customBase && customBase.trim() !== "") ? customBase.replace(/\/$/, "") : "https://api.binance.com";
+    if (env === "demo") {
+      return "https://api-demo.bybit.com";
     }
-
-    if (exchange === "bybit") {
-      if (env === "demo") return "https://api-demo.bybit.com";
-      if (env === "testnet") {
-        const customTestnet = envBindings?.BYBIT_TESTNET_URL as string;
-        return (customTestnet || "https://api-testnet.bybit.com").replace(/\/$/, "");
-      }
-      return "https://api.bybit.com";
-    }
-
-    if (exchange === "kucoin") {
-      if (env === "demo") {
-        throw new UnifiedError("KuCoin does not support demo environment.", "UNSUPPORTED_OPERATION");
-      }
-      if (product === "futures") {
-        return "https://api-futures.kucoin.com";
-      }
-      return "https://api.kucoin.com";
-    }
-
-    throw new UnifiedError(`Unsupported exchange: ${context.exchange}`, "INVALID_INPUT_PARAMETERS");
+    return "https://api.bybit.com";
   }
 
   /**
-   * Adapter Compatibility Helper:
-   * Returns fallback URLs array for resilient connection handling across Cloudflare Worker edge datacenters.
+   * Adapter Compatibility Helper: Returns primary REST URL array.
    */
   public static getRestUrls(context: RoutingContext, envBindings?: Record<string, unknown>): string[] {
-    const primary = this.getRestUrl(context, envBindings);
-    const exchange = (context.exchange || "").toLowerCase().trim();
-    const env = this.getCanonicalEnvironment(context.environment);
-
-    if (exchange === "binance" && env === "mainnet") {
-      return [
-        primary,
-        "https://api1.binance.com",
-        "https://api2.binance.com",
-        "https://api3.binance.com",
-        "https://api4.binance.com",
-        "https://api.binance.info",
-      ];
-    }
-    return [primary];
+    return [this.getRestUrl(context, envBindings)];
   }
 
   /**
@@ -105,18 +53,9 @@ export class ExchangeRoutingResolver {
    */
   public static getBybitWebSocketUrl(envInput: string, purpose: BybitWsPurpose): string {
     const env = this.getCanonicalEnvironment(envInput);
-    const domain = env === "testnet" ? "stream-testnet.bybit.com" : env === "demo" ? "stream-demo.bybit.com" : "stream.bybit.com";
+    const domain = env === "demo" ? "stream-demo.bybit.com" : "stream.bybit.com";
     const path = (purpose === "private" || purpose === "trade") ? purpose : `public/${purpose}`;
     return `wss://${domain}/v5/${path}`;
   }
-
-
-  /**
-   * Binance WebSocket URL Resolver.
-   */
-  public static getBinanceWebSocketUrl(envInput: string, listenKey?: string): string {
-    const env = this.getCanonicalEnvironment(envInput);
-    const baseUrl = env === "testnet" ? "wss://testnet.binance.vision/ws" : "wss://stream.binance.com:9443/ws";
-    return listenKey ? `${baseUrl}/${listenKey}` : baseUrl;
-  }
 }
+

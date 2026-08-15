@@ -87,8 +87,8 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
   },
   SPOT_TRADING_NOT_ENABLED: {
     code: "SPOT_TRADING_NOT_ENABLED",
-    friendlyMessage: "Spot trading is not enabled on this API key.",
-    hint: "Go to your exchange API settings and check the 'Enable Spot Trading' permission.",
+    friendlyMessage: "Linear perpetual trading is not enabled on this API key.",
+    hint: "Go to your exchange API settings and enable 'Orders/Positions' permissions for Bybit Linear perpetual trading.",
   },
   INSUFFICIENT_BALANCE: {
     code: "INSUFFICIENT_BALANCE",
@@ -98,7 +98,7 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
   PERMISSION_DENIED: {
     code: "PERMISSION_DENIED",
     friendlyMessage: "Access denied. Your API key does not have the necessary permissions.",
-    hint: "Ensure the key has 'Read' and 'Trade' (Spot/Contract) permissions enabled.",
+    hint: "Ensure the key has 'Read' and 'Orders/Positions' (Bybit Linear / USDT Perpetual) permissions enabled.",
   },
   INVALID_SIGNATURE: {
     code: "INVALID_SIGNATURE",
@@ -173,7 +173,7 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
   INSUFFICIENT_PERMISSIONS: {
     code: "INSUFFICIENT_PERMISSIONS",
     friendlyMessage: "Your API key doesn't have the permissions Crypto Pulse needs.",
-    hint: "Enable 'Read' and 'Trade' (spot) permissions, then reconnect. We never require withdrawal access.",
+    hint: "Enable 'Read' and 'Orders/Positions' (Bybit Linear / USDT Perpetual) permissions, then reconnect. We never require withdrawal access.",
   },
   INVALID_API_VERSION: {
     code: "INVALID_API_VERSION",

@@ -22,7 +22,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import com.cryptopulse.app.domain.models.AnalysisSnapshot
+import com.cryptopulse.app.domain.models.TradeSetupConfig
 import com.cryptopulse.app.ui.components.CoinInfoCard
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.GlowCard
@@ -36,9 +38,11 @@ import com.cryptopulse.app.ui.components.GradientButton
 fun TechnicalAnalysisScreen(
     candidate: MarketCandidate,
     analysisState: AnalysisSnapshot?,
+    tradeSetupConfig: TradeSetupConfig? = null,
     onBack: () -> Unit,
     onExecuteMockTrade: (Map<String, Any>) -> Unit
 ) {
+    val context = LocalContext.current
     val bgGradient = remember { Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020))) }
 
     Box(
@@ -59,20 +63,29 @@ fun TechnicalAnalysisScreen(
                     GradientButton(
                         text = "EXECUTE MOCK TRADE",
                         onClick = {
-                            val currentPrice = if (candidate.currentMarketPrice > 0.0) candidate.currentMarketPrice else 50000.0
-                            val mockAlert = mapOf<String, Any>(
-                                "id" to "mock-alert-${System.currentTimeMillis()}",
-                                "symbol" to candidate.symbol,
-                                "side" to "BUY",
-                                "entryPrice" to currentPrice,
-                                "stopLoss" to (currentPrice * 0.985),
-                                "takeProfit" to (currentPrice * 1.03),
-                                "signalPrice" to currentPrice,
-                                "targetEntryPrice" to currentPrice,
-                                "positionSize" to 500.0,
-                                "estimatedPnl" to (500.0 * 0.03)
-                            )
-                            onExecuteMockTrade(mockAlert)
+                            val configuredUsdt = tradeSetupConfig?.tradeValueUsdt
+                            if (configuredUsdt != null && configuredUsdt > 0.0) {
+                                val currentPrice = if (candidate.currentMarketPrice > 0.0) candidate.currentMarketPrice else 50000.0
+                                val mockAlert = mapOf<String, Any>(
+                                    "id" to "mock-alert-${System.currentTimeMillis()}",
+                                    "symbol" to candidate.symbol,
+                                    "side" to "BUY",
+                                    "entryPrice" to currentPrice,
+                                    "stopLoss" to (currentPrice * 0.985),
+                                    "takeProfit" to (currentPrice * 1.03),
+                                    "signalPrice" to currentPrice,
+                                    "targetEntryPrice" to currentPrice,
+                                    "positionSize" to configuredUsdt,
+                                    "estimatedPnl" to (configuredUsdt * 0.03)
+                                )
+                                onExecuteMockTrade(mockAlert)
+                            } else {
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "No active Trade Setup found. Please configure trade amount in Trade Setup first.",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            }
                         },
                         enabled = true,
                         leadingIcon = Icons.Default.Bolt,

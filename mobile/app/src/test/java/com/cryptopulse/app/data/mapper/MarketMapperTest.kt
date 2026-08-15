@@ -22,7 +22,6 @@ class MarketMapperTest {
             lowPrice24h = 0.1697,
             score = 133.77,
             minNotional = 5.0,
-            recommendedTimeframe = "1h",
             tradeSide = "BUY"
         )
 
@@ -40,7 +39,6 @@ class MarketMapperTest {
         assertEquals(0.1697, domain.lowPrice24h, 0.0001)
         assertEquals(133.77, domain.score, 0.01)
         assertEquals(5.0, domain.minNotional, 0.01)
-        assertEquals("1h", domain.recommendedTimeframe)
         assertEquals("BUY", domain.tradeSide)
     }
 
@@ -60,7 +58,6 @@ class MarketMapperTest {
         assertEquals(0.0, domain.lowPrice24h, 0.0)
         assertEquals(0.0, domain.score, 0.0)
         assertEquals(0.0, domain.minNotional, 0.0)
-        assertEquals("", domain.recommendedTimeframe)
-        assertEquals("", domain.tradeSide)
+        assertEquals("NEUTRAL", domain.tradeSide)
     }
 }

@@ -550,8 +550,7 @@ export class TradingBot {
             secret,
             password,
             region: resolveCanonicalRoutingRegion(user.exchange_region),
-            egressProxyUrl: this.env.EGRESS_PROXY_URL,
-            egressProxySecret: this.env.EGRESS_PROXY_SECRET,
+            ...this.resolveEgressConfig(user.exchange_name),
           });
 
           const provider = new AdapterCandleProvider(adapter);
@@ -726,8 +725,7 @@ export class TradingBot {
               secret: decryptedSecret,
               password: decryptedPassphrase,
               region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
-              egressProxyUrl: this.env.EGRESS_PROXY_URL,
-              egressProxySecret: this.env.EGRESS_PROXY_SECRET,
+              ...this.resolveEgressConfig(userKeys.exchange_name),
             });
 
             const coinId = (await this.state.storage.get('coinId')) as string;
@@ -870,8 +868,7 @@ export class TradingBot {
                    secret: decryptedSecret,
                    password: decryptedPassphrase,
                    region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
-                   egressProxyUrl: this.env.EGRESS_PROXY_URL,
-                   egressProxySecret: this.env.EGRESS_PROXY_SECRET,
+                   ...this.resolveEgressConfig(executionSnapshot.exchangeName),
                 });
 
 
@@ -884,6 +881,8 @@ export class TradingBot {
                    params: {}
                 };
                 if (executionSnapshot.limitPrice) req.price = new BigNumber(executionSnapshot.limitPrice);
+                if (executionSnapshot.takeProfit) req.takeProfit = executionSnapshot.takeProfit;
+                if (executionSnapshot.stopLoss) req.stopLoss = executionSnapshot.stopLoss;
 
                 console.log(`[DIAGNOSTIC] [STAGE: ORDER_REQUEST_BUILT] payload=${JSON.stringify({ symbol: req.symbol, side: req.side, type: req.type, amount: req.amount?.toString(), price: req.price?.toString(), clientOrderId: req.clientOrderId })}`);
 
@@ -1124,7 +1123,7 @@ export class TradingBot {
         const user = userId
           ? await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>()
           : null;
-        const adapter = user?.exchange_name ? await ExchangeManager.getProvider(user.exchange_name, { environment: normalizeEnvironment(user.exchange_environment), region: resolveCanonicalRoutingRegion(user.exchange_region) }) : null;
+        const adapter = user?.exchange_name ? await ExchangeManager.getProvider(user.exchange_name, { environment: normalizeEnvironment(user.exchange_environment), region: resolveCanonicalRoutingRegion(user.exchange_region), ...this.resolveEgressConfig(user.exchange_name) }) : null;
 
 
         const ticker = adapter ? await adapter.fetchTicker(coinId).catch(() => null) : null;
@@ -1182,7 +1181,7 @@ export class TradingBot {
           if (userId) {
             const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
             if (user?.exchange_name) {
-              const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment), region: resolveCanonicalRoutingRegion(user.exchange_region) });
+              const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment), region: resolveCanonicalRoutingRegion(user.exchange_region), ...this.resolveEgressConfig(user.exchange_name) });
 
               if ((adapter as any).cacheMetrics) {
                 adapterMetrics = { ... (adapter as any).cacheMetrics };
@@ -1321,6 +1320,7 @@ export class TradingBot {
                secret: decryptedSecret,
                password: decryptedPassphrase,
                region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
+               ...this.resolveEgressConfig(userKeys.exchange_name),
              });
              
              const reconciliationEngine = new ReconciliationEngine(this.state.storage, this.env, userId, adapter, userKeys);
@@ -1371,6 +1371,7 @@ export class TradingBot {
             secret,
             password,
             region: resolveCanonicalRoutingRegion(user.exchange_region),
+            ...this.resolveEgressConfig(user.exchange_name),
           });
 
             const provider = new AdapterCandleProvider(adapter);
@@ -1554,7 +1555,7 @@ export class TradingBot {
       if (!userKeys?.exchange_name || !hasApiKey || !userKeys?.exchange_api_secret_encrypted) return;
 
 
-      const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, { environment: normalizeEnvironment(userKeys.exchange_environment), region: resolveCanonicalRoutingRegion(userKeys.exchange_region) });
+      const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, { environment: normalizeEnvironment(userKeys.exchange_environment), region: resolveCanonicalRoutingRegion(userKeys.exchange_region), ...this.resolveEgressConfig(userKeys.exchange_name) });
 
       
       for (const position of results as any[]) {
@@ -1616,5 +1617,9 @@ export class TradingBot {
 
   private appendLog(logs: AnalysisLog[], message: string, level: AnalysisLog['level']): AnalysisLog[] {
     return logs.concat([{ timestamp: new Date().toISOString(), level, message }]);
+  }
+
+  private resolveEgressConfig(_exchangeName?: string | null) {
+    return {};
   }
 }

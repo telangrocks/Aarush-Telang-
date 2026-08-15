@@ -36,7 +36,12 @@ class ExchangeRepositoryImpl @Inject constructor(
     override suspend fun getConnectionStatus(): NetworkResult<ExchangeStatus> = withContext(dispatcherProvider.io) {
         when (val result = exchangeRemoteDataSource.getConnectionStatus()) {
             is NetworkResult.Success -> {
-                val state = if (result.data.isConnected) ExchangeStatus(isConnected = true, exchangeName = null, environment = null, region = null) else ExchangeStatus(isConnected = false, exchangeName = null, environment = null, region = null)
+                val state = ExchangeStatus(
+                    isConnected = result.data.isConnected,
+                    exchangeName = result.data.exchangeName,
+                    environment = result.data.environment,
+                    region = result.data.region
+                )
                 NetworkResult.Success(state)
             }
             is NetworkResult.Error -> result

@@ -12,9 +12,9 @@ account_id = "0ea8292ec77cc8fabb1bdc1b73127a19"
 # Skip Wrangler telemetry network calls in CI.
 send_metrics = false
 
-# Enable Smart Placement to optimize backend execution location near upstream services/exchanges
+# Explicit Frankfurt placement to ensure Worker executes in EU (bypasses Bybit CloudFront US geo-block)
 [placement]
-mode = "smart"
+region = "aws:eu-central-1"
 
 # Workers AI binding — used to call Moonshot AI "Kimi K3" (moonshotai/kimi-k3)
 # via env.AI.run(...). Workers AI is enabled on all Cloudflare plans by default.
@@ -41,8 +41,6 @@ new_sqlite_classes = ["TradingBot"]
 [triggers]
 crons = []
 
-# Plain-text environment variables (R1, R7)
+# Plain-text environment variables
 [vars]
 ENVIRONMENT = "production"
-BINANCE_BASE_URL = ""
-BINANCE_TESTNET_URL = "https://testnet.binance.vision"

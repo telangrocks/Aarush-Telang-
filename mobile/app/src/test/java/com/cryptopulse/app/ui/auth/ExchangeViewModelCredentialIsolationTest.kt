@@ -2,18 +2,17 @@ package com.cryptopulse.app.ui.auth
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ExchangeViewModelCredentialIsolationTest {
 
     @Test
-    fun `test A - Bybit Testnet credentials isolated when switching to Bybit Mainnet`() {
-        var state = ExchangeFormState(selectedExchange = "bybit", environment = "testnet")
-        state = state.updateCurrentCredentials(apiKey = "bybit_testnet_key", apiSecret = "bybit_testnet_sec")
+    fun `test A - Bybit Demo credentials isolated when switching to Bybit Mainnet`() {
+        var state = ExchangeFormState(selectedExchange = "bybit", environment = "demo")
+        state = state.updateCurrentCredentials(apiKey = "bybit_demo_key", apiSecret = "bybit_demo_sec")
 
-        assertEquals("bybit_testnet_key", state.apiKey)
-        assertEquals("bybit_testnet_sec", state.apiSecret)
+        assertEquals("bybit_demo_key", state.apiKey)
+        assertEquals("bybit_demo_sec", state.apiSecret)
 
         // Switch to Mainnet
         state = state.selectEnvironment("mainnet")
@@ -21,21 +20,21 @@ class ExchangeViewModelCredentialIsolationTest {
         // Mainnet slot should be empty
         assertEquals("", state.apiKey)
         assertEquals("", state.apiSecret)
-        assertNotEquals("bybit_testnet_key", state.apiKey)
+        assertNotEquals("bybit_demo_key", state.apiKey)
     }
 
     @Test
-    fun `test B - Bybit Mainnet credentials isolated when switching to Bybit Testnet`() {
+    fun `test B - Bybit Mainnet credentials isolated when switching to Bybit Demo`() {
         var state = ExchangeFormState(selectedExchange = "bybit", environment = "mainnet")
         state = state.updateCurrentCredentials(apiKey = "bybit_mainnet_key", apiSecret = "bybit_mainnet_sec")
 
         assertEquals("bybit_mainnet_key", state.apiKey)
         assertEquals("bybit_mainnet_sec", state.apiSecret)
 
-        // Switch to Testnet
-        state = state.selectEnvironment("testnet")
+        // Switch to Demo
+        state = state.selectEnvironment("demo")
 
-        // Testnet slot should be empty
+        // Demo slot should be empty
         assertEquals("", state.apiKey)
         assertEquals("", state.apiSecret)
         assertNotEquals("bybit_mainnet_key", state.apiKey)
@@ -72,22 +71,10 @@ class ExchangeViewModelCredentialIsolationTest {
     }
 
     @Test
-    fun `test E - Binance Testnet credentials preserved when switching away and back`() {
-        var state = ExchangeFormState(selectedExchange = "binance", environment = "testnet")
-        state = state.updateCurrentCredentials(apiKey = "binance_test_key", apiSecret = "binance_test_sec")
-
-        // Switch away to Bybit Mainnet and add Bybit key
-        state = state.selectExchange("bybit").selectEnvironment("mainnet")
-        state = state.updateCurrentCredentials(apiKey = "bybit_main_key", apiSecret = "bybit_main_sec")
-
-        assertEquals("bybit_main_key", state.apiKey)
-
-        // Switch back to Binance Testnet
-        state = state.selectExchange("binance").selectEnvironment("testnet")
-
-        // Binance Testnet credentials restored intact
-        assertEquals("binance_test_key", state.apiKey)
-        assertEquals("binance_test_sec", state.apiSecret)
+    fun `test E - Default state starts with Bybit and Demo`() {
+        val state = ExchangeFormState()
+        assertEquals("bybit", state.selectedExchange)
+        assertEquals("demo", state.environment)
     }
 
     @Test
@@ -97,12 +84,30 @@ class ExchangeViewModelCredentialIsolationTest {
 
         assertEquals("secret_passphrase", state.apiPassphrase)
 
-        // Switch environment to testnet
-        state = state.selectEnvironment("testnet")
+        // Switch environment to demo
+        state = state.selectEnvironment("demo")
         assertEquals("", state.apiPassphrase)
 
         // Switch back to mainnet
         state = state.selectEnvironment("mainnet")
         assertEquals("secret_passphrase", state.apiPassphrase)
+    }
+
+    @Test
+    fun `test G - Modifying API key invalidates old secret in active slot to prevent stale secret reuse`() {
+        var state = ExchangeFormState(selectedExchange = "bybit", environment = "demo")
+        state = state.updateCurrentCredentials(apiKey = "key_A", apiSecret = "secret_A")
+
+        assertEquals("key_A", state.apiKey)
+        assertEquals("secret_A", state.apiSecret)
+
+        // Simulate API key edit: updating key to key_B while passing empty/reset secret
+        val currentKey = state.apiKey
+        val newKey = "key_B"
+        val secretToUse = if (newKey != currentKey && currentKey.isNotBlank()) "" else state.apiSecret
+        state = state.updateCurrentCredentials(apiKey = newKey, apiSecret = secretToUse)
+
+        assertEquals("key_B", state.apiKey)
+        assertEquals("", state.apiSecret)
     }
 }

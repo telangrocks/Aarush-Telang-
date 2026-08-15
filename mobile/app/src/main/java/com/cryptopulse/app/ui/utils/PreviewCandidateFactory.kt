@@ -32,15 +32,14 @@ object PreviewCandidateFactory {
             highPrice24h = highPrice,
             lowPrice24h = lowPrice,
             minNotional = minNotional,
-            recommendedTimeframe = timeframe,
             tradeSide = side,
+            formattedPrice = "",
             coinColor = Color(0xFF00B4FF)
         )
     }
 
     fun createSampleCandidateList(): List<MarketCandidate> {
         return listOf(
-            createSampleCandidate(rank = 1, symbol = "ADA", pairName = "ADA/USDT", price = 0.1863, priceChange = 8.377, score = 133.77, side = "BUY", timeframe = "1h"),
             createSampleCandidate(rank = 2, symbol = "ETH", pairName = "ETH/USDT", price = 3450.25, priceChange = 3.12, score = 112.50, side = "BUY", timeframe = "1h"),
             createSampleCandidate(rank = 3, symbol = "SOL", pairName = "SOL/USDT", price = 145.80, priceChange = -1.85, score = 98.40, side = "SELL", timeframe = "15m"),
             createSampleCandidate(rank = 4, symbol = "BTC", pairName = "BTC/USDT", price = 67800.00, priceChange = 1.45, score = 95.10, side = "BUY", timeframe = "4h")

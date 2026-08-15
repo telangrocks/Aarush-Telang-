@@ -29,8 +29,8 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PortfolioScreen(
-    onBack: () -> Unit,
-    viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
+    onBack: () -> Unit = {},
+    viewModel: ExchangeViewModel = hiltViewModel(),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val balances by viewModel.balances.collectAsState()

@@ -54,6 +54,12 @@ class ExchangeConnectionManager(private val context: Context) {
         val isConnected = prefs?.get(IS_CONNECTED) ?: false
         val name = prefs?.get(EXCHANGE_NAME)
         val env = prefs?.get(EXCHANGE_ENVIRONMENT)
-        return Triple(isConnected, name, env)
+
+        // Logical invalidation: Require reconnect if legacy exchange (Binance/KuCoin) or Testnet
+        if (isConnected && (!"bybit".equals(name, ignoreCase = true) || "testnet".equals(env, ignoreCase = true))) {
+            return Triple(false, null, null)
+        }
+
+        return Triple(isConnected, name ?: "bybit", env ?: "demo")
     }
 }

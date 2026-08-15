@@ -49,7 +49,7 @@ import android.util.Log
 @Composable
 fun ConnectExchangeScreen(
     navController: NavController,
-    viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
+    viewModel: ExchangeViewModel = hiltViewModel(),
     exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager = com.cryptopulse.app.data.local.ExchangeConnectionManager(LocalContext.current.applicationContext),
 ) {
     Log.d("VM_CHECK", "[DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=${System.identityHashCode(viewModel)}")
@@ -172,17 +172,14 @@ fun ConnectExchangeScreen(
                     ) {
                         AuthFieldLabel("EXCHANGE")
                         Spacer(Modifier.height(4.dp))
-                        ExchangeDropdown(
-                            selectedExchange = formState.selectedExchange,
-                            onExchangeSelected = viewModel::onExchangeSelected,
-                        )
+                        StaticBybitBadge()
+
 
                         Spacer(Modifier.height(12.dp))
 
                         AuthFieldLabel("ENVIRONMENT")
                         Spacer(Modifier.height(4.dp))
                         EnvironmentToggle(
-                            selectedExchange = formState.selectedExchange,
                             selectedEnvironment = formState.environment,
                             onEnvironmentSelected = viewModel::onEnvironmentSelected,
                         )
@@ -243,40 +240,7 @@ fun ConnectExchangeScreen(
                             )
                         }
 
-                        if (formState.selectedExchange.equals("kucoin", ignoreCase = true)) {
-                            Spacer(Modifier.height(12.dp))
 
-                            AuthFieldLabel("API PASSPHRASE")
-                            Spacer(Modifier.height(4.dp))
-                            var apiPassphraseVisible by remember { mutableStateOf(false) }
-                            DarkTextField(
-                                value = formState.apiPassphrase,
-                                onValueChange = viewModel::onApiPassphraseChanged,
-                                placeholder = "Enter your API Passphrase",
-                                visualTransformation = if (apiPassphraseVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                                isError = formState.apiPassphraseError != null,
-                                testTag = "api_passphrase_input",
-                                trailingIcon = {
-                                    IconButton(onClick = { apiPassphraseVisible = !apiPassphraseVisible }) {
-                                        Icon(
-                                            imageVector = if (apiPassphraseVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                            contentDescription = if (apiPassphraseVisible) "Hide API Passphrase" else "Show API Passphrase",
-                                            tint = TextSecondary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                },
-                            )
-                            if (formState.apiPassphraseError != null) {
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    text = formState.apiPassphraseError!!,
-                                    color = LossRed,
-                                    fontSize = 11.sp,
-                                    modifier = Modifier.padding(start = 4.dp),
-                                )
-                            }
-                        }
                     }
                 }
 
@@ -304,78 +268,46 @@ fun ConnectExchangeScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ExchangeDropdown(
-    selectedExchange: String,
-    onExchangeSelected: (String) -> Unit,
-) {
-    val exchanges = listOf(
-        "binance" to "Binance",
-        "bybit" to "Bybit",
-        "kucoin" to "KuCoin",
-    )
-    var expanded by remember { mutableStateOf(false) }
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = !expanded },
+private fun StaticBybitBadge() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(NavyCard, RoundedCornerShape(10.dp))
+            .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        OutlinedTextField(
-            value = exchanges.find { it.first == selectedExchange }?.second ?: selectedExchange,
-            onValueChange = {},
-            readOnly = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .menuAnchor()
-                .testTag("exchange_dropdown"),
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = CyanPrimary,
-                unfocusedBorderColor = NavyBorder,
-                cursorColor = CyanPrimary,
-                focusedTextColor = TextPrimary,
-                unfocusedTextColor = TextPrimary,
-                focusedContainerColor = NavyCard,
-                unfocusedContainerColor = NavyCard,
-            ),
-            shape = RoundedCornerShape(10.dp),
+        Text(
+            text = "Bybit",
+            color = TextPrimary,
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
         )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.background(NavyCard),
-        ) {
-            exchanges.forEach { (value, label) ->
-                DropdownMenuItem(
-                    text = { Text(text = label, color = TextPrimary) },
-                    onClick = {
-                        onExchangeSelected(value)
-                        expanded = false
-                    },
-                )
-            }
-        }
+        Text(
+            text = "Supported Exchange",
+            color = CyanPrimary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 
 @Composable
 private fun EnvironmentToggle(
-    selectedExchange: String,
     selectedEnvironment: String,
     onEnvironmentSelected: (String) -> Unit,
 ) {
-    val options = if (selectedExchange.equals("bybit", ignoreCase = true)) {
-        listOf(
-            "testnet" to "Testnet",
-            "demo" to "Demo",
-            "mainnet" to "Mainnet",
-        )
-    } else {
-        listOf(
-            "testnet" to "Testnet",
-            "mainnet" to "Mainnet",
-        )
+    val options = listOf(
+        "demo" to "Demo",
+        "mainnet" to "Real",
+    )
+
+    LaunchedEffect(selectedEnvironment) {
+        if (options.none { it.first.equals(selectedEnvironment, ignoreCase = true) }) {
+            onEnvironmentSelected("demo")
+        }
     }
 
     Row(

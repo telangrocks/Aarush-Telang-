@@ -546,7 +546,7 @@ describe("App Endpoints", () => {
     });
 
     it("POST /api/exchange/connect should store encrypted keys", async () => {
-      const body = { exchangeName: "binance", apiKey: "test-api-key", apiSecret: "test-api-secret", environment: "testnet" };
+      const body = { exchangeName: "bybit", apiKey: "test-api-key", apiSecret: "test-api-secret", environment: "demo" };
       const req = new Request("http://localhost/api/exchange/connect", {
         method: "POST",
         headers: {
@@ -564,8 +564,8 @@ describe("App Endpoints", () => {
         "UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = NULL, exchange_api_key_iv = ?, exchange_api_key_encrypted = ?, exchange_api_key_salt = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_secret_salt = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ?, exchange_api_passphrase_salt = ? WHERE id = ?",
       );
       expect(mockEnv.DB?.prepare("stmt").bind).toHaveBeenCalledWith(
-        "binance",
-        "testnet",
+        "bybit",
+        "demo",
         "india",
         expect.any(String),
         expect.any(String),

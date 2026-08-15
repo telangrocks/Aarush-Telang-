@@ -52,7 +52,7 @@ fun SplashScreen(
     exchangeRepository: ExchangeRepository,
     botRepository: BotRepository,
 ) {
-    val exchangeViewModel = hiltViewModel<ExchangeViewModel>(LocalContext.current as androidx.fragment.app.FragmentActivity)
+    val exchangeViewModel = hiltViewModel<ExchangeViewModel>()
 
     // ── Animation state ───────────────────────────────────────────────────
     var visible by remember { mutableStateOf(false) }
@@ -114,7 +114,7 @@ fun SplashScreen(
                     if (!token.isNullOrEmpty()) {
                         try {
                             val result = exchangeRepository.getConnectionStatus()
-                            if (result is com.cryptopulse.app.core.network.NetworkResult.Success) { val status = result.data; if (status.isConnected) { exchangeConnectionManager.saveConnection(status.exchangeName ?: "binance", status.environment ?: "testnet") } }
+                            if (result is com.cryptopulse.app.core.network.NetworkResult.Success) { val status = result.data; if (status.isConnected) { exchangeConnectionManager.saveConnection(status.exchangeName ?: "bybit", status.environment ?: "demo") } }
                         } catch (e: Exception) {
                             // Silently fail if not connected
                         }

@@ -192,6 +192,16 @@ class TradeSetupViewModel @Inject constructor(
         }
     }
 
+    fun updateTradeValueUsdt(value: String) {
+        _uiState.update { currentState ->
+            val num = value.toDoubleOrNull()
+            val err = if (value.isBlank()) "Trade amount is required."
+            else if (num == null || num <= 0.0) "Trade amount must be a positive number."
+            else null
+            currentState.copy(tradeValueUsdt = value, tradeValueUsdtError = err)
+        }
+    }
+
     private fun validateEntryPriceOnly(
         entryPriceStr: String,
         rules: SymbolTradingRules
@@ -272,6 +282,17 @@ class TradeSetupViewModel @Inject constructor(
             finalErrors["entryPrice"] = entryPriceError
         }
 
+        val tradeValueNum = currentState.tradeValueUsdt.toDoubleOrNull()
+        val tradeValueError = if (currentState.tradeValueUsdt.isBlank()) "Trade amount is required."
+        else if (tradeValueNum == null || tradeValueNum <= 0.0) "Trade amount must be a positive number."
+        else null
+
+        newErrors["tradeValueUsdt"] = tradeValueError
+        if (tradeValueError != null) {
+            hasErrors = true
+            finalErrors["tradeValueUsdt"] = tradeValueError
+        }
+
         currentState.fields.forEach { field ->
             val value = currentState.formValues[field.key] ?: field.defaultValue
             val error = validateField(field.key, value, currentState.fields)
@@ -283,7 +304,7 @@ class TradeSetupViewModel @Inject constructor(
         }
         
         if (hasErrors) {
-            _uiState.update { it.copy(formErrors = newErrors, entryPriceError = entryPriceError) }
+            _uiState.update { it.copy(formErrors = newErrors, entryPriceError = entryPriceError, tradeValueUsdtError = tradeValueError) }
             return TradeSetupConfigResult.ValidationFailed(finalErrors)
         }
 
@@ -291,7 +312,7 @@ class TradeSetupViewModel @Inject constructor(
             strategyId = sessionRepository.selectedStrategyId.value!!,
             symbol = symbol,
             entryPrice = currentState.entryPrice.toDouble(),
-            tradeValueUsdt = 0.0, // Legacy non-null property in TradeSetupConfig data model; mapped to positionSize = null prior to /bot/activate
+            tradeValueUsdt = tradeValueNum!!,
             parameters = currentState.formValues
         )
         sessionRepository.setTradeSetupConfig(config)

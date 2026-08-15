@@ -328,6 +328,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const volume = new BigNumber(item.volume24h || 0);
     const quoteVolume = new BigNumber(item.turnover24h || volume.multipliedBy(px));
 
+    const percentageRaw = item.price24hPcnt !== undefined ? parseFloat(item.price24hPcnt) : undefined;
+    const percentage = percentageRaw !== undefined && !isNaN(percentageRaw) ? percentageRaw * 100 : undefined;
+
     this.logger.info('[BybitAdapter] fetchTicker success', { symbol: canonicalSymbol, price: px.toString(), latencyMs: Date.now() - startTime });
 
     return {
@@ -340,7 +343,59 @@ export class BybitAdapter extends BaseExchangeAdapter {
       low,
       volume,
       quoteVolume,
+      percentage,
+      info: item,
     };
+  }
+
+  public async fetchTickers(symbols?: string[]): Promise<Ticker[]> {
+    const startTime = Date.now();
+    this.logger.info('[BybitAdapter] Outbound fetchTickers (bulk)', { symbolCount: symbols?.length || 0 });
+
+    let result: any;
+    try {
+      result = await this.makeRequest('GET', '/v5/market/tickers', { category: 'linear' }, false);
+    } catch (_) {
+      result = await this.makeRequest('GET', '/v5/market/tickers', { category: 'spot' }, false);
+    }
+
+    const list = result?.list || [];
+    const tickers: Ticker[] = [];
+
+    const targetRawSymbols = symbols ? new Set(symbols.map(s => this.normalizeSymbol(s).canonicalSymbol.replace('/', '').toUpperCase())) : null;
+
+    for (const item of list) {
+      if (targetRawSymbols && !targetRawSymbols.has(item.symbol)) continue;
+
+      const canonicalSymbol = this.normalizeSymbol(item.symbol).canonicalSymbol;
+      const px = new BigNumber(item.lastPrice || 0);
+      const bid = new BigNumber(item.bid1Price || item.lastPrice || 0);
+      const ask = new BigNumber(item.ask1Price || item.lastPrice || 0);
+      const high = new BigNumber(item.highPrice24h || item.lastPrice || 0);
+      const low = new BigNumber(item.lowPrice24h || item.lastPrice || 0);
+      const volume = new BigNumber(item.volume24h || 0);
+      const quoteVolume = new BigNumber(item.turnover24h || volume.multipliedBy(px));
+
+      const percentageRaw = item.price24hPcnt !== undefined ? parseFloat(item.price24hPcnt) : undefined;
+      const percentage = percentageRaw !== undefined && !isNaN(percentageRaw) ? percentageRaw * 100 : undefined;
+
+      tickers.push({
+        symbol: canonicalSymbol,
+        timestamp: Date.now(),
+        last: px,
+        bid,
+        ask,
+        high,
+        low,
+        volume,
+        quoteVolume,
+        percentage,
+        info: item,
+      });
+    }
+
+    this.logger.info('[BybitAdapter] fetchTickers success', { fetchedCount: tickers.length, latencyMs: Date.now() - startTime });
+    return tickers;
   }
 
   public async fetchKlines(symbol: string, interval: string, limit = 200): Promise<any[]> {
@@ -382,22 +437,53 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchMarkets(): Promise<Market[]> {
-    let result: any;
+    let list: any[] = [];
+    let cursor: string | undefined = undefined;
+    let isSpotFallback = false;
+
     try {
-      result = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'linear' }, false);
+      const firstRes = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'linear', limit: 1000 }, false);
+      list = list.concat(firstRes?.list || []);
+      cursor = firstRes?.nextPageCursor;
+
+      while (cursor) {
+        const res = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'linear', limit: 1000, cursor }, false);
+        const batch = res?.list || [];
+        if (batch.length === 0) break;
+        list = list.concat(batch);
+        cursor = res?.nextPageCursor;
+      }
     } catch (_) {
-      result = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'spot' }, false);
+      isSpotFallback = true;
     }
 
-    const list = result?.list || [];
+    if (isSpotFallback) {
+      const firstRes = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'spot', limit: 1000 }, false);
+      list = list.concat(firstRes?.list || []);
+      cursor = firstRes?.nextPageCursor;
+
+      while (cursor) {
+        const res = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'spot', limit: 1000, cursor }, false);
+        const batch = res?.list || [];
+        if (batch.length === 0) break;
+        list = list.concat(batch);
+        cursor = res?.nextPageCursor;
+      }
+    }
     const markets: Market[] = [];
     for (const item of list) {
       const symbol = `${item.baseCoin}/${item.quoteCoin}`;
-      const priceStep = parseFloat(item.priceFilter?.tickSize || '0.01');
-      const amountStep = parseFloat(item.lotSizeFilter?.qtyStep || '0.001');
-      const minAmount = parseFloat(item.lotSizeFilter?.minOrderQty || '0.001');
-      const minPrice = parseFloat(item.priceFilter?.minPrice || '0.01');
-      const minNotional = parseFloat(item.lotSizeFilter?.minNotionalValue || '5.0');
+      const priceStepStr = item.priceFilter?.tickSize;
+      const amountStepStr = item.lotSizeFilter?.qtyStep || item.lotSizeFilter?.basePrecision;
+      const minAmountStr = item.lotSizeFilter?.minOrderQty;
+      const minPriceStr = item.priceFilter?.minPrice;
+      const minNotionalStr = item.lotSizeFilter?.minNotionalValue || item.lotSizeFilter?.minOrderAmt;
+
+      const priceStep = priceStepStr !== undefined ? parseFloat(priceStepStr) : 0;
+      const amountStep = amountStepStr !== undefined ? parseFloat(amountStepStr) : 0;
+      const minAmount = minAmountStr !== undefined ? parseFloat(minAmountStr) : 0;
+      const minPrice = minPriceStr !== undefined ? parseFloat(minPriceStr) : 0;
+      const minNotional = minNotionalStr !== undefined ? parseFloat(minNotionalStr) : 0;
 
       markets.push({
         id: item.symbol,
@@ -448,7 +534,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const qtyBN = new BigNumber(order.amount);
     const qtyStr = qtyBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
 
-    const category = ((this.config?.environment as string) === 'futures' || order.symbol.includes(':')) ? 'linear' : 'spot';
+    const category = 'linear';
 
     const params: Record<string, any> = {
       category,
@@ -479,18 +565,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
       params.stopLoss = slBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
     }
 
-    let result: any;
-    try {
-      result = await this.makeRequest('POST', '/v5/order/create', params, true);
-    } catch (err: any) {
-      // Fallback to linear category if spot returns invalid category
-      if (err?.message?.includes('category') || err?.message?.includes('10001')) {
-        params.category = 'linear';
-        result = await this.makeRequest('POST', '/v5/order/create', params, true);
-      } else {
-        throw err;
-      }
-    }
+    const result = await this.makeRequest('POST', '/v5/order/create', params, true);
 
     return {
       id: result?.orderId || '',

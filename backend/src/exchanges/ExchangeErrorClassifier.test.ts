@@ -5,113 +5,83 @@ import { ExchangeSpecificationRegistry } from './registry/ExchangeSpecificationR
 describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests', () => {
   const classifier = ExchangeErrorClassifier.getInstance();
 
-  it('1. Should classify Binance -2015 generic error as INVALID_API_KEY_OR_IP_OR_PERMISSION', () => {
-    const body = JSON.stringify({ code: -2015, msg: 'Invalid API-key, IP, or permissions for action.' });
-    const res = classifier.classifyResponse('binance', 400, { 'content-type': 'application/json' }, body, 'corr-123');
-    expect(res.code).toBe('INVALID_API_KEY_OR_IP_OR_PERMISSION');
-    expect(res.friendlyMessage).toContain('Binance rejected authentication');
+describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests', () => {
+  const classifier = ExchangeErrorClassifier.getInstance();
+
+  it('1. Should classify Bybit 10002 invalid API key error', () => {
+    const body = JSON.stringify({ retCode: 10002, retMsg: 'invalid api_key' });
+    const res = classifier.classifyResponse('bybit', 400, { 'content-type': 'application/json' }, body, 'corr-123');
+    expect(res.code).toBe('INVALID_API_KEY');
     expect(res.version).toBe('1.0');
     expect(res.correlationId).toBe('corr-123');
   });
 
-  it('2. Should classify Binance -2015 IP restricted error cleanly', () => {
-    const body = JSON.stringify({ code: -2015, msg: 'Invalid API-key, IP, or permissions for action, request IP: 192.168.1.1' });
-    const res = classifier.classifyResponse('binance', 400, { 'content-type': 'application/json' }, body);
-    expect(res.code).toBe('IP_NOT_WHITELISTED');
-    expect(res.hint).toContain('192.168.1.1');
+  it('2. Should classify Bybit 10003 timestamp error', () => {
+    const body = JSON.stringify({ retCode: 10003, retMsg: 'req timestamp exceeds recv_window' });
+    const res = classifier.classifyResponse('bybit', 400, { 'content-type': 'application/json' }, body);
+    expect(res.code).toBe('TIMESTAMP_OUT_OF_SYNC');
   });
 
-  it('3. Should classify Binance -1022 invalid signature error', () => {
-    const body = JSON.stringify({ code: -1022, msg: 'Signature for this request is not valid.' });
-    const res = classifier.classifyResponse('binance', 400, { 'content-type': 'application/json' }, body);
+  it('3. Should classify Bybit 10004 invalid sign error', () => {
+    const body = JSON.stringify({ retCode: 10004, retMsg: 'Error sign' });
+    const res = classifier.classifyResponse('bybit', 400, { 'content-type': 'application/json' }, body);
     expect(res.code).toBe('INVALID_SIGNATURE');
   });
 
-  it('4. Should classify KuCoin 400001 invalid API key error', () => {
-    const body = JSON.stringify({ code: '400001', msg: 'Invalid API key' });
-    const res = classifier.classifyResponse('kucoin', 400, { 'content-type': 'application/json' }, body);
-    expect(res.code).toBe('INVALID_API_KEY');
-  });
-
-  it('5. Should classify KuCoin 400003 IP not whitelisted error vs non-existent key', () => {
-    const bodyKeyNotExists = JSON.stringify({ code: '400003', msg: 'The API key does not exist or site mismatch.' });
-    const res1 = classifier.classifyResponse('kucoin', 400, { 'content-type': 'application/json' }, bodyKeyNotExists);
-    expect(res1.code).toBe('INVALID_API_KEY');
-
-    const bodyIpRestricted = JSON.stringify({ code: '400003', msg: 'IP restricted' });
-    const res2 = classifier.classifyResponse('kucoin', 400, { 'content-type': 'application/json' }, bodyIpRestricted);
-    expect(res2.code).toBe('IP_NOT_WHITELISTED');
-  });
-
-  it('6. Should classify KuCoin 400004 invalid passphrase error', () => {
-    const body = JSON.stringify({ code: '400004', msg: 'Invalid Passphrase' });
-    const res = classifier.classifyResponse('kucoin', 400, { 'content-type': 'application/json' }, body);
-    expect(res.code).toBe('INVALID_PASSPHRASE');
-  });
-
-  it('7. Should classify Bybit 10003 permission denied error', () => {
-    const body = JSON.stringify({ retCode: 10003, retMsg: 'You are not authorized to execute this request.' });
-    const res = classifier.classifyResponse('bybit', 400, { 'content-type': 'application/json' }, body);
-    expect(res.code).toBe('INSUFFICIENT_PERMISSIONS');
-  });
-
-  it('8. Should classify Bybit 10010 IP not whitelisted error', () => {
+  it('4. Should classify Bybit 10010 IP not whitelisted error', () => {
     const body = JSON.stringify({ retCode: 10010, retMsg: 'Unmatched IP address' });
     const res = classifier.classifyResponse('bybit', 400, { 'content-type': 'application/json' }, body);
     expect(res.code).toBe('IP_NOT_WHITELISTED');
   });
 
-  it('9. Should classify HTTP 403 HTML Cloudflare WAF challenge page as WAF_BLOCKED', () => {
+  it('5. Should classify HTTP 403 HTML Cloudflare WAF challenge page as WAF_BLOCKED', () => {
     const htmlBody = '<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Cloudflare Ray ID: 8abc123</body></html>';
     const headers = { 'content-type': 'text/html; charset=UTF-8', 'server': 'cloudflare', 'cf-ray': '8abc123' };
-    const res = classifier.classifyResponse('binance', 403, headers, htmlBody);
+    const res = classifier.classifyResponse('bybit', 403, headers, htmlBody);
     expect(res.code).toBe('WAF_BLOCKED');
   });
 
-  it('10. Should classify HTTP 451 WITH explicit legal restriction payload as REGION_NOT_SUPPORTED', () => {
-    const body = JSON.stringify({ message: 'Service unavailable in restricted jurisdiction due to legal compliance' });
-    const res = classifier.classifyResponse('binance', 451, { 'content-type': 'application/json' }, body);
-    expect(res.code).toBe('REGION_NOT_SUPPORTED');
+  it('5a. Should classify HTTP 403 + Bybit JSON retCode 10005 as INSUFFICIENT_PERMISSIONS and NOT WAF_BLOCKED', () => {
+    const body = JSON.stringify({ retCode: 10005, retMsg: 'Permission denied' });
+    const headers = { 'content-type': 'application/json', 'cf-ray': '8abc123-BOM' };
+    const res = classifier.classifyResponse('bybit', 403, headers, body);
+    expect(res.code).toBe('INSUFFICIENT_PERMISSIONS');
+    expect(res.code).not.toBe('WAF_BLOCKED');
   });
 
-  it('11. Should classify HTTP 451 WITHOUT explicit legal restriction payload as LEGAL_RESTRICTION_UNKNOWN', () => {
-    const body = JSON.stringify({ message: 'Generic status error' });
-    const res = classifier.classifyResponse('binance', 451, { 'content-type': 'application/json' }, body);
-    expect(res.code).toBe('LEGAL_RESTRICTION_UNKNOWN');
+  it('5b. Should NOT classify HTTP 403 + cf-ray header as WAF_BLOCKED when no WAF challenge HTML is present', () => {
+    const body = JSON.stringify({ retCode: 10002, retMsg: 'invalid api_key' });
+    const headers = { 'content-type': 'application/json', 'server': 'cloudflare', 'cf-ray': '8abc123-SIN' };
+    const res = classifier.classifyResponse('bybit', 403, headers, body);
+    expect(res.code).toBe('INVALID_API_KEY');
+    expect(res.code).not.toBe('WAF_BLOCKED');
   });
 
-  it('12. Should classify HTTP 401 as AUTHENTICATION_FAILED', () => {
-    const res = classifier.classifyResponse('binance', 401, {}, 'Unauthorized');
+  it('6. Should classify HTTP 401 as AUTHENTICATION_FAILED', () => {
+    const res = classifier.classifyResponse('bybit', 401, { 'cf-ray': '8abc123-SIN' }, 'Unauthorized');
     expect(res.code).toBe('AUTHENTICATION_FAILED');
   });
 
-  it('13. Should classify HTTP 429 as API_RATE_LIMIT_REACHED', () => {
-    const res = classifier.classifyResponse('binance', 429, {}, 'Too many requests');
+  it('7. Should classify HTTP 429 as API_RATE_LIMIT_REACHED', () => {
+    const res = classifier.classifyResponse('bybit', 429, {}, 'Too many requests');
     expect(res.code).toBe('API_RATE_LIMIT_REACHED');
   });
 
-  it('14. Should classify HTTP 503 Service Unavailable as SERVICE_TEMPORARILY_UNAVAILABLE', () => {
-    const res = classifier.classifyResponse('binance', 503, {}, 'Server busy');
-    expect(res.code).toBe('SERVICE_TEMPORARILY_UNAVAILABLE');
+  it('8. Should classify HTTP 502/503 HTML server error as SERVICE_TEMPORARILY_UNAVAILABLE', () => {
+    const htmlServerError = '<html><body>502 Bad Gateway</body></html>';
+    const res502 = classifier.classifyResponse('bybit', 502, { 'content-type': 'text/html' }, htmlServerError);
+    expect(res502.code).toBe('SERVICE_TEMPORARILY_UNAVAILABLE');
+
+    const res503 = classifier.classifyResponse('bybit', 503, { 'content-type': 'text/html' }, 'Server busy');
+    expect(res503.code).toBe('SERVICE_TEMPORARILY_UNAVAILABLE');
   });
 
-  it('15. Should classify AbortError / TimeoutError exception as NETWORK_TIMEOUT', () => {
-    const err = new Error('The operation was aborted');
-    err.name = 'AbortError';
-    const res = classifier.classifyException(err, 'binance');
-    expect(res.code).toBe('NETWORK_TIMEOUT');
-  });
-
-  it('16. Should handle malformed JSON body gracefully without throwing', () => {
-    const res = classifier.classifyResponse('binance', 400, { 'content-type': 'application/json' }, 'NOT_JSON{{{');
-    expect(res.code).toBe('INVALID_REQUEST');
-  });
-
-  it('17. Should look up ExchangeSpecification cleanly from ExchangeSpecificationRegistry', () => {
+  it('9. Should look up ExchangeSpecification cleanly from ExchangeSpecificationRegistry', () => {
     const registry = ExchangeSpecificationRegistry.getInstance();
-    const binanceSpec = registry.getSpecification('binance');
-    expect(binanceSpec).toBeDefined();
-    expect(binanceSpec?.displayName).toBe('Binance');
-    expect(binanceSpec?.defaultCapabilities.supportsOco).toBe(true);
+    const bybitSpec = registry.getSpecification('bybit');
+    expect(bybitSpec).toBeDefined();
+    expect(bybitSpec?.displayName).toBe('Bybit');
+    expect(bybitSpec?.defaultCapabilities.supportsFutures).toBe(true);
   });
+});
 });

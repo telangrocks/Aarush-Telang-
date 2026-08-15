@@ -1,5 +1,5 @@
-import { BinanceExchange } from "./src/exchanges/BinanceExchange.ts";
-import { analyzeMarket } from "./src/market-analysis.ts";
+import { BinanceExchange } from "./src/exchanges/BinanceExchange";
+import { analyzeMarket } from "./src/market-analysis";
 
 async function runRealBotLogic() {
     console.log("=== STARTING REAL BOT LOGIC TEST WITH SPOT TESTNET KEYS ===");
@@ -32,7 +32,7 @@ async function runRealBotLogic() {
     
     console.log("\n=== TOP 10 CANDIDATE PAIRS ===");
     topPairs.forEach((pair, index) => {
-        console.log(`${index + 1}. ${pair.symbol} - Trade: ${pair.tradeSide} | Score: ${pair.score.toFixed(2)} | Timeframe: ${pair.recommendedTimeframe} | 24h Vol: $${pair.quoteVolume24h.toFixed(2)} | Price: ${pair.price}`);
+        console.log(`${index + 1}. ${(pair as any).symbol} - Trade: ${pair.tradeSide} | Score: ${pair.score.toFixed(2)} | 24h Vol: $${(pair as any).quoteVolume24h.toFixed(2)} | Price: ${(pair as any).price}`);
     });
 }
 

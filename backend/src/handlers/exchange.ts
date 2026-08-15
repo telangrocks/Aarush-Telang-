@@ -19,6 +19,23 @@ function normalizeEnvironment(value: unknown): ExchangeEnvironment | null {
   return normEnvUtil(value) as ExchangeEnvironment | null;
 }
 
+function resolveEgressConfig(exchangeName: string, env: Env) {
+  const isKucoin = (exchangeName || '').toString().toLowerCase() === 'kucoin';
+  const kucoinEgressUrl = env.KUCOIN_EGRESS_PROXY_URL;
+  if (isKucoin && kucoinEgressUrl && kucoinEgressUrl.trim() !== '') {
+    return {
+      egressProxyUrl: kucoinEgressUrl,
+      egressProxySecret: env.EGRESS_PROXY_SECRET,
+      egressGatewayFetcher: undefined,
+    };
+  }
+  return {
+    egressProxyUrl: env.EGRESS_PROXY_URL,
+    egressProxySecret: env.EGRESS_PROXY_SECRET,
+    egressGatewayFetcher: env.EGRESS_GATEWAY,
+  };
+}
+
 export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
@@ -63,20 +80,20 @@ export async function handleValidateExchange(
       return c.json({
         success: false,
         code: "INVALID_REQUEST" as ExchangeErrorCode,
-        message: "Invalid environment. Supported values: mainnet, testnet, demo.",
-        hint: "Supported environment values are mainnet, testnet, or demo.",
+        message: "Invalid environment. Supported values: demo, mainnet.",
+        hint: "Supported environment values are demo or mainnet.",
         version: "1.0",
         correlationId,
       });
     }
 
-    if (!isEnvironmentSupported(exchangeName, normEnv as CanonicalEnvironment)) {
+    if (exchangeName?.toLowerCase() !== "bybit") {
       c.status(400);
       return c.json({
         success: false,
         code: "UNSUPPORTED_OPERATION" as ExchangeErrorCode,
-        message: `${exchangeName} does not support the '${normEnv}' environment. Supported: ${getSupportedEnvironmentsList(exchangeName)}.`,
-        hint: `Please select a supported environment for ${exchangeName}: ${getSupportedEnvironmentsList(exchangeName)}.`,
+        message: `${exchangeName} is no longer supported. Bybit is the single supported exchange platform.`,
+        hint: "Please select Bybit as your exchange platform.",
         version: "1.0",
         correlationId,
       });
@@ -111,8 +128,7 @@ export async function handleValidateExchange(
         secret: cleanApiSecret,
         password: cleanApiPassphrase,
         region: resolvedRegion,
-        egressProxyUrl: c.env.EGRESS_PROXY_URL,
-        egressProxySecret: c.env.EGRESS_PROXY_SECRET,
+        ...resolveEgressConfig(exchangeName, c.env),
       });
       if (provider && typeof provider.getHost === "function") {
         actualHost = provider.getHost();
@@ -286,8 +302,7 @@ export async function handleConnectExchange(
         secret: cleanApiSecret,
         password: cleanApiPassphrase,
         region: resolvedRegion,
-        egressProxyUrl: c.env.EGRESS_PROXY_URL,
-        egressProxySecret: c.env.EGRESS_PROXY_SECRET,
+        ...resolveEgressConfig(exchangeName, c.env),
       });
       await provider.fetchBalance();
       console.log(`[exchange-auth] connect validation successful for ${exchangeName}`);
@@ -393,6 +408,8 @@ export async function handleGetExchangeStatus(
 
     const isConnected = Boolean(
       user?.exchange_name &&
+      user?.exchange_name.toLowerCase() === "bybit" &&
+      user?.exchange_environment !== "testnet" &&
       user?.exchange_api_key_encrypted &&
       user?.exchange_api_secret_encrypted &&
       user?.exchange_api_secret_iv
@@ -400,8 +417,8 @@ export async function handleGetExchangeStatus(
 
     return c.json({
       isConnected,
-      exchangeName: user?.exchange_name ?? null,
-      environment: user?.exchange_environment ?? null,
+      exchangeName: isConnected ? "bybit" : (user?.exchange_name ?? null),
+      environment: isConnected ? (user?.exchange_environment ?? "demo") : null,
       region: user?.exchange_region ?? null,
     });
   } catch (e: unknown) {
@@ -482,8 +499,7 @@ export async function handleGetExchangeBalances(
       secret: decryptedSecret,
       password: decryptedPassphrase,
       region: resolveCanonicalRoutingRegion(user.exchange_region),
-      egressProxyUrl: c.env.EGRESS_PROXY_URL,
-      egressProxySecret: c.env.EGRESS_PROXY_SECRET,
+      ...resolveEgressConfig(user.exchange_name, c.env),
     });
 
     const balanceRes = await adapter.fetchBalance();
@@ -630,8 +646,7 @@ export async function handleGetPersonalizedMarketCandidates(
         apiKey: cleanKey,
         secret: cleanSecret,
         region: resolveCanonicalRoutingRegion(user.exchange_region),
-        egressProxyUrl: c.env.EGRESS_PROXY_URL,
-        egressProxySecret: c.env.EGRESS_PROXY_SECRET,
+        ...resolveEgressConfig(user.exchange_name, c.env),
       });
 
       console.log(`[DIAGNOSTIC] Stage 5: CCXT client created for provider=${user.exchange_name}`);
@@ -680,55 +695,58 @@ export async function handleGetPersonalizedMarketCandidates(
       ];
     }
 
-    // Execute ticker fetches in controlled concurrent batches (size 3) to prevent Cloudflare Worker socket deadlocks
+    // Execute bulk ticker fetch to prevent O(N) subrequest limits (Phase 6 architecture fix)
     const rawTickers: any[] = [];
-    const batchSize = 3;
-    for (let i = 0; i < markets.length; i += batchSize) {
-      const batch = markets.slice(i, i + batchSize);
-      const batchResults = await Promise.all(
-        batch.map(async (m) => {
-          try {
-            const t = await adapter.fetchTicker(m.symbol);
-            const px = typeof t?.last?.toNumber === 'function' ? t.last.toNumber() : (typeof t?.last === 'number' ? t.last : 0);
-            if (!px || px <= 0 || isNaN(px)) {
-              console.warn(`[DIAGNOSTIC] Stage 7: Invalid or missing spot price for ${m.symbol}, skipping symbol.`);
-              return null;
-            }
-            const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : 0);
-            const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : (vol * px));
-            const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (typeof t?.high === 'number' ? t.high : px);
-            const low = typeof t?.low?.toNumber === 'function' ? t.low.toNumber() : (typeof t?.low === 'number' ? t.low : px);
+    try {
+      const allTickers = await adapter.fetchTickers(markets.map(m => m.symbol));
+      const tickerMap = new Map<string, any>(allTickers.map((t: any) => [t.symbol, t]));
 
-            let chg = 0;
-            if (typeof (t as any)?.percentage === 'number' && !isNaN((t as any).percentage)) {
-              chg = (t as any).percentage;
-            } else if (typeof (t as any)?.info?.priceChangePercent !== 'undefined') {
-              chg = parseFloat((t as any).info.priceChangePercent) || 0;
-            } else if (typeof (t as any)?.info?.changeRate !== 'undefined') {
-              chg = (parseFloat((t as any).info.changeRate) || 0) * 100;
-            } else if (typeof (t as any)?.open === 'number' || typeof (t as any)?.open?.toNumber === 'function') {
-              const open = typeof (t as any)?.open?.toNumber === 'function' ? (t as any).open.toNumber() : (t as any).open;
-              if (open > 0) chg = ((px - open) / open) * 100;
-            }
+      for (const m of markets) {
+        const t = tickerMap.get(m.symbol);
+        if (!t) {
+          console.warn(`[DIAGNOSTIC] Stage 7: Ticker missing in bulk response for ${m.symbol}, skipping.`);
+          continue;
+        }
 
-            return {
-              symbol: m.base || (m.symbol ? m.symbol.split('/')[0] : "BTC"),
-              pairName: m.symbol || "BTC/USDT",
-              price: px,
-              volume24h: vol,
-              quoteVolume24h: qVol,
-              highPrice24h: high,
-              lowPrice24h: low,
-              priceChangePercent24h: chg,
-              minNotional: typeof m?.limits?.cost?.min?.toNumber === 'function' ? m.limits.cost.min.toNumber() : 5.0,
-            };
-          } catch (tErr: any) {
-            console.warn(`[DIAGNOSTIC] Stage 7: fetchTicker failed for ${m?.symbol}: ${tErr?.message}. Skipping symbol to prevent data fabrication.`);
-            return null;
-          }
-        })
-      );
-      rawTickers.push(...batchResults);
+        const px = typeof t?.last?.toNumber === 'function' ? t.last.toNumber() : (typeof t?.last === 'number' ? t.last : 0);
+        if (!px || px <= 0 || isNaN(px)) {
+          console.warn(`[DIAGNOSTIC] Stage 7: Invalid or missing spot price for ${m.symbol}, skipping symbol.`);
+          continue;
+        }
+        const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : 0);
+        const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : (vol * px));
+        const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (typeof t?.high === 'number' ? t.high : px);
+        const low = typeof t?.low?.toNumber === 'function' ? t.low.toNumber() : (typeof t?.low === 'number' ? t.low : px);
+
+        let chg = 0;
+        if (typeof (t as any)?.percentage === 'number' && !isNaN((t as any).percentage)) {
+          chg = (t as any).percentage;
+        } else if (typeof (t as any)?.info?.priceChangePercent !== 'undefined') {
+          chg = parseFloat((t as any).info.priceChangePercent) || 0;
+        } else if (typeof (t as any)?.info?.changeRate !== 'undefined') {
+          chg = (parseFloat((t as any).info.changeRate) || 0) * 100;
+        } else if (typeof (t as any)?.open === 'number' || typeof (t as any)?.open?.toNumber === 'function') {
+          const open = typeof (t as any)?.open?.toNumber === 'function' ? (t as any).open.toNumber() : (t as any).open;
+          if (open > 0) chg = ((px - open) / open) * 100;
+        }
+
+        rawTickers.push({
+          symbol: m.base || (m.symbol ? m.symbol.split('/')[0] : "BTC"),
+          pairName: m.symbol || "BTC/USDT",
+          price: px,
+          volume24h: vol,
+          quoteVolume24h: qVol,
+          highPrice24h: high,
+          lowPrice24h: low,
+          priceChangePercent24h: chg,
+          minNotional: typeof m?.limits?.cost?.min?.toNumber === 'function' ? m.limits.cost.min.toNumber() : 0,
+          minOrderQty: typeof m?.limits?.amount?.min?.toNumber === 'function' ? m.limits.amount.min.toNumber() : 0,
+          qtyStep: typeof m?.precision?.amount === 'number' ? m.precision.amount : 0,
+          tickSize: typeof m?.precision?.price === 'number' ? m.precision.price : 0,
+        });
+      }
+    } catch (tErr: any) {
+      console.warn(`[DIAGNOSTIC] Stage 7: bulk fetchTickers failed: ${tErr?.message}. Proceeding with 0 tickers.`);
     }
     const tickers = rawTickers.filter((t): t is NonNullable<typeof t> => t !== null);
     console.log(`[DIAGNOSTIC] Stage 7: fetchTickers completed with ${tickers.length} genuine live tickers`);
@@ -827,6 +845,7 @@ export async function handleGetTicker(
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
       region: resolveCanonicalRoutingRegion(user.exchange_region),
+      ...resolveEgressConfig(user.exchange_name, c.env),
     });
 
     const ticker = await adapter.fetchTicker(symbol);
@@ -889,6 +908,7 @@ export async function handleGetKlines(
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
       region: resolveCanonicalRoutingRegion(user.exchange_region),
+      ...resolveEgressConfig(user.exchange_name, c.env),
     });
 
     const klines = await adapter.fetchKlines(symbol, interval, limit);
@@ -944,6 +964,7 @@ export async function handleGetTechnicalAnalysis(
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
       region: resolveCanonicalRoutingRegion(user.exchange_region),
+      ...resolveEgressConfig(user.exchange_name, c.env),
     });
 
     const ticker = await adapter.fetchTicker(symbol);

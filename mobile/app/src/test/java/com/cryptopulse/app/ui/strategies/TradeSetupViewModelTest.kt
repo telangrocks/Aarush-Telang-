@@ -145,6 +145,7 @@ class TradeSetupViewModelTest {
         viewModel.setMinNotional(10.0)
         viewModel.updateFieldValue("stopLoss", "20")
         viewModel.updateEntryPrice("50000.0")
+        viewModel.updateTradeValueUsdt("100.0")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.Success)
@@ -152,7 +153,7 @@ class TradeSetupViewModelTest {
         assertEquals("test_strat", config.strategyId)
         assertEquals("BTC", config.symbol)
         assertEquals(50000.0, config.entryPrice, 0.001)
-        assertEquals(0.0, config.tradeValueUsdt, 0.001)
+        assertEquals(100.0, config.tradeValueUsdt, 0.001)
         assertEquals("20", config.parameters["stopLoss"])
     }
 

@@ -151,7 +151,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     const res = await bot.fetch(req);
     expect(res.status).not.toBe(403);
     const data = await res.json<any>();
-    expect(data.error).not.toContain('Safe Mode is active');
+    expect(data.error || '').not.toContain('Safe Mode is active');
 
     // Verify GET /analysis-status reports safeMode = false
     const statusReq = new Request('http://bot/analysis-status', { method: 'GET' });

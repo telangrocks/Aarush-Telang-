@@ -21,8 +21,10 @@ fun MarketCandidateDto.toDomain(): MarketCandidate {
         lowPrice24h = lowPrice24h?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
         score = score?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
         minNotional = minNotional?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
-        recommendedTimeframe = recommendedTimeframe ?: "",
-        tradeSide = tradeSide ?: ""
+        minOrderQty = minOrderQty?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        qtyStep = qtyStep?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        tickSize = tickSize?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        tradeSide = tradeSide ?: "NEUTRAL"
     )
 }
 

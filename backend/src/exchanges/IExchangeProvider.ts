@@ -8,6 +8,7 @@ export interface IExchangeProvider {
   fetchMarkets(): Promise<Market[]>;
   fetchBalance(): Promise<Balance[]>;
   fetchTicker(symbol: string): Promise<Ticker>;
+  fetchTickers(symbols?: string[]): Promise<Ticker[]>;
   fetchKlines(symbol: string, interval: string, limit: number): Promise<any[]>;
   fetchPositions(): Promise<Position[]>;
   

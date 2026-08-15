@@ -23,6 +23,7 @@ describe('Exchange Connectivity Module Fixes Unit Tests', () => {
       fetchMarkets = async () => [];
       fetchBalance = async () => [];
       fetchTicker = async () => ({} as any);
+      fetchTickers = async () => [];
       fetchKlines = async () => [];
       fetchPositions = async () => [];
       createOrder = async () => ({} as any);
@@ -72,6 +73,7 @@ describe('Exchange Connectivity Module Fixes Unit Tests', () => {
       fetchMarkets = async () => [];
       fetchBalance = async () => [];
       fetchTicker = async () => ({ symbol: 'BTC/USDT', timestamp: 0, last: new BigNumber(0), bid: new BigNumber(0), ask: new BigNumber(0), high: new BigNumber(0), low: new BigNumber(0), volume: new BigNumber(0), quoteVolume: new BigNumber(0) });
+      fetchTickers = async () => [];
       fetchKlines = async () => [];
       fetchPositions = async () => [];
       createOrder = async () => ({} as any);

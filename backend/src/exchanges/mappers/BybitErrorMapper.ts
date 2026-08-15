@@ -30,9 +30,9 @@ export class BybitErrorMapper implements IExchangeErrorMapper {
     if (retCode === undefined) return null;
 
     const codeMap: Record<number, ExchangeErrorCode> = {
-      10001: 'INVALID_SIGNATURE', // Parameter error / invalid signature
-      10002: 'INVALID_SIGNATURE', // Invalid request timestamp
-      10003: 'INSUFFICIENT_PERMISSIONS', // You are not authorized to execute this request
+      10001: 'INVALID_REQUEST', // Parameter error
+      10002: 'INVALID_API_KEY', // Invalid API key
+      10003: 'TIMESTAMP_OUT_OF_SYNC', // Timestamp exceeds recvWindow
       10004: 'INVALID_SIGNATURE', // Invalid sign
       10005: 'INSUFFICIENT_PERMISSIONS', // Permission denied
       10006: 'API_RATE_LIMIT_REACHED', // Too many requests

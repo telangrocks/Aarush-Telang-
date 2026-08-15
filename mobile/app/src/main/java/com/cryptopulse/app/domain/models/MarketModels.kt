@@ -13,7 +13,9 @@ data class MarketCandidate(
     val lowPrice24h: Double,
     val score: Double,
     val minNotional: Double,
-    val recommendedTimeframe: String,
+    val minOrderQty: Double,
+    val qtyStep: Double,
+    val tickSize: Double,
     val tradeSide: String
 )
 
