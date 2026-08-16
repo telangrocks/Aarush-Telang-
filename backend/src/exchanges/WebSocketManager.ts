@@ -1,5 +1,5 @@
 import { ExchangeName, ExchangeEnvironment } from "./types";
-import { ExchangeRoutingResolver, BybitWsPurpose, KuCoinWsPurpose, KuCoinBulletTokenResponse } from "./routing/ExchangeRoutingResolver";
+import { ExchangeRoutingResolver, BybitWsPurpose } from "./routing/ExchangeRoutingResolver";
 import { WebCryptoSigner } from "../infrastructure/crypto/WebCryptoSigner";
 import { UnifiedError } from "./models/UnifiedError";
 
@@ -132,7 +132,7 @@ export class WebSocketManager {
     }
   }
 
-  // WebSocket Endpoint URL Resolver across Exchanges & Environments
+// WebSocket Endpoint URL Resolver across Exchanges & Environments
   public getWebSocketUrl(
     exchange: ExchangeName,
     environment: ExchangeEnvironment = "mainnet",
@@ -140,119 +140,20 @@ export class WebSocketManager {
     listenKey?: string,
     bybitPurpose: BybitWsPurpose = "linear"
   ): string {
-    if (exchange === "binance") {
-      return ExchangeRoutingResolver.getBinanceWebSocketUrl(environment, listenKey);
-    }
-
     if (exchange === "bybit") {
       const url = ExchangeRoutingResolver.getBybitWebSocketUrl(environment, bybitPurpose);
       return listenKey ? `${url}?listenKey=${listenKey}` : url;
     }
 
-    if (exchange === "kucoin") {
-      throw new UnifiedError("KuCoin WebSocket requires dynamic token acquisition. Use getKuCoinWebSocketUrl() instead.", "UNSUPPORTED_OPERATION");
-    }
-
     throw new UnifiedError(`Unsupported exchange: ${exchange}`, "INVALID_INPUT_PARAMETERS");
   }
 
-  /**
-   * KuCoin Dynamic WebSocket Token Acquisition Flow (Bullet Token + instanceServers).
-   * Reuses WebCryptoSigner and KuCoin API v2 HMAC signature logic.
-   */
-  public async fetchKuCoinBulletToken(
-    restHost: string,
-    purpose: KuCoinWsPurpose,
-    apiKey?: string,
-    apiSecret?: string,
-    passphrase?: string
-  ): Promise<KuCoinBulletTokenResponse> {
-    if (purpose === "private") {
-      if (!apiKey || !apiSecret || !passphrase) {
-        throw new UnifiedError("Missing required KuCoin credentials for private WebSocket feed.", "MISSING_REQUIRED_CREDENTIALS");
-      }
-    }
-
-    const isPrivate = purpose === "private";
-    const endpoint = isPrivate ? "/api/v1/bullet-private" : "/api/v1/bullet-public";
-    const url = `${restHost}${endpoint}`;
-
-    const headers: Record<string, string> = {
-      "Accept": "application/json",
-      "User-Agent": "CryptoPulse/1.0",
-    };
-
-    if (isPrivate) {
-      const ts = Date.now().toString();
-      const cleanSec = apiSecret!.trim();
-      const cleanPass = passphrase!.trim();
-      const passHmac = await WebCryptoSigner.hmacSha256Base64(cleanSec, cleanPass);
-      const strToSign = ts + "POST" + endpoint;
-      const sig = await WebCryptoSigner.hmacSha256Base64(cleanSec, strToSign);
-
-      headers["KC-API-KEY"] = apiKey!.trim();
-      headers["KC-API-SIGN"] = sig;
-      headers["KC-API-TIMESTAMP"] = ts;
-      headers["KC-API-PASSPHRASE"] = passHmac;
-      headers["KC-API-KEY-VERSION"] = "2";
-      headers["Content-Type"] = "application/json";
-    }
-
-    const res = await fetch(url, { method: "POST", headers });
-    if (!res.ok) {
-      throw new UnifiedError(`KuCoin bullet token request failed with status ${res.status}`, "EXCHANGE_NOT_REACHABLE");
-    }
-
-    const json = await res.json() as any;
-    if (json.code !== "200000" || !json.data?.token || !Array.isArray(json.data?.instanceServers) || json.data.instanceServers.length === 0) {
-      throw new UnifiedError(`KuCoin returned invalid bullet token payload: ${json.msg || 'Unknown error'}`, "EXCHANGE_NOT_REACHABLE");
-    }
-
-    return json.data;
-  }
-
-  /**
-   * Dynamically constructs the KuCoin WebSocket URL containing both token and connectId.
-   */
-  public async getKuCoinWebSocketUrl(
-    restHost: string,
-    purpose: KuCoinWsPurpose,
-    apiKey?: string,
-    apiSecret?: string,
-    passphrase?: string
-  ): Promise<string> {
-    const bulletData = await this.fetchKuCoinBulletToken(restHost, purpose, apiKey, apiSecret, passphrase);
-    const server = bulletData.instanceServers[0];
-    if (!server?.endpoint) {
-      throw new UnifiedError("KuCoin bullet response contained no instanceServer endpoint", "EXCHANGE_NOT_REACHABLE");
-    }
-    const connectId = crypto.randomUUID();
-    return `${server.endpoint}?token=${bulletData.token}&connectId=${connectId}`;
-  }
-
-
   public getSubscriptionPayload(exchange: ExchangeName, symbol: string, channel = "ticker"): string {
     const rawSymbol = symbol.replace(/[/\s_-]/g, '').toUpperCase();
-    if (exchange === "binance") {
-      return JSON.stringify({
-        method: "SUBSCRIBE",
-        params: [`${rawSymbol.toLowerCase()}@ticker`],
-        id: Date.now(),
-      });
-    }
     if (exchange === "bybit") {
       return JSON.stringify({
         op: "subscribe",
         args: [`tickers.${rawSymbol}`],
-      });
-    }
-    if (exchange === "kucoin") {
-      return JSON.stringify({
-        id: Date.now().toString(),
-        type: "subscribe",
-        topic: `/market/ticker:${symbol.replace('/', '-')}`,
-        privateChannel: false,
-        response: true,
       });
     }
     return "";

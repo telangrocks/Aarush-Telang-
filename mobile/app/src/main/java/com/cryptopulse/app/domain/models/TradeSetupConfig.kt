@@ -12,9 +12,9 @@ package com.cryptopulse.app.domain.models
  * back into Int/Double/Boolean based on its own source of truth.
  */
 data class TradeSetupConfig(
-    val strategyId: String,
+    val strategyId: String? = null,
     val symbol: String,
     val entryPrice: Double,
     val tradeValueUsdt: Double,
-    val parameters: Map<String, String>
+    val parameters: Map<String, String> = emptyMap()
 )

@@ -175,22 +175,26 @@ export async function analyzeMarket(
 
 function calculateScore(ticker: any): number {
   const volume = Number(ticker.quoteVolume24h || ticker.volume24h || 0);
-  const volumeScore = Math.min(Math.log10(volume + 1) * 5, 30);
+  const logVol = Math.max(0, Math.log10(volume + 1));
+  const volumeScore = 30 * (1 - Math.exp(-logVol / 3));
 
   const volatility = Math.abs(Number(ticker.priceChangePercent24h || 0));
-  const volatilityScore = Math.min(volatility * 3, 30);
+  const volatilityScore = 30 * (1 - Math.exp(-volatility / 10));
 
   const price = Number(ticker.price || 0);
   const high = Number(ticker.highPrice24h || price || 0);
   const low = Number(ticker.lowPrice24h || price || 0);
   const range = Math.max(0, high - low);
   const rangePercent = price > 0 ? (range / price) * 100 : 0;
-  const rangeScore = Math.min(rangePercent * 3, 20);
+  const rangeScore = 20 * (1 - Math.exp(-rangePercent / 10));
 
   const changePercent = Number(ticker.priceChangePercent24h || 0);
-  const momentumScore = Math.min(Math.abs(changePercent) * 3, 30);
-  const trendDirectionScore = Math.max(-40, Math.min(40, changePercent * 4));
+  const momentumScore = changePercent > 0 ? 30 * (1 - Math.exp(-changePercent / 10)) : 0;
 
-  const total = volumeScore + volatilityScore + rangeScore + momentumScore + trendDirectionScore;
-  return isNaN(total) ? 0 : total;
+  const trendBase = 40 * (1 - Math.exp(-Math.abs(changePercent) / 10));
+  const trendDirectionScore = changePercent > 0 ? trendBase : -trendBase;
+
+  let totalScore = volumeScore + volatilityScore + rangeScore + momentumScore + trendDirectionScore;
+  if (isNaN(totalScore)) return 0;
+  return Math.max(0, Math.min(150, totalScore));
 }

@@ -20,19 +20,11 @@ function normalizeEnvironment(value: unknown): ExchangeEnvironment | null {
 }
 
 function resolveEgressConfig(exchangeName: string, env: Env) {
-  const isKucoin = (exchangeName || '').toString().toLowerCase() === 'kucoin';
-  const kucoinEgressUrl = env.KUCOIN_EGRESS_PROXY_URL;
-  if (isKucoin && kucoinEgressUrl && kucoinEgressUrl.trim() !== '') {
-    return {
-      egressProxyUrl: kucoinEgressUrl,
-      egressProxySecret: env.EGRESS_PROXY_SECRET,
-      egressGatewayFetcher: undefined,
-    };
-  }
+  const e = env as any;
   return {
-    egressProxyUrl: env.EGRESS_PROXY_URL,
-    egressProxySecret: env.EGRESS_PROXY_SECRET,
-    egressGatewayFetcher: env.EGRESS_GATEWAY,
+    egressProxyUrl: e.EGRESS_PROXY_URL,
+    egressProxySecret: e.EGRESS_PROXY_SECRET,
+    egressGatewayFetcher: e.EGRESS_GATEWAY,
   };
 }
 
@@ -730,6 +722,22 @@ export async function handleGetPersonalizedMarketCandidates(
           if (open > 0) chg = ((px - open) / open) * 100;
         }
 
+        const extractConstraint = (ccxtVal: any, bybitVal: any): number | null => {
+          if (ccxtVal !== undefined && ccxtVal !== null) {
+            if (typeof ccxtVal?.toNumber === 'function') {
+              const val = ccxtVal.toNumber();
+              if (!isNaN(val)) return val;
+            } else if (typeof ccxtVal === 'number' && !isNaN(ccxtVal)) {
+              return ccxtVal;
+            }
+          }
+          if (bybitVal !== undefined && bybitVal !== null) {
+            const parsed = Number(bybitVal);
+            if (!isNaN(parsed)) return parsed;
+          }
+          return null;
+        };
+
         rawTickers.push({
           symbol: m.base || (m.symbol ? m.symbol.split('/')[0] : "BTC"),
           pairName: m.symbol || "BTC/USDT",
@@ -739,10 +747,13 @@ export async function handleGetPersonalizedMarketCandidates(
           highPrice24h: high,
           lowPrice24h: low,
           priceChangePercent24h: chg,
-          minNotional: typeof m?.limits?.cost?.min?.toNumber === 'function' ? m.limits.cost.min.toNumber() : 0,
-          minOrderQty: typeof m?.limits?.amount?.min?.toNumber === 'function' ? m.limits.amount.min.toNumber() : 0,
-          qtyStep: typeof m?.precision?.amount === 'number' ? m.precision.amount : 0,
-          tickSize: typeof m?.precision?.price === 'number' ? m.precision.price : 0,
+          minNotional: extractConstraint(m?.limits?.cost?.min, m?.info?.lotSizeFilter?.minNotionalValue),
+          minOrderQty: extractConstraint(m?.limits?.amount?.min, m?.info?.lotSizeFilter?.minOrderQty),
+          qtyStep: extractConstraint(m?.precision?.amount, m?.info?.lotSizeFilter?.qtyStep),
+          tickSize: extractConstraint(m?.precision?.price, m?.info?.priceFilter?.tickSize),
+          minPrice: extractConstraint(m?.limits?.price?.min, m?.info?.priceFilter?.minPrice),
+          maxPrice: extractConstraint(m?.limits?.price?.max, m?.info?.priceFilter?.maxPrice),
+          maxQty: extractConstraint(m?.limits?.amount?.max, m?.info?.lotSizeFilter?.maxOrderQty),
         });
       }
     } catch (tErr: any) {
@@ -864,11 +875,11 @@ export async function handleGetTicker(
       priceChangePercent24h: 0,
       highPrice24h: ticker.high.toNumber(),
       lowPrice24h: ticker.low.toNumber(),
-      minNotional: 0,
-      minOrderQty: 0,
-      maxOrderQty: 0,
-      tickSize: 0,
-      lotSize: 0,
+      minNotional: null,
+      minOrderQty: null,
+      maxOrderQty: null,
+      tickSize: null,
+      lotSize: null,
       timestamp: new Date().toISOString(),
     });
   } catch (e: unknown) {

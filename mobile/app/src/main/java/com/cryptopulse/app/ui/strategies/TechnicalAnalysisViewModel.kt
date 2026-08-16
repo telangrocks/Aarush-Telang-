@@ -57,11 +57,12 @@ class TechnicalAnalysisViewModel @Inject constructor(
         _isActivating.value = true
         _activationError.value = null
 
+        val finalConfig = config ?: sessionRepository.tradeSetupConfig.value
         viewModelScope.launch {
             val result = botRepository.activateBot(
                 symbol = symbol,
                 strategy = strategy,
-                config = config
+                config = finalConfig
             )
             result.onSuccess {
                 _isActivating.value = false

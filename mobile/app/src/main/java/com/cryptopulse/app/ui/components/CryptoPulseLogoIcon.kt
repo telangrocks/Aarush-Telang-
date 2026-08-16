@@ -26,7 +26,7 @@ fun CryptoPulseLogoIcon(
     secondaryColor: Color = Color(0xFF00FF9D),
 ) {
     Image(
-        painter = painterResource(id = R.drawable.app_logo),
+        painter = painterResource(id = R.drawable.ic_cryptopulse_logo),
         contentDescription = "CryptoPulse Logo",
         contentScale = ContentScale.Crop,
         modifier = modifier

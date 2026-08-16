@@ -55,7 +55,7 @@ object AppModule {
         private var isRefreshing = false
 
         override fun intercept(chain: Interceptor.Chain): Response {
-            val token = tokenManager.tokenFlow.value
+            val token = runBlocking { tokenManager.getToken() }
             val requestBuilder = chain.request().newBuilder()
 
             if (!token.isNullOrEmpty()) {
@@ -71,7 +71,7 @@ object AppModule {
                         try {
                             val result = runBlocking { authRepositoryLazy.get().refreshToken() }
                             if (result is NetworkResult.Success) {
-                                val newToken = tokenManager.tokenFlow.value
+                                val newToken = runBlocking { tokenManager.getToken() }
                                 if (!newToken.isNullOrEmpty()) {
                                     val newRequest = chain.request().newBuilder()
                                         .removeHeader("Authorization")

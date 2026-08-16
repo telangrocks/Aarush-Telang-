@@ -48,9 +48,9 @@ fun CoinInfoCard(candidate: MarketCandidate) {
         Column(modifier = Modifier.weight(1f)) {
             Text(candidate.pairName, color = TextPrimary, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
             Text(candidate.coinName, color = TextSecondary, fontSize = 12.sp)
-            if (candidate.minNotional > 0.0) {
+            if (candidate.minNotional != null && candidate.minNotional > 0.0) {
                 Text(
-                    text = "Min Tradable Price: $${String.format("%.2f", candidate.minNotional)} USDT",
+                    text = "Min Notional: $${String.format("%.2f", candidate.minNotional)} USDT",
                     color = CyanPrimary,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold

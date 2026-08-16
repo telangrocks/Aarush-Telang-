@@ -20,10 +20,13 @@ fun MarketCandidateDto.toDomain(): MarketCandidate {
         highPrice24h = highPrice24h?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
         lowPrice24h = lowPrice24h?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
         score = score?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
-        minNotional = minNotional?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
-        minOrderQty = minOrderQty?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
-        qtyStep = qtyStep?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
-        tickSize = tickSize?.takeIf { !it.isNaN() && !it.isInfinite() } ?: 0.0,
+        minNotional = minNotional?.takeIf { !it.isNaN() && !it.isInfinite() },
+        minOrderQty = minOrderQty?.takeIf { !it.isNaN() && !it.isInfinite() },
+        qtyStep = qtyStep?.takeIf { !it.isNaN() && !it.isInfinite() },
+        tickSize = tickSize?.takeIf { !it.isNaN() && !it.isInfinite() },
+        minPrice = minPrice?.takeIf { !it.isNaN() && !it.isInfinite() },
+        maxPrice = maxPrice?.takeIf { !it.isNaN() && !it.isInfinite() },
+        maxQty = maxQty?.takeIf { !it.isNaN() && !it.isInfinite() },
         tradeSide = tradeSide ?: "NEUTRAL"
     )
 }

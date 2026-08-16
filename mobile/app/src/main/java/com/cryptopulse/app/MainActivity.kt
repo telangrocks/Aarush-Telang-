@@ -85,7 +85,8 @@ class MainActivity : FragmentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val navController = rememberNavController()
-                    val token by tokenManager.tokenFlow.collectAsState(initial = null)
+                    val tokenState by tokenManager.tokenFlow.collectAsState(initial = com.cryptopulse.app.data.local.TokenState.Uninitialized)
+                    val token = (tokenState as? com.cryptopulse.app.data.local.TokenState.Authenticated)?.token
                     val startDestination = "splash"
                     val coroutineScope = rememberCoroutineScope()
 
@@ -169,7 +170,7 @@ class MainActivity : FragmentActivity() {
                                     viewModel = viewModel,
                                     onCandidateClick = { candidate ->
                                         viewModel.selectCandidate(candidate)
-                                        navController.navigate("strategy_selection")
+                                        navController.navigate("trade_setup")
                                     },
                                     onBack = { navController.popBackStack() }
                                 )
@@ -180,6 +181,7 @@ class MainActivity : FragmentActivity() {
                                 }
                                 val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
                                 val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
+                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
 
                                 val candidate = selectedCandidate ?: MarketCandidate(
@@ -196,8 +198,21 @@ class MainActivity : FragmentActivity() {
                                 StrategySelectionScreen(
                                     candidate = candidate,
                                     onBack = { navController.popBackStack() },
-                                    onProceedToTradeSetup = {
-                                        navController.navigate("trade_setup")
+                                    onProceedToExecution = {
+                                        val strategyId = strategyViewModel.selectedStrategyId.value ?: "scalper-v2"
+                                        
+                                        // Config is already stored in TradeSessionRepository by TradeSetupViewModel.buildConfig
+                                        technicalAnalysisViewModel.activateBot(
+                                            symbol = candidate.symbol,
+                                            strategy = strategyId,
+                                            config = null, // Will be read from sessionRepository
+                                            onSuccess = {
+                                                com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
+                                                navController.navigate("technical_analysis") {
+                                                    popUpTo("trade_setup") { inclusive = true }
+                                                }
+                                            }
+                                        )
                                     },
                                     viewModel = strategyViewModel
                                 )
@@ -209,8 +224,6 @@ class MainActivity : FragmentActivity() {
                                 }
                                 val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
                                 val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>()
-                                val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
-                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
 
                                 val candidate = selectedCandidate ?: MarketCandidate(
@@ -229,19 +242,9 @@ class MainActivity : FragmentActivity() {
                                     onBack = { navController.popBackStack() },
                                     onProceedToAnalysis = {
                                         val result = tradeSetupViewModel.buildConfig(candidate.symbol)
-                                        val strategyId = strategyViewModel.selectedStrategyId.value ?: "scalper-v2"
-                                        val config = if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) result.config else null
-                                        technicalAnalysisViewModel.activateBot(
-                                            symbol = candidate.symbol,
-                                            strategy = strategyId,
-                                            config = config,
-                                            onSuccess = {
-                                                com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
-                                                navController.navigate("technical_analysis") {
-                                                    popUpTo("trade_setup") { inclusive = true }
-                                                }
-                                            }
-                                        )
+                                        if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) {
+                                            navController.navigate("strategy_selection")
+                                        }
                                     },
                                     viewModel = tradeSetupViewModel,
                                 )

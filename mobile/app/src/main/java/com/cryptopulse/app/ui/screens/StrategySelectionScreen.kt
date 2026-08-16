@@ -42,7 +42,7 @@ import com.cryptopulse.app.ui.theme.*
 fun StrategySelectionScreen(
     candidate: MarketCandidate,
     onBack: () -> Unit,
-    onProceedToTradeSetup: () -> Unit,
+    onProceedToExecution: () -> Unit,
     viewModel: StrategySelectionViewModel
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
@@ -67,11 +67,11 @@ fun StrategySelectionScreen(
                         .padding(horizontal = 20.dp, vertical = 12.dp),
                 ) {
                     GradientButton(
-                        text = "PROCEED TO TRADE SETUP",
-                        onClick = onProceedToTradeSetup,
+                        text = "PROCEED TO EXECUTION",
+                        onClick = onProceedToExecution,
                         enabled = selectedId != null,
                         leadingIcon = Icons.Default.ArrowForward,
-                        modifier = Modifier.testTag("proceed_to_trade_setup_button")
+                        modifier = Modifier.testTag("proceed_to_execution_button")
                     )
                 }
             }

@@ -46,10 +46,13 @@ data class MarketCandidate(
     val coinName: String = "",
     val notations: Int = 0,
     val currentMarketPrice: Double = 0.0,
-    val minNotional: Double = 0.0,
-    val minOrderQty: Double = 0.0,
-    val qtyStep: Double = 0.0,
-    val tickSize: Double = 0.0,
+    val minNotional: Double? = null,
+    val minOrderQty: Double? = null,
+    val qtyStep: Double? = null,
+    val tickSize: Double? = null,
+    val minPrice: Double? = null,
+    val maxPrice: Double? = null,
+    val maxQty: Double? = null,
     val coinColor: Color = Color.Unspecified,
     val volume24h: Double = 0.0,
     val quoteVolume24h: Double = 0.0,
@@ -67,11 +70,11 @@ fun MarketCandidate.toAccessibilityDescription(): String {
     val priceStr = Formatters.formatCryptoPrice(currentMarketPrice)
     val pctStr = Formatters.formatPercentage(priceChangePercent24h)
     val volStr = Formatters.formatQuoteVolume(quoteVolume24h)
-    val minStr = Formatters.formatMinNotional(minNotional)
+    val minStr = Formatters.formatMinNotional(minNotional ?: 0.0)
     val scoreStr = Formatters.formatScore(score)
     val sideText = if (tradeSide.isNotBlank()) "$tradeSide." else ""
     val directionText = if (priceChangePercent24h >= 0) "Up" else "Down"
-    return "Rank $rank. $pairName. $sideText Price $priceStr dollars. $directionText $pctStr. AI Score $scoreStr. 24 hour volume $volStr. Minimum order $minStr."
+    return "Rank $rank. $pairName. $sideText Price $priceStr dollars. $directionText $pctStr. Technical Score $scoreStr. 24 hour volume $volStr. Minimum order $minStr."
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -360,7 +363,7 @@ fun MarketCandidatesScreen(
                         }
                         Spacer(Modifier.height(5.dp))
                         Text(
-                            text = "Ranked by the CryptoPulse AI Pre-Screening Engine",
+                            text = "Ranked by the CryptoPulse Technical Screening Algorithm",
                             color = CyanPrimary.copy(alpha = 0.75f),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium,
@@ -413,7 +416,7 @@ fun MarketCandidatesScreen(
                         Icon(Icons.Default.Info, null, tint = CyanPrimary, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "These candidates are selected based on multi-layer AI analysis, volume, volatility, momentum and breakout potential.",
+                            text = "These candidates are selected based on multi-layer technical analysis, volume, volatility, momentum and breakout potential.",
                             color = TextSecondary,
                             fontSize = 11.sp,
                             lineHeight = 17.sp,
@@ -525,7 +528,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
 
 
 
-            // 4. AI Score
+            // 4. Technical Score
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text = "Technical Score",
@@ -545,17 +548,17 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
             // 5. Trading Constraints
             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.Center) {
                 Text(
-                    text = "Min Qty: ${Formatters.formatConstraint(candidate.minOrderQty)}",
+                    text = "Min Qty: ${Formatters.formatConstraint(candidate.minOrderQty ?: 0.0)}",
                     color = TextSecondary,
                     fontSize = 10.sp,
                 )
                 Text(
-                    text = "Qty Step: ${Formatters.formatConstraint(candidate.qtyStep)}",
+                    text = "Qty Step: ${Formatters.formatConstraint(candidate.qtyStep ?: 0.0)}",
                     color = TextSecondary,
                     fontSize = 10.sp,
                 )
                 Text(
-                    text = "Tick Size: ${Formatters.formatConstraint(candidate.tickSize)}",
+                    text = "Tick Size: ${Formatters.formatConstraint(candidate.tickSize ?: 0.0)}",
                     color = TextSecondary,
                     fontSize = 10.sp,
                 )

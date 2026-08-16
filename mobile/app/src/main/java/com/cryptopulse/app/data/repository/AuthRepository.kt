@@ -44,7 +44,7 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     override suspend fun refreshToken(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
-        val currentToken = tokenManager.tokenFlow.value ?: return@withContext NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception("No token")))
+        val currentToken = tokenManager.getToken() ?: return@withContext NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception("No token")))
         when (val result = authRemoteDataSource.refreshToken(RefreshRequestDto(currentToken))) {
             is NetworkResult.Success -> {
                 tokenManager.saveTokens(result.data.accessToken ?: "", result.data.refreshToken ?: "")

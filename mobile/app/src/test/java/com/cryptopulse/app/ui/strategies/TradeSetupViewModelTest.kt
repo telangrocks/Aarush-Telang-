@@ -83,110 +83,77 @@ class TradeSetupViewModelTest {
     }
 
     @Test
-    fun `loadStrategySchema populates default values successfully`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeRepository())
+    fun `buildConfig returns Success when trade passes validation`() = runTest {
+        val viewModel = TradeSetupViewModel(createMockSessionRepository(""), createMockExchangeRepository())
         
         testDispatcher.scheduler.advanceUntilIdle()
 
-        val state = viewModel.uiState.value
-        assertEquals(false, state.isLoading)
-        assertEquals(null, state.error)
-        assertEquals(4, state.fields.size)
-        assertEquals("5.0", state.formValues["stopLoss"])
-        assertEquals("1.5", state.formValues["risk"])
-        assertEquals("Safe", state.formValues["mode"])
-        assertEquals("2.0", state.formValues["takeProfitMultiplier"])
-        assertEquals("", state.entryPrice)
-        assertEquals(null, state.entryPriceError)
-    }
-
-    @Test
-    fun `updateFieldValue incremental validation fails on max limit`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeRepository())
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        viewModel.updateFieldValue("stopLoss", "150") // max is 100
-        
-        val state = viewModel.uiState.value
-        assertEquals("150", state.formValues["stopLoss"])
-        assertEquals("Max is 100.0", state.formErrors["stopLoss"])
-    }
-
-    @Test
-    fun `updateFieldValue incremental validation fails on invalid enum`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeRepository())
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        viewModel.updateFieldValue("mode", "SuperAggressive")
-        
-        val state = viewModel.uiState.value
-        assertEquals("SuperAggressive", state.formValues["mode"])
-        assertEquals("Invalid option.", state.formErrors["mode"])
-    }
-    
-    @Test
-    fun `updateFieldValue clears error when valid`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeRepository())
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        viewModel.updateFieldValue("stopLoss", "150") 
-        viewModel.updateFieldValue("stopLoss", "50") 
-        
-        val state = viewModel.uiState.value
-        assertEquals("50", state.formValues["stopLoss"])
-        assertEquals(null, state.formErrors["stopLoss"])
-    }
-
-    @Test
-    fun `buildConfig returns Success when all fields valid`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeRepository())
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        viewModel.setMinNotional(10.0)
-        viewModel.updateFieldValue("stopLoss", "20")
+        viewModel.setConstraints(
+            minNotional = 10.0,
+            minOrderQty = 0.001,
+            qtyStep = 0.001,
+            tickSize = 0.1,
+            minPrice = 0.1,
+            maxPrice = 100000.0,
+            maxQty = 100.0
+        )
         viewModel.updateEntryPrice("50000.0")
         viewModel.updateTradeValueUsdt("100.0")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.Success)
         val config = (result as TradeSetupConfigResult.Success).config
-        assertEquals("test_strat", config.strategyId)
+        assertEquals(null, config.strategyId)
         assertEquals("BTC", config.symbol)
         assertEquals(50000.0, config.entryPrice, 0.001)
         assertEquals(100.0, config.tradeValueUsdt, 0.001)
-        assertEquals("20", config.parameters["stopLoss"])
     }
 
     @Test
-    fun `buildConfig returns ValidationFailed when entry price is invalid`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeRepository())
+    fun `buildConfig returns ValidationFailed when entry price is missing`() = runTest {
+        val viewModel = TradeSetupViewModel(createMockSessionRepository(""), createMockExchangeRepository())
         testDispatcher.scheduler.advanceUntilIdle()
 
-        viewModel.updateEntryPrice("-5.0")
-
-        val result = viewModel.buildConfig("BTC")
-        assertTrue(result is TradeSetupConfigResult.ValidationFailed)
-        val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
-        assertEquals("Entry price must be a valid positive number.", errors["entryPrice"])
-        assertEquals("Entry price must be a valid positive number.", viewModel.uiState.value.entryPriceError)
-    }
-
-    @Test
-    fun `buildConfig returns ValidationFailed when a required field is empty`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockRepository(mockStrategy), createMockSessionRepository("test_strat"), createMockExchangeRepository())
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        viewModel.updateFieldValue("stopLoss", "")
+        viewModel.setConstraints(
+            minNotional = 10.0,
+            minOrderQty = 0.001,
+            qtyStep = 0.001,
+            tickSize = 0.1,
+            minPrice = 0.1,
+            maxPrice = 100000.0,
+            maxQty = 100.0
+        )
         viewModel.updateEntryPrice("")
+        viewModel.updateTradeValueUsdt("100.0")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
         val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
-        assertEquals("This field is required.", errors["stopLoss"])
         assertEquals("Entry price is required.", errors["entryPrice"])
-        
-        assertEquals("This field is required.", viewModel.uiState.value.formErrors["stopLoss"])
         assertEquals("Entry price is required.", viewModel.uiState.value.entryPriceError)
+    }
+
+    @Test
+    fun `buildConfig fails when required constraint is missing`() = runTest {
+        val viewModel = TradeSetupViewModel(createMockSessionRepository(""), createMockExchangeRepository())
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.setConstraints(
+            minNotional = null, // Missing constraint
+            minOrderQty = 0.001,
+            qtyStep = 0.001,
+            tickSize = 0.1,
+            minPrice = 0.1,
+            maxPrice = 100000.0,
+            maxQty = 100.0
+        )
+        viewModel.updateEntryPrice("50000.0")
+        viewModel.updateTradeValueUsdt("100.0")
+
+        val result = viewModel.buildConfig("BTC")
+        assertTrue(result is TradeSetupConfigResult.ValidationFailed)
+        val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
+        assertEquals("Trading rules for this pair are currently unavailable from the exchange.", errors["entryPrice"])
     }
 }
 

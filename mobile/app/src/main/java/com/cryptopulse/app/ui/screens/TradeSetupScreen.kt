@@ -46,7 +46,15 @@ fun TradeSetupScreen(
     android.util.Log.d("VM_CHECK", "[DIAGNOSTIC] TradeSetupScreen TradeSetupViewModel hash=${System.identityHashCode(viewModel)}, balanceState=$balanceState")
 
     LaunchedEffect(candidate) {
-        viewModel.setMinNotional(candidate.minNotional)
+        viewModel.setConstraints(
+            minNotional = candidate.minNotional,
+            minOrderQty = candidate.minOrderQty,
+            qtyStep = candidate.qtyStep,
+            tickSize = candidate.tickSize,
+            minPrice = candidate.minPrice,
+            maxPrice = candidate.maxPrice,
+            maxQty = candidate.maxQty
+        )
     }
 
     Box(
@@ -102,7 +110,7 @@ fun TradeSetupScreen(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Configure strategy parameters based on schema.",
+                        text = "Configure parameters for execution.",
                         color = TextSecondary,
                         fontSize = 12.sp,
                         textAlign = TextAlign.Center,
@@ -116,33 +124,16 @@ fun TradeSetupScreen(
                         balanceState = balanceState,
                         onRetry = { viewModel.loadBalance() }
                     )
-                    if (candidate.minNotional > 0.0) {
-                        Spacer(Modifier.height(8.dp))
-                        Surface(
-                            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-                            color = Color(0xFF131D30),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Minimum Tradable Price:",
-                                    color = TextSecondary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Normal
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text = "$${"%.2f".format(candidate.minNotional)} USDT",
-                                    color = CyanPrimary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
+                    
+                    Spacer(Modifier.height(8.dp))
+                    val minQtyText = candidate.minOrderQty?.let { it.toString() } ?: "N/A"
+                    Text(
+                        text = "Minimum Order Quantity: $minQtyText",
+                        color = CyanPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
                     Spacer(Modifier.height(14.dp))
                 }
 
@@ -194,8 +185,7 @@ fun TradeSetupScreen(
                                     )
                                 } else if (candidate.currentMarketPrice > 0.0) {
                                     Text(
-                                        text = "Current price: $${"%.2f".format(candidate.currentMarketPrice)}" +
-                                                if (uiState.minNotional > 0.0) " | Min Notional: $${"%.2f".format(uiState.minNotional)} USDT" else "",
+                                        text = "Current price: $${"%.2f".format(candidate.currentMarketPrice)}",
                                         color = TextSecondary,
                                         fontSize = 12.sp
                                     )
@@ -246,18 +236,6 @@ fun TradeSetupScreen(
                         )
                     }
 
-                    items(items = uiState.fields, key = { it.key }) { field ->
-                        val currentValue = uiState.formValues[field.key] ?: ""
-                        val error = uiState.formErrors[field.key]
-                        DynamicFieldRenderer(
-                            field = field,
-                            currentValue = currentValue,
-                            error = error,
-                            onValueChange = { newValue ->
-                                viewModel.updateFieldValue(field.key, newValue)
-                            }
-                        )
-                    }
                     item {
                         Spacer(Modifier.height(80.dp))
                     }

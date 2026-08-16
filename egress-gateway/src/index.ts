@@ -15,8 +15,8 @@ const ALLOWED_HOSTS = new Set([
   "api-futures.kucoin.com"
 ]);
 
-export function createEgressGatewayApp(proxySecret: string = process.env.EGRESS_PROXY_SECRET || "crypto-pulse-egress-secret-2026") {
-  const app = new Hono();
+export function createEgressGatewayApp(overrideSecret?: string) {
+  const app = new Hono<{ Bindings: { EGRESS_PROXY_SECRET?: string } }>();
 
   // Health check endpoint
   app.get("/health", (c) => {
@@ -29,6 +29,7 @@ export function createEgressGatewayApp(proxySecret: string = process.env.EGRESS_
 
   // Forwarding endpoint
   app.post("/forward", async (c) => {
+    const proxySecret = overrideSecret || c.env?.EGRESS_PROXY_SECRET || (globalThis as any).process?.env?.EGRESS_PROXY_SECRET || "crypto-pulse-egress-secret-2026";
     // 1. Authenticate Cloudflare Worker token
     const authToken = c.req.header("X-Egress-Auth-Token");
     if (!authToken || authToken !== proxySecret) {
@@ -118,9 +119,11 @@ export function createEgressGatewayApp(proxySecret: string = process.env.EGRESS_
 }
 
 // Start standalone server if executed directly
-if (process.argv[1] && process.argv[1].includes("index")) {
+if (typeof process !== "undefined" && process.argv && process.argv[1] && process.argv[1].includes("index")) {
   const port = parseInt(process.env.PORT || "8080", 10);
   const app = createEgressGatewayApp();
   console.log(`[EGRESS GATEWAY] Server listening on port ${port}...`);
   serve({ fetch: app.fetch, port });
 }
+
+export default createEgressGatewayApp();

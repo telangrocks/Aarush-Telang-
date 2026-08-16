@@ -50,6 +50,16 @@ object TradeValidator {
         }
         val entryPriceBD = BigDecimal.valueOf(params.entryPrice)
 
+        // Null constraints check
+        if (rules.minPrice == null || rules.maxPrice == null || rules.tickSize == null || 
+            rules.stepSize == null || rules.minQty == null || rules.maxQty == null || rules.minNotional == null) {
+            return TradeValidationResult(
+                isValid = false,
+                errorCode = ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE,
+                errorMessage = "Trading rules for this pair are currently unavailable from the exchange."
+            )
+        }
+
         // 3. Price & Tick Size Filter
         val minPriceBD = BigDecimal.valueOf(rules.minPrice)
         val maxPriceBD = BigDecimal.valueOf(rules.maxPrice)

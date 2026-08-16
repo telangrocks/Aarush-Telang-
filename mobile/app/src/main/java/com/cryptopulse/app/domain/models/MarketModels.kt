@@ -12,10 +12,13 @@ data class MarketCandidate(
     val highPrice24h: Double,
     val lowPrice24h: Double,
     val score: Double,
-    val minNotional: Double,
-    val minOrderQty: Double,
-    val qtyStep: Double,
-    val tickSize: Double,
+    val minNotional: Double?,
+    val minOrderQty: Double?,
+    val qtyStep: Double?,
+    val tickSize: Double?,
+    val minPrice: Double?,
+    val maxPrice: Double?,
+    val maxQty: Double?,
     val tradeSide: String
 )
 
@@ -28,11 +31,11 @@ data class Ticker(
     val priceChangePercent24h: Double,
     val highPrice24h: Double,
     val lowPrice24h: Double,
-    val minNotional: Double,
-    val minOrderQty: Double,
-    val maxOrderQty: Double,
-    val tickSize: Double,
-    val lotSize: Double,
+    val minNotional: Double?,
+    val minOrderQty: Double?,
+    val maxOrderQty: Double?,
+    val tickSize: Double?,
+    val lotSize: Double?,
     val timestamp: String
 )
 
