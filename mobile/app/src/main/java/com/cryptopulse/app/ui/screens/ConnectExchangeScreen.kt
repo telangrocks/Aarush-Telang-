@@ -49,7 +49,7 @@ import android.util.Log
 @Composable
 fun ConnectExchangeScreen(
     navController: NavController,
-    viewModel: ExchangeViewModel = hiltViewModel(),
+    viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
     exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager = com.cryptopulse.app.data.local.ExchangeConnectionManager(LocalContext.current.applicationContext),
 ) {
     Log.d("VM_CHECK", "[DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=${System.identityHashCode(viewModel)}")

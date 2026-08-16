@@ -757,7 +757,15 @@ export async function handleGetPersonalizedMarketCandidates(
         });
       }
     } catch (tErr: any) {
-      console.warn(`[DIAGNOSTIC] Stage 7: bulk fetchTickers failed: ${tErr?.message}. Proceeding with 0 tickers.`);
+      console.error(`[DIAGNOSTIC] Stage 7: bulk fetchTickers failed: ${tErr?.message}`);
+      c.status(503);
+      return c.json({
+        success: false,
+        stage: "7. fetchTickers completed",
+        error: tErr?.message || "Failed to fetch tickers from exchange",
+        constructor: tErr?.constructor?.name || "ExchangeError",
+        stack: tErr?.stack || String(tErr)
+      });
     }
     const tickers = rawTickers.filter((t): t is NonNullable<typeof t> => t !== null);
     console.log(`[DIAGNOSTIC] Stage 7: fetchTickers completed with ${tickers.length} genuine live tickers`);
