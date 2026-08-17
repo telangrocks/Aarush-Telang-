@@ -19,8 +19,6 @@ data class TradeSetupUiState(
     val error: String? = null,
     val entryPrice: String = "",
     val entryPriceError: String? = null,
-    val tradeValueUsdt: String = "",
-    val tradeValueUsdtError: String? = null,
     val minNotional: Double? = null,
     val minOrderQty: Double? = null,
     val qtyStep: Double? = null,
@@ -154,16 +152,6 @@ class TradeSetupViewModel @Inject constructor(
         }
     }
 
-    fun updateTradeValueUsdt(value: String) {
-        _uiState.update { currentState ->
-            val num = value.toDoubleOrNull()
-            val err = if (value.isBlank()) "Trade amount is required."
-            else if (num == null || num <= 0.0) "Trade amount must be a positive number."
-            else null
-            currentState.copy(tradeValueUsdt = value, tradeValueUsdtError = err)
-        }
-    }
-
     private fun validateEntryPriceOnly(
         entryPriceStr: String,
         rules: SymbolTradingRules
@@ -173,7 +161,8 @@ class TradeSetupViewModel @Inject constructor(
             params = com.cryptopulse.app.domain.validation.TradeValidationParams(
                 symbol = rules.symbol,
                 entryPrice = price,
-                tradeValueUsdt = 100.0 // Dummy notional passed solely to validate entry price limits & tick size
+                tradeValueUsdt = null,
+                quantity = null
             ),
             rules = rules
         )
@@ -181,62 +170,21 @@ class TradeSetupViewModel @Inject constructor(
 
     fun buildConfig(symbol: String): TradeSetupConfigResult {
         val currentState = _uiState.value
-        var hasErrors = false
-        val finalErrors = mutableMapOf<String, String>()
-
         val rules = buildRules(currentState, symbol)
         
         val valRes = validateEntryPriceOnly(currentState.entryPrice, rules)
         val entryPriceError = if (currentState.entryPrice.isBlank()) "Entry price is required." else if (!valRes.isValid) valRes.errorMessage else null
 
         if (entryPriceError != null) {
-            hasErrors = true
-            finalErrors["entryPrice"] = entryPriceError
-        }
-
-        val tradeValueNum = currentState.tradeValueUsdt.toDoubleOrNull()
-        val tradeValueError = if (currentState.tradeValueUsdt.isBlank()) "Trade amount is required."
-        else if (tradeValueNum == null || tradeValueNum <= 0.0) "Trade amount must be a positive number."
-        else null
-
-        if (tradeValueError != null) {
-            hasErrors = true
-            finalErrors["tradeValueUsdt"] = tradeValueError
-        }
-
-        // Check if rules are missing
-        if (!hasErrors) {
-            val finalValRes = com.cryptopulse.app.domain.validation.TradeValidator.validate(
-                params = com.cryptopulse.app.domain.validation.TradeValidationParams(
-                    symbol = symbol,
-                    entryPrice = currentState.entryPrice.toDouble(),
-                    tradeValueUsdt = tradeValueNum!!
-                ),
-                rules = rules
-            )
-            if (!finalValRes.isValid) {
-                hasErrors = true
-                val err = finalValRes.errorMessage ?: "Validation failed"
-                finalErrors["general"] = err
-                // if it's entry price related, put it there too for UI convenience
-                if (err.contains("price", ignoreCase = true) || err.contains("unavailable", ignoreCase = true)) {
-                    finalErrors["entryPrice"] = err
-                } else {
-                    finalErrors["tradeValueUsdt"] = err
-                }
-            }
-        }
-        
-        if (hasErrors) {
-            _uiState.update { it.copy(entryPriceError = finalErrors["entryPrice"], tradeValueUsdtError = finalErrors["tradeValueUsdt"]) }
-            return TradeSetupConfigResult.ValidationFailed(finalErrors)
+            _uiState.update { it.copy(entryPriceError = entryPriceError) }
+            return TradeSetupConfigResult.ValidationFailed(mapOf("entryPrice" to entryPriceError))
         }
 
         val config = TradeSetupConfig(
             strategyId = null,
             symbol = symbol,
             entryPrice = currentState.entryPrice.toDouble(),
-            tradeValueUsdt = tradeValueNum!!,
+            tradeValueUsdt = null,
             parameters = emptyMap()
         )
         sessionRepository.setTradeSetupConfig(config)

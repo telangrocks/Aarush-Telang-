@@ -195,48 +195,6 @@ fun TradeSetupScreen(
                     }
 
                     item {
-                        Spacer(Modifier.height(10.dp))
-                        OutlinedTextField(
-                            value = uiState.tradeValueUsdt,
-                            onValueChange = { newValue ->
-                                if (newValue.isEmpty() || newValue.matches(Regex("^\\d*\\.?\\d*$"))) {
-                                    viewModel.updateTradeValueUsdt(newValue)
-                                }
-                            },
-                            label = { Text("Trade Amount (USDT)") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("trade_setup_trade_value"),
-                            isError = uiState.tradeValueUsdtError != null,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary,
-                                cursorColor = CyanPrimary,
-                                focusedBorderColor = CyanPrimary,
-                                unfocusedBorderColor = Color(0xFF2A3650),
-                                errorBorderColor = LossRed
-                            ),
-                            supportingText = {
-                                val tradeValueUsdtError = uiState.tradeValueUsdtError
-                                if (tradeValueUsdtError != null) {
-                                    Text(
-                                        text = tradeValueUsdtError,
-                                        color = LossRed,
-                                        fontSize = 12.sp
-                                    )
-                                } else {
-                                    Text(
-                                        text = "Enter desired trade size in USDT.",
-                                        color = TextSecondary,
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
-                        )
-                    }
-
-                    item {
                         Spacer(Modifier.height(80.dp))
                     }
                 }

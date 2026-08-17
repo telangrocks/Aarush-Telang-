@@ -50,9 +50,9 @@ object TradeValidator {
         }
         val entryPriceBD = BigDecimal.valueOf(params.entryPrice)
 
-        // Null constraints check
-        if (rules.minPrice == null || rules.maxPrice == null || rules.tickSize == null || 
-            rules.stepSize == null || rules.minQty == null || rules.maxQty == null || rules.minNotional == null) {
+        val isEntryPriceOnly = params.quantity == null && params.tradeValueUsdt == null
+
+        if (rules.minPrice == null || rules.tickSize == null) {
             return TradeValidationResult(
                 isValid = false,
                 errorCode = ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE,
@@ -60,16 +60,26 @@ object TradeValidator {
             )
         }
 
+        if (!isEntryPriceOnly) {
+            if (rules.stepSize == null || rules.minQty == null || rules.minNotional == null) {
+                return TradeValidationResult(
+                    isValid = false,
+                    errorCode = ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE,
+                    errorMessage = "Trading rules for this pair are currently unavailable from the exchange."
+                )
+            }
+        }
+
         // 3. Price & Tick Size Filter
-        val minPriceBD = BigDecimal.valueOf(rules.minPrice)
-        val maxPriceBD = BigDecimal.valueOf(rules.maxPrice)
-        val tickSizeBD = BigDecimal.valueOf(rules.tickSize)
+        val minPriceBD = rules.minPrice?.let { BigDecimal.valueOf(it) } ?: BigDecimal.ZERO
+        val maxPriceBD = rules.maxPrice?.let { BigDecimal.valueOf(it) } ?: BigDecimal.ZERO
+        val tickSizeBD = rules.tickSize?.let { BigDecimal.valueOf(it) } ?: BigDecimal.ZERO
 
         if (minPriceBD > BigDecimal.ZERO && entryPriceBD < minPriceBD) {
             return TradeValidationResult(
                 isValid = false,
                 errorCode = ValidationErrorReason.PRICE_BELOW_MINIMUM,
-                errorMessage = "Entry price ($${entryPriceBD.toPlainString()}) is below exchange minimum price ($${minPriceBD.toPlainString()})."
+                errorMessage = "Please enter a valid entry price for this trading pair."
             )
         }
 
@@ -77,7 +87,7 @@ object TradeValidator {
             return TradeValidationResult(
                 isValid = false,
                 errorCode = ValidationErrorReason.PRICE_ABOVE_MAXIMUM,
-                errorMessage = "Entry price ($${entryPriceBD.toPlainString()}) exceeds exchange maximum price ($${maxPriceBD.toPlainString()})."
+                errorMessage = "Please enter a valid entry price for this trading pair."
             )
         }
 
@@ -89,10 +99,14 @@ object TradeValidator {
                     return TradeValidationResult(
                         isValid = false,
                         errorCode = ValidationErrorReason.INVALID_TICK_SIZE,
-                        errorMessage = "Entry price ($${entryPriceBD.toPlainString()}) does not align with exchange tick size (${tickSizeBD.toPlainString()})."
+                        errorMessage = "Please enter a valid entry price for this trading pair."
                     )
                 }
             }
+        }
+
+        if (isEntryPriceOnly) {
+            return TradeValidationResult(isValid = true)
         }
 
         // 4. Raw Quantity Calculation
@@ -113,7 +127,7 @@ object TradeValidator {
         }
 
         // 5. Step Size Quantization (Floor rounding to stepSize)
-        val stepSizeBD = BigDecimal.valueOf(rules.stepSize)
+        val stepSizeBD = rules.stepSize?.let { BigDecimal.valueOf(it) } ?: BigDecimal.ZERO
         val roundedQtyBD: BigDecimal = if (stepSizeBD > BigDecimal.ZERO) {
             val steps = rawQtyBD.divide(stepSizeBD, 0, RoundingMode.FLOOR)
             steps.multiply(stepSizeBD)
@@ -122,8 +136,8 @@ object TradeValidator {
         }
 
         // 6. Quantity Filter (Min/Max Qty)
-        val minQtyBD = BigDecimal.valueOf(rules.minQty)
-        val maxQtyBD = BigDecimal.valueOf(rules.maxQty)
+        val minQtyBD = rules.minQty?.let { BigDecimal.valueOf(it) } ?: BigDecimal.ZERO
+        val maxQtyBD = rules.maxQty?.let { BigDecimal.valueOf(it) } ?: BigDecimal.ZERO
 
         if (roundedQtyBD < minQtyBD) {
             return TradeValidationResult(
@@ -145,7 +159,7 @@ object TradeValidator {
 
         // 7. Post-Rounding Notional Calculation
         val postRoundingNotionalBD = roundedQtyBD.multiply(entryPriceBD)
-        val minNotionalBD = BigDecimal.valueOf(rules.minNotional)
+        val minNotionalBD = rules.minNotional?.let { BigDecimal.valueOf(it) } ?: BigDecimal.ZERO
 
         if (minNotionalBD > BigDecimal.ZERO && postRoundingNotionalBD < minNotionalBD) {
             return TradeValidationResult(

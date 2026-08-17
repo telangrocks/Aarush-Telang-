@@ -98,7 +98,6 @@ class TradeSetupViewModelTest {
             maxQty = 100.0
         )
         viewModel.updateEntryPrice("50000.0")
-        viewModel.updateTradeValueUsdt("100.0")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.Success)
@@ -106,7 +105,7 @@ class TradeSetupViewModelTest {
         assertEquals(null, config.strategyId)
         assertEquals("BTC", config.symbol)
         assertEquals(50000.0, config.entryPrice, 0.001)
-        assertEquals(100.0, config.tradeValueUsdt, 0.001)
+        assertEquals(null, config.tradeValueUsdt)
     }
 
     @Test
@@ -124,7 +123,6 @@ class TradeSetupViewModelTest {
             maxQty = 100.0
         )
         viewModel.updateEntryPrice("")
-        viewModel.updateTradeValueUsdt("100.0")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
@@ -142,13 +140,12 @@ class TradeSetupViewModelTest {
             minNotional = null, // Missing constraint
             minOrderQty = 0.001,
             qtyStep = 0.001,
-            tickSize = 0.1,
+            tickSize = null, // Set tickSize to null to fail entry price validation
             minPrice = 0.1,
             maxPrice = 100000.0,
             maxQty = 100.0
         )
         viewModel.updateEntryPrice("50000.0")
-        viewModel.updateTradeValueUsdt("100.0")
 
         val result = viewModel.buildConfig("BTC")
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
