@@ -92,17 +92,23 @@ object AppModule {
         }
     }
 
-    private class RetryInterceptor : Interceptor {
+    internal class RetryInterceptor : Interceptor {
         private val MAX_RETRIES = 2
         private val INITIAL_DELAY_MS = 1000L
 
         override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val method = request.method
+            if (method != "GET" && method != "HEAD") {
+                return chain.proceed(request)
+            }
+
             var retryCount = 0
             var lastException: IOException? = null
 
             while (retryCount < MAX_RETRIES) {
                 try {
-                    return chain.proceed(chain.request())
+                    return chain.proceed(request)
                 } catch (e: IOException) {
                     lastException = e
                 }
