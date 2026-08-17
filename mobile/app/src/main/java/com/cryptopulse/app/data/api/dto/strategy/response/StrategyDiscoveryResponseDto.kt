@@ -13,6 +13,10 @@ data class StrategyParameterSchemaDto(
     @SerializedName("options") val options: List<String>? = null
 )
 
+data class StrategyConfigDto(
+    @SerializedName("riskParameters") val riskParameters: Map<String, Double>? = null
+)
+
 data class StrategyManifestDto(
     @SerializedName("id") val id: String? = null,
     @SerializedName("displayName") val displayName: String? = null,
@@ -29,7 +33,8 @@ data class StrategyManifestDto(
     @SerializedName("supportsLiveTrading") val supportsLiveTrading: Boolean? = null,
     @SerializedName("status") val status: String? = null,
     @SerializedName("author") val author: String? = null,
-    @SerializedName("parameters") val parameters: List<StrategyParameterSchemaDto>? = null
+    @SerializedName("parameters") val parameters: List<StrategyParameterSchemaDto>? = null,
+    @SerializedName("defaultConfiguration") val defaultConfiguration: StrategyConfigDto? = null
 )
 
 data class StrategyDiscoveryResponseDto(

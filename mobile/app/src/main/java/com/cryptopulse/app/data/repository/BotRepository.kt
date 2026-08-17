@@ -34,12 +34,16 @@ class BotRepositoryImpl @Inject constructor(
     override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
     override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+        val mergedConfig = mutableMapOf<String, Any>()
+        config?.parameters?.let { mergedConfig.putAll(it) }
+        config?.riskParameters?.let { if (it.isNotEmpty()) mergedConfig["riskParameters"] = it }
+
         val request = ActivateBotRequestDto(
             coinId = symbol,
             strategy = strategy,
             targetEntryPrice = config?.entryPrice?.takeIf { it > 0.0 },
             positionSize = config?.tradeValueUsdt?.takeIf { it > 0.0 },
-            config = config?.parameters
+            config = mergedConfig.takeIf { it.isNotEmpty() }
         )
         when (val result = botRemoteDataSource.activate(request)) {
             is NetworkResult.Success -> {

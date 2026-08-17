@@ -45,5 +45,6 @@ data class Strategy(
     val supportsLiveTrading: Boolean = true,
     val status: String = "ACTIVE",
     val author: String = "CryptoPulse Core",
-    val requiredParameters: List<StrategyParameterSchema>
+    val requiredParameters: List<StrategyParameterSchema>,
+    val defaultRiskParameters: Map<String, Double> = emptyMap()
 )

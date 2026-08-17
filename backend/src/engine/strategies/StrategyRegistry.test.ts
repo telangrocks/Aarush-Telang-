@@ -66,4 +66,42 @@ describe('StrategyRegistry', () => {
       expect(strategy?.manifest.id).toBe(expectedId);
     }
   });
+  it('should safely deep merge explicitly permitted objects like riskParameters', () => {
+    const registry = StrategyRegistry.getInstance();
+    const strategy = registry.createStrategy('ScalperV2', {
+      riskParameters: {
+        accountRiskPercent: 2.5
+      }
+    });
+
+    expect(strategy).toBeDefined();
+    expect((strategy as any).config.riskParameters.accountRiskPercent).toBe(2.5);
+    // ensure maxExposureLimit is preserved
+    expect((strategy as any).config.riskParameters.maxExposureLimit).toBeDefined();
+    expect((strategy as any).config.riskParameters.maxExposureLimit).toBe(20.0);
+  });
+
+  it('should reject invalid riskParameters bounds', () => {
+    const registry = StrategyRegistry.getInstance();
+    
+    expect(() => {
+      registry.createStrategy('ScalperV2', { riskParameters: { accountRiskPercent: 99.0 } });
+    }).toThrow(/Invalid accountRiskPercent/);
+
+    expect(() => {
+      registry.createStrategy('ScalperV2', { riskParameters: { accountRiskPercent: 0.05 } });
+    }).toThrow(/Invalid accountRiskPercent/);
+
+    expect(() => {
+      registry.createStrategy('ScalperV2', { riskParameters: { riskRewardRatio: 0.5 } });
+    }).toThrow(/Invalid riskRewardRatio/);
+
+    expect(() => {
+      registry.createStrategy('ScalperV2', { riskParameters: { riskRewardRatio: 6.0 } });
+    }).toThrow(/Invalid riskRewardRatio/);
+
+    expect(() => {
+      registry.createStrategy('ScalperV2', { riskParameters: { atrStopLossMultiplier: 0.1 } });
+    }).toThrow(/Invalid atrStopLossMultiplier/);
+  });
 });

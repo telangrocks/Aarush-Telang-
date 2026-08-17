@@ -1,0 +1,69 @@
+
+logcat_test.txt:1069:08-13 23:19:26.522 D/VM_CHECK( 4372): [DIAGNOSTIC] ExchangeViewModel hash=147232901
+logcat_test.txt:1070:08-13 23:19:26.522 D/ExchangeViewModel( 4372): [DIAGNOSTIC] ViewModel created: 147232901
+logcat_test.txt:1096:08-13 23:19:27.049 D/Navigation( 4372): [DIAGNOSTIC] Destination = splash
+logcat_test.txt:1165:08-13 23:19:29.174 D/Navigation( 4372): [DIAGNOSTIC] Destination = onboarding
+logcat_test.txt:1245:08-13 23:19:55.111 D/Navigation( 4372): [DIAGNOSTIC] Destination = auth
+logcat_test.txt:1277:08-13 23:20:11.284 D/OkHttpDiagnostics( 4372): --> POST https://crypto-pulse-backend.telangrocks.workers.dev/api/login (57-byte body)
+logcat_test.txt:1279:08-13 23:20:14.446 D/OkHttpDiagnostics( 4372): <-- 200 https://crypto-pulse-backend.telangrocks.workers.dev/api/login (3147ms, unknown-length body)
+logcat_test.txt:1280:08-13 23:20:14.483 D/Navigation( 4372): [DIAGNOSTIC] Destination = connect_exchange
+logcat_test.txt:1281:08-13 23:20:14.489 D/VM_CHECK( 4372): [DIAGNOSTIC] ExchangeViewModel hash=190880349
+logcat_test.txt:1282:08-13 23:20:14.489 D/ExchangeViewModel( 4372): [DIAGNOSTIC] ViewModel created: 190880349
+logcat_test.txt:1283:08-13 23:20:14.490 D/VM_CHECK( 4372): [DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=190880349
+logcat_test.txt:1284:08-13 23:20:14.490 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Screen ViewModel: 190880349
+logcat_test.txt:1285:08-13 23:20:14.490 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Observed: uiState=com.cryptopulse.app.ui.auth.ExchangeUiState$Idle@e1ff72a ready=false candidates=0
+logcat_test.txt:1287:08-13 23:20:14.613 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] LaunchedEffect triggered: uiState=com.cryptopulse.app.ui.auth.ExchangeUiState$Idle@e1ff72a, readyForCandidates=false, candidatesCount=0
+logcat_test.txt:1288:08-13 23:20:14.617 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Initial connection check: isConnected=false
+logcat_test.txt:1289:08-13 23:20:14.621 D/VM_CHECK( 4372): [DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=190880349
+logcat_test.txt:1290:08-13 23:20:14.621 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Screen ViewModel: 190880349
+logcat_test.txt:1291:08-13 23:20:14.621 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Observed: uiState=com.cryptopulse.app.ui.auth.ExchangeUiState$Idle@e1ff72a ready=false candidates=0
+logcat_test.txt:1292:08-13 23:20:14.965 D/VM_CHECK( 4372): [DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=190880349
+logcat_test.txt:1293:08-13 23:20:14.965 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Screen ViewModel: 190880349
+logcat_test.txt:1294:08-13 23:20:14.965 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Observed: uiState=com.cryptopulse.app.ui.auth.ExchangeUiState$Idle@e1ff72a ready=false candidates=0
+logcat_test.txt:1295:08-13 23:20:14.991 D/VM_CHECK( 4372): [DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=190880349
+logcat_test.txt:1296:08-13 23:20:14.992 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Screen ViewModel: 190880349
+logcat_test.txt:1297:08-13 23:20:14.992 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Observed: uiState=com.cryptopulse.app.ui.auth.ExchangeUiState$Idle@e1ff72a ready=false candidates=0
+logcat_test.txt:1473:08-13 23:21:04.663 D/VM_CHECK( 4372): [DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=190880349
+logcat_test.txt:1474:08-13 23:21:04.664 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Screen ViewModel: 190880349
+logcat_test.txt:1475:08-13 23:21:04.664 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Observed: uiState=com.cryptopulse.app.ui.auth.ExchangeUiState$Validating@6d25dfb ready=false candidates=0
+logcat_test.txt:1476:08-13 23:21:04.675 D/OkHttpDiagnostics( 4372): --> POST https://crypto-pulse-backend.telangrocks.workers.dev/api/exchange/validate (126-byte body)
+logcat_test.txt:1477:08-13 23:21:04.687 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] LaunchedEffect triggered: uiState=com.cryptopulse.app.ui.auth.ExchangeUiState$Validating@6d25dfb, readyForCandidates=false, candidatesCount=0
+logcat_test.txt:1478:08-13 23:21:05.731 D/OkHttpDiagnostics( 4372): <-- 200 https://crypto-pulse-backend.telangrocks.workers.dev/api/exchange/validate (1054ms, unknown-length body)
+logcat_test.txt:1479:08-13 23:21:05.738 D/OkHttpDiagnostics( 4372): --> POST https://crypto-pulse-backend.telangrocks.workers.dev/api/exchange/connect (126-byte body)
+logcat_test.txt:1483:08-13 23:21:08.288 D/OkHttpDiagnostics( 4372): <-- 200 https://crypto-pulse-backend.telangrocks.workers.dev/api/exchange/connect (2549ms, unknown-length body)
+logcat_test.txt:1484:08-13 23:21:08.295 D/VM_CHECK( 4372): [DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=190880349
+logcat_test.txt:1485:08-13 23:21:08.295 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Screen ViewModel: 190880349
+logcat_test.txt:1486:08-13 23:21:08.295 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Observed: uiState=Connected(exchangeName=bybit) ready=false candidates=0
+logcat_test.txt:1487:08-13 23:21:08.314 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] LaunchedEffect triggered: uiState=Connected(exchangeName=bybit), readyForCandidates=false, candidatesCount=0
+logcat_test.txt:1488:08-13 23:21:08.314 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] NAVIGATING -> market_candidates
+logcat_test.txt:1489:08-13 23:21:08.320 D/Navigation( 4372): [DIAGNOSTIC] Destination = market_candidates
+logcat_test.txt:1490:08-13 23:21:08.331 D/VM_CHECK( 4372): [DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=190880349
+logcat_test.txt:1491:08-13 23:21:08.331 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Screen ViewModel: 190880349
+logcat_test.txt:1492:08-13 23:21:08.331 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Observed: uiState=Connected(exchangeName=bybit) ready=false candidates=0
+logcat_test.txt:1493:08-13 23:21:08.340 D/VM_CHECK( 4372): [DIAGNOSTIC] ExchangeViewModel hash=66973426
+logcat_test.txt:1494:08-13 23:21:08.340 D/ExchangeViewModel( 4372): [DIAGNOSTIC] ViewModel created: 66973426
+logcat_test.txt:1495:08-13 23:21:08.341 D/VM_CHECK( 4372): [DIAGNOSTIC] MarketCandidatesScreen ExchangeViewModel hash=66973426
+logcat_test.txt:1496:08-13 23:21:08.342 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Recomposed: VM hash=66973426, candidatesCount=0, marketDataState=com.cryptopulse.app.ui.auth.MarketDataUiState$Idle@1f432d8
+logcat_test.txt:1498:08-13 23:21:08.474 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] SCREEN CREATED
+logcat_test.txt:1499:08-13 23:21:08.480 D/VM_CHECK( 4372): [DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=190880349
+logcat_test.txt:1500:08-13 23:21:08.480 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Screen ViewModel: 190880349
+logcat_test.txt:1501:08-13 23:21:08.480 D/ConnectExchangeScreen( 4372): [DIAGNOSTIC] Observed: uiState=Connected(exchangeName=bybit) ready=false candidates=0
+logcat_test.txt:1502:08-13 23:21:08.482 D/VM_CHECK( 4372): [DIAGNOSTIC] MarketCandidatesScreen ExchangeViewModel hash=66973426
+logcat_test.txt:1503:08-13 23:21:08.482 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Recomposed: VM hash=66973426, candidatesCount=0, marketDataState=com.cryptopulse.app.ui.auth.MarketDataUiState$Idle@1f432d8
+logcat_test.txt:1504:08-13 23:21:08.506 D/OkHttpDiagnostics( 4372): --> GET https://crypto-pulse-backend.telangrocks.workers.dev/api/market/candidates
+logcat_test.txt:1505:08-13 23:21:08.832 D/VM_CHECK( 4372): [DIAGNOSTIC] MarketCandidatesScreen ExchangeViewModel hash=66973426
+logcat_test.txt:1506:08-13 23:21:08.832 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Recomposed: VM hash=66973426, candidatesCount=0, marketDataState=com.cryptopulse.app.ui.auth.MarketDataUiState$Idle@1f432d8
+logcat_test.txt:1507:08-13 23:21:08.867 D/VM_CHECK( 4372): [DIAGNOSTIC] MarketCandidatesScreen ExchangeViewModel hash=66973426
+logcat_test.txt:1508:08-13 23:21:08.867 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Recomposed: VM hash=66973426, candidatesCount=0, marketDataState=com.cryptopulse.app.ui.auth.MarketDataUiState$Idle@1f432d8
+logcat_test.txt:1518:08-13 23:21:10.720 D/OkHttpDiagnostics( 4372): --> GET https://crypto-pulse-backend.telangrocks.workers.dev/api/market/candidates
+logcat_test.txt:1519:08-13 23:21:10.728 D/VM_CHECK( 4372): [DIAGNOSTIC] MarketCandidatesScreen ExchangeViewModel hash=66973426
+logcat_test.txt:1520:08-13 23:21:10.728 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Recomposed: VM hash=66973426, candidatesCount=0, marketDataState=com.cryptopulse.app.ui.auth.MarketDataUiState$Loading@922dec0
+logcat_test.txt:1521:08-13 23:21:14.372 D/OkHttpDiagnostics( 4372): <-- 200 https://crypto-pulse-backend.telangrocks.workers.dev/api/market/candidates (5865ms, unknown-length body)
+logcat_test.txt:1522:08-13 23:21:17.049 D/OkHttpDiagnostics( 4372): <-- 200 https://crypto-pulse-backend.telangrocks.workers.dev/api/market/candidates (6329ms, unknown-length body)
+logcat_test.txt:1523:08-13 23:21:17.063 D/VM_CHECK( 4372): [DIAGNOSTIC] MarketCandidatesScreen ExchangeViewModel hash=66973426
+logcat_test.txt:1524:08-13 23:21:17.066 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Recomposed: VM hash=66973426, candidatesCount=5, marketDataState=Success(candidates=[MarketCandidate(rank=1, symbol=2Z, pairName=2Z/USDT, coinName=2Z, notations=0, currentMarketPrice=0.04843, minNotional=5.0, coinColor=Color(0.53333336, 0.53333336, 0.53333336, 1.0, sRGB IEC61966-2.1), volume24h=9.0625923E7, quoteVolume24h=5003349.1162, priceChangePercent24h=0.0, score=50.0, recommendedTimeframe=1h, tradeSide=SELL, formattedPrice=, formattedMinNotional=, formattedVolume=, highPrice24h=0.06589, lowPrice24h=0.04707), MarketCandidate(rank=2, symbol=AAOI, pairName=AAOI/USDT, coinName=AAOI, notations=0, currentMarketPrice=137.0, minNotional=5.0, coinColor=Color(0.53333336, 0.53333336, 0.53333336, 1.0, sRGB IEC61966-2.1), volume24h=26254.76, quoteVolume24h=3636708.635, priceChangePercent24h=0.0, score=50.0, recommendedTimeframe=1h, tradeSide=SELL, formattedPrice=, formattedMinNotional=, formattedVolume=, highPrice24h=144.8, lowPrice24h=133.22), MarketCandidate(rank=3, symbol=ACE, pairName=ACE/USDT, coinName=ACE, notations=0, currentMarketPrice=0.11506, minNotional=5.0, coinColor=Color(0.53333336, 0.53333336, 0.53333336, 1.0, sRGB IEC61966-2.1), volume24h=2.37595071E7, quoteVolume24h=2626723.0598, priceChangePercent24h=0.0, score=50.0, recommendedTimeframe=1h, tradeSide=SELL, formattedPrice=, formattedMinNotional=, formattedVolume=, highPrice24h=0.11849, lowPrice24h=0.104), MarketCandidate(rank=4, symbol=ACU, pairName=ACU/USDT, coinName=ACU, notations=0, currentMarketPrice=0.12671, minNotional=5.0, coinColor=Color(0.53333336, 0.53333336, 0.53333336, 1.0, sRGB IEC61966-2.1), volume24h=1.52231668E8, quoteVolume24h=1.89559971082E7, priceChangePercent24h=0.0, score=50.0, recommendedTimeframe=1h, tradeSide=SELL, formattedPrice=, formattedMinNotional=, formattedVolume=, highPrice24h=0.14268, lowPrice24h=0.0938), MarketCandidate(rank=5, symbol=4, pairName=4/USDT, coinName=4, notations=0, currentMarketPrice=0.01027, minNotional=5.0, coinColor=Color(0.53333336, 0.53333336, 0.53333336, 1.0, sRGB IEC61966-2.1), volume24h=6.4112949E7, quoteVolume24h=695013.7171, priceChangePercent24h=0.0, score=49.2099700048761, recommendedTimeframe=1h, tradeSide=SELL, formattedPrice=, formattedMinNotional=, formattedVolume=, highPrice24h=0.011533, lowPrice24h=0.010122)])
+logcat_test.txt:1525:08-13 23:21:17.122 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Rendering item: symbol=2Z, pair=2Z/USDT, rank=1, price=$0.04843
+logcat_test.txt:1526:08-13 23:21:17.136 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Rendering item: symbol=AAOI, pair=AAOI/USDT, rank=2, price=$137.0
+logcat_test.txt:1527:08-13 23:21:17.148 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Rendering item: symbol=ACE, pair=ACE/USDT, rank=3, price=$0.11506
+logcat_test.txt:1528:08-13 23:21:17.162 D/MarketCandidatesScreen( 4372): [DIAGNOSTIC] Rendering item: symbol=ACU, pair=ACU/USDT, rank=4, price=$0.12671
+

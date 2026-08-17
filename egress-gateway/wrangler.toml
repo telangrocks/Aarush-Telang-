@@ -1,0 +1,10 @@
+name = "crypto-pulse-egress-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+account_id = "0ea8292ec77cc8fabb1bdc1b73127a19"
+workers_dev = true
+send_metrics = false
+
+[vars]
+EGRESS_PROXY_SECRET = "crypto-pulse-egress-secret-2026"

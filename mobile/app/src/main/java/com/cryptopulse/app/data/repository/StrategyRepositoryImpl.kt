@@ -56,7 +56,8 @@ class StrategyRepositoryImpl @Inject constructor(
                                 maxValue = p.maxValue,
                                 options = p.options
                             )
-                        } ?: emptyList()
+                        } ?: emptyList(),
+                        defaultRiskParameters = dto.defaultConfiguration?.riskParameters ?: emptyMap()
                     )
                 }
                 cachedStrategies = strategies

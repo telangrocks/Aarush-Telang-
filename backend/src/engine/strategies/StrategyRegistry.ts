@@ -49,9 +49,41 @@ function applyConfigOverrides<T extends Record<string, any>>(defaultConfig: T, o
     }
   }
 
+  if (overrides.riskParameters) {
+    const rp = overrides.riskParameters;
+    if (rp.accountRiskPercent !== undefined) {
+      if (typeof rp.accountRiskPercent !== 'number' || rp.accountRiskPercent < 0.1 || rp.accountRiskPercent > 5.0) {
+        throw new Error(`Invalid accountRiskPercent: ${rp.accountRiskPercent}. Must be between 0.1 and 5.0.`);
+      }
+    }
+    if (rp.riskRewardRatio !== undefined) {
+      if (typeof rp.riskRewardRatio !== 'number' || rp.riskRewardRatio < 1.0 || rp.riskRewardRatio > 5.0) {
+        throw new Error(`Invalid riskRewardRatio: ${rp.riskRewardRatio}. Must be between 1.0 and 5.0.`);
+      }
+    }
+    if (rp.atrStopLossMultiplier !== undefined) {
+      if (typeof rp.atrStopLossMultiplier !== 'number' || rp.atrStopLossMultiplier < 0.5 || rp.atrStopLossMultiplier > 5.0) {
+        throw new Error(`Invalid atrStopLossMultiplier: ${rp.atrStopLossMultiplier}. Must be between 0.5 and 5.0.`);
+      }
+    }
+
+    // Safely apply overrides, explicitly preserving system-controlled parameters
+    const { maxExposureLimit, atrTakeProfitMultiplier, ...safeOverrides } = rp;
+    merged.riskParameters = { ...merged.riskParameters, ...safeOverrides };
+  }
+
+  const permittedBlocks = ['indicatorConfig', 'conditionConfig', 'signalRules', 'trendFilter', 'vwapRules', 'entryRules'];
+  for (const block of permittedBlocks) {
+    if (overrides[block] && typeof overrides[block] === 'object' && !Array.isArray(overrides[block])) {
+      merged[block] = { ...merged[block], ...overrides[block] };
+    }
+  }
+
   for (const [key, val] of Object.entries(overrides)) {
-    if (key in merged && typeof val === typeof (merged as any)[key]) {
-      (merged as any)[key] = val;
+    if (key !== 'riskParameters' && key !== 'confidenceWeights' && !permittedBlocks.includes(key)) {
+      if (key in merged && typeof val === typeof (merged as any)[key] && typeof val !== 'object') {
+        (merged as any)[key] = val;
+      }
     }
   }
 
