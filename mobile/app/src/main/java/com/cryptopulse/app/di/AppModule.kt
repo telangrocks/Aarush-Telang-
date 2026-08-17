@@ -141,6 +141,8 @@ object AppModule {
                     .replace(Regex("\"apiKey\"\\s*:\\s*\"[^\"]+\""), "\"apiKey\":\"[REDACTED]\"")
                     .replace(Regex("\"apiSecret\"\\s*:\\s*\"[^\"]+\""), "\"apiSecret\":\"[REDACTED]\"")
                     .replace(Regex("\"apiPassphrase\"\\s*:\\s*\"[^\"]+\""), "\"apiPassphrase\":\"[REDACTED]\"")
+                    .replace(Regex("\"password\"\\s*:\\s*\"[^\"]+\""), "\"password\":\"[REDACTED]\"")
+                    .replace(Regex("\"confirmPassword\"\\s*:\\s*\"[^\"]+\""), "\"confirmPassword\":\"[REDACTED]\"")
                     .replace(Regex("Authorization: Bearer \\S+"), "Authorization: Bearer [REDACTED]")
                     .replace(Regex("X-BAPI-API-KEY: \\S+"), "X-BAPI-API-KEY: [REDACTED]")
                     .replace(Regex("X-BAPI-SIGN: \\S+"), "X-BAPI-SIGN: [REDACTED]")

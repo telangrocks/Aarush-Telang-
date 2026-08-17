@@ -35,16 +35,16 @@ import com.cryptopulse.app.ui.theme.*
 @Composable
 fun TradeSetupScreen(
     candidate: MarketCandidate,
+    balance: Double?,
+    asset: String,
+    exchangeName: String,
+    environmentName: String,
     onBack: () -> Unit,
     onProceedToAnalysis: () -> Unit,
     viewModel: TradeSetupViewModel
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val uiState by viewModel.uiState.collectAsState()
-    val balanceState by viewModel.balanceState.collectAsState()
-
-    android.util.Log.d("VM_CHECK", "[DIAGNOSTIC] TradeSetupScreen TradeSetupViewModel hash=${System.identityHashCode(viewModel)}, balanceState=$balanceState")
-
     LaunchedEffect(candidate) {
         viewModel.setConstraints(
             minNotional = candidate.minNotional,
@@ -121,8 +121,10 @@ fun TradeSetupScreen(
                     CoinInfoCard(candidate = candidate)
                     Spacer(Modifier.height(10.dp))
                     AvailableBalanceCard(
-                        balanceState = balanceState,
-                        onRetry = { viewModel.loadBalance() }
+                        balance = balance,
+                        asset = asset,
+                        exchangeName = exchangeName,
+                        environmentName = environmentName
                     )
                     
                     Spacer(Modifier.height(8.dp))
@@ -205,14 +207,15 @@ fun TradeSetupScreen(
 
 @Composable
 fun AvailableBalanceCard(
-    balanceState: com.cryptopulse.app.ui.strategies.BalanceUiState,
-    onRetry: () -> Unit
+    balance: Double?,
+    asset: String,
+    exchangeName: String,
+    environmentName: String
 ) {
-    val accessibleBalanceText = when (balanceState) {
-        is com.cryptopulse.app.ui.strategies.BalanceUiState.Success -> "Available balance ${String.format(java.util.Locale.US, "%,.2f", balanceState.freeBalance)} ${balanceState.primaryAsset} on ${balanceState.exchangeName} ${balanceState.environment}."
-        is com.cryptopulse.app.ui.strategies.BalanceUiState.NotConnected -> "No exchange connected."
-        is com.cryptopulse.app.ui.strategies.BalanceUiState.Error -> "Balance error: ${balanceState.message}"
-        else -> "Fetching wallet balance."
+    val accessibleBalanceText = if (balance != null) {
+        "Available balance ${String.format(java.util.Locale.US, "%,.2f", balance)} $asset on $exchangeName $environmentName."
+    } else {
+        "Fetching wallet balance."
     }
 
     Surface(
@@ -240,85 +243,42 @@ fun AvailableBalanceCard(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 )
-                when (balanceState) {
-                    is com.cryptopulse.app.ui.strategies.BalanceUiState.Success -> {
-                        Text(
-                            text = "${balanceState.exchangeName} • ${balanceState.environment}",
-                            color = TextSecondary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Normal
-                        )
-                    }
-                    else -> {}
-                }
+                Text(
+                    text = "$exchangeName • $environmentName",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Normal
+                )
             }
 
             Spacer(Modifier.height(4.dp))
 
-            when (balanceState) {
-                is com.cryptopulse.app.ui.strategies.BalanceUiState.Loading -> {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            color = CyanPrimary,
-                            strokeWidth = 2.dp
-                        )
-                        Text(
-                            text = "Fetching wallet balance...",
-                            color = TextSecondary,
-                            fontSize = 13.sp
-                        )
-                    }
-                }
-                is com.cryptopulse.app.ui.strategies.BalanceUiState.Success -> {
-                    val formatted = String.format("%,.2f", balanceState.freeBalance)
-                    Text(
-                        text = "$formatted ${balanceState.primaryAsset}",
-                        color = ProfitGreen,
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.5.sp
+            if (balance != null) {
+                val formatted = String.format("%,.2f", balance)
+                Text(
+                    text = "$formatted $asset",
+                    color = ProfitGreen,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                )
+            } else {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = CyanPrimary,
+                        strokeWidth = 2.dp
                     )
-                }
-                is com.cryptopulse.app.ui.strategies.BalanceUiState.NotConnected -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "No exchange connected",
-                            color = Color(0xFFFFB74D),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                        TextButton(onClick = onRetry) {
-                            Text("Retry", color = CyanPrimary, fontSize = 12.sp)
-                        }
-                    }
-                }
-                is com.cryptopulse.app.ui.strategies.BalanceUiState.Error -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = balanceState.message,
-                            color = Color(0xFFFF5252),
-                            fontSize = 12.sp,
-                            modifier = Modifier.weight(1f)
-                        )
-                        TextButton(onClick = onRetry) {
-                            Text("Retry", color = CyanPrimary, fontSize = 12.sp)
-                        }
-                    }
+                    Text(
+                        text = "Fetching wallet balance...",
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
                 }
             }
         }
     }
 }
-

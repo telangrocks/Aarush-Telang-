@@ -184,16 +184,13 @@ class MainActivity : FragmentActivity() {
                                 val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
 
-                                val candidate = selectedCandidate ?: MarketCandidate(
-                                    rank = 1,
-                                    symbol = "BTC",
-                                    pairName = "BTC/USDT",
-                                    coinName = "Bitcoin",
-                                    notations = 100,
-                                    currentMarketPrice = 50000.0,
-                                    minNotional = 0.0,
-                                    coinColor = Color(0xFFF7931A),
-                                )
+                                val candidate = selectedCandidate
+                                if (candidate == null) {
+                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    return@composable
+                                }
 
                                 StrategySelectionScreen(
                                     candidate = candidate,
@@ -218,16 +215,13 @@ class MainActivity : FragmentActivity() {
                                 val strategiesState = strategyViewModel.uiState.collectAsState().value
                                 val strategy = (strategiesState as? com.cryptopulse.app.ui.strategies.StrategySelectionState.Success)?.strategies?.find { it.id == strategyId }
                                 
-                                val candidate = selectedCandidate ?: MarketCandidate(
-                                    rank = 1,
-                                    symbol = "BTC",
-                                    pairName = "BTC/USDT",
-                                    coinName = "Bitcoin",
-                                    notations = 100,
-                                    currentMarketPrice = 50000.0,
-                                    minNotional = 0.0,
-                                    coinColor = Color(0xFFF7931A),
-                                )
+                                val candidate = selectedCandidate
+                                if (candidate == null) {
+                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    return@composable
+                                }
 
                                 if (strategy != null) {
                                     com.cryptopulse.app.ui.strategies.RiskManagementScreen(
@@ -263,20 +257,25 @@ class MainActivity : FragmentActivity() {
                                 val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
                                 val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>()
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
+                                val balances by exchangeViewModel.balances.collectAsState()
+                                val formState by exchangeViewModel.formState.collectAsState()
 
-                                val candidate = selectedCandidate ?: MarketCandidate(
-                                    rank = 1,
-                                    symbol = "BTC",
-                                    pairName = "BTC/USDT",
-                                    coinName = "Bitcoin",
-                                    notations = 100,
-                                    currentMarketPrice = 50000.0,
-                                    minNotional = 0.0,
-                                    coinColor = Color(0xFFF7931A),
-                                )
+                                val candidate = selectedCandidate
+                                if (candidate == null) {
+                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    return@composable
+                                }
+                                
+                                val primaryBalance = balances.find { it.asset.equals("USDT", ignoreCase = true) }?.free
 
                                 TradeSetupScreen(
                                     candidate = candidate,
+                                    balance = primaryBalance,
+                                    asset = "USDT",
+                                    exchangeName = formState.selectedExchange.replaceFirstChar { it.uppercase() },
+                                    environmentName = formState.environment.replaceFirstChar { it.uppercase() },
                                     onBack = { navController.popBackStack() },
                                     onProceedToAnalysis = {
                                         val result = tradeSetupViewModel.buildConfig(candidate.symbol)
@@ -293,20 +292,17 @@ class MainActivity : FragmentActivity() {
                                     navController.getBackStackEntry("authenticated_flow")
                                 }
                                 val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
-                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>()
+                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
                                 val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
                                 val analysisState by technicalAnalysisViewModel.analysisState.collectAsState()
 
-                                val candidate = selectedCandidate ?: MarketCandidate(
-                                    rank = 1,
-                                    symbol = "BTC",
-                                    pairName = "BTC/USDT",
-                                    coinName = "Bitcoin",
-                                    notations = 100,
-                                    currentMarketPrice = 50000.0,
-                                    minNotional = 0.0,
-                                    coinColor = Color(0xFFF7931A),
-                                )
+                                val candidate = selectedCandidate
+                                if (candidate == null) {
+                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    return@composable
+                                }
 
                                 LaunchedEffect(candidate.symbol) {
                                     technicalAnalysisViewModel.loadPreviewAnalysis(candidate.symbol, "ScalperV2")
@@ -332,12 +328,6 @@ class MainActivity : FragmentActivity() {
                                 )
                             }
 
-                            composable("live_analysis") {
-                                navController.navigate("technical_analysis") {
-                                    popUpTo("live_analysis") { inclusive = true }
-                                }
-                            }
-
                             composable("trade_alert") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
                                     navController.getBackStackEntry("authenticated_flow")
@@ -346,35 +336,41 @@ class MainActivity : FragmentActivity() {
                                 val alert by viewModel.pendingAlert.collectAsState(initial = null)
                                 val candidate by viewModel.selectedCandidate.collectAsState(initial = null)
 
-                                val alertSymbol = (alert?.get("symbol") as? String) ?: candidate?.symbol ?: "BTC"
-                                val entryPrice = (alert?.get("entryPrice") as? Double)
-                                    ?: candidate?.currentMarketPrice ?: 0.0
-                                val stopLossPrice = (alert?.get("stopLoss") as? Double)
-                                    ?: (entryPrice * 0.99)
-                                val takeProfitPrice = (alert?.get("takeProfit") as? Double)
-                                    ?: (entryPrice * 1.02)
-                                val signalPrice = (alert?.get("signalPrice") as? Double) ?: entryPrice
-                                val targetEntryPrice = (alert?.get("targetEntryPrice") as? Double)
+                                data class TradeMath(
+                                    val entryPrice: Double,
+                                    val stopLossPrice: Double,
+                                    val takeProfitPrice: Double,
+                                    val signalPrice: Double,
+                                    val targetEntryPrice: Double?,
+                                    val positionSize: Double,
+                                    val calculatedPnl: Double
+                                )
                                 
-                                val positionSize = (alert?.get("positionSize") as? Double) ?: 0.0
-                                val refPrice = targetEntryPrice ?: signalPrice
-                                val quantity = if (refPrice > 0.0) positionSize / refPrice else 0.0
-                                val calculatedPnl = if (quantity > 0.0) {
-                                    kotlin.math.abs(takeProfitPrice - signalPrice) * quantity
-                                } else {
-                                    (alert?.get("estimatedPnl") as? Double) ?: 0.0
+                                val math = remember(alert, candidate) {
+                                    val ep = (alert?.get("entryPrice") as? Double) ?: candidate?.currentMarketPrice ?: 0.0
+                                    val sl = (alert?.get("stopLoss") as? Double) ?: (ep * 0.99)
+                                    val tp = (alert?.get("takeProfit") as? Double) ?: (ep * 1.02)
+                                    val sp = (alert?.get("signalPrice") as? Double) ?: ep
+                                    val tep = (alert?.get("targetEntryPrice") as? Double)
+                                    val ps = (alert?.get("positionSize") as? Double) ?: 0.0
+                                    
+                                    val refPrice = tep ?: sp
+                                    val q = if (refPrice > 0.0) ps / refPrice else 0.0
+                                    val pnl = if (q > 0.0) {
+                                        kotlin.math.abs(tp - sp) * q
+                                    } else {
+                                        (alert?.get("estimatedPnl") as? Double) ?: 0.0
+                                    }
+                                    TradeMath(ep, sl, tp, sp, tep, ps, pnl)
                                 }
 
-                                val marketCandidate = candidate ?: MarketCandidate(
-                                    rank = 1,
-                                    symbol = alertSymbol,
-                                    pairName = "$alertSymbol/USDT",
-                                    coinName = alertSymbol,
-                                    notations = 100,
-                                    currentMarketPrice = entryPrice,
-                                    minNotional = 10.0,
-                                    coinColor = Color(0xFFF7931A),
-                                )
+                                val marketCandidate = candidate
+                                if (marketCandidate == null) {
+                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    return@composable
+                                }
                                 TradeAlertScreen(
                                     onBack = { navController.popBackStack() },
                                     onTradeExecuted = {
@@ -383,13 +379,13 @@ class MainActivity : FragmentActivity() {
                                         }
                                     },
                                     candidate = marketCandidate,
-                                    entryPrice = entryPrice,
-                                    stopLossPrice = stopLossPrice,
-                                    takeProfitPrice = takeProfitPrice,
-                                    estimatedPnl = calculatedPnl,
-                                    signalPrice = signalPrice,
-                                    targetEntryPrice = targetEntryPrice,
-                                    tradeAmountUsdt = positionSize,
+                                    entryPrice = math.entryPrice,
+                                    stopLossPrice = math.stopLossPrice,
+                                    takeProfitPrice = math.takeProfitPrice,
+                                    estimatedPnl = math.calculatedPnl,
+                                    signalPrice = math.signalPrice,
+                                    targetEntryPrice = math.targetEntryPrice,
+                                    tradeAmountUsdt = math.positionSize,
                                 )
                             }
 

@@ -35,33 +35,45 @@ fun RiskManagementScreen(
         Spacer(modifier = Modifier.height(24.dp))
 
         Text("Account Risk per Trade (%)")
-        Slider(
-            value = state.accountRiskPercent.toFloat(),
-            onValueChange = { viewModel.updateAccountRisk(it.toDouble()) },
-            valueRange = 0.1f..5.0f,
-            steps = 49
-        )
-        Text(String.format("%.1f", state.accountRiskPercent))
+        if (state.accountRiskPercent != null) {
+            Slider(
+                value = state.accountRiskPercent!!.toFloat(),
+                onValueChange = { viewModel.updateAccountRisk(it.toDouble()) },
+                valueRange = 0.1f..5.0f,
+                steps = 49
+            )
+            Text(String.format("%.1f", state.accountRiskPercent!!))
+        } else {
+            Text("No default specified by strategy.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
         Spacer(modifier = Modifier.height(16.dp))
 
         Text("Risk / Reward Ratio")
-        Slider(
-            value = state.riskRewardRatio.toFloat(),
-            onValueChange = { viewModel.updateRiskReward(it.toDouble()) },
-            valueRange = 1.0f..5.0f,
-            steps = 40
-        )
-        Text(String.format("%.1f", state.riskRewardRatio))
+        if (state.riskRewardRatio != null) {
+            Slider(
+                value = state.riskRewardRatio!!.toFloat(),
+                onValueChange = { viewModel.updateRiskReward(it.toDouble()) },
+                valueRange = 1.0f..5.0f,
+                steps = 40
+            )
+            Text(String.format("%.1f", state.riskRewardRatio!!))
+        } else {
+            Text("No default specified by strategy.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
         Spacer(modifier = Modifier.height(16.dp))
 
         Text("Stop Loss Distance (ATR)")
-        Slider(
-            value = state.atrStopLossMultiplier.toFloat(),
-            onValueChange = { viewModel.updateAtrStopLoss(it.toDouble()) },
-            valueRange = 0.5f..5.0f,
-            steps = 45
-        )
-        Text(String.format("%.1f", state.atrStopLossMultiplier))
+        if (state.atrStopLossMultiplier != null) {
+            Slider(
+                value = state.atrStopLossMultiplier!!.toFloat(),
+                onValueChange = { viewModel.updateAtrStopLoss(it.toDouble()) },
+                valueRange = 0.5f..5.0f,
+                steps = 45
+            )
+            Text(String.format("%.1f", state.atrStopLossMultiplier!!))
+        } else {
+            Text("No default specified by strategy.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
         Spacer(modifier = Modifier.height(32.dp))
 
         Button(

@@ -454,16 +454,7 @@ class ExchangeViewModel @Inject constructor(
 
     fun restoreSession(coinId: String, strategy: String?) {
         val symbol = coinId.replace("/USDT", "").replace("USDT", "").uppercase()
-        _selectedCandidate.value = MarketCandidate(
-            rank = 0,
-            symbol = symbol,
-            pairName = "$symbol/USDT",
-            coinName = symbol,
-            notations = 0,
-            currentMarketPrice = 0.0,
-            minNotional = 0.0,
-            coinColor = androidx.compose.ui.graphics.Color(0xFF00B4FF)
-        )
+        _selectedCandidate.value = _candidates.value.find { it.symbol == symbol }
     }
 
     fun fetchTechnicalAnalysis(strategy: String, config: Map<String, Any>? = null) {

@@ -65,7 +65,7 @@ fun TechnicalAnalysisScreen(
                         onClick = {
                             val configuredUsdt = tradeSetupConfig?.tradeValueUsdt
                             if (configuredUsdt != null && configuredUsdt > 0.0) {
-                                val currentPrice = if (candidate.currentMarketPrice > 0.0) candidate.currentMarketPrice else 50000.0
+                                val currentPrice = candidate.currentMarketPrice
                                 val mockAlert = mapOf<String, Any>(
                                     "id" to "mock-alert-${System.currentTimeMillis()}",
                                     "symbol" to candidate.symbol,

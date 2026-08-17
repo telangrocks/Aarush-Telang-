@@ -33,19 +33,6 @@ sealed interface TradeSetupConfigResult {
     data class ValidationFailed(val errors: Map<String, String>) : TradeSetupConfigResult
 }
 
-sealed interface BalanceUiState {
-    object Loading : BalanceUiState
-    data class Success(
-        val primaryAsset: String,
-        val freeBalance: Double,
-        val totalBalance: Double,
-        val exchangeName: String,
-        val environment: String
-    ) : BalanceUiState
-    data class Error(val message: String, val code: String? = null) : BalanceUiState
-    object NotConnected : BalanceUiState
-}
-
 @HiltViewModel
 class TradeSetupViewModel @Inject constructor(
     private val sessionRepository: TradeSessionRepository,
@@ -54,51 +41,6 @@ class TradeSetupViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(TradeSetupUiState())
     val uiState: StateFlow<TradeSetupUiState> = _uiState.asStateFlow()
-
-    private val _balanceState = MutableStateFlow<BalanceUiState>(BalanceUiState.Loading)
-    val balanceState: StateFlow<BalanceUiState> = _balanceState.asStateFlow()
-
-    init {
-        loadBalance()
-    }
-
-    fun loadBalance() {
-        viewModelScope.launch {
-            _balanceState.value = BalanceUiState.Loading
-
-            val statusResult = exchangeRepository.getConnectionStatus()
-            val (exchangeName, environmentName) = if (statusResult is NetworkResult.Success) {
-                val status = statusResult.data
-                (status.exchangeName?.replaceFirstChar { it.uppercase() } ?: "Exchange") to (status.environment?.replaceFirstChar { it.uppercase() } ?: "Mainnet")
-            } else {
-                "Exchange" to "Mainnet"
-            }
-            
-            val result = exchangeRepository.getBalances()
-            result.onSuccess { body ->
-                val primaryAsset = "USDT"
-                val balances = body
-                val primaryItem = balances.find { it.asset.equals(primaryAsset, ignoreCase = true) }
-                
-                val free = primaryItem?.free ?: 0.0
-                val total = primaryItem?.total ?: 0.0
-
-                _balanceState.value = BalanceUiState.Success(
-                    primaryAsset = primaryAsset.uppercase(),
-                    freeBalance = free,
-                    totalBalance = total,
-                    exchangeName = exchangeName,
-                    environment = environmentName
-                )
-            }.onFailure { e ->
-                if (e is com.cryptopulse.app.domain.models.DomainException && e.code == "NO_EXCHANGE_CONNECTED") {
-                    _balanceState.value = BalanceUiState.NotConnected
-                } else {
-                    _balanceState.value = BalanceUiState.Error(e.message ?: "Failed to fetch balance.")
-                }
-            }
-        }
-    }
 
     fun setConstraints(
         minNotional: Double?,

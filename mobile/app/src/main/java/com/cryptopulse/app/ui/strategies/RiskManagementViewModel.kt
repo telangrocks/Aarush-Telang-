@@ -14,9 +14,9 @@ import javax.inject.Inject
 data class RiskManagementState(
     val selectedStrategy: Strategy? = null,
     val tradeSetupConfig: TradeSetupConfig? = null,
-    val accountRiskPercent: Double = 1.0,
-    val riskRewardRatio: Double = 2.0,
-    val atrStopLossMultiplier: Double = 1.5
+    val accountRiskPercent: Double? = null,
+    val riskRewardRatio: Double? = null,
+    val atrStopLossMultiplier: Double? = null
 )
 
 @HiltViewModel
@@ -33,9 +33,9 @@ class RiskManagementViewModel @Inject constructor(
             it.copy(
                 selectedStrategy = strategy,
                 tradeSetupConfig = config,
-                accountRiskPercent = defaults["accountRiskPercent"] ?: 1.0,
-                riskRewardRatio = defaults["riskRewardRatio"] ?: 2.0,
-                atrStopLossMultiplier = defaults["atrStopLossMultiplier"] ?: 1.5
+                accountRiskPercent = defaults["accountRiskPercent"],
+                riskRewardRatio = defaults["riskRewardRatio"],
+                atrStopLossMultiplier = defaults["atrStopLossMultiplier"]
             )
         }
     }
@@ -57,12 +57,10 @@ class RiskManagementViewModel @Inject constructor(
     
     fun getUpdatedConfig(): TradeSetupConfig? {
         val currentConfig = _state.value.tradeSetupConfig ?: return null
-        return currentConfig.copy(
-            riskParameters = mapOf(
-                "accountRiskPercent" to _state.value.accountRiskPercent,
-                "riskRewardRatio" to _state.value.riskRewardRatio,
-                "atrStopLossMultiplier" to _state.value.atrStopLossMultiplier
-            )
-        )
+        val params = mutableMapOf<String, Double>()
+        _state.value.accountRiskPercent?.let { params["accountRiskPercent"] = it }
+        _state.value.riskRewardRatio?.let { params["riskRewardRatio"] = it }
+        _state.value.atrStopLossMultiplier?.let { params["atrStopLossMultiplier"] = it }
+        return currentConfig.copy(riskParameters = params)
     }
 }
