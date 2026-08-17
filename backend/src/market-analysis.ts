@@ -87,80 +87,82 @@ export async function analyzeMarket(
   // Take top 10 candidates for intraday analysis to stay well within Cloudflare Worker subrequest and CPU limits
   const top10 = scored.slice(0, 10);
 
-  // Evaluate intraday timeframes sequentially or safely to avoid subrequest burst limit
+  // Evaluate intraday timeframes using bounded concurrency to respect Cloudflare Worker subrequest limits
   const analyzed: any[] = [];
-  for (const candidate of top10) {
-    try {
-      let klines1h: any[] = [];
-      let klines15m: any[] = [];
+  const CONCURRENCY_LIMIT = 5;
 
-      try {
-        klines1h = await adapter.fetchKlines(candidate.symbol, "1h", 100);
-      } catch (kErr1: any) {
-        console.warn(`[MARKET_ANALYSIS] fetchKlines 1h failed for ${candidate.symbol}:`, kErr1?.message);
-      }
+  for (let i = 0; i < top10.length; i += CONCURRENCY_LIMIT) {
+    const chunk = top10.slice(i, i + CONCURRENCY_LIMIT);
 
-      try {
-        klines15m = await adapter.fetchKlines(candidate.symbol, "15m", 100);
-      } catch (kErr2: any) {
-        console.warn(`[MARKET_ANALYSIS] fetchKlines 15m failed for ${candidate.symbol}:`, kErr2?.message);
-      }
+    const chunkResults = await Promise.all(
+      chunk.map(async (candidate) => {
+        try {
+          let klines1h: any[] = [];
+          let klines15m: any[] = [];
 
-      if (!Array.isArray(klines1h) || !Array.isArray(klines15m) || klines1h.length < 20 || klines15m.length < 20) {
-        analyzed.push({
-          ...candidate,
-          tradeSide: "NEUTRAL" as any,
-        });
-        continue;
-      }
+          const [res1h, res15m] = await Promise.allSettled([
+            adapter.fetchKlines(candidate.symbol, "1h", 100),
+            adapter.fetchKlines(candidate.symbol, "15m", 100)
+          ]);
 
-      const closes1h = klines1h.map((k) => Number(k.close || 0)).filter((c) => c > 0);
-      const ema20_1h = calculateEMA(closes1h, 20);
-      const ema50_1h = calculateEMA(closes1h, 50);
-      const rsi1h = calculateRSI(closes1h, 14);
+          if (res1h.status === 'fulfilled') {
+            klines1h = res1h.value;
+          } else {
+            console.warn(`[MARKET_ANALYSIS] fetchKlines 1h failed for ${candidate.symbol}:`, res1h.reason?.message);
+          }
 
-      const closes15m = klines15m.map((k) => Number(k.close || 0)).filter((c) => c > 0);
-      const ema20_15m = calculateEMA(closes15m, 20);
-      const ema50_15m = calculateEMA(closes15m, 50);
-      const rsi15m = calculateRSI(closes15m, 14);
+          if (res15m.status === 'fulfilled') {
+            klines15m = res15m.value;
+          } else {
+            console.warn(`[MARKET_ANALYSIS] fetchKlines 15m failed for ${candidate.symbol}:`, res15m.reason?.message);
+          }
 
-      let side1h: "BUY" | "SELL" | "HOLD" = "HOLD";
-      if (ema20_1h > ema50_1h && rsi1h > 50) side1h = "BUY";
-      else if (ema20_1h < ema50_1h && rsi1h < 50) side1h = "SELL";
+          if (!Array.isArray(klines1h) || !Array.isArray(klines15m) || klines1h.length < 20 || klines15m.length < 20) {
+            return {
+              ...candidate,
+              tradeSide: "NEUTRAL" as any,
+            };
+          }
 
-      let side15m: "BUY" | "SELL" | "HOLD" = "HOLD";
-      if (ema20_15m > ema50_15m && rsi15m > 50) side15m = "BUY";
-      else if (ema20_15m < ema50_15m && rsi15m < 50) side15m = "SELL";
+          const closes1h = klines1h.map((k) => Number(k.close || 0)).filter((c) => c > 0);
+          const ema20_1h = calculateEMA(closes1h, 20);
+          const ema50_1h = calculateEMA(closes1h, 50);
+          const rsi1h = calculateRSI(closes1h, 14);
 
-      if (side1h !== "HOLD" && side1h === side15m) {
-        analyzed.push({
-          ...candidate,
-          tradeSide: side1h,
-        });
-      } else if (side1h !== "HOLD") {
-        analyzed.push({
-          ...candidate,
-          tradeSide: side1h,
-        });
-      } else if (side15m !== "HOLD") {
-        analyzed.push({
-          ...candidate,
-          tradeSide: side15m,
-        });
-      } else {
-        analyzed.push({
-          ...candidate,
-          tradeSide: "NEUTRAL" as any,
-        });
-      }
-    } catch (err: any) {
-      console.error(`[MARKET_ANALYSIS] Error analyzing candidate ${candidate?.symbol}:`, err);
-      analyzed.push({
-        ...candidate,
-        recommendedTimeframe: "1h",
-        tradeSide: "NEUTRAL" as any,
-      });
-    }
+          const closes15m = klines15m.map((k) => Number(k.close || 0)).filter((c) => c > 0);
+          const ema20_15m = calculateEMA(closes15m, 20);
+          const ema50_15m = calculateEMA(closes15m, 50);
+          const rsi15m = calculateRSI(closes15m, 14);
+
+          let side1h: "BUY" | "SELL" | "HOLD" = "HOLD";
+          if (ema20_1h > ema50_1h && rsi1h > 50) side1h = "BUY";
+          else if (ema20_1h < ema50_1h && rsi1h < 50) side1h = "SELL";
+
+          let side15m: "BUY" | "SELL" | "HOLD" = "HOLD";
+          if (ema20_15m > ema50_15m && rsi15m > 50) side15m = "BUY";
+          else if (ema20_15m < ema50_15m && rsi15m < 50) side15m = "SELL";
+
+          if (side1h !== "HOLD" && side1h === side15m) {
+            return { ...candidate, tradeSide: side1h };
+          } else if (side1h !== "HOLD") {
+            return { ...candidate, tradeSide: side1h };
+          } else if (side15m !== "HOLD") {
+            return { ...candidate, tradeSide: side15m };
+          } else {
+            return { ...candidate, tradeSide: "NEUTRAL" as any };
+          }
+        } catch (err: any) {
+          console.error(`[MARKET_ANALYSIS] Error analyzing candidate ${candidate?.symbol}:`, err);
+          return {
+            ...candidate,
+            recommendedTimeframe: "1h",
+            tradeSide: "NEUTRAL" as any,
+          };
+        }
+      })
+    );
+
+    analyzed.push(...chunkResults);
   }
 
   const result = analyzed.slice(0, 10).map((item, index) => ({
