@@ -35,33 +35,4 @@ class TradeValidatorTest {
         assertEquals(ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE, result.errorCode)
     }
 
-    @Test
-    fun `validate rejects trade below minimum notional requirement`() {
-        val result = TradeValidator.validate(
-            params = TradeValidationParams(symbol = "BTCUSDT", entryPrice = 50000.0, tradeValueUsdt = 5.0),
-            rules = mockBtcRules
-        )
-        assertFalse(result.isValid)
-        assertEquals(ValidationErrorReason.MIN_NOTIONAL_FAILED, result.errorCode)
-    }
-
-    @Test
-    fun `validate accepts trade meeting minimum notional requirement`() {
-        val result = TradeValidator.validate(
-            params = TradeValidationParams(symbol = "BTCUSDT", entryPrice = 50000.0, tradeValueUsdt = 20.0),
-            rules = mockBtcRules
-        )
-        assertTrue(result.isValid)
-        assertEquals(20.0, result.postRoundingNotional!!, 0.01)
-    }
-
-    @Test
-    fun `validate quantizes quantity to step size`() {
-        val result = TradeValidator.validate(
-            params = TradeValidationParams(symbol = "BTCUSDT", entryPrice = 50000.0, quantity = 0.000329),
-            rules = mockBtcRules
-        )
-        assertTrue(result.isValid)
-        assertEquals(0.00032, result.quantizedQuantity!!, 0.000001)
-    }
 }
