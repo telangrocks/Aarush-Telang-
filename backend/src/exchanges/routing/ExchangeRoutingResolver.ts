@@ -38,6 +38,9 @@ export class ExchangeRoutingResolver {
     if (env === "demo") {
       return "https://api-demo.bybit.com";
     }
+    if (env === "testnet") {
+      return "https://api-testnet.bybit.com";
+    }
     return "https://api.bybit.com";
   }
 
@@ -53,7 +56,7 @@ export class ExchangeRoutingResolver {
    */
   public static getBybitWebSocketUrl(envInput: string, purpose: BybitWsPurpose): string {
     const env = this.getCanonicalEnvironment(envInput);
-    const domain = env === "demo" ? "stream-demo.bybit.com" : "stream.bybit.com";
+    const domain = env === "demo" ? "stream-demo.bybit.com" : env === "testnet" ? "stream-testnet.bybit.com" : "stream.bybit.com";
     const path = (purpose === "private" || purpose === "trade") ? purpose : `public/${purpose}`;
     return `wss://${domain}/v5/${path}`;
   }

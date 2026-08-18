@@ -20,6 +20,16 @@ describe('Domain Layer Architecture Unit Tests', () => {
     }
   });
 
+  it('ExchangeId.create() safely rejects historical database values (binance/kucoin) with UNSUPPORTED_EXCHANGE', () => {
+    const resBinance = ExchangeId.create('binance');
+    expect(resBinance.isFailure).toBe(true);
+    if (resBinance.isFailure) expect(resBinance.error.code).toBe('UNSUPPORTED_EXCHANGE');
+
+    const resKucoin = ExchangeId.create('kucoin');
+    expect(resKucoin.isFailure).toBe(true);
+    if (resKucoin.isFailure) expect(resKucoin.error.code).toBe('UNSUPPORTED_EXCHANGE');
+  });
+
   it('Price & Quantity quantization operates deterministically', () => {
     const pRes = Price.create(50000.1234);
     const tickRes = Price.create(0.01);
@@ -39,10 +49,7 @@ describe('Domain Layer Architecture Unit Tests', () => {
   });
 
   it('ExchangeId VO enforces supported exchanges', () => {
-    expect(ExchangeId.create('binance').isSuccess).toBe(true);
-    expect(ExchangeId.create('kucoin').isSuccess).toBe(true);
     expect(ExchangeId.create('bybit').isSuccess).toBe(true);
-    expect(ExchangeId.create('delta').isSuccess).toBe(true);
     expect(ExchangeId.create('unsupported_exchange').isFailure).toBe(true);
   });
 

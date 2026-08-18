@@ -1,6 +1,4 @@
 import { BybitAdapter } from './infrastructure/exchange/adapters/BybitAdapter';
-import { BinanceAdapter } from './infrastructure/exchange/adapters/BinanceAdapter';
-import { KucoinAdapter } from './infrastructure/exchange/adapters/KucoinAdapter';
 
 async function runLiveValidation() {
   console.log('====================================================');
@@ -71,8 +69,8 @@ async function runLiveValidation() {
   }
 
   // 2. BINANCE PUBLIC LIVE TEST
-  console.log('\n[2/3] Testing BinanceAdapter against Binance REST API...');
-  const binance = new BinanceAdapter();
+  console.log('\n[2/3] Testing BybitAdapter against Binance REST API...');
+  const binance = new BybitAdapter();
   await binance.connect({ environment: 'mainnet' });
   try {
     const ticker = await binance.fetchTicker('BTC/USDT');
@@ -85,8 +83,8 @@ async function runLiveValidation() {
   }
 
   // 3. KUCOIN PUBLIC LIVE TEST
-  console.log('\n[3/3] Testing KucoinAdapter against KuCoin REST API...');
-  const kucoin = new KucoinAdapter();
+  console.log('\n[3/3] Testing BybitAdapter against KuCoin REST API...');
+  const kucoin = new BybitAdapter();
   await kucoin.connect({ environment: 'mainnet' });
   try {
     const ticker = await kucoin.fetchTicker('BTC/USDT');

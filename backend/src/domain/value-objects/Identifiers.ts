@@ -36,14 +36,14 @@ export class OrderId {
   }
 }
 
-export type SupportedExchangeId = 'binance' | 'kucoin' | 'bybit' | 'delta';
+export type SupportedExchangeId = 'bybit';
 
 export class ExchangeId {
   private constructor(readonly value: SupportedExchangeId) {}
 
   public static create(value: string): Result<ExchangeId> {
     const normalized = (value || '').trim().toLowerCase() as SupportedExchangeId;
-    if (!['binance', 'kucoin', 'bybit', 'delta'].includes(normalized)) {
+    if (!['bybit'].includes(normalized)) {
       return fail(createDomainError('UNSUPPORTED_EXCHANGE', `Exchange '${value}' is not supported.`));
     }
     return ok(new ExchangeId(normalized));

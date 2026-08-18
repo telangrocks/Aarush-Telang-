@@ -19,6 +19,11 @@ describe('ExchangeRoutingResolver & Routing Architecture Regression Suite', () =
     expect(url).toBe('https://api-demo.bybit.com');
   });
 
+  it('2.5. Bybit Testnet resolves to api-testnet.bybit.com', () => {
+    const url = ExchangeRoutingResolver.getRestUrl({ exchange: 'bybit', environment: 'testnet' });
+    expect(url).toBe('https://api-testnet.bybit.com');
+  });
+
   it('3. Bybit WebSocket stream resolves explicitly by purpose', () => {
     expect(ExchangeRoutingResolver.getBybitWebSocketUrl('mainnet', 'spot')).toBe('wss://stream.bybit.com/v5/public/spot');
     expect(ExchangeRoutingResolver.getBybitWebSocketUrl('mainnet', 'linear')).toBe('wss://stream.bybit.com/v5/public/linear');
@@ -28,6 +33,10 @@ describe('ExchangeRoutingResolver & Routing Architecture Regression Suite', () =
 
   it('4. Bybit Demo WebSocket streams resolve to stream-demo.bybit.com', () => {
     expect(ExchangeRoutingResolver.getBybitWebSocketUrl('demo', 'linear')).toBe('wss://stream-demo.bybit.com/v5/public/linear');
+  });
+
+  it('4.5. Bybit Testnet WebSocket streams resolve to stream-testnet.bybit.com', () => {
+    expect(ExchangeRoutingResolver.getBybitWebSocketUrl('testnet', 'linear')).toBe('wss://stream-testnet.bybit.com/v5/public/linear');
   });
 
   it('5. Legacy exchange connection attempts throw EXCHANGE_RECONNECT_REQUIRED', () => {

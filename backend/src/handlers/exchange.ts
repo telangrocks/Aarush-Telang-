@@ -112,7 +112,7 @@ export async function handleValidateExchange(
 
     let provider: any;
     let actualHost = "unknown";
-    let actualEndpoint = exchangeName === "binance" ? "/api/v3/account" : exchangeName === "bybit" ? "/v5/account/wallet-balance" : "/api/v1/accounts?type=trade";
+    let actualEndpoint = "/v5/account/wallet-balance";
     try {
       provider = await ExchangeManager.createUncachedProvider(exchangeName as ExchangeName, {
         environment: normEnv,
@@ -130,16 +130,16 @@ export async function handleValidateExchange(
       
       const successProof = {
         workerPath: "/api/exchange/validate",
-        adapterSelected: exchangeName === "binance" ? "BinanceAdapter" : exchangeName === "bybit" ? "BybitAdapter" : "KucoinAdapter",
+        adapterSelected: "BybitAdapter",
         exchangeSelected: exchangeName,
         environmentSelected: normEnv,
         actualExchangeHostname: actualHost,
         actualAuthenticatedEndpoint: actualEndpoint,
         httpStatusReturnedByExchange: 200,
-        rawExchangeResponseCode: exchangeName === "kucoin" ? "200000" : "0",
+        rawExchangeResponseCode: "0",
         rawExchangeResponseMessage: "SUCCESS",
         relevantResponseHeaders: { "cf-ray": cfRay, "content-type": "application/json" },
-        bybitAccountType: exchangeName === "bybit" ? "UNIFIED" : "N/A",
+        bybitAccountType: "UNIFIED",
         timestampInformation: `Timestamp synced: ${Date.now()}`,
         signingVerified: true,
         signingProof: provider?.lastSigningProof,
@@ -174,7 +174,7 @@ export async function handleValidateExchange(
 
       const failProof = {
         workerPath: "/api/exchange/validate",
-        adapterSelected: exchangeName === "binance" ? "BinanceAdapter" : exchangeName === "bybit" ? "BybitAdapter" : "KucoinAdapter",
+        adapterSelected: "BybitAdapter",
         exchangeSelected: exchangeName,
         environmentSelected: normEnv,
         actualExchangeHostname: host,
@@ -183,7 +183,7 @@ export async function handleValidateExchange(
         rawExchangeResponseCode: String(origCode ?? "N/A"),
         rawExchangeResponseMessage: String(origMsg ?? "N/A"),
         relevantResponseHeaders: valErr?.rawHeaders ?? { "cf-ray": cfRay },
-        bybitAccountType: exchangeName === "bybit" ? "UNIFIED" : "N/A",
+        bybitAccountType: "UNIFIED",
         timestampInformation: `Timestamp offset check at ${Date.now()}`,
         signingVerified: true,
         signingProof: provider?.lastSigningProof,
@@ -722,13 +722,13 @@ export async function handleGetPersonalizedMarketCandidates(
           if (open > 0) chg = ((px - open) / open) * 100;
         }
 
-        const extractConstraint = (ccxtVal: any, bybitVal: any): number | null => {
-          if (ccxtVal !== undefined && ccxtVal !== null) {
-            if (typeof ccxtVal?.toNumber === 'function') {
-              const val = ccxtVal.toNumber();
+        const extractConstraint = (legacyVal: any, bybitVal: any): number | null => {
+          if (legacyVal !== undefined && legacyVal !== null) {
+            if (typeof legacyVal?.toNumber === 'function') {
+              const val = legacyVal.toNumber();
               if (!isNaN(val)) return val;
-            } else if (typeof ccxtVal === 'number' && !isNaN(ccxtVal)) {
-              return ccxtVal;
+            } else if (typeof legacyVal === 'number' && !isNaN(legacyVal)) {
+              return legacyVal;
             }
           }
           if (bybitVal !== undefined && bybitVal !== null) {

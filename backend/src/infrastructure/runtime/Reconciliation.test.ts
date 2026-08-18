@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ExecutionJournal } from './ExecutionJournal';
 import { ReconciliationService } from './ReconciliationService';
-import { BinanceAdapter } from '../exchange/adapters/BinanceAdapter';
+import { BybitAdapter } from '../exchange/adapters/BybitAdapter';
 import BigNumber from 'bignumber.js';
 import { Order } from '../../exchanges/models/NormalizedDomain';
 
@@ -16,7 +16,7 @@ describe('Milestone 6 — ReconciliationService Order State Repair Unit Tests', 
     journal.recordSubmitting(clientOrdId, 'wf_recon', hash, { symbol: 'BTC/USDT', side: 'buy' });
 
     // Mock exchange adapter with remote order record
-    const adapter = new BinanceAdapter();
+    const adapter = new BybitAdapter();
     const mockOrder: Order = {
       id: 'ex_binance_777',
       clientOrderId: clientOrdId,
@@ -56,7 +56,7 @@ describe('Milestone 6 — ReconciliationService Order State Repair Unit Tests', 
     const hash = await journal.createIntentHash('usr1', 'BTC/USDT', 'buy', 1);
     journal.recordSubmitting(clientOrdId, 'wf_recon', hash, { symbol: 'BTC/USDT', side: 'buy' });
 
-    const adapter = new BinanceAdapter();
+    const adapter = new BybitAdapter();
     adapter.fetchOpenOrders = async () => [];
     adapter.fetchClosedOrders = async () => [];
 

@@ -580,6 +580,84 @@ describe("App Endpoints", () => {
       );
     });
 
+    it("POST /api/exchange/connect rejects unsupported exchange (binance) with HTTP 400", async () => {
+      const { ExchangeManager } = await import("../../src/exchanges");
+      const { ExchangeRegistry } = await import("../../src/infrastructure/exchange/registry/ExchangeRegistry");
+      const getProviderSpy = vi.spyOn(ExchangeManager, "getProvider");
+      const createRegistrySpy = vi.spyOn(ExchangeRegistry, "create");
+
+      const body = { exchangeName: "binance", apiKey: "test-key", apiSecret: "test-secret", environment: "mainnet" };
+      const req = new Request("http://localhost/api/exchange/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+      const res = await worker.fetch(req, mockEnv as Env);
+      expect(res.status).toBe(400);
+      const data = await res.json<{ success: boolean, code: string }>();
+      expect(data.success).toBe(false);
+      expect(data.code).toBe("UNSUPPORTED_OPERATION");
+
+      expect(getProviderSpy).not.toHaveBeenCalled();
+      expect(createRegistrySpy).not.toHaveBeenCalled();
+
+      getProviderSpy.mockRestore();
+      createRegistrySpy.mockRestore();
+    });
+
+    it("POST /api/exchange/connect rejects unsupported exchange (kucoin) with HTTP 400", async () => {
+      const { ExchangeManager } = await import("../../src/exchanges");
+      const { ExchangeRegistry } = await import("../../src/infrastructure/exchange/registry/ExchangeRegistry");
+      const getProviderSpy = vi.spyOn(ExchangeManager, "getProvider");
+      const createRegistrySpy = vi.spyOn(ExchangeRegistry, "create");
+
+      const body = { exchangeName: "kucoin", apiKey: "test-key", apiSecret: "test-secret", environment: "mainnet" };
+      const req = new Request("http://localhost/api/exchange/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+      const res = await worker.fetch(req, mockEnv as Env);
+      expect(res.status).toBe(400);
+      const data = await res.json<{ success: boolean, code: string }>();
+      expect(data.success).toBe(false);
+      expect(data.code).toBe("UNSUPPORTED_OPERATION");
+
+      expect(getProviderSpy).not.toHaveBeenCalled();
+      expect(createRegistrySpy).not.toHaveBeenCalled();
+
+      getProviderSpy.mockRestore();
+      createRegistrySpy.mockRestore();
+    });
+
+    it("POST /api/exchange/connect rejects unknown exchange with HTTP 400", async () => {
+      const { ExchangeManager } = await import("../../src/exchanges");
+      const { ExchangeRegistry } = await import("../../src/infrastructure/exchange/registry/ExchangeRegistry");
+      const getProviderSpy = vi.spyOn(ExchangeManager, "getProvider");
+      const createRegistrySpy = vi.spyOn(ExchangeRegistry, "create");
+
+      const body = { exchangeName: "unknown_random", apiKey: "test-key", apiSecret: "test-secret", environment: "mainnet" };
+      const req = new Request("http://localhost/api/exchange/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+      const res = await worker.fetch(req, mockEnv as Env);
+      expect(res.status).toBe(400);
+      const data = await res.json<{ success: boolean, code: string }>();
+      expect(data.success).toBe(false);
+      expect(data.code).toBe("UNSUPPORTED_OPERATION");
+
+      expect(getProviderSpy).not.toHaveBeenCalled();
+      expect(createRegistrySpy).not.toHaveBeenCalled();
+
+      getProviderSpy.mockRestore();
+      createRegistrySpy.mockRestore();
+    });
+
     it("POST /api/logout should blacklist the current JWT and clear FCM token", async () => {
       const mockLogoutDb = {
         prepare: vi.fn((query: string) => {

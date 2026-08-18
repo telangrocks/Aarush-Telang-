@@ -13,15 +13,13 @@ on:
           - level2_testnet
           - level3_prod_smoke
       exchange:
-        description: "Exchange (leave blank for level default: Level 1/2 → binance, Level 3 → kucoin)"
+        description: "Exchange (leave blank for level default: Level 1/2/3 → bybit)"
         required: false
         default: ""
         type: choice
         options:
           - ""
-          - binance
           - bybit
-          - kucoin
   push:
     branches: [main]
     paths:

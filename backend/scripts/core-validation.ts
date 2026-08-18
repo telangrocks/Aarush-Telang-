@@ -59,7 +59,7 @@ async function runCoreValidation() {
     const userProfile = {
       id: "usr_val_2026",
       email: "qa.core.validation@cryptopulse.dev",
-      exchange_name: "binance",
+      exchange_name: "bybit",
       exchange_environment: "mainnet",
       is_active: 1,
     };
@@ -75,7 +75,7 @@ async function runCoreValidation() {
   // Step 2: Validate Testnet Environment
   // ─────────────────────────────────────────────────────────────────────────
   try {
-    const testnetProvider = ProviderFactory.create("binance");
+    const testnetProvider = ProviderFactory.create("bybit");
     if (!testnetProvider) throw new Error("Failed to instantiate provider for testnet validation");
     logStep(2, "Validate Testnet Environment", "PASS", "Testnet environment verified");
   } catch (err) {
@@ -86,7 +86,7 @@ async function runCoreValidation() {
   // Step 3: Validate Mainnet Environment
   // ─────────────────────────────────────────────────────────────────────────
   try {
-    exchangeProvider = ProviderFactory.create("binance");
+    exchangeProvider = ProviderFactory.create("bybit");
     if (!exchangeProvider) throw new Error("Failed to instantiate mainnet provider");
     logStep(3, "Validate Mainnet Environment", "PASS", "Mainnet provider instantiated cleanly");
   } catch (err) {
@@ -196,7 +196,7 @@ async function runCoreValidation() {
     const marketSnapshot: any = {
       timestamp: Date.now(),
       symbol: selectedCandidate!,
-      exchange: "binance",
+      exchange: "bybit",
       candles: {
         "15m": liveCandleData!.map(c => ({
           openTime: c.openTime,
@@ -268,7 +268,7 @@ async function runCoreValidation() {
   try {
     const rules = {
       symbol: selectedCandidate!,
-      exchange: "binance",
+      exchange: "bybit",
       baseAsset: "BTC",
       quoteAsset: "USDT",
       minNotional: 10,

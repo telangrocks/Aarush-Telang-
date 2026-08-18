@@ -1,10 +1,10 @@
 // backend/src/utils/environment.ts
 
-export type CanonicalEnvironment = "mainnet" | "demo";
+export type CanonicalEnvironment = "mainnet" | "demo" | "testnet";
 
 /**
- * Normalizes an untrusted environment string into a canonical value ("mainnet" | "demo").
- * Returns null if the value is unrecognized, unsupported (e.g. testnet), empty, null, or undefined.
+ * Normalizes an untrusted environment string into a canonical value ("mainnet" | "demo" | "testnet").
+ * Returns null if the value is unrecognized, empty, null, or undefined.
  */
 export function normalizeEnvironment(value: unknown): CanonicalEnvironment | null {
   if (typeof value === "string") {
@@ -14,6 +14,9 @@ export function normalizeEnvironment(value: unknown): CanonicalEnvironment | nul
     }
     if (lower === "demo") {
       return "demo";
+    }
+    if (lower === "testnet") {
+      return "testnet";
     }
   }
   return null;
@@ -30,7 +33,7 @@ export function resolveCanonicalEnvironment(value: unknown): CanonicalEnvironmen
  * Supported environments per exchange registry.
  */
 const SUPPORTED_ENVIRONMENTS: Record<string, CanonicalEnvironment[]> = {
-  bybit: ["demo", "mainnet"],
+  bybit: ["demo", "mainnet", "testnet"],
 };
 
 /**

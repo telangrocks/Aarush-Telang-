@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { ExchangeOrchestrator } from './ExchangeOrchestrator';
-import { BinanceAdapter } from '../exchange/adapters/BinanceAdapter';
+import { BybitAdapter } from '../exchange/adapters/BybitAdapter';
 import { ValidationPipeline } from '../safety/ValidationPipeline';
 import { ValidationContext } from '../safety/ValidationContext';
 
 describe('Milestone 10 — ExchangeOrchestrator Pipeline Integration Unit Tests', () => {
   it('ExchangeOrchestrator executes validated order pipeline cleanly', async () => {
     const orchestrator = new ExchangeOrchestrator();
-    const adapter = new BinanceAdapter();
+    const adapter = new BybitAdapter();
     const pipeline = new ValidationPipeline(true);
 
     const context = new ValidationContext({
@@ -46,7 +46,7 @@ describe('Milestone 10 — ExchangeOrchestrator Pipeline Integration Unit Tests'
 
   it('ExchangeOrchestrator rejects order when ValidationPipeline fails before exchange dispatch', async () => {
     const orchestrator = new ExchangeOrchestrator();
-    const adapter = new BinanceAdapter();
+    const adapter = new BybitAdapter();
     const pipeline = new ValidationPipeline(true);
 
     const invalidContext = new ValidationContext({

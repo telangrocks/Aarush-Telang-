@@ -1,6 +1,4 @@
 import { BybitAdapter } from './infrastructure/exchange/adapters/BybitAdapter';
-import { BinanceAdapter } from './infrastructure/exchange/adapters/BinanceAdapter';
-import { KucoinAdapter } from './infrastructure/exchange/adapters/KucoinAdapter';
 import { MarketDataEngine, AdapterCandleProvider } from './engine/market-data';
 import { CandleValidator } from './infrastructure/exchange/CandleValidator';
 import { CircuitBreaker } from './infrastructure/orchestrator/CircuitBreaker';
@@ -29,7 +27,7 @@ async function runProductionAudit() {
     });
 
     // Test missing credentials protection
-    const unauthBinance = new BinanceAdapter();
+    const unauthBinance = new BybitAdapter();
     await unauthBinance.connect({ environment: 'testnet' });
     let caughtUnauth = false;
     try {
@@ -144,10 +142,10 @@ async function runProductionAudit() {
     const bybit = new BybitAdapter();
     await bybit.connect({ environment: 'testnet' });
 
-    const binance = new BinanceAdapter();
+    const binance = new BybitAdapter();
     await binance.connect({ environment: 'mainnet' });
 
-    const kucoin = new KucoinAdapter();
+    const kucoin = new BybitAdapter();
     await kucoin.connect({ environment: 'mainnet' });
 
     const providers = [

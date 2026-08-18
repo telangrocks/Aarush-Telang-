@@ -1,9 +1,9 @@
 name = "crypto-pulse-backend"
 main = "src/index.ts"
 # 2024-09-23: first date where bare `crypto` (without `node:` prefix) resolves
-# to the Node.js built-in in the Workers runtime. Required by ccxt's rsa.js.
+# to the Node.js built-in in the Workers runtime.
 compatibility_date = "2024-09-23"
-# Enable Node.js built-ins (crypto, stream, etc.) required by CCXT and bignumber.js.
+# Enable Node.js built-ins (crypto, stream, etc.) required by bignumber.js and backend utilities.
 compatibility_flags = ["nodejs_compat"]
 # Pin the account so Wrangler does not call /memberships to auto-discover it.
 # Narrowly scoped API tokens cannot list memberships, which otherwise fails

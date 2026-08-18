@@ -3,7 +3,7 @@ import { HealthMonitor } from './HealthMonitor';
 import { ExecutionJournal } from './ExecutionJournal';
 import { ReconciliationService } from './ReconciliationService';
 import { PartialResultContainer } from './PartialFailureFramework';
-import { BinanceAdapter } from '../exchange/adapters/BinanceAdapter';
+import { BybitAdapter } from '../exchange/adapters/BybitAdapter';
 import { ResilientWebSocketManager } from './WebSocketManager';
 import { MockExchangeSocketAdapter } from './adapters/ExchangeSocketAdapter';
 import BigNumber from 'bignumber.js';
@@ -55,7 +55,7 @@ describe('Milestone 10 — Continuous Chaos & Runtime Resilience Test Suite', ()
     const journalIsolate2 = journalIsolate1; // Persistent storage simulated
     const reconService = new ReconciliationService(journalIsolate2);
 
-    const adapter = new BinanceAdapter();
+    const adapter = new BybitAdapter();
     adapter.fetchOpenOrders = async () => [
       {
         id: 'ex_binance_cf_777',

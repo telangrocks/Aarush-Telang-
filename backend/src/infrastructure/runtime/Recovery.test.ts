@@ -4,7 +4,7 @@ import { ExecutionJournal } from './ExecutionJournal';
 import { ReconciliationService } from './ReconciliationService';
 import { EventBus } from '../../domain/events/EventBus';
 import { RecoveryCoordinator, RecoveryCompletedEvent } from './RecoveryCoordinator';
-import { BinanceAdapter } from '../exchange/adapters/BinanceAdapter';
+import { BybitAdapter } from '../exchange/adapters/BybitAdapter';
 import { ResilientWebSocketManager } from './WebSocketManager';
 import { MockExchangeSocketAdapter } from './adapters/ExchangeSocketAdapter';
 
@@ -23,7 +23,7 @@ describe('Milestone 8 — RecoveryCoordinator Pure Orchestration Unit Tests', ()
       expect(evt.reason).toBe('WEBSOCKET_DISCONNECT');
     });
 
-    const adapter = new BinanceAdapter();
+    const adapter = new BybitAdapter();
     adapter.fetchOpenOrders = async () => [];
     adapter.fetchClosedOrders = async () => [];
 

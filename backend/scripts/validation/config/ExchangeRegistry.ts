@@ -51,9 +51,9 @@ export interface ExchangeConfig {
 
 /** Default exchange per validation level. Overridable via VALIDATION_EXCHANGE env var. */
 export const LEVEL_DEFAULT_EXCHANGE: Record<ValidationLevel, string> = {
-  level1_public:     "binance",
-  level2_testnet:    "binance",
-  level3_prod_smoke: "kucoin",
+  level1_public:     "bybit",
+  level2_testnet:    "bybit",
+  level3_prod_smoke: "bybit",
 };
 
 /** Which exchange environment each validation level operates against. */
@@ -95,12 +95,6 @@ export const SUPPORTED_EXCHANGES: Record<string, ExchangeConfig> = {
         displayLabel: "KuCoin Mainnet",
         requiresPassphrase: true,
         secretPrefix: "KUCOIN_MAINNET",
-      },
-      // testnet: KuCoin officially deprecated their sandbox environment.
-      // Add this entry if KuCoin reinstates testnet support in the future.
-    },
-  },
-
   bybit: {
     ccxtId: "bybit",
     displayName: "Bybit",

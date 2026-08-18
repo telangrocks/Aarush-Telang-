@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ExchangeRegistry } from './exchange/registry/ExchangeRegistry';
-import { BinanceAdapter } from './exchange/adapters/BinanceAdapter';
-import { KucoinAdapter } from './exchange/adapters/KucoinAdapter';
 import { BybitAdapter } from './exchange/adapters/BybitAdapter';
 import { ProviderPool } from './cache/ProviderPool';
 import { ExchangeOrchestrator } from './orchestrator/ExchangeOrchestrator';

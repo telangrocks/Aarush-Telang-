@@ -9,7 +9,7 @@ describe('WebSocketManager & EventDeduplicator', () => {
       clientOrderId: 'cli_1',
       exchangeOrderId: 'ex_1',
       symbol: 'BTC',
-      exchange: 'binance',
+      exchange: 'bybit',
       side: 'BUY',
       status: 'filled',
       price: 65000,
@@ -30,7 +30,7 @@ describe('WebSocketManager & EventDeduplicator', () => {
       clientOrderId: 'cli_1',
       exchangeOrderId: 'ex_1',
       symbol: 'BTC',
-      exchange: 'binance',
+      exchange: 'bybit',
       side: 'BUY',
       status: 'open',
       price: 65000,
@@ -45,7 +45,7 @@ describe('WebSocketManager & EventDeduplicator', () => {
       clientOrderId: 'cli_1',
       exchangeOrderId: 'ex_1',
       symbol: 'BTC',
-      exchange: 'binance',
+      exchange: 'bybit',
       side: 'BUY',
       status: 'pending',
       price: 65000,
@@ -59,30 +59,4 @@ describe('WebSocketManager & EventDeduplicator', () => {
     expect(dedup.isDuplicateOrOutofOrder(delayedEvent)).toBe(true); // Out-of-order rejected
   });
 
-  it('should normalize Binance executionReport correctly', () => {
-    const mgr = new WebSocketManager();
-    const rawReport = {
-      e: 'executionReport',
-      E: 1499404633056,
-      s: 'ETHUSDT',
-      c: 'my_client_id',
-      S: 'BUY',
-      o: 'LIMIT',
-      f: 'GTC',
-      q: '1.00000000',
-      p: '0.10264400',
-      X: 'FILLED',
-      i: 4293153,
-      z: '1.00000000',
-      Z: '0.10264400',
-      T: 1499404633056,
-    };
-
-    const normalized = mgr.normalizeBinanceExecutionReport(rawReport);
-    expect(normalized).not.toBeNull();
-    expect(normalized?.symbol).toBe('ETH');
-    expect(normalized?.exchange).toBe('binance');
-    expect(normalized?.status).toBe('filled');
-    expect(normalized?.exchangeOrderId).toBe('4293153');
-    expect(normalized?.clientOrderId).toBe('my_client_id');
-  });});
+});

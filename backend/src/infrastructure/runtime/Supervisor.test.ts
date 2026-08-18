@@ -5,7 +5,7 @@ import { ExecutionJournal } from './ExecutionJournal';
 import { ReconciliationService } from './ReconciliationService';
 import { EventBus } from '../../domain/events/EventBus';
 import { RecoveryCoordinator } from './RecoveryCoordinator';
-import { BinanceAdapter } from '../exchange/adapters/BinanceAdapter';
+import { BybitAdapter } from '../exchange/adapters/BybitAdapter';
 
 describe('Milestone 9 — BotSupervisor Session Supervision Unit Tests', () => {
   it('BotSupervisor tracks bot heartbeats and detects unresponsive bot sessions', async () => {
@@ -16,17 +16,17 @@ describe('Milestone 9 — BotSupervisor Session Supervision Unit Tests', () => {
     const coordinator = new RecoveryCoordinator(health, recon, bus);
     const supervisor = new BotSupervisor(coordinator, health, 50); // 50ms heartbeat threshold
 
-    supervisor.registerBotSession('bot_scalper_1', 'binance');
+    supervisor.registerBotSession('bot_scalper_1', 'bybit');
     expect(supervisor.getSession('bot_scalper_1')?.status).toBe('RUNNING');
 
     // Simulate time elapsed beyond 50ms
     await new Promise(r => setTimeout(r, 60));
 
     const adapterMap = new Map();
-    const binanceAdapter = new BinanceAdapter();
-    binanceAdapter.fetchOpenOrders = async () => [];
-    binanceAdapter.fetchClosedOrders = async () => [];
-    adapterMap.set('binance', binanceAdapter);
+    const adapter1 = new BybitAdapter();
+    adapter1.fetchOpenOrders = async () => [];
+    adapter1.fetchClosedOrders = async () => [];
+    adapterMap.set('bybit', adapter1);
 
     const result = await supervisor.inspectAndSupervise(adapterMap);
 

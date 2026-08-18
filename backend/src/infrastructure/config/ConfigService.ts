@@ -1,6 +1,5 @@
 export interface ExchangeConfig {
   readonly timeoutMs: number;
-  readonly testnetBaseUrl: string;
   readonly recvWindowMs: number;
 }
 
@@ -40,7 +39,6 @@ export class ConfigService implements IConfigService {
   constructor(private env: Record<string, unknown> = {}) {
     this.exchangeConfig = {
       timeoutMs: Number(env.EXCHANGE_TIMEOUT_MS) || 10000,
-      testnetBaseUrl: (env.BINANCE_TESTNET_URL as string) || 'https://testnet.binance.vision',
       recvWindowMs: Number(env.RECV_WINDOW_MS) || 10000,
     };
 

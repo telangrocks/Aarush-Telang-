@@ -32,7 +32,7 @@
 const fs = require("node:fs/promises");
 
 const WORKER_URL = (process.env.WORKER_URL || "https://crypto-pulse-backend.telangrocks.workers.dev").replace(/\/$/, "");
-const EXCHANGE_NAME = (process.env.EXCHANGE_NAME || "binance").toLowerCase();
+const EXCHANGE_NAME = (process.env.EXCHANGE_NAME || "bybit").toLowerCase();
 const EXCHANGE_ENVIRONMENT = process.env.EXCHANGE_ENVIRONMENT === "testnet" ? "testnet" : "mainnet";
 const EXCHANGE_API_KEY = process.env.EXCHANGE_API_KEY || "";
 const EXCHANGE_API_SECRET = process.env.EXCHANGE_API_SECRET || "";

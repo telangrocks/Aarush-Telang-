@@ -4,14 +4,13 @@ import { BaseExchangeAdapter } from '../infrastructure/exchange/adapters/BaseExc
 import { ExchangeRegistry } from '../infrastructure/exchange/registry/ExchangeRegistry';
 import { UnifiedError } from './models/UnifiedError';
 import { ExchangeOrchestrator } from '../infrastructure/orchestrator/ExchangeOrchestrator';
-import { BinanceAdapter } from '../infrastructure/exchange/adapters/BinanceAdapter';
-import { KucoinAdapter } from '../infrastructure/exchange/adapters/KucoinAdapter';
+import { BybitAdapter } from '../infrastructure/exchange/adapters/BybitAdapter';
 import BigNumber from 'bignumber.js';
 
 describe('Exchange Connectivity Module Fixes Unit Tests', () => {
   beforeEach(() => {
-    ExchangeRegistry.register({ exchangeId: 'binance', factory: () => new BinanceAdapter() });
-    ExchangeRegistry.register({ exchangeId: 'kucoin', factory: () => new KucoinAdapter() });
+    ExchangeRegistry.register({ exchangeId: 'binance', factory: () => new BybitAdapter() });
+    ExchangeRegistry.register({ exchangeId: 'kucoin', factory: () => new BybitAdapter() });
   });
 
   it('EC-C1 & EC-C2: getProvider throws error and evicts cache when connection fails', async () => {
@@ -42,8 +41,9 @@ describe('Exchange Connectivity Module Fixes Unit Tests', () => {
 
   it('EC-H1: Circuit breaker states are isolated per-exchange', async () => {
     const orchestrator = new ExchangeOrchestrator();
-    const binance = new BinanceAdapter();
-    const kucoin = new KucoinAdapter();
+    const binance = new BybitAdapter();
+    const kucoin = new BybitAdapter();
+    Object.defineProperty(kucoin, 'exchangeId', { value: 'kucoin_mock' });
 
     // Trigger failures on binance
     for (let i = 0; i < 6; i++) {
@@ -92,20 +92,20 @@ describe('Exchange Connectivity Module Fixes Unit Tests', () => {
   });
 
   it('EC-H5: disconnect() clears credentials and disconnectProvider clears state', async () => {
-    const adapter = new BinanceAdapter();
+    const adapter = new BybitAdapter();
     await adapter.connect({ environment: 'mainnet', apiKey: 'testKey', secret: 'testSec' });
     await adapter.disconnect();
     expect(() => (adapter as any).getConfig()).toThrow('Adapter not connected. Call connect() first.');
   });
 
   it('EC-M5: Symbol parser rejects multiple separators with INVALID_REQUEST', () => {
-    const adapter = new BinanceAdapter();
+    const adapter = new BybitAdapter();
     expect(() => adapter.normalizeSymbol('BTC/USDT/USD')).toThrow(UnifiedError);
     expect(() => adapter.normalizeSymbol('BTC/USDT/USD')).toThrow('Invalid symbol format with multiple separators');
   });
 
   it('EC-M6: Unconnected adapter throws NOT_CONNECTED error code', () => {
-    const adapter = new BinanceAdapter();
+    const adapter = new BybitAdapter();
     expect(() => (adapter as any).getConfig()).toThrow(UnifiedError);
     try {
       (adapter as any).getConfig();

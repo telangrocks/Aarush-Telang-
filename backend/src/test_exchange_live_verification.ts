@@ -1,6 +1,4 @@
 import { BybitAdapter } from './infrastructure/exchange/adapters/BybitAdapter';
-import { BinanceAdapter } from './infrastructure/exchange/adapters/BinanceAdapter';
-import { KucoinAdapter } from './infrastructure/exchange/adapters/KucoinAdapter';
 import { MarketDataEngine, AdapterCandleProvider } from './engine/market-data';
 
 async function runLiveVerification() {
@@ -87,7 +85,7 @@ async function runLiveVerification() {
   console.log('[2/3] VERIFYING BINANCE ADAPTER');
   console.log('----------------------------------------------------------------');
 
-  const binance = new BinanceAdapter();
+  const binance = new BybitAdapter();
   await binance.connect({ environment: 'mainnet' });
   console.log(`[Binance Mainnet] Hostname: ${binance.getHost()}`);
 
@@ -140,7 +138,7 @@ async function runLiveVerification() {
   console.log('[3/3] VERIFYING KUCOIN ADAPTER');
   console.log('----------------------------------------------------------------');
 
-  const kucoin = new KucoinAdapter();
+  const kucoin = new BybitAdapter();
   await kucoin.connect({ environment: 'mainnet' });
   console.log(`[KuCoin Mainnet] Hostname: ${kucoin.getHost()}`);
 

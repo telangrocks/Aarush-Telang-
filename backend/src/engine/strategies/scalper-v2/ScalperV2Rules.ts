@@ -4,7 +4,7 @@ export const SCALPER_V2_MANIFEST = {
   version: '2.0.0',
   author: 'System',
   category: 'Scalping',
-  supportedExchanges: ['binance', 'kucoin', 'bybit'],
+  supportedExchanges: ['bybit'],
   supportedMarkets: ['CRYPTO'],
   baseTimeframe: '5m',
   macroTimeframes: ['15m', '30m']

@@ -73,9 +73,6 @@ export class WebSocketManager {
     if (exchange === "bybit") {
       return JSON.stringify({ op: "ping" });
     }
-    if (exchange === "kucoin") {
-      return JSON.stringify({ id: Date.now().toString(), type: "ping" });
-    }
     return null;
   }
 
@@ -159,37 +156,5 @@ export class WebSocketManager {
     return "";
   }
 
-  // Event Ingestion Normalizers
-  public normalizeBinanceExecutionReport(data: any): ExchangeEvent | null {
-    if (data.e !== 'executionReport') return null;
-    
-    const statusMap: Record<string, any> = {
-      'NEW': 'open',
-      'PARTIALLY_FILLED': 'partially_filled',
-      'FILLED': 'filled',
-      'CANCELED': 'cancelled',
-      'REJECTED': 'rejected',
-      'EXPIRED': 'expired',
-    };
 
-    const status = statusMap[data.X] || 'pending';
-    const cumQuote = parseFloat(data.Z || '0');
-    const execQty = parseFloat(data.z || '0');
-    const avgPrice = execQty > 0 ? cumQuote / execQty : parseFloat(data.p || '0');
-
-    return {
-      eventId: `${data.i}_${data.x}_${data.T}`,
-      clientOrderId: data.c,
-      exchangeOrderId: data.i?.toString(),
-      symbol: data.s?.replace("USDT", "") || "",
-      exchange: "binance",
-      side: data.S === "BUY" ? "BUY" : "SELL",
-      status: status,
-      price: parseFloat(data.p || '0'),
-      quantity: parseFloat(data.q || '0'),
-      filledQuantity: execQty,
-      averageFillPrice: avgPrice,
-      eventTime: parseInt(data.T || Date.now().toString()),
-    };
-  }
 }

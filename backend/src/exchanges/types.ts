@@ -198,19 +198,6 @@ export interface ValidationResult {
 
 export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
   {
-    name: "binance",
-    displayName: "Binance",
-    defaultRegion: "india",
-    regionUrls: {
-      global: "https://api.binance.com",
-      india: "https://api.binance.com",
-    },
-    regionTestnetUrls: {
-      global: "https://testnet.binance.vision",
-      india: "https://testnet.binance.vision",
-    },
-  },
-  {
     name: "bybit",
     displayName: "Bybit",
     defaultRegion: "india",
@@ -222,32 +209,6 @@ export const SUPPORTED_EXCHANGES: ExchangeConfig[] = [
       global: "https://api-testnet.bybit.com",
       india: "https://api-testnet.bybit.com",
     },
-  },
-  {
-    name: "kucoin",
-    displayName: "KuCoin",
-    defaultRegion: "india",
-    regionUrls: {
-      global: "https://api.kucoin.com",
-      india: "https://api.kucoin.com",
-    },
-    regionTestnetUrls: {
-      global: "https://api.kucoin.com",
-      india: "https://api.kucoin.com",
-    },
-  },
-  {
-    name: "delta",
-    displayName: "Delta Exchange",
-    defaultRegion: "india",
-    regionUrls: {
-      global: "https://api.delta.exchange",
-      india: "https://api.delta.exchange",
-    },
-    regionTestnetUrls: {
-      global: "https://testnet-api.delta.exchange",
-      india: "https://testnet-api.delta.exchange",
-    },
-  },
+  }
 ];
 
