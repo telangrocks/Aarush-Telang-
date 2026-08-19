@@ -19,7 +19,7 @@ export interface IExchangeAdapter {
 
   createOrder(order: OrderRequest): Promise<Order>;
   cancelOrder(orderId: string, symbol: string): Promise<boolean>;
-  fetchOrder(orderId: string, symbol: string): Promise<Order>;
+  fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string }): Promise<Order>;
   fetchOpenOrders(symbol?: string): Promise<Order[]>;
   fetchClosedOrders(symbol?: string): Promise<Order[]>;
   fetchMyTrades(symbol?: string): Promise<Trade[]>;

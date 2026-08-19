@@ -520,6 +520,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
         size: size,
         unrealizedPnl: new BigNumber(p.unrealisedPnl || 0),
         leverage: parseFloat(p.leverage || '1'),
+        stopLoss: p.stopLoss ? new BigNumber(p.stopLoss) : undefined,
+        takeProfit: p.takeProfit ? new BigNumber(p.takeProfit) : undefined,
       });
     }
     return positions;
@@ -545,9 +547,16 @@ export class BybitAdapter extends BaseExchangeAdapter {
       timeInForce: 'GTC',
     };
 
+    if ((order as any).reduceOnly === true) {
+      params.reduceOnly = true;
+      params.closeOnTrigger = true; // Bybit Linear requirement for exit orders
+    }
+
     if (order.clientOrderId) {
-      const cleanId = order.clientOrderId.replace(/[^a-zA-Z0-9-_]/g, '');
-      params.orderLinkId = cleanId.length > 36 ? cleanId.slice(-36) : cleanId;
+      if (order.clientOrderId.length > 36) {
+        throw new UnifiedError(`clientOrderId ${order.clientOrderId} exceeds 36 characters. Validation failed.`, 'INVALID_REQUEST');
+      }
+      params.orderLinkId = order.clientOrderId;
     }
 
     if (isLimit && order.price) {
@@ -594,15 +603,34 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return true;
   }
 
-  public async fetchOrder(orderId: string, symbol: string): Promise<Order> {
-    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+  public async fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string }): Promise<Order> {
+    if (!request.clientOrderId && !request.exchangeOrderId) {
+      throw new UnifiedError(`fetchOrder requires exactly one of clientOrderId or exchangeOrderId`, 'INVALID_REQUEST');
+    }
+    if (request.clientOrderId && request.exchangeOrderId) {
+      throw new UnifiedError(`fetchOrder requires exactly one of clientOrderId or exchangeOrderId, not both`, 'INVALID_REQUEST');
+    }
+
+    const { canonicalSymbol } = this.normalizeSymbol(request.symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
-    const result = await this.makeRequest('GET', '/v5/order/realtime', { category: 'linear', symbol: rawSymbol, orderId }, true);
+    
+    const params: Record<string, any> = { category: 'linear', symbol: rawSymbol };
+    if (request.clientOrderId) {
+      params.orderLinkId = request.clientOrderId;
+    } else {
+      params.orderId = request.exchangeOrderId;
+    }
+
+    const result = await this.makeRequest('GET', '/v5/order/realtime', params, true);
     const item = result?.list?.[0];
 
     if (!item) {
-      throw new UnifiedError(`Order ${orderId} not found`, 'EXCHANGE_NOT_REACHABLE');
+      throw new UnifiedError(`Order not found`, 'ORDER_NOT_FOUND');
     }
+
+    const parsedStatus = item.orderStatus === 'Filled' ? 'closed' : 
+                         item.orderStatus === 'PartiallyFilled' ? 'partially_filled' :
+                         item.orderStatus === 'Cancelled' ? 'canceled' : 'open';
 
     return {
       id: item.orderId,
@@ -610,8 +638,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
       symbol: canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       type: item.orderType.toLowerCase() as 'limit' | 'market',
-      status: item.orderStatus === 'Filled' ? 'closed' : item.orderStatus === 'Cancelled' ? 'canceled' : 'open',
-      price: new BigNumber(item.price || 0),
+      status: parsedStatus,
+      price: item.price ? new BigNumber(item.price) : new BigNumber(0),
+      average: item.avgPrice ? new BigNumber(item.avgPrice) : undefined, // Leave undefined if falsy so it doesn't overwrite with 0
       amount: new BigNumber(item.qty || 0),
       filled: new BigNumber(item.cumExecQty || 0),
       remaining: new BigNumber(item.leavesQty || 0),
@@ -635,6 +664,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
       type: item.orderType.toLowerCase() as 'limit' | 'market',
       status: 'open',
       price: new BigNumber(item.price || 0),
+      average: new BigNumber(item.avgPrice || 0),
       amount: new BigNumber(item.qty || 0),
       filled: new BigNumber(item.cumExecQty || 0),
       remaining: new BigNumber(item.leavesQty || 0),
@@ -658,6 +688,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
       type: item.orderType.toLowerCase() as 'limit' | 'market',
       status: item.orderStatus === 'Filled' ? 'closed' : 'canceled',
       price: new BigNumber(item.price || 0),
+      average: new BigNumber(item.avgPrice || 0),
       amount: new BigNumber(item.qty || 0),
       filled: new BigNumber(item.cumExecQty || 0),
       remaining: new BigNumber(item.leavesQty || 0),

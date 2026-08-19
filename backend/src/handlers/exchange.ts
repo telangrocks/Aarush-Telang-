@@ -1136,11 +1136,28 @@ export async function handleExecuteTrade(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
+    let alertId: string | undefined;
+    try {
+      const body = await c.req.json();
+      alertId = body.alertId;
+    } catch (e) {
+      // Ignore if no JSON body
+    }
+
+    if (!alertId) {
+      c.status(400);
+      return c.json({ success: false, message: "alertId is required to execute a trade." });
+    }
+
     const botId = c.env.TRADING_BOTS.idFromName(userId);
     const bot = c.env.TRADING_BOTS.get(botId);
 
     const response = await bot.fetch(
-      new Request("http://bot/execute-trade", { method: "POST" }),
+      new Request("http://bot/execute-trade", { 
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alertId })
+      }),
     );
 
     const data = await response.json<{ success: boolean; message: string; order?: any }>();

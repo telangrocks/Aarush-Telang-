@@ -48,6 +48,8 @@ export interface Position {
   markPrice?: BigNumber;
   leverage?: number;
   liquidationPrice?: BigNumber;
+  stopLoss?: BigNumber;
+  takeProfit?: BigNumber;
 }
 
 export interface Order {
@@ -55,7 +57,7 @@ export interface Order {
   clientOrderId?: string;
   symbol: string;
   timestamp: number;
-  status: 'open' | 'closed' | 'canceled' | 'rejected' | 'expired';
+  status: 'open' | 'closed' | 'canceled' | 'rejected' | 'expired' | 'partially_filled';
   side: 'buy' | 'sell';
   type: 'limit' | 'market';
   timeInForce?: 'GTC' | 'IOC' | 'FOK' | 'PO';

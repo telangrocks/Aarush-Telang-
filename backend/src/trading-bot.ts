@@ -3,7 +3,7 @@ import { ExchangeManager, ExchangeName, ExchangeEnvironment } from './exchanges'
 import { Ticker } from './exchanges/models/NormalizedDomain';
 import BigNumber from 'bignumber.js';
 
-import { ReconciliationEngine } from './exchanges/ReconciliationEngine';
+
 import { decrypt } from './crypto';
 import { TradeValidator } from './validation/TradeValidator';
 import { sendTradeNotification } from './handlers/notifications';
@@ -730,31 +730,38 @@ export class TradingBot {
 
             const coinId = (await this.state.storage.get('coinId')) as string;
 
+            let alertId: string | undefined;
+            try {
+              const body = await request.clone().json() as any;
+              alertId = body.alertId;
+            } catch (e) {}
+
+            if (!alertId) {
+              return new Response(JSON.stringify({ error: 'alertId is required.' }), { status: 400 });
+            }
+
+            // [SAFETY GATE: STRICT SCHEMA READINESS CHECK]
+            // We must absolutely guarantee the persistence layer is capable of tracking this execution
+            // BEFORE we ever dispatch a non-idempotent intent to the remote exchange.
+            // Requirement: Migration 0024 (target_entry_price) MUST exist.
+            try {
+              const tableInfo = await this.env.DB.prepare("PRAGMA table_info('trade_positions')").all();
+              const hasTargetEntryPrice = tableInfo.results.some((r: any) => r.name === 'target_entry_price');
+              const hasEntryStatus = tableInfo.results.some((r: any) => r.name === 'entry_status');
+              if (!hasTargetEntryPrice || !hasEntryStatus) {
+                console.error(`[SAFETY GATE: FATAL] Database schema is incomplete. Migration 0016 or 0024 missing. Missing required columns. Execution HALTED.`);
+                return new Response(JSON.stringify({ error: 'System deployment incomplete. Missing required D1 database migrations. Execution halted to prevent un-trackable exchange inventory.' }), { status: 503 });
+              }
+            } catch (schemaErr: any) {
+              console.error(`[SAFETY GATE: FATAL] Failed to verify D1 schema readiness: ${schemaErr.message}`);
+              return new Response(JSON.stringify({ error: 'Failed to verify persistence readiness. Execution halted.' }), { status: 500 });
+            }
+
             const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-            const pending = alerts.filter((a) => a.status === 'pending' || a.status === 'acknowledged');
-            let target: TradeAlert;
-            if (pending.length > 0) {
-              target = pending[pending.length - 1];
-            } else {
-              const storedSize = (await this.state.storage.get('positionSize')) as number;
-              const positionSize = (storedSize && storedSize > 0) ? storedSize : 10;
-              const targetEntryPrice = (await this.state.storage.get('targetEntryPrice')) as number || 64500;
-              target = {
-                id: `alert_${crypto.randomUUID()}`,
-                symbol: coinId || 'BTC/USDT',
-                signalPrice: targetEntryPrice,
-                targetEntryPrice: targetEntryPrice,
-                entryPrice: targetEntryPrice,
-                stopLoss: targetEntryPrice * 0.985,
-                takeProfit: targetEntryPrice * 1.03,
-                estimatedPnl: 3.0,
-                positionSize: positionSize,
-                strategy: 'scalper_v2',
-                side: 'BUY',
-                timestamp: new Date().toISOString(),
-                status: 'pending'
-              };
-              alerts.push(target);
+            const target: TradeAlert | undefined = alerts.find((a) => a.id === alertId && (a.status === 'pending' || a.status === 'acknowledged'));
+            
+            if (!target) {
+              return new Response(JSON.stringify({ error: 'Trade alert not found, expired, or already executed.' }), { status: 409 });
             }
             const side: 'BUY' | 'SELL' = target.side || 'BUY';
             const rawSymbol = coinId || target.symbol || 'BTC/USDT';
@@ -762,6 +769,17 @@ export class TradingBot {
             const clientOrderId = target.id;
 
             console.log(`[DIAGNOSTIC] [STAGE: PENDING_ALERT_FOUND] targetAlertId=${target.id} symbol=${orderSymbol} side=${side} positionSize=${target.positionSize}`);
+
+            // Phase 3: Strict Concurrency Check
+            // Mathematically prevents executing a new intent for a symbol if an unresolved intent already exists for it.
+            const existingIntents = await this.state.storage.list({ prefix: 'intent:order:' });
+            for (const val of existingIntents.values()) {
+              const intent = val as any;
+              if (intent.symbol === orderSymbol && ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)) {
+                  console.error(`[SAFETY_GATE] Rejected concurrent entry: Intent ${intent.intentId} is unresolved (${intent.status}) for ${orderSymbol}.`);
+                  return new Response(JSON.stringify({ error: `Concurrent execution blocked. Unresolved intent ${intent.intentId} in state ${intent.status} exists for ${orderSymbol}.` }), { status: 423 }); // 423 Locked
+              }
+            }
 
             target.status = 'submitted';
             await this.state.storage.put('alerts', this.pruneAlerts(alerts));
@@ -884,58 +902,112 @@ export class TradingBot {
                 if (executionSnapshot.takeProfit) req.takeProfit = executionSnapshot.takeProfit;
                 if (executionSnapshot.stopLoss) req.stopLoss = executionSnapshot.stopLoss;
 
-                console.log(`[DIAGNOSTIC] [STAGE: ORDER_REQUEST_BUILT] payload=${JSON.stringify({ symbol: req.symbol, side: req.side, type: req.type, amount: req.amount?.toString(), price: req.price?.toString(), clientOrderId: req.clientOrderId })}`);
+                // Phase 3: Final Dispatch Safety Gate
+                const { FinalDispatchSafetyGate } = require('./engine/safety/FinalDispatchSafetyGate');
+                try {
+                  FinalDispatchSafetyGate.validate(req, {
+                    stepSize,
+                    tickSize,
+                    minQty,
+                    minNotional,
+                  });
+                } catch (gateErr: any) {
+                  throw new Error(`RISK_GATE_REJECTED: ${gateErr.message}`);
+                }
 
-                console.log(`[DIAGNOSTIC] [STAGE: CCXT_CREATE_ORDER_CALLED] exchange=${executionSnapshot.exchangeName} environment=${executionSnapshot.environment}`);
-                const rawOrder = await ExchangeManager.executeIdempotentOrder(writeProvider, req);
-                console.log(`[DIAGNOSTIC] [STAGE: BINANCE_HTTP_RESPONSE_RECEIVED] rawResponse=${JSON.stringify(rawOrder)}`);
+                // Phase 3: Core WAL State Machine (INTENT_PERSISTED)
+                const { EconomicIntent } = require('./engine/wal/WalTypes');
+                const intentObj: any = {
+                  intentId: executionSnapshot.clientOrderId,
+                  version: Date.now(),
+                  symbol: req.symbol,
+                  side: req.side,
+                  orderType: req.type,
+                  qty: req.amount.toString(),
+                  price: req.price?.toString(),
+                  status: 'INTENT_PERSISTED',
+                  requestedStopLoss: req.stopLoss,
+                  requestedTakeProfit: req.takeProfit,
+                  createdAt: Date.now(),
+                  reconciliationAttemptCount: 0,
+                  payloadSnapshot: req
+                };
+                
+                await this.state.storage.transaction(async (txn) => {
+                  await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                });
 
-                const filledQty = rawOrder.filled?.toNumber() || (rawOrder.status === 'closed' ? rawOrder.amount.toNumber() : 0);
-                const orderStatus = rawOrder.status === 'open' ? 'open' : 'filled';
-                const effectiveQty = filledQty > 0 ? filledQty : executionSnapshot.quantizedQuantity;
+                console.log(`[DIAGNOSTIC] [STAGE: INTENT_PERSISTED] WAL written for ${intentObj.intentId}`);
 
-                let ocoResult: any = null;
-                if (writeProvider.supportsOco() && executionSnapshot.takeProfit && executionSnapshot.stopLoss && effectiveQty > 0) {
-                  console.log(`[DIAGNOSTIC] Submitting post-fill Spot OCO protection for effectiveQty=${effectiveQty}...`);
-                  const ocoReq = {
-                    symbol: executionSnapshot.symbol,
-                    side: (executionSnapshot.side === 'BUY' ? 'sell' : 'buy') as 'buy' | 'sell',
-                    amount: new BigNumber(effectiveQty),
-                    price: new BigNumber(executionSnapshot.takeProfit),
-                    stopPrice: new BigNumber(executionSnapshot.stopLoss),
-                    stopLimitPrice: new BigNumber(executionSnapshot.stopLoss * 0.999),
-                    listClientOrderId: `oco_${executionSnapshot.clientOrderId}`
-                  };
-                  try {
-                    ocoResult = await ExchangeManager.executeIdempotentOcoOrder(writeProvider, ocoReq);
-                    console.log('[DIAGNOSTIC] Post-fill Spot OCO success:', JSON.stringify(ocoResult));
-                  } catch (ocoErr: any) {
-                    console.error('[DIAGNOSTIC] Post-fill Spot OCO submission error:', ocoErr?.message);
+                let rawOrder: any;
+                try {
+                  intentObj.status = 'DISPATCHED';
+                  intentObj.dispatchedAt = Date.now();
+                  await this.state.storage.transaction(async (txn) => {
+                    await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                  });
+
+                  rawOrder = await ExchangeManager.executeIdempotentOrder(writeProvider, req);
+                  
+                  intentObj.status = rawOrder.status === 'open' ? 'DISPATCHED' : 'FILLED';
+                  await this.state.storage.transaction(async (txn) => {
+                    await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                  });
+                  console.log(`[DIAGNOSTIC] [STAGE: ORDER_SUCCESS] orderId=${rawOrder.id} status=${intentObj.status}`);
+
+                } catch (e: any) {
+                  // Catch HTTP timeouts / 5xx to enforce UNKNOWN state instead of FAILED
+                  const isNetworkError = e.code === 'EXCHANGE_NOT_REACHABLE' || e.code === 'EXCHANGE_TIMEOUT' || String(e.message).includes('timeout') || String(e.status).startsWith('5');
+                  
+                  if (isNetworkError) {
+                    intentObj.status = 'UNKNOWN';
+                    await this.state.storage.transaction(async (txn) => {
+                      await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                    });
+                    console.warn(`[DIAGNOSTIC] [STAGE: UNKNOWN_STATE] Network failure during dispatch for ${intentObj.intentId}. Transitioning to UNKNOWN. Initiating reconciliation.`);
+                    
+                    // Trigger immediate first pass reconciliation
+                    const { ReconciliationEngine } = require('./engine/reconciliation/ReconciliationEngine');
+                    await ReconciliationEngine.reconcile(writeProvider, intentObj, Date.now());
+                    await this.state.storage.transaction(async (txn) => {
+                      await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                    });
+                    
+                    // If it remains UNKNOWN, we must halt the current execution cycle safely
+                    throw new Error(`UNKNOWN_STATE: Order ${intentObj.intentId} dispatch status is unknown due to network failure.`);
+                  } else {
+                    intentObj.status = 'FAILED';
+                    await this.state.storage.transaction(async (txn) => {
+                      await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                    });
+                    throw e; // Explicit rejection
                   }
                 }
 
-                console.log(`[DIAGNOSTIC] [STAGE: ORDER_SUCCESS] orderId=${rawOrder.id} status=${orderStatus} quantity=${filledQty}`);
+                const filledQty = rawOrder.filled?.toNumber() || (rawOrder.status === 'closed' ? rawOrder.amount.toNumber() : 0);
+                const orderStatus = rawOrder.status === 'open' ? 'open' : 'filled';
 
                 orderResult = {
                    success: true,
+                   message: 'Order accepted by exchange.',
                    orderId: rawOrder.id,
-                   price: rawOrder.average?.toNumber() || rawOrder.price?.toNumber(),
-                   quantity: filledQty > 0 ? filledQty : rawOrder.amount.toNumber(),
-                   status: orderStatus,
-                   ocoGroupId: ocoResult?.ocoGroupId || null,
-                   tpOrderId: ocoResult?.tpOrderId || null,
-                   slOrderId: ocoResult?.slOrderId || null,
-                   protectionMode: ocoResult ? 'NATIVE_OCO' : 'ATTACHED_TPSL'
+                   price: null, // Force null to prevent UI from rendering $0 fake price
+                   quantity: rawOrder.amount.toNumber(),
+                   status: 'open',
+                   ocoGroupId: null,
+                   tpOrderId: null,
+                   slOrderId: null,
+                   protectionMode: 'ATTACHED_TPSL'
                 };
               }
             } catch (e: any) {
-              console.error(`[DIAGNOSTIC] [STAGE: ORDER_FAILED] exceptionMessage=${e.message} exceptionName=${e.name} code=${e.code} status=${e.status} techDetail=${e.technicalDetail} origMsg=${e.originalExchangeErrorMessage} stack=${e.stack}`);
+              console.error(`[DIAGNOSTIC] [STAGE: ORDER_FAILED] exceptionMessage=${e.message}`);
               orderResult = {
                 success: false,
-                code: "EXCHANGE_REJECTED",
-                exchangeCode: e.originalExchangeErrorCode || e.code || e.status || -1,
+                code: e.message.includes('RISK_GATE') ? 'RISK_GATE_REJECTED' : (e.message.includes('UNKNOWN') ? 'UNKNOWN_STATE' : 'EXCHANGE_REJECTED'),
+                exchangeCode: -1,
                 message: e.message || 'Trade execution failed',
-                details: e.originalExchangeErrorMessage || e.technicalDetail || e.details || String(e)
+                details: String(e)
               };
             }
 
@@ -964,12 +1036,7 @@ export class TradingBot {
                 createdAt: new Date().toISOString()
               };
 
-              const refPrice = snapshot.targetEntryPrice || snapshot.signalPrice;
-              let averageFillPrice = orderResult.price;
-              if (!averageFillPrice || averageFillPrice <= 0) {
-                const fallbackTicker = await adapter?.fetchTicker(snapshot.symbol).catch(() => null);
-                averageFillPrice = (typeof fallbackTicker?.last?.toNumber === 'function' ? fallbackTicker.last.toNumber() : (typeof fallbackTicker?.last === 'number' ? fallbackTicker.last : 0)) || refPrice;
-              }
+              let averageFillPrice: number | null = orderResult.price || null;
 
               const currentStatus = orderResult.status === 'open' ? 'open' : 'filled';
               const actionType = currentStatus === 'open' ? 'TRADE_SUBMITTED' : 'TRADE_FILLED';
@@ -981,7 +1048,7 @@ export class TradingBot {
                   await sendTradeNotification(this.env, snapshot.userId, orderResult.orderId || snapshot.alertId, {
                     symbol: snapshot.symbol,
                     side: snapshot.side,
-                    entryPrice: averageFillPrice,
+                    entryPrice: averageFillPrice || snapshot.signalPrice,
                     targetEntryPrice: snapshot.targetEntryPrice || snapshot.signalPrice,
                     signalPrice: snapshot.signalPrice,
                     stopLoss: snapshot.stopLoss || 0,
@@ -999,7 +1066,7 @@ export class TradingBot {
               await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
               await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
 
-              const positionId = crypto.randomUUID();
+              const positionId = snapshot.alertId;
               const now = new Date().toISOString();
               const initialStatus = orderResult.status === 'open' ? 'PENDING_ENTRY' : 'OPEN';
               
@@ -1008,7 +1075,7 @@ export class TradingBot {
                   userId: snapshot.userId,
                   orderSymbol: snapshot.symbol,
                   side: snapshot.side,
-                  entryPrice: averageFillPrice,
+                  entryPrice: averageFillPrice || snapshot.signalPrice,
                   targetEntryPrice: snapshot.targetEntryPrice || null,
                   signalPrice: snapshot.signalPrice,
                   averageFillPrice: averageFillPrice,
@@ -1075,7 +1142,8 @@ export class TradingBot {
 
                 // Record Audit Entry
                 const targetPrice = snapshot.targetEntryPrice || snapshot.signalPrice;
-                const slippagePercent = targetPrice > 0 ? (Math.abs(averageFillPrice - targetPrice) / targetPrice) * 100 : 0;
+                const safeAverageFillPrice = averageFillPrice ?? snapshot.signalPrice;
+                const slippagePercent = targetPrice > 0 ? (Math.abs(safeAverageFillPrice - targetPrice) / targetPrice) * 100 : 0;
                 await this.env.DB.prepare(
                   `INSERT INTO trade_execution_audit (
                     id, alert_id, user_id, symbol, strategy, target_entry_price, signal_price, execution_price, average_fill_price, stop_loss, take_profit, slippage_percent, fill_timestamp, created_at
@@ -1089,8 +1157,8 @@ export class TradingBot {
                     snapshot.strategy,
                     snapshot.targetEntryPrice || null,
                     snapshot.signalPrice,
-                    refPrice,
-                    averageFillPrice,
+                    safeAverageFillPrice,
+                    safeAverageFillPrice,
                     snapshot.stopLoss,
                     snapshot.takeProfit,
                     slippagePercent,
@@ -1247,13 +1315,14 @@ export class TradingBot {
   async alarm() {
     // Feature 11: Background Monitoring Fail-Safe (Immortal Alarm)
     try {
-      const isActive = await this.state.storage.get('isActive');
-      if (!isActive) return;
+      await this.state.blockConcurrencyWhile(async () => {
+        const isActive = await this.state.storage.get('isActive');
+        if (!isActive) return;
 
-      if (this.env.GLOBAL_TRADING_HALT === 'true') {
-        console.warn('GLOBAL_TRADING_HALT is active. Skipping background operations.');
-        return;
-      }
+        if (this.env.GLOBAL_TRADING_HALT === 'true') {
+          console.warn('GLOBAL_TRADING_HALT is active. Skipping background operations.');
+          return;
+        }
 
       // Phase 3.3.1: Write-Ahead Logging (WAL) Recovery
       const pendingPositionSync = await this.state.storage.get<any>('pendingPositionSync');
@@ -1289,48 +1358,136 @@ export class TradingBot {
         }
       }
 
-      // Phase 3.3.2: Reconciliation Sweep (Run roughly every hour or based on config)
-      const lastReconciliationAt = (await this.state.storage.get('lastReconciliationAt')) as number | undefined;
-      const RECONCILIATION_INTERVAL_MS = 60 * 60 * 1000;
-      if (!lastReconciliationAt || Date.now() - lastReconciliationAt > RECONCILIATION_INTERVAL_MS) {
-         try {
-           const userId = await this.state.storage.get('userId') as string;
-           if (userId) {
-           const userKeys = await this.env.DB.prepare('SELECT exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<any>();
-           if (userKeys?.exchange_name && userKeys.exchange_api_secret_encrypted) {
-             let apiKey: string | undefined = undefined;
-             if (userKeys.exchange_api_key_iv && userKeys.exchange_api_key_encrypted) {
-               try {
-                 apiKey = await decrypt({ iv: userKeys.exchange_api_key_iv, encrypted: userKeys.exchange_api_key_encrypted, salt: userKeys.exchange_api_key_salt }, this.env.ENCRYPTION_KEY);
-               } catch (_) {}
-             }
-             if (!apiKey && userKeys.exchange_api_key) {
-               apiKey = userKeys.exchange_api_key;
-             }
+      // Phase 3: Exhaustive WAL Reconciliation Sweep
+      try {
+        const userId = await this.state.storage.get('userId') as string;
+        if (userId) {
+          const userKeys = await this.env.DB.prepare('SELECT exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<any>();
+          if (userKeys?.exchange_name && userKeys.exchange_api_secret_encrypted) {
+            let apiKey: string | undefined = undefined;
+            if (userKeys.exchange_api_key_iv && userKeys.exchange_api_key_encrypted) {
+              try {
+                apiKey = await decrypt({ iv: userKeys.exchange_api_key_iv, encrypted: userKeys.exchange_api_key_encrypted, salt: userKeys.exchange_api_key_salt }, this.env.ENCRYPTION_KEY);
+              } catch (_) {}
+            }
+            if (!apiKey && userKeys.exchange_api_key) {
+              apiKey = userKeys.exchange_api_key;
+            }
 
-             const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted, salt: userKeys.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
-             let decryptedPassphrase = undefined;
-             if (userKeys.exchange_api_passphrase_iv && userKeys.exchange_api_passphrase_encrypted) {
-               decryptedPassphrase = await decrypt({ iv: userKeys.exchange_api_passphrase_iv, encrypted: userKeys.exchange_api_passphrase_encrypted, salt: userKeys.exchange_api_passphrase_salt }, this.env.ENCRYPTION_KEY);
-             }
-             // Reconciliation makes authenticated calls (fetchOrder) — pass full credentials
-             const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, {
-               environment: normalizeEnvironment(userKeys.exchange_environment),
-               apiKey,
-               secret: decryptedSecret,
-               password: decryptedPassphrase,
-               region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
-               ...this.resolveEgressConfig(userKeys.exchange_name),
-             });
-             
-             const reconciliationEngine = new ReconciliationEngine(this.state.storage, this.env, userId, adapter, userKeys);
-             await reconciliationEngine.runReconciliationSweep();
-           }
-         }
-       } catch (e) {
-         console.error("Reconciliation sweep failed:", e);
-       }
-    }
+            const decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted, salt: userKeys.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
+            let decryptedPassphrase = undefined;
+            if (userKeys.exchange_api_passphrase_iv && userKeys.exchange_api_passphrase_encrypted) {
+              decryptedPassphrase = await decrypt({ iv: userKeys.exchange_api_passphrase_iv, encrypted: userKeys.exchange_api_passphrase_encrypted, salt: userKeys.exchange_api_passphrase_salt }, this.env.ENCRYPTION_KEY);
+            }
+            
+            const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, {
+              environment: normalizeEnvironment(userKeys.exchange_environment),
+              apiKey,
+              secret: decryptedSecret,
+              password: decryptedPassphrase,
+              region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
+              ...this.resolveEgressConfig(userKeys.exchange_name),
+            });
+            
+            // 1. Process UNKNOWN / PENDING Economic Intents
+            const { ReconciliationEngine } = require('./engine/reconciliation/ReconciliationEngine');
+            const intentMap = await this.state.storage.list({ prefix: 'intent:order:' });
+            for (const [key, value] of intentMap.entries()) {
+              const intent = value as any;
+              const pendingStates = ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'];
+              if (pendingStates.includes(intent.status)) {
+                console.log(`[RECONCILIATION] Sweeping intent ${intent.intentId} in state ${intent.status}`);
+                const reconciled = await ReconciliationEngine.reconcile(adapter, intent, Date.now());
+                await this.state.storage.transaction(async (txn) => {
+                  await txn.put(key, reconciled);
+                });
+
+                if (reconciled.status === 'FILLED' || reconciled.status === 'PARTIALLY_FILLED' || (reconciled.status === 'DISPATCHED' && reconciled.actualExecutedQuantity > 0)) {
+                  try {
+                    const snap = reconciled.payloadSnapshot || {};
+                    const isClosed = reconciled.status === 'FAILED' || reconciled.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION';
+                    await this.env.DB.prepare(
+                      `INSERT INTO trade_positions (
+                        id, user_id, symbol, side, entry_price, target_entry_price, quantity, stop_loss, take_profit, status, entry_status, average_fill_price, filled_quantity, order_id, exchange, environment, entry_at, created_at, updated_at
+                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      ON CONFLICT(id) DO UPDATE SET
+                        status = CASE WHEN excluded.status = 'OPEN' THEN 'OPEN' ELSE trade_positions.status END,
+                        entry_status = CASE 
+                           WHEN excluded.entry_status = 'FILLED' THEN 'FILLED'
+                           WHEN excluded.entry_status = 'PARTIALLY_FILLED' AND trade_positions.entry_status != 'FILLED' THEN 'PARTIALLY_FILLED'
+                           WHEN excluded.entry_status = 'DISPATCHED' AND trade_positions.entry_status NOT IN ('FILLED', 'PARTIALLY_FILLED') THEN 'DISPATCHED'
+                           ELSE trade_positions.entry_status
+                        END,
+                        average_fill_price = CASE 
+                           WHEN excluded.average_fill_price > 0 THEN excluded.average_fill_price 
+                           WHEN excluded.average_fill_price IS NULL OR excluded.average_fill_price = 0 THEN trade_positions.average_fill_price 
+                           ELSE excluded.average_fill_price 
+                        END,
+                        filled_quantity = MAX(COALESCE(trade_positions.filled_quantity, 0), COALESCE(excluded.filled_quantity, 0)),
+                        order_id = CASE
+                           WHEN excluded.order_id IS NOT NULL THEN excluded.order_id
+                           ELSE trade_positions.order_id
+                        END,
+                        updated_at = excluded.updated_at`
+                    )
+                    .bind(
+                      reconciled.intentId,
+                      userId,
+                      snap.symbol || '',
+                      snap.side || 'BUY',
+                      snap.price || 0,
+                      snap.targetEntryPrice || snap.price || 0,
+                      snap.qty || 0,
+                      snap.requestedStopLoss || 0,
+                      snap.requestedTakeProfit || 0,
+                      'OPEN', // Position status is OPEN because inventory exists
+                      reconciled.status, // entry_status is the specific lifecycle: PARTIALLY_FILLED, FILLED, etc
+                      reconciled.actualFillPrice || null,
+                      reconciled.actualExecutedQuantity || 0,
+                      reconciled.actualOrderId || null,
+                      userKeys.exchange_name,
+                      userKeys.exchange_environment || 'mainnet',
+                      new Date(reconciled.createdAt || Date.now()).toISOString(),
+                      new Date(reconciled.createdAt || Date.now()).toISOString(),
+                      new Date().toISOString()
+                    )
+                    .run();
+                  } catch (e) {
+                    console.error(`[RECONCILIATION] D1 UPSERT failed for intent ${reconciled.intentId}:`, e);
+                  }
+                }
+              }
+            }
+
+            // 2. Native Protection Engine Verification
+            const positions = await adapter.fetchPositions().catch(() => null);
+            if (positions) {
+               const activePositions = await this.state.storage.get<any[]>('activePositions') || [];
+               for (const dbPos of activePositions) {
+                 const exchangePos = positions.find((p: any) => p.symbol === dbPos.symbol && p.side === (dbPos.side === 'BUY' ? 'long' : 'short'));
+                 if (exchangePos && exchangePos.size.toNumber() > 0) {
+                    // Phase 3: Critical Correction #5 - Verify actual bounds, not just existence
+                    const exchangeSL = exchangePos.stopLoss ? (typeof exchangePos.stopLoss.toNumber === 'function' ? exchangePos.stopLoss.toNumber() : Number(exchangePos.stopLoss)) : null;
+                    const exchangeTP = exchangePos.takeProfit ? (typeof exchangePos.takeProfit.toNumber === 'function' ? exchangePos.takeProfit.toNumber() : Number(exchangePos.takeProfit)) : null;
+                    const expectedSL = dbPos.stop_loss || dbPos.stopLoss;
+                    const expectedTP = dbPos.take_profit || dbPos.takeProfit;
+                    
+                    // 1% tolerance for precision/rounding differences from the exchange
+                    const isValidSL = exchangeSL && expectedSL && Math.abs((exchangeSL - expectedSL) / expectedSL) < 0.01;
+                    const isValidTP = exchangeTP && expectedTP && Math.abs((exchangeTP - expectedTP) / expectedTP) < 0.01;
+                    
+                    if (!isValidSL || !isValidTP) {
+                      console.warn(`[SAFETY] Position ${dbPos.symbol} protection mismatch! Expected SL:${expectedSL}/TP:${expectedTP}, found SL:${exchangeSL}/TP:${exchangeTP}`);
+                      await this.logAuditEvent(userId, 'PROTECTION_VERIFICATION_FAILED', { symbol: dbPos.symbol, expectedSL, expectedTP, exchangeSL, exchangeTP });
+                    }
+                 }
+               }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("WAL Reconciliation sweep failed:", e);
+      }
 
     // Sprint 10 Phase 1 Integration
     try {
@@ -1516,6 +1673,7 @@ export class TradingBot {
         await this.monitorOpenPositions();
         await this.state.storage.put('lastPositionCheckAt', Date.now());
       }
+      });
     } catch (e) {
       console.error('Fatal DO alarm error:', e);
     } finally {
@@ -1539,13 +1697,10 @@ export class TradingBot {
       const userId = (await this.state.storage.get('userId')) as string;
       if (!userId) return;
 
-      const { results } = await this.env.DB.prepare(
-        "SELECT * FROM trade_positions WHERE user_id = ? AND status = 'OPEN'"
-      )
-        .bind(userId)
-        .all();
+      const activePositions = await this.state.storage.get<any[]>('activePositions') || [];
 
-      if (!results || results.length === 0) return;
+      if (activePositions.length === 0) return;
+      const results = activePositions;
 
       const userKeys = await this.env.DB.prepare(
         'SELECT exchange_api_key, exchange_api_key_encrypted, exchange_api_key_iv, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
@@ -1587,11 +1742,16 @@ export class TradingBot {
             const realizedPnl = (priceDiff / position.entry_price) * position.quantity * position.entry_price;
             const now = new Date().toISOString();
 
-            await this.env.DB.prepare(
+            // Fire-and-forget telemetry push to D1
+            this.env.DB.prepare(
               "UPDATE trade_positions SET status = 'CLOSED', closed_at = ?, close_price = ?, realized_pnl = ?, close_reason = ?, updated_at = ? WHERE id = ?"
             )
               .bind(now, currentPrice, realizedPnl, closeReason, now, position.id)
-              .run();
+              .run().catch(e => console.error('D1 position close sync failed:', e));
+
+            // Update Authoritative DO WAL
+            const updatedPositions = activePositions.filter((p: any) => p.id !== position.id);
+            await this.state.storage.put('activePositions', updatedPositions);
 
             // Reset DO trade state so the UI gracefully exits LivePnLMonitoringScreen
             const currentTradeActive = await this.state.storage.get('tradeActive');

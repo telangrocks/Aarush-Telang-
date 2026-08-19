@@ -18,7 +18,7 @@ export interface IExchangeProvider {
   supportsOco(): boolean;
   createOcoOrder(order: OcoOrderRequest): Promise<OcoOrderResponse>;
 
-  fetchOrder(orderId: string, symbol: string): Promise<Order>;
+  fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string }): Promise<Order>;
   fetchOpenOrders(symbol?: string): Promise<Order[]>;
   fetchClosedOrders(symbol?: string): Promise<Order[]>;
   fetchMyTrades(symbol?: string): Promise<Trade[]>;

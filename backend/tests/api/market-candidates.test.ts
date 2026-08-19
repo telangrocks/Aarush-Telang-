@@ -50,8 +50,8 @@ describe("Market Candidates Analysis Engine", () => {
     }));
 
     const result = await analyzeMarket(inputTickers, mockAdapter);
-    expect(result.length).toBe(5);
+    expect(result.length).toBe(10);
     expect(result[0].rank).toBe(1);
-    expect(result[4].rank).toBe(5);
+    expect(result[9].rank).toBe(10);
   });
 });

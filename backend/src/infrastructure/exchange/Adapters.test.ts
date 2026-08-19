@@ -24,4 +24,25 @@ describe('Exchange Adapters & Dynamic Self-Registration Registry Unit Tests', ()
     await bybit.connect({ environment: 'demo' });
     await expect(bybit.fetchBalance()).rejects.toThrow('Missing required exchange credentials');
   });
+
+  it('Test K: BybitAdapter rejects clientOrderId > 36 characters instead of silent truncation', async () => {
+    const config: any = {
+      apiKey: 'test-key',
+      secret: 'test-secret',
+      environment: 'testnet'
+    };
+    const adapter = new BybitAdapter();
+    await adapter.connect(config);
+
+    const overLimitId = '1234567890123456789012345678901234567'; // 37 characters
+    const BigNumber = require('bignumber.js');
+
+    await expect(adapter.createOrder({
+      symbol: 'BTC/USDT',
+      type: 'market',
+      side: 'buy',
+      amount: new BigNumber(1),
+      clientOrderId: overLimitId
+    })).rejects.toThrow(/exceeds 36 characters/);
+  });
 });

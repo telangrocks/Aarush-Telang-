@@ -138,7 +138,7 @@ export class ExchangeManager {
   ): Promise<OcoOrderResponse> {
     const idempotentRequest = { ...request };
     if (!idempotentRequest.listClientOrderId) {
-      idempotentRequest.listClientOrderId = `oco_${crypto.randomUUID()}`;
+      idempotentRequest.listClientOrderId = `oco_${crypto.randomUUID().replace(/-/g, '').substring(0, 32)}`;
     }
     if (provider instanceof BaseExchangeAdapter) {
       const res = await this.orchestrator.execute(provider, 'createOcoOrder', async (p) => {

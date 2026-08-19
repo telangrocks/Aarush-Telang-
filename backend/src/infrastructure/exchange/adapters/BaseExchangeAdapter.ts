@@ -119,7 +119,7 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
     throw new UnifiedError(`OCO orders not supported on exchange ${this.exchangeId}`, 'UNSUPPORTED_OPERATION');
   }
 
-  abstract fetchOrder(orderId: string, symbol: string): Promise<Order>;
+  abstract fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string }): Promise<Order>;
   abstract fetchOpenOrders(symbol?: string): Promise<Order[]>;
   abstract fetchClosedOrders(symbol?: string): Promise<Order[]>;
   abstract fetchMyTrades(symbol?: string): Promise<Trade[]>;
