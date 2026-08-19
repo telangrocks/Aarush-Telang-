@@ -9,15 +9,22 @@ import android.os.Build
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.cryptopulse.app.MainActivity
+import com.cryptopulse.app.data.local.TradeAlertDataStore
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import javax.inject.Inject
+import javax.inject.Singleton
 
-class TradeAlertManager private constructor(context: Context) {
-
-    private val appContext = context.applicationContext
+@Singleton
+class TradeAlertManager @Inject constructor(
+    @ApplicationContext private val appContext: Context,
+    private val dataStore: TradeAlertDataStore
+) {
     private val audioManager = TradeAlertAudioManager(appContext)
     private val vibrationManager = TradeAlertVibrationManager(appContext)
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -32,19 +39,22 @@ class TradeAlertManager private constructor(context: Context) {
         const val CHANNEL_ID = "trading_bot_channel"
         const val ALERT_NOTIFICATION_ID = 1002
         private const val WAKELOCK_TIMEOUT_MS = 5 * 60 * 1000L // 5 minutes safety timeout
-
-        @Volatile
-        private var instance: TradeAlertManager? = null
-
-        fun getInstance(context: Context): TradeAlertManager {
-            return instance ?: synchronized(this) {
-                instance ?: TradeAlertManager(context).also { instance = it }
-            }
-        }
     }
 
     init {
         createNotificationChannel()
+        restoreActiveAlert()
+    }
+
+    private fun restoreActiveAlert() {
+        scope.launch {
+            val alert = dataStore.getActiveAlertFlow().first()
+            if (alert != null) {
+                activeAlertData = alert
+                _currentState.value = TradeAlertState.USER_VIEWING_ALERT
+                TradeAlertLogger.log("ALERT_RESTORED", "Restored active alert from DataStore: ${alert["id"]}")
+            }
+        }
     }
 
     @Synchronized
@@ -58,6 +68,7 @@ class TradeAlertManager private constructor(context: Context) {
         if (_currentState.value != TradeAlertState.IDLE && activeAlertData != null) {
             // Seamless Replace Strategy: Update active data & UI, keep voice/vibration playing uninterrupted
             activeAlertData = alertData
+            scope.launch { dataStore.saveActiveAlert(alertData) }
             _currentState.value = TradeAlertState.ALERT_REPLACED
             TradeAlertLogger.log("ALERT_REPLACED", "Updated active alert details to latest signal ($symbol)")
             scope.launch { AlertBus.send(alertData) }
@@ -68,6 +79,7 @@ class TradeAlertManager private constructor(context: Context) {
 
         // Fresh alert trigger
         activeAlertData = alertData
+        scope.launch { dataStore.saveActiveAlert(alertData) }
         _currentState.value = TradeAlertState.ALERT_TRIGGERED
 
         acquireWakeLock()
@@ -98,6 +110,7 @@ class TradeAlertManager private constructor(context: Context) {
         cancelSystemNotification()
 
         activeAlertData = null
+        scope.launch { dataStore.saveActiveAlert(null) }
         _currentState.value = TradeAlertState.IDLE
     }
 

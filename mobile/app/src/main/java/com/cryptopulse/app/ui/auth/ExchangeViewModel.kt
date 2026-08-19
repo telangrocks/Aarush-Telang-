@@ -16,9 +16,14 @@ import com.cryptopulse.app.domain.models.Kline
 import com.cryptopulse.app.ui.screens.MarketCandidate
 import com.cryptopulse.app.domain.models.TechnicalAnalysisResult
 import com.cryptopulse.app.domain.models.Ticker
+import com.cryptopulse.app.service.TradeAlertManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -148,7 +153,8 @@ class ExchangeViewModel @Inject constructor(
     private val fcmRepository: FcmRepository,
     private val tokenManager: com.cryptopulse.app.data.local.TokenManager,
     private val exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager,
-    private val sessionRepository: com.cryptopulse.app.domain.repository.TradeSessionRepository
+    private val sessionRepository: com.cryptopulse.app.domain.repository.TradeSessionRepository,
+    private val tradeAlertManager: TradeAlertManager
 ) : ViewModel() {
 
     private val _formState = MutableStateFlow(ExchangeFormState())
@@ -194,6 +200,15 @@ class ExchangeViewModel @Inject constructor(
 
     private val _lastTrade = MutableStateFlow<TradeSetupState?>(null)
     val lastTrade: StateFlow<TradeSetupState?> = _lastTrade
+
+    private val _liveAlertPrice = MutableStateFlow<Double?>(null)
+    val liveAlertPrice: StateFlow<Double?> = _liveAlertPrice
+
+    private val _isUnknownState = MutableStateFlow(false)
+    val isUnknownState: StateFlow<Boolean> = _isUnknownState
+
+    private var tickerJob: Job? = null
+    private var isProcessingTrade = false
 
 
     // ── User-facing error state ──────────
@@ -326,26 +341,8 @@ class ExchangeViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            _uiState.value = ExchangeUiState.Validating
-            _formState.value = _formState.value.copy(isLoading = true, validationMessage = null)
-
-            val valResult = exchangeRepository.validateKeys(
-                exchangeName = state.selectedExchange,
-                apiKey = state.apiKey,
-                apiSecret = state.apiSecret,
-                apiPassphrase = state.apiPassphrase.takeIf { it.isNotBlank() },
-                environment = state.environment,
-            )
-
-            if (valResult is NetworkResult.Error) {
-                val e = valResult.exceptionOrNull() ?: Exception()
-                val (userMessage, hint) = getUserFriendlyErrorMessage(endpointName = "/api/exchange/validate", exception = e)
-                _uiState.value = ExchangeUiState.Error(userMessage, hint)
-                _formState.value = _formState.value.copy(isLoading = false, validationMessage = userMessage)
-                return@launch
-            }
-
-            _formState.value = _formState.value.copy(validationMessage = "Credentials valid. Connecting...")
+            _uiState.value = ExchangeUiState.Connecting
+            _formState.value = _formState.value.copy(isLoading = true, validationMessage = "Connecting...")
 
             val connResult = exchangeRepository.connectExchange(
                 exchangeName = state.selectedExchange,
@@ -423,6 +420,10 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun resetState() {
+        tickerJob?.cancel()
+        isProcessingTrade = false
+        _liveAlertPrice.value = null
+        _isUnknownState.value = false
         _uiState.value = ExchangeUiState.Idle
         _formState.value = ExchangeFormState()
         _candidates.value = emptyList()
@@ -497,8 +498,34 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
+    fun startLiveTicker(symbol: String) {
+        tickerJob?.cancel()
+        tickerJob = viewModelScope.launch {
+            while (isActive && !isProcessingTrade) {
+                when (val result = marketRepository.getTicker(symbol)) {
+                    is NetworkResult.Success -> {
+                        _liveAlertPrice.value = result.data.price
+                    }
+                    is NetworkResult.Error -> {
+                        // Silently ignore ticker errors during alert
+                    }
+                }
+                delay(2000L)
+            }
+        }
+    }
+
+    fun stopLiveTicker() {
+        tickerJob?.cancel()
+    }
+
     fun setPendingAlert(alert: Map<String, Any>) {
         _pendingAlert.value = alert
+        _isUnknownState.value = false
+        val symbol = alert["symbol"] as? String
+        if (symbol != null) {
+            startLiveTicker(symbol)
+        }
     }
 
     fun setPendingBotAlert(alert: BotAlert) {
@@ -513,10 +540,13 @@ class ExchangeViewModel @Inject constructor(
             "strategy" to (alert.strategy ?: ""),
             "side" to (alert.side ?: "BUY"),
         )
+        _isUnknownState.value = false
+        startLiveTicker(alert.symbol)
     }
 
     fun dismissCurrentAlert() {
-        com.cryptopulse.app.service.TradeAlertManager.getInstance(appContext).dismissOrExecuteAlert()
+        stopLiveTicker()
+        tradeAlertManager.dismissOrExecuteAlert()
         val alertId = _pendingAlert.value?.get("id") as? String
         if (alertId != null) {
             viewModelScope.launch {
@@ -538,12 +568,16 @@ class ExchangeViewModel @Inject constructor(
         val tradeSetup = _tradeSetup.value
         _tradeError.value = null
         _lastTrade.value = null
+        isProcessingTrade = true
+        stopLiveTicker()
 
         viewModelScope.launch {
             val token = tokenManager.getToken()
             if (token != null) {
                 val result = botRepository.executeTrade()
                 result.onSuccess {
+                    _isUnknownState.value = false
+                    isProcessingTrade = false
                     val alertId = alert["id"] as? String ?: ""
                     botRepository.acknowledgeAlert(alertId)
                     _pendingAlert.value = null
@@ -558,9 +592,17 @@ class ExchangeViewModel @Inject constructor(
                         takeProfitPrice = takeProfit,
                     )
                 }.onFailure { e ->
-                    _tradeError.value = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/execute-trade", exception = e).first
+                    isProcessingTrade = false
+                    val errorMessage = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/execute-trade", exception = e).first
+                    if (errorMessage.contains("UNKNOWN_STATE") || errorMessage.contains("Network failure") || errorMessage.contains("timeout")) {
+                        _isUnknownState.value = true
+                        _tradeError.value = "Order status unknown due to network timeout. The backend is safely reconciling. Please wait."
+                    } else {
+                        _tradeError.value = errorMessage
+                    }
                 }
             } else {
+                isProcessingTrade = false
                 _tradeError.value = "Your session has expired. Please sign in again."
             }
         }

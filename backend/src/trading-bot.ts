@@ -757,12 +757,35 @@ export class TradingBot {
               return new Response(JSON.stringify({ error: 'Failed to verify persistence readiness. Execution halted.' }), { status: 500 });
             }
 
+            // Idempotency Check: If an intent already exists for this alertId, return success (execution already handled)
+            const existingIntentForAlert = await this.state.storage.get(`intent:order:${alertId}`) as any;
+            if (existingIntentForAlert) {
+              console.log(`[DIAGNOSTIC] Idempotent retry detected for alertId ${alertId}. Returning success.`);
+              return new Response(JSON.stringify({
+                success: true,
+                message: 'Execution already handled.',
+                orderId: alertId,
+                status: existingIntentForAlert.status === 'FILLED' ? 'filled' : 'open',
+              }), { status: 200 });
+            }
+
             const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
             const target: TradeAlert | undefined = alerts.find((a) => a.id === alertId && (a.status === 'pending' || a.status === 'acknowledged'));
             
             if (!target) {
               return new Response(JSON.stringify({ error: 'Trade alert not found, expired, or already executed.' }), { status: 409 });
             }
+
+            // Signal TTL Enforcement (5 minutes = 300,000ms)
+            const MAX_SIGNAL_AGE_MS = 300000;
+            const signalAgeMs = Date.now() - new Date(target.timestamp).getTime();
+            if (signalAgeMs > MAX_SIGNAL_AGE_MS) {
+              console.warn(`[SAFETY GATE] Rejected stale signal execution. Age: ${signalAgeMs}ms. AlertId: ${target.id}`);
+              target.status = 'expired';
+              await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+              return new Response(JSON.stringify({ error: `Signal has expired. Maximum allowed execution latency is 5 minutes.` }), { status: 400 });
+            }
+
             const side: 'BUY' | 'SELL' = target.side || 'BUY';
             const rawSymbol = coinId || target.symbol || 'BTC/USDT';
             const orderSymbol = rawSymbol.includes('/') ? rawSymbol : `${rawSymbol}/USDT`;
@@ -898,6 +921,7 @@ export class TradingBot {
                    clientOrderId: executionSnapshot.clientOrderId,
                    params: {}
                 };
+                if (req.type === 'limit') req.timeInForce = 'IOC';
                 if (executionSnapshot.limitPrice) req.price = new BigNumber(executionSnapshot.limitPrice);
                 if (executionSnapshot.takeProfit) req.takeProfit = executionSnapshot.takeProfit;
                 if (executionSnapshot.stopLoss) req.stopLoss = executionSnapshot.stopLoss;

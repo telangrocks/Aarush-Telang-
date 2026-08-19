@@ -51,6 +51,7 @@ import com.cryptopulse.app.ui.theme.CryptoPulseTheme
 import com.cryptopulse.app.ui.components.LocalOnLogout
 import com.cryptopulse.app.ui.screens.MarketCandidate
 import com.cryptopulse.app.ui.auth.TradeSetupState
+import com.cryptopulse.app.service.TradeAlertManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -72,6 +73,9 @@ class MainActivity : FragmentActivity() {
 
     @Inject
     lateinit var botRepository: com.cryptopulse.app.domain.repository.BotRepository
+
+    @Inject
+    lateinit var tradeAlertManager: TradeAlertManager
 
     @Inject
     lateinit var fcmRepository: com.cryptopulse.app.domain.repository.FcmRepository
@@ -304,8 +308,11 @@ class MainActivity : FragmentActivity() {
                                     return@composable
                                 }
 
-                                LaunchedEffect(candidate.symbol) {
-                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.symbol, "ScalperV2")
+                                val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
+                                val selectedStrategy = tradeSetupConfig?.strategyId ?: "ScalperV2"
+
+                                LaunchedEffect(candidate.symbol, selectedStrategy) {
+                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.symbol, selectedStrategy, tradeSetupConfig)
                                 }
 
                                 LaunchedEffect(Unit) {
@@ -315,15 +322,13 @@ class MainActivity : FragmentActivity() {
                                     }
                                 }
 
-                                val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
-
                                 TechnicalAnalysisScreen(
                                     candidate = candidate,
                                     analysisState = analysisState,
                                     tradeSetupConfig = tradeSetupConfig,
                                     onBack = { navController.popBackStack() },
-                                    onExecuteMockTrade = { mockAlert ->
-                                        com.cryptopulse.app.service.TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(mockAlert)
+                                    onExecuteMockTrade = {
+                                        technicalAnalysisViewModel.triggerMockAlert(candidate.symbol, applicationContext)
                                     }
                                 )
                             }
@@ -461,7 +466,7 @@ class MainActivity : FragmentActivity() {
                 if (positionSize != null && positionSize > 0.0) {
                     alert["positionSize"] = positionSize
                 }
-                com.cryptopulse.app.service.TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(alert)
+                tradeAlertManager.onNewAlertReceived(alert)
             }
         }
     }

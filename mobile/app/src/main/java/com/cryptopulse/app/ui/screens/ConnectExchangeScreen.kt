@@ -245,10 +245,15 @@ fun ConnectExchangeScreen(
                 }
 
                 Spacer(Modifier.height(16.dp))
+                
+                if (uiState !is ExchangeUiState.Connected) {
+                    BybitConnectivityChecklist()
+                    Spacer(Modifier.height(16.dp))
+                }
 
                 GradientButton(
                     text = when {
-                        uiState is ExchangeUiState.Validating || uiState is ExchangeUiState.Connecting -> "Processing…"
+                        uiState is ExchangeUiState.Connecting -> "Processing…"
                         formState.validationMessage != null -> "Retry"
                         else -> "Validate & Connect"
                     },
@@ -348,3 +353,43 @@ private fun EnvironmentToggle(
     }
 }
 
+@Composable
+fun BybitConnectivityChecklist() {
+    GlowCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Text(
+                text = "Bybit Connectivity Checklist",
+                color = CyanPrimary,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+            
+            Row(modifier = Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.Top) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = CyanPrimary, modifier = Modifier.size(16.dp).padding(top = 2.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "Ensure API Key has 'Unified Trading' or 'Spot & Derivatives' permissions enabled.",
+                    color = TextSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+            }
+            
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = CyanPrimary, modifier = Modifier.size(16.dp).padding(top = 2.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "Select 'No IP Restriction' (or configure appropriate static IPs if supported).",
+                    color = TextSecondary,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+            }
+        }
+    }
+}

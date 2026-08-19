@@ -252,23 +252,42 @@ export class BybitAdapter extends BaseExchangeAdapter {
   }
 
   public async fetchBalance(): Promise<Balance[]> {
-    let result: any;
     const requestedAccountType = (this.config as any)?.accountType ? String((this.config as any).accountType).toUpperCase() : null;
-
-    const accountTypesToTry = requestedAccountType ? [requestedAccountType] : ['UNIFIED', 'SPOT', 'CONTRACT', 'FUND'];
+    const accountTypesToTry = requestedAccountType ? [requestedAccountType] : ['UNIFIED', 'SPOT', 'CONTRACT'];
 
     let lastErr: any;
+    let anySuccess = false;
+    const balancesByCoin = new Map<string, { free: BigNumber, locked: BigNumber, total: BigNumber }>();
+
     for (const accType of accountTypesToTry) {
       try {
-        result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: accType }, true);
-        if (result) break;
+        const result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: accType }, true);
+        anySuccess = true;
+        const list = result?.list || [];
+        for (const acc of list) {
+          const coins = acc.coin || [];
+          for (const c of coins) {
+            const free = new BigNumber(c.availableToWithdraw || c.free || c.equity || 0);
+            const locked = new BigNumber(c.locked || c.used || 0);
+            const total = new BigNumber(c.walletBalance || c.equity || free.plus(locked));
+            
+            if (balancesByCoin.has(c.coin)) {
+              const existing = balancesByCoin.get(c.coin)!;
+              existing.free = existing.free.plus(free);
+              existing.locked = existing.locked.plus(locked);
+              existing.total = existing.total.plus(total);
+            } else {
+              balancesByCoin.set(c.coin, { free, locked, total });
+            }
+          }
+        }
       } catch (err: any) {
         lastErr = err;
       }
     }
 
-    if (!result) {
-      // If wallet-balance fails, verify authentication directly via /v5/user/query-api
+    if (!anySuccess) {
+      // If wallet-balance fails entirely, verify authentication directly via /v5/user/query-api
       try {
         const keyInfo = await this.makeRequest('GET', '/v5/user/query-api', {}, true);
         if (keyInfo) {
@@ -282,20 +301,13 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
 
     const balances: Balance[] = [];
-    const list = result?.list || [];
-    for (const acc of list) {
-      const coins = acc.coin || [];
-      for (const c of coins) {
-        const free = new BigNumber(c.availableToWithdraw || c.free || c.equity || 0);
-        const locked = new BigNumber(c.locked || c.used || 0);
-        const total = new BigNumber(c.walletBalance || c.equity || free.plus(locked));
-        balances.push({
-          currency: c.coin,
-          free,
-          used: locked,
-          total,
-        });
-      }
+    for (const [coin, b] of balancesByCoin.entries()) {
+      balances.push({
+        currency: coin,
+        free: b.free,
+        used: b.locked,
+        total: b.total,
+      });
     }
     return balances;
   }
@@ -502,8 +514,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return markets;
   }
 
-  public async fetchPositions(): Promise<Position[]> {
-    const result = await this.makeRequest('GET', '/v5/position/list', { category: 'linear', settleCoin: 'USDT' }, true);
+  public async fetchPositions(category?: string): Promise<Position[]> {
+    const reqCategory = category || 'linear';
+    const result = await this.makeRequest('GET', '/v5/position/list', { category: reqCategory, settleCoin: 'USDT' }, true);
     const list = result?.list || [];
     const positions: Position[] = [];
 
@@ -536,7 +549,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const qtyBN = new BigNumber(order.amount);
     const qtyStr = qtyBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
 
-    const category = 'linear';
+    const category = order.category || 'linear';
 
     const params: Record<string, any> = {
       category,
@@ -544,7 +557,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
       side: isBuy ? 'Buy' : 'Sell',
       orderType: isLimit ? 'Limit' : 'Market',
       qty: qtyStr,
-      timeInForce: 'GTC',
+      timeInForce: order.timeInForce || 'GTC',
     };
 
     if ((order as any).reduceOnly === true) {
@@ -591,11 +604,12 @@ export class BybitAdapter extends BaseExchangeAdapter {
     };
   }
 
-  public async cancelOrder(orderId: string, symbol: string): Promise<boolean> {
+  public async cancelOrder(orderId: string, symbol: string, category?: string): Promise<boolean> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
+    const reqCategory = category || 'linear';
     const params = {
-      category: 'linear',
+      category: reqCategory,
       symbol: rawSymbol,
       orderId,
     };
@@ -603,7 +617,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return true;
   }
 
-  public async fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string }): Promise<Order> {
+  public async fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string; category?: string }): Promise<Order> {
     if (!request.clientOrderId && !request.exchangeOrderId) {
       throw new UnifiedError(`fetchOrder requires exactly one of clientOrderId or exchangeOrderId`, 'INVALID_REQUEST');
     }
@@ -613,8 +627,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
     const { canonicalSymbol } = this.normalizeSymbol(request.symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
+    const reqCategory = request.category || 'linear';
     
-    const params: Record<string, any> = { category: 'linear', symbol: rawSymbol };
+    const params: Record<string, any> = { category: reqCategory, symbol: rawSymbol };
     if (request.clientOrderId) {
       params.orderLinkId = request.clientOrderId;
     } else {
@@ -648,9 +663,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
     };
   }
 
-  public async fetchOpenOrders(symbol?: string): Promise<Order[]> {
+  public async fetchOpenOrders(symbol?: string, category?: string): Promise<Order[]> {
     const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase() : undefined;
-    const params: Record<string, any> = { category: 'linear', settleCoin: 'USDT' };
+    const reqCategory = category || 'linear';
+    const params: Record<string, any> = { category: reqCategory, settleCoin: 'USDT' };
     if (rawSymbol) params.symbol = rawSymbol;
 
     const result = await this.makeRequest('GET', '/v5/order/realtime', params, true);
@@ -672,9 +688,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }));
   }
 
-  public async fetchClosedOrders(symbol?: string): Promise<Order[]> {
+  public async fetchClosedOrders(symbol?: string, category?: string): Promise<Order[]> {
     const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase() : undefined;
-    const params: Record<string, any> = { category: 'linear', settleCoin: 'USDT' };
+    const reqCategory = category || 'linear';
+    const params: Record<string, any> = { category: reqCategory, settleCoin: 'USDT' };
     if (rawSymbol) params.symbol = rawSymbol;
 
     const result = await this.makeRequest('GET', '/v5/order/history', params, true);
@@ -696,9 +713,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }));
   }
 
-  public async fetchMyTrades(symbol?: string): Promise<Trade[]> {
+  public async fetchMyTrades(symbol?: string, category?: string): Promise<Trade[]> {
     const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase() : undefined;
-    const params: Record<string, any> = { category: 'linear', settleCoin: 'USDT' };
+    const reqCategory = category || 'linear';
+    const params: Record<string, any> = { category: reqCategory, settleCoin: 'USDT' };
     if (rawSymbol) params.symbol = rawSymbol;
 
     const result = await this.makeRequest('GET', '/v5/execution/list', params, true);

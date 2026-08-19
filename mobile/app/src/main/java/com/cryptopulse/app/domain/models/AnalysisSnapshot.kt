@@ -53,5 +53,6 @@ data class SignalDTO(
 data class AnalysisSnapshot(
     val engineStatus: EngineStatusDTO?,
     val marketAnalysis: MarketAnalysisDTO?,
-    val tradingSignal: SignalDTO?
+    val tradingSignal: SignalDTO?,
+    val opportunity: BotAlert?
 )

@@ -100,16 +100,28 @@ export class AnalysisSnapshotMapper {
 
     const conditionsMet = checkpoints.filter((c) => c.status === 'PASSED').map((c) => c.name);
 
+    const rawSignal = result.metadata?.signal;
     let opportunity: Record<string, any> | null = null;
     if (result.hasSignal && signal.type !== 'HOLD') {
+      const positionSize = rawSignal?.riskAssessment?.positionSizeRecommendation || 0;
+      const entryPrice = signal.signalPrice ?? snapshot.currentPrice;
+      const takeProfit = signal.takeProfit ?? 0;
+      const estimatedPnl = Math.abs(takeProfit - entryPrice) * (entryPrice > 0 ? positionSize / entryPrice : 0);
+      
       opportunity = {
+        id: crypto.randomUUID(),
         symbol: snapshot.symbol,
-        entryPrice: signal.signalPrice ?? snapshot.currentPrice,
+        signalPrice: signal.signalPrice || entryPrice,
+        targetEntryPrice: signal.targetEntryPrice ?? undefined,
+        entryPrice: entryPrice,
         stopLoss: signal.stopLoss ?? 0,
-        takeProfit: signal.takeProfit ?? 0,
-        estimatedPnl: 0,
-        positionSize: 100,
-        side: signal.entryContext || 'BUY',
+        takeProfit: takeProfit,
+        estimatedPnl: estimatedPnl,
+        positionSize: positionSize,
+        strategy: manifest.id,
+        side: signal.entryContext === 'SELL' ? 'SELL' : 'BUY',
+        timestamp: new Date().toISOString(),
+        status: 'pending'
       };
     }
 

@@ -119,7 +119,7 @@ describe('AnalysisSnapshotMapper Unit Tests', () => {
     expect(dto.indicators.atr).toBe(350.0);
     expect(dto.progress).toBe(85);
     expect(dto.opportunity).not.toBeNull();
-    expect(dto.opportunity?.side).toBe('LONG');
+    expect(dto.opportunity?.side).toBe('BUY');
   });
 
   it('should map correctly in Live Mode (isLive = true)', () => {

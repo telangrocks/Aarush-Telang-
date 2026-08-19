@@ -40,7 +40,7 @@ fun TechnicalAnalysisScreen(
     analysisState: AnalysisSnapshot?,
     tradeSetupConfig: TradeSetupConfig? = null,
     onBack: () -> Unit,
-    onExecuteMockTrade: (Map<String, Any>) -> Unit
+    onExecuteMockTrade: () -> Unit
 ) {
     val context = LocalContext.current
     val bgGradient = remember { Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020))) }
@@ -63,29 +63,7 @@ fun TechnicalAnalysisScreen(
                     GradientButton(
                         text = "EXECUTE MOCK TRADE",
                         onClick = {
-                            val configuredUsdt = tradeSetupConfig?.tradeValueUsdt
-                            if (configuredUsdt != null && configuredUsdt > 0.0) {
-                                val currentPrice = candidate.currentMarketPrice
-                                val mockAlert = mapOf<String, Any>(
-                                    "id" to "mock-alert-${System.currentTimeMillis()}",
-                                    "symbol" to candidate.symbol,
-                                    "side" to "BUY",
-                                    "entryPrice" to currentPrice,
-                                    "stopLoss" to (currentPrice * 0.985),
-                                    "takeProfit" to (currentPrice * 1.03),
-                                    "signalPrice" to currentPrice,
-                                    "targetEntryPrice" to currentPrice,
-                                    "positionSize" to configuredUsdt,
-                                    "estimatedPnl" to (configuredUsdt * 0.03)
-                                )
-                                onExecuteMockTrade(mockAlert)
-                            } else {
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "No active Trade Setup found. Please configure trade amount in Trade Setup first.",
-                                    android.widget.Toast.LENGTH_LONG
-                                ).show()
-                            }
+                            onExecuteMockTrade()
                         },
                         enabled = true,
                         leadingIcon = Icons.Default.Bolt,

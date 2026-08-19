@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -24,6 +25,9 @@ class BackgroundMonitoringService : Service() {
 
     @Inject
     lateinit var botRepository: com.cryptopulse.app.domain.repository.BotRepository
+
+    @Inject
+    lateinit var tradeAlertManager: TradeAlertManager
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollingJob: Job? = null
@@ -60,7 +64,15 @@ class BackgroundMonitoringService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification("Monitoring market..."))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification("Monitoring market..."),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification("Monitoring market..."))
+        }
 
         pollingJob?.cancel()
         pollingJob = serviceScope.launch {
@@ -79,7 +91,7 @@ class BackgroundMonitoringService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        TradeAlertManager.getInstance(applicationContext).dismissOrExecuteAlert()
+        tradeAlertManager.dismissOrExecuteAlert()
         pollingJob?.cancel()
         serviceScope.cancel()
     }
@@ -171,6 +183,6 @@ class BackgroundMonitoringService : Service() {
             "strategy" to (alert.strategy ?: ""),
             "side" to (alert.side ?: "")
         )
-        TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(map)
+        tradeAlertManager.onNewAlertReceived(map)
     }
 }

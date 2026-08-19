@@ -4,6 +4,7 @@ import { RiskAssessment } from '../risk';
 export interface SignalRules {
   minConfidenceScore: number;
   allowedRiskClassifications: string[];
+  forceMockSignal?: 'BUY' | 'SELL';
 }
 
 export class SignalValidator {

@@ -7,8 +7,10 @@ import { SignalValidator, SignalRules } from './SignalValidator';
 
 export class SignalEngine {
   private validator: SignalValidator;
+  private rules: SignalRules;
 
   constructor(rules: SignalRules) {
+    this.rules = rules;
     this.validator = new SignalValidator(rules);
   }
 
@@ -42,6 +44,10 @@ export class SignalEngine {
       }
     }
 
+    if (this.rules.forceMockSignal) {
+      proposedType = this.rules.forceMockSignal === 'BUY' ? SignalType.BUY : SignalType.SELL;
+    }
+
     if (proposedType === SignalType.HOLD) {
        return this.createHoldSignal(
         context, 
@@ -52,7 +58,7 @@ export class SignalEngine {
 
     const { isValid, reasoning } = this.validator.validate(tfConfidence, riskAssessment);
 
-    if (!isValid) {
+    if (!isValid && !this.rules.forceMockSignal) {
       return this.createHoldSignal(context, confidenceScore.timestamp, reasoning);
     }
 

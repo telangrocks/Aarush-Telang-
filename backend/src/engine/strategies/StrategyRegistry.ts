@@ -49,6 +49,11 @@ function applyConfigOverrides<T extends Record<string, any>>(defaultConfig: T, o
     }
   }
 
+  if (overrides.parameters?.forceMockSignal) {
+    merged.signalRules = merged.signalRules || {};
+    merged.signalRules.forceMockSignal = overrides.parameters.forceMockSignal;
+  }
+
   if (overrides.riskParameters) {
     const rp = overrides.riskParameters;
     if (rp.accountRiskPercent !== undefined) {

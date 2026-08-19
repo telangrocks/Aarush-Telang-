@@ -20,6 +20,9 @@ class FcmService : FirebaseMessagingService() {
     @Inject
     lateinit var fcmRepository: com.cryptopulse.app.domain.repository.FcmRepository
 
+    @Inject
+    lateinit var tradeAlertManager: TradeAlertManager
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onNewToken(token: String) {
@@ -73,7 +76,7 @@ class FcmService : FirebaseMessagingService() {
                 "strategy" to (data["strategy"] ?: ""),
                 "side" to (data["side"] ?: "")
             )
-            TradeAlertManager.getInstance(applicationContext).onNewAlertReceived(alertData)
+            tradeAlertManager.onNewAlertReceived(alertData)
         }
     }
 

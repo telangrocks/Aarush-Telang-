@@ -90,6 +90,7 @@ export interface Trade {
 
 export interface OrderRequest {
   symbol: string;
+  category?: string;
   type: 'limit' | 'market';
   side: 'buy' | 'sell';
   amount: BigNumber;

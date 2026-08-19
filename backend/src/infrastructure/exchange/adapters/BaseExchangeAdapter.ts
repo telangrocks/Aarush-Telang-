@@ -106,10 +106,10 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
   abstract fetchTicker(symbol: string): Promise<Ticker>;
   abstract fetchTickers(symbols?: string[]): Promise<Ticker[]>;
   abstract fetchKlines(symbol: string, interval: string, limit?: number): Promise<any[]>;
-  abstract fetchPositions(): Promise<Position[]>;
+  abstract fetchPositions(category?: string): Promise<Position[]>;
 
   abstract createOrder(order: OrderRequest): Promise<Order>;
-  abstract cancelOrder(orderId: string, symbol: string): Promise<boolean>;
+  abstract cancelOrder(orderId: string, symbol: string, category?: string): Promise<boolean>;
 
   public supportsOco(): boolean {
     return this.capabilities.supportsOco;
@@ -119,8 +119,8 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
     throw new UnifiedError(`OCO orders not supported on exchange ${this.exchangeId}`, 'UNSUPPORTED_OPERATION');
   }
 
-  abstract fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string }): Promise<Order>;
-  abstract fetchOpenOrders(symbol?: string): Promise<Order[]>;
-  abstract fetchClosedOrders(symbol?: string): Promise<Order[]>;
-  abstract fetchMyTrades(symbol?: string): Promise<Trade[]>;
+  abstract fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string; category?: string }): Promise<Order>;
+  abstract fetchOpenOrders(symbol?: string, category?: string): Promise<Order[]>;
+  abstract fetchClosedOrders(symbol?: string, category?: string): Promise<Order[]>;
+  abstract fetchMyTrades(symbol?: string, category?: string): Promise<Trade[]>;
 }

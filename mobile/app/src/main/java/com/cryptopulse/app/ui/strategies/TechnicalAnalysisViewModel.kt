@@ -11,6 +11,7 @@ import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.models.AnalysisSnapshot
 import com.cryptopulse.app.domain.models.TradeSetupConfig
 import com.cryptopulse.app.ui.screens.MarketCandidate
+import com.cryptopulse.app.service.TradeAlertManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,7 +23,8 @@ import javax.inject.Inject
 class TechnicalAnalysisViewModel @Inject constructor(
     private val sessionRepository: TradeSessionRepository,
     private val botRepository: BotRepository,
-    private val technicalAnalysisRepository: TechnicalAnalysisRepository
+    private val technicalAnalysisRepository: TechnicalAnalysisRepository,
+    private val tradeAlertManager: TradeAlertManager
 ) : ViewModel() {
 
     val tradeSetupConfig: StateFlow<TradeSetupConfig?> = sessionRepository.tradeSetupConfig
@@ -44,6 +46,44 @@ class TechnicalAnalysisViewModel @Inject constructor(
             val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategy, config)
             result.onSuccess { snapshot ->
                 botRepository.updateAnalysisState(snapshot)
+            }
+        }
+    }
+
+    fun triggerMockAlert(symbol: String, context: android.content.Context) {
+        viewModelScope.launch {
+            val originalConfig = sessionRepository.tradeSetupConfig.value
+            if (originalConfig == null) {
+                android.widget.Toast.makeText(context, "No active Trade Setup found.", android.widget.Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val strategyId = originalConfig.strategyId ?: "ScalperV2"
+            
+            val mockConfig = originalConfig.copy(
+                parameters = originalConfig.parameters + ("forceMockSignal" to "BUY")
+            )
+            
+            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategyId, mockConfig)
+            result.onSuccess { snapshot ->
+                snapshot.opportunity?.let { botAlert ->
+                    val mockAlertMap = mapOf<String, Any>(
+                        "id" to botAlert.id,
+                        "symbol" to botAlert.symbol,
+                        "entryPrice" to botAlert.entryPrice,
+                        "stopLoss" to botAlert.stopLoss,
+                        "takeProfit" to botAlert.takeProfit,
+                        "estimatedPnl" to botAlert.estimatedPnl,
+                        "strategy" to (botAlert.strategy ?: strategyId),
+                        "side" to (botAlert.side ?: "BUY"),
+                        "timestamp" to (botAlert.timestamp ?: ""),
+                        "signalPrice" to (botAlert.signalPrice ?: botAlert.entryPrice),
+                        "positionSize" to (botAlert.positionSize ?: 0.0)
+                    ).toMutableMap()
+                    
+                    botAlert.targetEntryPrice?.let { mockAlertMap["targetEntryPrice"] = it }
+                    
+                    tradeAlertManager.onNewAlertReceived(mockAlertMap)
+                }
             }
         }
     }

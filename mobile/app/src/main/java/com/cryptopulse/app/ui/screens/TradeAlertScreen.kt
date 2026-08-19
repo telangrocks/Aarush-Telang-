@@ -57,9 +57,23 @@ fun TradeAlertScreen(
     var isProcessing by remember { mutableStateOf(false) }
     val tradeError by viewModel.tradeError.collectAsState(initial = null)
     val lastTrade by viewModel.lastTrade.collectAsState(initial = null)
+    val livePrice by viewModel.liveAlertPrice.collectAsState()
+    val isUnknownState by viewModel.isUnknownState.collectAsState()
+
+    val slippagePercent = remember(livePrice, signalPrice) {
+        if (livePrice != null && signalPrice > 0) {
+            ((livePrice!! - signalPrice) / signalPrice) * 100
+        } else null
+    }
 
     LaunchedEffect(Unit) {
-        com.cryptopulse.app.service.TradeAlertManager.getInstance(context).onUserViewingAlertScreen()
+        viewModel.startLiveTicker(candidate.symbol)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopLiveTicker()
+        }
     }
 
     // Resolve the outcome of an in-flight trade execution: navigate forward on a
@@ -69,7 +83,7 @@ fun TradeAlertScreen(
             when {
                 lastTrade != null -> {
                     isProcessing = false
-                    com.cryptopulse.app.service.TradeAlertManager.getInstance(context).dismissOrExecuteAlert()
+                    viewModel.dismissCurrentAlert()
                     onTradeExecuted()
                 }
                 tradeError != null -> {
@@ -86,7 +100,7 @@ fun TradeAlertScreen(
     ) {
         Scaffold(
             topBar = { CryptoPulseTopBar(onBack = {
-                com.cryptopulse.app.service.TradeAlertManager.getInstance(context).dismissOrExecuteAlert()
+                viewModel.dismissCurrentAlert()
                 onBack()
             }) },
             containerColor = Color.Transparent,
@@ -120,47 +134,54 @@ fun TradeAlertScreen(
                         }
                         Spacer(Modifier.height(10.dp))
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
+                    if (isUnknownState) {
                         GradientButton(
-                            text = if (tradeError != null) "Retry" else "Cancel",
-                            onClick = {
-                                com.cryptopulse.app.service.TradeAlertManager.getInstance(context).dismissOrExecuteAlert()
-                                if (tradeError != null) {
+                            text = "Reconciling Order...",
+                            onClick = { /* Hard locked to prevent double-fire */ },
+                            leadingIcon = Icons.Default.Sync,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = false,
+                            testTag = "trade_alert_reconciling_button",
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            GradientButton(
+                                text = if (tradeError != null) "Retry" else "Cancel",
+                                onClick = {
+                                    if (tradeError != null) {
+                                        viewModel.clearTradeError()
+                                        isProcessing = true
+                                        scope.launch {
+                                            viewModel.executeCurrentTrade()
+                                        }
+                                    } else {
+                                        viewModel.dismissCurrentAlert()
+                                        onBack()
+                                    }
+                                },
+                                leadingIcon = if (tradeError != null) Icons.Default.Refresh else Icons.Default.Close,
+                                modifier = Modifier.weight(1f),
+                                enabled = !isProcessing,
+                                testTag = "trade_alert_cancel_button",
+                            )
+                            GradientButton(
+                                text = "Trade",
+                                onClick = {
                                     viewModel.clearTradeError()
                                     isProcessing = true
                                     scope.launch {
                                         viewModel.executeCurrentTrade()
                                     }
-                                } else {
-                                    scope.launch {
-                                        viewModel.dismissCurrentAlert()
-                                        onBack()
-                                    }
-                                }
-                            },
-                            leadingIcon = if (tradeError != null) Icons.Default.Refresh else Icons.Default.Close,
-                            modifier = Modifier.weight(1f),
-                            enabled = !isProcessing,
-                            testTag = "trade_alert_cancel_button",
-                        )
-                        GradientButton(
-                            text = "Trade",
-                            onClick = {
-                                com.cryptopulse.app.service.TradeAlertManager.getInstance(context).dismissOrExecuteAlert()
-                                viewModel.clearTradeError()
-                                isProcessing = true
-                                scope.launch {
-                                    viewModel.executeCurrentTrade()
-                                }
-                            },
-                            leadingIcon = Icons.Default.Check,
-                            modifier = Modifier.weight(1f),
-                            enabled = !isProcessing,
-                            testTag = "trade_alert_trade_button",
-                        )
+                                },
+                                leadingIcon = Icons.Default.Check,
+                                modifier = Modifier.weight(1f),
+                                enabled = !isProcessing,
+                                testTag = "trade_alert_trade_button",
+                            )
+                        }
                     }
                 }
             }
@@ -220,6 +241,21 @@ fun TradeAlertScreen(
                         Spacer(Modifier.height(10.dp))
 
                         SummaryRow("Pair", candidate.pairName, TextPrimary, "trade_alert_pair")
+                        
+                        livePrice?.let { lp ->
+                            val slippage = slippagePercent ?: 0.0
+                            val slippageColor = if (Math.abs(slippage) > 0.05) Color(0xFFFFA500) else ProfitGreen
+                            SummaryRow("Live Price", "${formatPrice(lp)} USDT", slippageColor, "trade_alert_live_price")
+                            if (Math.abs(slippage) > 0.05) {
+                                Text(
+                                    "Slippage > 0.05%. Order will execute as IOC Limit.",
+                                    color = slippageColor,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                            }
+                        }
+
                         if (targetEntryPrice != null && targetEntryPrice > 0.0) {
                             SummaryRow("Planned Entry", "${formatPrice(targetEntryPrice)} USDT", TextPrimary, "trade_alert_target_entry")
                         }

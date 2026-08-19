@@ -401,7 +401,6 @@ export async function handleGetExchangeStatus(
     const isConnected = Boolean(
       user?.exchange_name &&
       user?.exchange_name.toLowerCase() === "bybit" &&
-      user?.exchange_environment !== "testnet" &&
       user?.exchange_api_key_encrypted &&
       user?.exchange_api_secret_encrypted &&
       user?.exchange_api_secret_iv

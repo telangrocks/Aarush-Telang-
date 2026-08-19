@@ -34,5 +34,6 @@ fun AnalysisSnapshotDto.toDomain(): AnalysisSnapshot = AnalysisSnapshot(
     }) ?: MarketAnalysisDTO("BTCUSDT", "ALIGNED", emptyList(), emptyList(), 50, emptyList()),
     tradingSignal = (tradingSignal?.let { s -> 
         SignalDTO(s.type ?: "HOLD", s.entryContext ?: "NONE", s.signalPrice ?: 0.0, s.targetEntryPrice ?: 0.0, s.stopLoss ?: 0.0, s.takeProfit ?: 0.0, s.riskClassification ?: "MEDIUM", s.reasoning ?: emptyList()) 
-    }) ?: SignalDTO("HOLD", "NONE", 0.0, 0.0, 0.0, 0.0, "LOW", emptyList())
+    }),
+    opportunity = opportunity?.toDomain()
 )

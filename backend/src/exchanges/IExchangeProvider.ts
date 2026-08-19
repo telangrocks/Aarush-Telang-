@@ -10,16 +10,16 @@ export interface IExchangeProvider {
   fetchTicker(symbol: string): Promise<Ticker>;
   fetchTickers(symbols?: string[]): Promise<Ticker[]>;
   fetchKlines(symbol: string, interval: string, limit: number): Promise<any[]>;
-  fetchPositions(): Promise<Position[]>;
+  fetchPositions(category?: string): Promise<Position[]>;
   
   createOrder(order: OrderRequest): Promise<Order>;
-  cancelOrder(orderId: string, symbol: string): Promise<boolean>;
+  cancelOrder(orderId: string, symbol: string, category?: string): Promise<boolean>;
   
   supportsOco(): boolean;
   createOcoOrder(order: OcoOrderRequest): Promise<OcoOrderResponse>;
 
-  fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string }): Promise<Order>;
-  fetchOpenOrders(symbol?: string): Promise<Order[]>;
-  fetchClosedOrders(symbol?: string): Promise<Order[]>;
-  fetchMyTrades(symbol?: string): Promise<Trade[]>;
+  fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string; category?: string }): Promise<Order>;
+  fetchOpenOrders(symbol?: string, category?: string): Promise<Order[]>;
+  fetchClosedOrders(symbol?: string, category?: string): Promise<Order[]>;
+  fetchMyTrades(symbol?: string, category?: string): Promise<Trade[]>;
 }
