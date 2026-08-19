@@ -5,6 +5,7 @@ export interface Market {
   symbol: string;
   base: string;
   quote: string;
+  category?: string;
   active: boolean;
   precision: {
     price: number;
@@ -27,6 +28,7 @@ export interface Balance {
 export interface Ticker {
   symbol: string;
   timestamp: number;
+  category?: string;
   last: BigNumber;
   bid: BigNumber;
   ask: BigNumber;

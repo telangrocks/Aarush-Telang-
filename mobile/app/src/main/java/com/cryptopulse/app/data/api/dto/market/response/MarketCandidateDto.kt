@@ -22,4 +22,6 @@ data class MarketCandidateDto(
     val maxPrice: Double? = null,
     val maxQty: Double? = null,
     val tradeSide: String? = null,
+    val category: String? = null,
+    val exchangeTimestamp: Long? = null
 )

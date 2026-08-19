@@ -27,7 +27,9 @@ fun MarketCandidateDto.toDomain(): MarketCandidate {
         minPrice = minPrice?.takeIf { !it.isNaN() && !it.isInfinite() },
         maxPrice = maxPrice?.takeIf { !it.isNaN() && !it.isInfinite() },
         maxQty = maxQty?.takeIf { !it.isNaN() && !it.isInfinite() },
-        tradeSide = tradeSide ?: "NEUTRAL"
+        tradeSide = tradeSide ?: "NEUTRAL",
+        category = category ?: "linear",
+        exchangeTimestamp = exchangeTimestamp ?: 0L
     )
 }
 

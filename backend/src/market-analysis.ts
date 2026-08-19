@@ -3,7 +3,9 @@ import { type IExchangeProvider } from "./exchanges";
 export interface AnalysisCandidate {
   score: number;
   rank: number;
-  tradeSide: "BUY" | "SELL";
+  tradeSide: "BUY" | "SELL" | "NEUTRAL";
+  category?: string;
+  exchangeTimestamp?: number;
 }
 
 function calculateEMA(closes: number[], period: number): number {
@@ -55,18 +57,23 @@ export async function analyzeMarket(
   const MAX_DECLINE_PERCENT = -50;
   
   const STABLECOINS = ["USDT", "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP"];
+  const LEVERAGED_TOKEN_REGEX = /.*(2L|3L|5L|2S|3S|5S)(USDT|USDC|DAI)?$/i;
   
-  // Filter out weak/illiquid/declining coins, and stablecoins
+  // Filter out weak/illiquid/declining coins, stablecoins, and leveraged tokens
   let filtered = tickers.filter(
     (ticker) =>
       (Number(ticker.quoteVolume24h ?? ticker.volume24h ?? 1_000_000)) >= MIN_VOLUME_USDT &&
       (Number(ticker.priceChangePercent24h ?? 0)) >= MAX_DECLINE_PERCENT &&
-      !STABLECOINS.includes(String(ticker.symbol || ""))
+      !STABLECOINS.includes(String(ticker.symbol || "")) &&
+      !LEVERAGED_TOKEN_REGEX.test(String(ticker.symbol || ""))
   );
 
   if (!filtered.length) {
-    console.warn(`[MARKET_ANALYSIS_WARN] Primary volume filter yielded 0 candidates. Falling back to non-stablecoin tickers.`);
-    filtered = tickers.filter((ticker) => !STABLECOINS.includes(String(ticker.symbol || "")));
+    console.warn(`[MARKET_ANALYSIS_WARN] Primary volume filter yielded 0 candidates. Falling back to non-stablecoin/leveraged tickers.`);
+    filtered = tickers.filter((ticker) => 
+      !STABLECOINS.includes(String(ticker.symbol || "")) && 
+      !LEVERAGED_TOKEN_REGEX.test(String(ticker.symbol || ""))
+    );
   }
 
   console.log(`[MARKET_ANALYSIS_FILTER] Filtered ${tickers.length} tickers down to ${filtered.length} eligible candidates.`);
@@ -84,15 +91,15 @@ export async function analyzeMarket(
   scored.sort((a, b) => (b.score || 0) - (a.score || 0));
   console.log(`[MARKET_ANALYSIS_SCORE] Scored ${scored.length} candidates. Top candidate: ${scored[0]?.symbol} (Score: ${scored[0]?.score}).`);
   
-  // Take top 10 candidates for intraday analysis to stay well within Cloudflare Worker subrequest and CPU limits
-  const top10 = scored.slice(0, 10);
+  // Take top 25 candidates for intraday analysis to increase pool
+  const top25 = scored.slice(0, 25);
 
   // Evaluate intraday timeframes using bounded concurrency to respect Cloudflare Worker subrequest limits
   const analyzed: any[] = [];
   const CONCURRENCY_LIMIT = 5;
 
-  for (let i = 0; i < top10.length; i += CONCURRENCY_LIMIT) {
-    const chunk = top10.slice(i, i + CONCURRENCY_LIMIT);
+  for (let i = 0; i < top25.length; i += CONCURRENCY_LIMIT) {
+    const chunk = top25.slice(i, i + CONCURRENCY_LIMIT);
 
     const chunkResults = await Promise.all(
       chunk.map(async (candidate) => {
@@ -121,6 +128,7 @@ export async function analyzeMarket(
             return {
               ...candidate,
               tradeSide: "NEUTRAL" as any,
+              exchangeTimestamp: candidate.timestamp,
             };
           }
 
@@ -142,21 +150,23 @@ export async function analyzeMarket(
           if (ema20_15m > ema50_15m && rsi15m > 50) side15m = "BUY";
           else if (ema20_15m < ema50_15m && rsi15m < 50) side15m = "SELL";
 
+          let finalSide = "NEUTRAL";
           if (side1h !== "HOLD" && side1h === side15m) {
-            return { ...candidate, tradeSide: side1h };
+            finalSide = side1h;
           } else if (side1h !== "HOLD") {
-            return { ...candidate, tradeSide: side1h };
+            finalSide = side1h;
           } else if (side15m !== "HOLD") {
-            return { ...candidate, tradeSide: side15m };
-          } else {
-            return { ...candidate, tradeSide: "NEUTRAL" as any };
+            finalSide = side15m;
           }
+          
+          return { ...candidate, tradeSide: finalSide, exchangeTimestamp: candidate.timestamp };
         } catch (err: any) {
           console.error(`[MARKET_ANALYSIS] Error analyzing candidate ${candidate?.symbol}:`, err);
           return {
             ...candidate,
             recommendedTimeframe: "1h",
             tradeSide: "NEUTRAL" as any,
+            exchangeTimestamp: candidate.timestamp,
           };
         }
       })
@@ -165,6 +175,20 @@ export async function analyzeMarket(
     analyzed.push(...chunkResults);
   }
 
+  // Multi-tier sort: Active Signals (BUY/SELL) first, then raw Score
+  analyzed.sort((a, b) => {
+    const aIsActive = a.tradeSide === "BUY" || a.tradeSide === "SELL";
+    const bIsActive = b.tradeSide === "BUY" || b.tradeSide === "SELL";
+    
+    // Tier 1: Active signals bubble to the top
+    if (aIsActive && !bIsActive) return -1;
+    if (!aIsActive && bIsActive) return 1;
+    
+    // Tier 2: Secondary sort by raw volume/volatility score
+    return (b.score || 0) - (a.score || 0);
+  });
+
+  // Take the absolute best 10 from the re-ranked pool of 25
   const result = analyzed.slice(0, 10).map((item, index) => ({
     ...item,
     rank: index + 1,

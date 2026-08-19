@@ -455,12 +455,13 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
     try {
       const firstRes = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'linear', limit: 1000 }, false);
-      list = list.concat(firstRes?.list || []);
+      const firstBatch = (firstRes?.list || []).map((x: any) => ({ ...x, _category: 'linear' }));
+      list = list.concat(firstBatch);
       cursor = firstRes?.nextPageCursor;
 
       while (cursor) {
         const res = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'linear', limit: 1000, cursor }, false);
-        const batch = res?.list || [];
+        const batch = (res?.list || []).map((x: any) => ({ ...x, _category: 'linear' }));
         if (batch.length === 0) break;
         list = list.concat(batch);
         cursor = res?.nextPageCursor;
@@ -471,12 +472,13 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
     if (isSpotFallback) {
       const firstRes = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'spot', limit: 1000 }, false);
-      list = list.concat(firstRes?.list || []);
+      const firstBatch = (firstRes?.list || []).map((x: any) => ({ ...x, _category: 'spot' }));
+      list = list.concat(firstBatch);
       cursor = firstRes?.nextPageCursor;
 
       while (cursor) {
         const res = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'spot', limit: 1000, cursor }, false);
-        const batch = res?.list || [];
+        const batch = (res?.list || []).map((x: any) => ({ ...x, _category: 'spot' }));
         if (batch.length === 0) break;
         list = list.concat(batch);
         cursor = res?.nextPageCursor;
@@ -502,6 +504,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
         symbol,
         base: item.baseCoin,
         quote: item.quoteCoin,
+        category: item._category || 'linear',
         active: item.status === 'Trading',
         precision: { price: priceStep, amount: amountStep },
         limits: {

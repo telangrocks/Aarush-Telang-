@@ -10,7 +10,8 @@ import { normalizeEnvironment as normEnvUtil, isEnvironmentSupported, getSupport
 import { normalizeRegion, resolveCanonicalRoutingRegion } from "../utils/region";
 import { WebCryptoSigner } from "../infrastructure/crypto/WebCryptoSigner";
 
-
+const DISCOVERY_CACHE = new Map<string, { timestamp: number, data: any }>();
+const CACHE_TTL_MS = 60000;
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
  * Returns null for unrecognized values.
@@ -597,6 +598,13 @@ export async function handleGetPersonalizedMarketCandidates(
     }
     console.log(`[DIAGNOSTIC] Stage 3: Exchange record loaded: exchange_name=${user.exchange_name}, env=${user.exchange_environment}`);
 
+    const cacheKey = `${userId}_${user.exchange_name}_${user.exchange_environment}`;
+    const cached = DISCOVERY_CACHE.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      console.log(`[DIAGNOSTIC] Cache hit for ${cacheKey}`);
+      return c.json(cached.data);
+    }
+
     // Stage 4: Secret decrypted
     currentStage = "4. Secret decrypted";
     let cleanKey: string | undefined = undefined;
@@ -740,6 +748,8 @@ export async function handleGetPersonalizedMarketCandidates(
         rawTickers.push({
           symbol: m.base || (m.symbol ? m.symbol.split('/')[0] : "BTC"),
           pairName: m.symbol || "BTC/USDT",
+          category: m.category || 'linear',
+          timestamp: typeof t?.timestamp === 'number' ? t.timestamp : Date.now(),
           price: px,
           volume24h: vol,
           quoteVolume24h: qVol,
@@ -793,6 +803,8 @@ export async function handleGetPersonalizedMarketCandidates(
     // Stage 10: response serialized
     currentStage = "10. response serialized";
     console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully (${candidates.length} items)`);
+    
+    DISCOVERY_CACHE.set(cacheKey, { timestamp: Date.now(), data: candidates });
     return c.json(candidates);
 
   } catch (fatalErr: any) {

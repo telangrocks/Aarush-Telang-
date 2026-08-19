@@ -19,7 +19,9 @@ data class MarketCandidate(
     val minPrice: Double?,
     val maxPrice: Double?,
     val maxQty: Double?,
-    val tradeSide: String
+    val tradeSide: String,
+    val category: String = "linear",
+    val exchangeTimestamp: Long = 0L
 )
 
 data class Ticker(

@@ -398,6 +398,8 @@ class ExchangeViewModel @Inject constructor(
                         maxQty = domain.maxQty,
                         highPrice24h = domain.highPrice24h,
                         lowPrice24h = domain.lowPrice24h,
+                        category = domain.category,
+                        exchangeTimestamp = domain.exchangeTimestamp,
                         coinColor = androidx.compose.ui.graphics.Color.Gray
                     )
                 }

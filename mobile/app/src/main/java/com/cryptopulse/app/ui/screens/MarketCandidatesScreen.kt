@@ -64,6 +64,8 @@ data class MarketCandidate(
     val formattedVolume: String = "",
     val highPrice24h: Double = 0.0,
     val lowPrice24h: Double = 0.0,
+    val category: String = "linear",
+    val exchangeTimestamp: Long = 0L
 )
 
 fun MarketCandidate.toAccessibilityDescription(): String {
@@ -384,9 +386,11 @@ fun MarketCandidatesScreen(
                             .padding(vertical = 10.dp, horizontal = 12.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly,
                     ) {
+                        val authTime = mappedCandidates.firstOrNull()?.exchangeTimestamp?.takeIf { it > 0L }
+                        val displayTime = authTime?.let { java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(it)) } ?: currentTime
                         MetadataItem(icon = Icons.Default.CalendarToday, label = "DATE", value = getCurrentDate())
                         VerticalDivider()
-                        MetadataItem(icon = Icons.Default.Schedule, label = "LAST UPDATED", value = currentTime)
+                        MetadataItem(icon = Icons.Default.Schedule, label = "LAST UPDATED", value = displayTime)
                     }
                     Spacer(Modifier.height(14.dp))
                 }
