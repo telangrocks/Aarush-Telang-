@@ -86,12 +86,16 @@ class TechnicalAnalysisViewModelTest {
         }
     }
 
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> uninitialized(): T = null as T
+
     @Test
     fun `activateBot performs explicit user activation handshake and invokes onSuccess`() = runTest {
         val viewModel = TechnicalAnalysisViewModel(
             createMockSessionRepository("scalper-v2"),
             createMockBotRepository(shouldSucceed = true),
-            createMockTechnicalAnalysisRepository()
+            createMockTechnicalAnalysisRepository(),
+            uninitialized()
         )
 
         var isSuccessInvoked = false
@@ -108,7 +112,8 @@ class TechnicalAnalysisViewModelTest {
         val viewModel = TechnicalAnalysisViewModel(
             createMockSessionRepository("scalper-v2"),
             createMockBotRepository(shouldSucceed = true),
-            createMockTechnicalAnalysisRepository()
+            createMockTechnicalAnalysisRepository(),
+            uninitialized()
         )
 
         var isStoppedInvoked = false

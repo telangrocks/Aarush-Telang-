@@ -1,0 +1,25 @@
+# Testing Progress: Real User Flow (Real Bot)
+
+- [ ] Deploy Application to Device
+- [ ] User Registration/Login Flow
+    - [ ] Navigate to Onboarding
+    - [ ] Complete Register/Login
+- [ ] Connect Exchange (Real Mode)
+    - [ ] Select Bybit
+    - [ ] Select 'Real' Environment
+    - [ ] Input API Keys (U8Jfd8uzRvdbt8Kkqu / 4GpzrYxE05zhPCwlllYb3PG3h3n1zjx16LOf)
+    - [ ] Verify Connection Success
+- [ ] Market Discovery (Top 10 Verification)
+    - [ ] Navigate to Market Candidates
+    - [ ] Verify list contains Top 10 coins
+    - [ ] Inspect ranking/shortlisting logic in logs
+- [ ] Real Bot Connection & Setup
+    - [ ] Select a candidate
+    - [ ] Configure Trade Setup
+    - [ ] Select Strategy
+    - [ ] Configure Risk Management
+    - [ ] Activate Real Bot
+- [ ] Final Verification & Log Analysis
+    - [ ] Check for UI/UX gaps
+    - [ ] Validate API responses
+    - [ ] Confirm shortlisting logic works

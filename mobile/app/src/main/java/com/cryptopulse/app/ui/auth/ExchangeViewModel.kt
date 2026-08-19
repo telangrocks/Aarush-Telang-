@@ -490,11 +490,15 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun fetchBalances() {
+        val activeEnv = _formState.value.environment
+        Log.d(TAG, "[DIAGNOSTIC] fetchBalances triggered for environment: $activeEnv")
         viewModelScope.launch {
             exchangeRepository.getBalances().onSuccess { body ->
+                Log.d(TAG, "[DIAGNOSTIC] fetchBalances Success: count=${body.size}")
                 _balances.value = body
                 _balancesError.value = null
             }.onFailure { e ->
+                Log.e(TAG, "[DIAGNOSTIC] fetchBalances Failure: ${e.message}", e)
                 _balancesError.value = e.message ?: "Network error"
             }
         }

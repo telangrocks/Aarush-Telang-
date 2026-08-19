@@ -6,7 +6,8 @@ import java.math.RoundingMode
 
 data class TradeValidationParams(
     val symbol: String,
-    val entryPrice: Double,
+    val entryPriceStr: String,
+    val currentMarketPrice: Double,
     val tradeValueUsdt: Double? = null,
     val quantity: Double? = null,
     val stopLoss: Double? = null,
@@ -41,14 +42,38 @@ object TradeValidator {
         }
 
         // 2. Input Parameter Validation
-        if (params.entryPrice <= 0.0 || params.entryPrice.isNaN() || params.entryPrice.isInfinite()) {
+        val entryPriceBD = try {
+            BigDecimal(params.entryPriceStr)
+        } catch (e: NumberFormatException) {
+            return TradeValidationResult(
+                isValid = false,
+                errorCode = ValidationErrorReason.INVALID_INPUT_PARAMETERS,
+                errorMessage = "Entry price must be a valid number."
+            )
+        }
+
+        val entryPrice = entryPriceBD.toDouble()
+        if (entryPrice <= 0.0 || entryPrice.isNaN() || entryPrice.isInfinite()) {
             return TradeValidationResult(
                 isValid = false,
                 errorCode = ValidationErrorReason.INVALID_INPUT_PARAMETERS,
                 errorMessage = "Entry price must be a valid positive number."
             )
         }
-        val entryPriceBD = BigDecimal.valueOf(params.entryPrice)
+
+        // Fat-Finger protection
+        val marketPrice = params.currentMarketPrice
+        if (marketPrice > 0.0) {
+            val variance = Math.abs((entryPrice - marketPrice) / marketPrice)
+            if (variance > 0.15) {
+                val formattedMarketPrice = java.text.NumberFormat.getCurrencyInstance(java.util.Locale.US).format(marketPrice)
+                return TradeValidationResult(
+                    isValid = false,
+                    errorCode = ValidationErrorReason.PRICE_VARIANCE_EXCEEDED,
+                    errorMessage = "Price deviates too far from market price of $formattedMarketPrice"
+                )
+            }
+        }
 
         val isEntryPriceOnly = params.quantity == null && params.tradeValueUsdt == null
 
@@ -94,14 +119,11 @@ object TradeValidator {
         if (tickSizeBD > BigDecimal.ZERO) {
             val remainder = entryPriceBD.remainder(tickSizeBD)
             if (remainder.compareTo(BigDecimal.ZERO) != 0) {
-                val threshold = tickSizeBD.multiply(BigDecimal.valueOf(0.0001))
-                if (remainder > threshold && (tickSizeBD - remainder) > threshold) {
-                    return TradeValidationResult(
-                        isValid = false,
-                        errorCode = ValidationErrorReason.INVALID_TICK_SIZE,
-                        errorMessage = "Please enter a valid entry price for this trading pair."
-                    )
-                }
+                return TradeValidationResult(
+                    isValid = false,
+                    errorCode = ValidationErrorReason.INVALID_TICK_SIZE,
+                    errorMessage = "Please enter a valid entry price for this trading pair."
+                )
             }
         }
 

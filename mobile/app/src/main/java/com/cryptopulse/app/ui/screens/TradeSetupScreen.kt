@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -45,16 +46,10 @@ fun TradeSetupScreen(
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val uiState by viewModel.uiState.collectAsState()
+    val scope = rememberCoroutineScope()
+    
     LaunchedEffect(candidate) {
-        viewModel.setConstraints(
-            minNotional = candidate.minNotional,
-            minOrderQty = candidate.minOrderQty,
-            qtyStep = candidate.qtyStep,
-            tickSize = candidate.tickSize,
-            minPrice = candidate.minPrice,
-            maxPrice = candidate.maxPrice,
-            maxQty = candidate.maxQty
-        )
+        viewModel.setConstraints(candidate, exchangeName)
     }
 
     Box(
@@ -77,9 +72,12 @@ fun TradeSetupScreen(
                     GradientButton(
                         text = if (uiState.isLoading) "Loading..." else "CONFIRM",
                         onClick = {
-                            val result = viewModel.buildConfig(candidate.symbol)
-                            if (result is TradeSetupConfigResult.Success) {
-                                onProceedToAnalysis()
+                            scope.launch {
+                                val strategyId = java.util.UUID.randomUUID().toString()
+                                val result = viewModel.validateAndConfirmTrade(strategyId, candidate, exchangeName)
+                                if (result is TradeSetupConfigResult.Success) {
+                                    onProceedToAnalysis()
+                                }
                             }
                         },
                         enabled = isButtonEnabled,
@@ -160,7 +158,7 @@ fun TradeSetupScreen(
                             value = uiState.entryPrice,
                             onValueChange = { newValue ->
                                 if (newValue.isEmpty() || newValue.matches(Regex("^\\d*\\.?\\d*$"))) {
-                                    viewModel.updateEntryPrice(newValue)
+                                    viewModel.updateEntryPrice(newValue, candidate, exchangeName)
                                 }
                             },
                             label = { Text("Target Entry Price (USDT)") },

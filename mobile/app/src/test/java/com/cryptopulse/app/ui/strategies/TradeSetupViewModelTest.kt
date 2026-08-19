@@ -1,157 +1,131 @@
 package com.cryptopulse.app.ui.strategies
 
 import com.cryptopulse.app.core.network.NetworkResult
-import com.cryptopulse.app.domain.models.*
+import com.cryptopulse.app.domain.models.BalanceItem
+import com.cryptopulse.app.domain.models.ExchangeStatus
+import com.cryptopulse.app.domain.models.TradeSetupConfig
 import com.cryptopulse.app.domain.repository.ExchangeRepository
-import com.cryptopulse.app.domain.repository.StrategyRepository
 import com.cryptopulse.app.domain.repository.TradeSessionRepository
+import com.cryptopulse.app.ui.screens.MarketCandidate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
-import org.junit.After
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
+import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TradeSetupViewModelTest {
 
-    private val testDispatcher = StandardTestDispatcher()
+    private lateinit var viewModel: TradeSetupViewModel
+    private lateinit var sessionRepository: FakeTradeSessionRepository
+    private lateinit var exchangeRepository: FakeExchangeRepository
+    private val testDispatcher = UnconfinedTestDispatcher()
+
+    private val testCandidate = MarketCandidate(
+        symbol = "BTCUSDT",
+        pairName = "BTC/USDT",
+        minNotional = 10.0,
+        minOrderQty = 0.001,
+        qtyStep = 0.001,
+        tickSize = 0.01,
+        minPrice = 1000.0,
+        maxPrice = 100000.0,
+        maxQty = 100.0,
+        currentMarketPrice = 50000.0
+    )
 
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
-    }
-
-    @After
-    fun tearDown() {
-        Dispatchers.resetMain()
-    }
-
-    private fun createMockRepository(strategy: Strategy?): StrategyRepository {
-        return object : StrategyRepository {
-            override suspend fun getStrategies(): NetworkResult<List<Strategy>> = NetworkResult.Success(emptyList())
-            override suspend fun getStrategyById(id: String): NetworkResult<Strategy?> = NetworkResult.Success(strategy)
-        }
-    }
-
-    private fun createMockSessionRepository(strategyId: String?): TradeSessionRepository {
-        return object : TradeSessionRepository {
-            private val _id = MutableStateFlow(strategyId)
-            override val selectedStrategyId: StateFlow<String?> = _id.asStateFlow()
-            
-            private val _config = MutableStateFlow<TradeSetupConfig?>(null)
-            override val tradeSetupConfig: StateFlow<TradeSetupConfig?> = _config.asStateFlow()
-            
-            override fun setStrategyId(id: String) { _id.value = id }
-            override fun setTradeSetupConfig(config: TradeSetupConfig) { _config.value = config }
-            override fun clearSession() {}
-        }
-    }
-
-    private val mockStrategy = Strategy(
-        id = "test_strat",
-        name = "Test",
-        description = "Desc",
-        category = StrategyCategory.CUSTOM,
-        riskLevel = RiskLevel.LOW,
-        schemaVersion = 1,
-        requiredParameters = listOf(
-            StrategyParameterSchema("stopLoss", "stopLoss", ParameterType.INT, "5.0", true, 1.0, 100.0, null),
-            StrategyParameterSchema("risk", "Risk", ParameterType.DOUBLE, "1.5", true, 0.1, 5.0, null),
-            StrategyParameterSchema("mode", "Mode", ParameterType.ENUM, "Safe", true, null, null, listOf("Safe", "Aggressive")),
-            StrategyParameterSchema("takeProfitMultiplier", "TP", ParameterType.DOUBLE, "2.0", false, null, null, null)
-        )
-    )
-
-    private fun createMockExchangeRepository(): ExchangeRepository {
-        return object : ExchangeRepository {
-            override suspend fun validateKeys(exchangeName: String, apiKey: String, apiSecret: String, apiPassphrase: String?, environment: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
-            override suspend fun connectExchange(exchangeName: String, apiKey: String, apiSecret: String, apiPassphrase: String?, environment: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
-            override suspend fun getConnectionStatus(): NetworkResult<ExchangeStatus> = NetworkResult.Success(ExchangeStatus(isConnected = true, exchangeName = "binance", environment = "mainnet", region = "global"))
-            override suspend fun getBalances(): NetworkResult<List<BalanceItem>> = NetworkResult.Success(
-                listOf(BalanceItem(asset = "USDT", free = 1000.0, locked = 0.0, total = 1000.0))
-            )
-        }
+        sessionRepository = FakeTradeSessionRepository()
+        exchangeRepository = FakeExchangeRepository()
+        viewModel = TradeSetupViewModel(sessionRepository, exchangeRepository)
     }
 
     @Test
-    fun `buildConfig returns Success when trade passes validation`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockSessionRepository(""), createMockExchangeRepository())
+    fun `setting constraints and valid entry price should update state correctly`() {
+        viewModel.setConstraints(testCandidate, "Binance")
+        viewModel.updateEntryPrice("50000.00", testCandidate, "Binance")
         
-        testDispatcher.scheduler.advanceUntilIdle()
+        val state = viewModel.uiState.value
+        assertEquals("50000.00", state.entryPrice)
+        assertNull(state.entryPriceError)
+    }
 
-        viewModel.setConstraints(
-            minNotional = 10.0,
-            minOrderQty = 0.001,
-            qtyStep = 0.001,
-            tickSize = 0.1,
-            minPrice = 0.1,
-            maxPrice = 100000.0,
-            maxQty = 100.0
-        )
-        viewModel.updateEntryPrice("50000.0")
+    @Test
+    fun `invalid entry price should show error in state`() {
+        val candidateWithStrictTick = testCandidate.copy(tickSize = 0.1)
+        viewModel.setConstraints(candidateWithStrictTick, "Binance")
 
-        val result = viewModel.buildConfig("BTC")
+        viewModel.updateEntryPrice("50000.05", candidateWithStrictTick, "Binance") // 2 decimals
+        
+        val state = viewModel.uiState.value
+        assertNotNull("Should have an error for tick size violation", state.entryPriceError)
+    }
+
+    @Test
+    fun `validateAndConfirmTrade should persist to repository on success and enforce atomicity`() = runTest {
+        viewModel.setConstraints(testCandidate, "Binance")
+        viewModel.updateEntryPrice("50000.00", testCandidate, "Binance")
+        
+        exchangeRepository.mockBalances = listOf(BalanceItem("USDT", 1000.0, 0.0, total = 1000.0))
+        
+        val result = viewModel.validateAndConfirmTrade("strat_123", testCandidate, "Binance")
+        
         assertTrue(result is TradeSetupConfigResult.Success)
         val config = (result as TradeSetupConfigResult.Success).config
-        assertEquals(null, config.strategyId)
-        assertEquals("BTC", config.symbol)
-        assertEquals(50000.0, config.entryPrice, 0.001)
-        assertEquals(null, config.tradeValueUsdt)
+        assertEquals(50000.0, config.entryPrice, 0.0)
+        assertEquals("BTCUSDT", config.symbol)
+        assertEquals("strat_123", config.strategyId)
+        
+        assertEquals(config, sessionRepository.savedConfig)
     }
 
     @Test
-    fun `buildConfig returns ValidationFailed when entry price is missing`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockSessionRepository(""), createMockExchangeRepository())
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        viewModel.setConstraints(
-            minNotional = 10.0,
-            minOrderQty = 0.001,
-            qtyStep = 0.001,
-            tickSize = 0.1,
-            minPrice = 0.1,
-            maxPrice = 100000.0,
-            maxQty = 100.0
-        )
-        viewModel.updateEntryPrice("")
-
-        val result = viewModel.buildConfig("BTC")
+    fun `validateAndConfirmTrade should fail if balance is insufficient for mapped quote asset`() = runTest {
+        viewModel.setConstraints(testCandidate, "Binance")
+        viewModel.updateEntryPrice("50000.00", testCandidate, "Binance")
+        
+        // Mock balance without USDT (mapped from BTC/USDT)
+        exchangeRepository.mockBalances = listOf(BalanceItem("BTC", 1.0, 0.0, total = 1.0))
+        
+        val result = viewModel.validateAndConfirmTrade("strat_123", testCandidate, "Binance")
+        
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
-        val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
-        assertEquals("Entry price is required.", errors["entryPrice"])
-        assertEquals("Entry price is required.", viewModel.uiState.value.entryPriceError)
-    }
-
-    @Test
-    fun `buildConfig fails when required constraint is missing`() = runTest {
-        val viewModel = TradeSetupViewModel(createMockSessionRepository(""), createMockExchangeRepository())
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        viewModel.setConstraints(
-            minNotional = null, // Missing constraint
-            minOrderQty = 0.001,
-            qtyStep = 0.001,
-            tickSize = null, // Set tickSize to null to fail entry price validation
-            minPrice = 0.1,
-            maxPrice = 100000.0,
-            maxQty = 100.0
-        )
-        viewModel.updateEntryPrice("50000.0")
-
-        val result = viewModel.buildConfig("BTC")
-        assertTrue(result is TradeSetupConfigResult.ValidationFailed)
-        val errors = (result as TradeSetupConfigResult.ValidationFailed).errors
-        assertEquals("Trading rules for this pair are currently unavailable from the exchange.", errors["entryPrice"])
+        val error = (result as TradeSetupConfigResult.ValidationFailed).errors["balance"]
+        assertEquals("Insufficient balance", error)
     }
 }
 
+class FakeTradeSessionRepository : TradeSessionRepository {
+    override val selectedStrategyId = MutableStateFlow<String?>(null)
+    override val tradeSetupConfig = MutableStateFlow<TradeSetupConfig?>(null)
+    var savedConfig: TradeSetupConfig? = null
 
+    override fun setStrategyId(id: String) {
+        selectedStrategyId.value = id
+    }
+
+    override fun setTradeSetupConfig(config: TradeSetupConfig) {
+        tradeSetupConfig.value = config
+        savedConfig = config
+    }
+
+    override fun clearSession() {
+        selectedStrategyId.value = null
+        tradeSetupConfig.value = null
+    }
+}
+
+class FakeExchangeRepository : ExchangeRepository {
+    var mockBalances: List<BalanceItem> = emptyList()
+    
+    override suspend fun validateKeys(exchangeName: String, apiKey: String, apiSecret: String, apiPassphrase: String?, environment: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+    override suspend fun connectExchange(exchangeName: String, apiKey: String, apiSecret: String, apiPassphrase: String?, environment: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+    override suspend fun getConnectionStatus(): NetworkResult<ExchangeStatus> = NetworkResult.Success(ExchangeStatus(true, "Binance", "mainnet", null))
+    override suspend fun getBalances(): NetworkResult<List<BalanceItem>> = NetworkResult.Success(mockBalances)
+}

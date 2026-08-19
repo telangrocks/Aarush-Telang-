@@ -1,0 +1,5 @@
+- [x] Fix missing `fetchBalances()` trigger in `TradeSetup` flow.
+- [x] Add logging to verify environment and balance fetching in `ExchangeViewModel`.
+- [x] Dynamically determine quote asset for balance display in `MainActivity`.
+- [ ] Verify balance fetching logic in both Demo and Real modes (requires log check or manual test).
+- [ ] Create unit test for balance fetching in `ExchangeViewModel` (using simplified fakes).

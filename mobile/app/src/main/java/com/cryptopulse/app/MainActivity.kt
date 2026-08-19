@@ -272,20 +272,23 @@ class MainActivity : FragmentActivity() {
                                     return@composable
                                 }
                                 
-                                val primaryBalance = balances.find { it.asset.equals("USDT", ignoreCase = true) }?.free
+                                LaunchedEffect(Unit) {
+                                    exchangeViewModel.fetchBalances()
+                                }
+
+                                val parts = candidate.pairName.split("/")
+                                val quoteAsset = if (parts.size >= 2) parts[1] else "USDT"
+                                val primaryBalance = balances.find { it.asset.equals(quoteAsset, ignoreCase = true) }?.free
 
                                 TradeSetupScreen(
                                     candidate = candidate,
                                     balance = primaryBalance,
-                                    asset = "USDT",
+                                    asset = quoteAsset,
                                     exchangeName = formState.selectedExchange.replaceFirstChar { it.uppercase() },
                                     environmentName = formState.environment.replaceFirstChar { it.uppercase() },
                                     onBack = { navController.popBackStack() },
                                     onProceedToAnalysis = {
-                                        val result = tradeSetupViewModel.buildConfig(candidate.symbol)
-                                        if (result is com.cryptopulse.app.ui.strategies.TradeSetupConfigResult.Success) {
-                                            navController.navigate("strategy_selection")
-                                        }
+                                        navController.navigate("strategy_selection")
                                     },
                                     viewModel = tradeSetupViewModel,
                                 )
