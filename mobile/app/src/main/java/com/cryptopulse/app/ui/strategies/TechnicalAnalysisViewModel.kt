@@ -57,7 +57,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 android.widget.Toast.makeText(context, "No active Trade Setup found.", android.widget.Toast.LENGTH_LONG).show()
                 return@launch
             }
-            val strategyId = originalConfig.strategyId ?: "ScalperV2"
+            val strategyId = sessionRepository.selectedStrategyId.value ?: originalConfig.strategyId ?: "ScalperV2"
             
             val mockConfig = originalConfig.copy(
                 parameters = originalConfig.parameters + ("forceMockSignal" to "BUY")
@@ -132,9 +132,11 @@ class TechnicalAnalysisViewModel @Inject constructor(
         viewModelScope.launch {
             val result = botRepository.getStatus()
             result.onSuccess { status ->
-                if (status == com.cryptopulse.app.domain.models.BotState.ANALYSING) {
+                if (status.isActive || status.state == com.cryptopulse.app.domain.models.BotState.ANALYSING) {
                     botRepository.startObserving()
-                    onSessionRestored("BTCUSDT", "ScalperV2")
+                    val restoredCoin = status.coinId ?: "BTCUSDT"
+                    val restoredStrategy = status.strategy ?: "ScalperV2"
+                    onSessionRestored(restoredCoin, restoredStrategy)
                 }
             }
         }

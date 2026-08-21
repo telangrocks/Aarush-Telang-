@@ -62,7 +62,7 @@ class TechnicalAnalysisViewModelTest {
             }
 
             override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
-            override suspend fun getStatus(): NetworkResult<BotState> = NetworkResult.Success(BotState.ANALYSING)
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "ScalperV2"))
             override suspend fun executeTrade(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun executeMockTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)

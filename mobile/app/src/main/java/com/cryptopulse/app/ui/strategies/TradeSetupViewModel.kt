@@ -116,7 +116,7 @@ class TradeSetupViewModel @Inject constructor(
     }
 
     suspend fun validateAndConfirmTrade(
-        strategyId: String,
+        strategyId: String? = null,
         candidate: MarketCandidate,
         exchangeName: String,
         availableBalance: Double?

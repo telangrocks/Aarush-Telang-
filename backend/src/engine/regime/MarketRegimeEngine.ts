@@ -1,4 +1,5 @@
 import { computeEMA, calculateAtr } from '../../trading-bot';
+import { StrategyRegistry } from '../strategies/StrategyRegistry';
 
 export interface MarketRegime {
   regime: "TRENDING" | "RANGING" | "VOLATILE";
@@ -116,21 +117,21 @@ export class MarketRegimeEngine {
    * Determines whether a given strategy is permitted under the active MarketRegime rules.
    */
   public static isStrategyAllowed(strategy: string | null, regime: MarketRegime): { allowed: boolean; reason?: string } {
-    const s = (strategy || 'momentum').toLowerCase();
+    const normalized = StrategyRegistry.getInstance().normalizeStrategyId(strategy || 'Momentum');
 
-    if (s === 'breakout' || s === 'momentum') {
+    if (normalized === 'Breakout' || normalized === 'Momentum') {
       if (!regime.allowTrendStrategies) {
         return { allowed: false, reason: `Strategy '${strategy}' requires TRENDING market (current regime: ${regime.regime}, ADX score: ${regime.score})` };
       }
-    } else if (s === 'mean_reversion') {
+    } else if (normalized === 'MeanReversion') {
       if (!regime.allowMeanReversion) {
         return { allowed: false, reason: `Strategy '${strategy}' requires RANGING market (current regime: ${regime.regime}, ADX score: ${regime.score})` };
       }
-    } else if (s === 'scalping' || s === 'scalper_v2') {
+    } else if (normalized === 'ScalperV2') {
       if (regime.score < 60) {
         return { allowed: false, reason: `Scalping requires market regime score > 60 (current score: ${regime.score})` };
       }
-    } else if (s === 'vwap') {
+    } else if (normalized === 'VWAP') {
       // VWAP is allowed in both TRENDING and RANGING, but blocked in low-score VOLATILE environments
       if (regime.regime === 'VOLATILE' && regime.score < 70) {
         return { allowed: false, reason: `VWAP strategy blocked during high volatility regime (score: ${regime.score} < 70)` };

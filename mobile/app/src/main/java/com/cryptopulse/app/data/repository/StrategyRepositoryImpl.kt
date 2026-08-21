@@ -86,11 +86,18 @@ class StrategyRepositoryImpl @Inject constructor(
     }
 
     private fun parseCategory(cat: String): StrategyCategory {
-        return try { StrategyCategory.valueOf(cat.uppercase()) } catch (e: Exception) { StrategyCategory.CUSTOM }
+        val sanitized = cat.trim().uppercase().replace(" ", "_").replace("-", "_")
+        return try { StrategyCategory.valueOf(sanitized) } catch (e: Exception) { StrategyCategory.CUSTOM }
     }
 
     private fun parseRisk(risk: String): RiskLevel {
-        return try { RiskLevel.valueOf(risk.uppercase()) } catch (e: Exception) { RiskLevel.MEDIUM }
+        val sanitized = risk.trim().uppercase().replace(" ", "_").replace("-", "_")
+        return when (sanitized) {
+            "LOW" -> RiskLevel.LOW
+            "MEDIUM" -> RiskLevel.MEDIUM
+            "HIGH", "MEDIUM_HIGH" -> RiskLevel.HIGH
+            else -> RiskLevel.MEDIUM
+        }
     }
 
     private fun parseParameterType(typeStr: String?): ParameterType {

@@ -104,7 +104,7 @@ class FakeBotRepositoryMinimal : com.cryptopulse.app.domain.repository.BotReposi
     override suspend fun activateBot(symbol: String, strategy: String, config: com.cryptopulse.app.domain.models.TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
-    override suspend fun getStatus(): NetworkResult<com.cryptopulse.app.domain.models.BotState> = NetworkResult.Success(com.cryptopulse.app.domain.models.BotState.NOT_STARTED)
+    override suspend fun getStatus(): NetworkResult<com.cryptopulse.app.domain.models.BotStatus> = NetworkResult.Success(com.cryptopulse.app.domain.models.BotStatus(state = com.cryptopulse.app.domain.models.BotState.NOT_STARTED, isActive = false))
     override suspend fun executeTrade(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun executeMockTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun getAlerts(): NetworkResult<List<com.cryptopulse.app.domain.models.BotAlert>> = NetworkResult.Success(emptyList())

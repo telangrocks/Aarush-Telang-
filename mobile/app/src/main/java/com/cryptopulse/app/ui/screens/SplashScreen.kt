@@ -122,10 +122,9 @@ fun SplashScreen(
                         try {
                             val botResult = botRepository.getStatus()
                             botResult.onSuccess { status ->
-                                if (status == com.cryptopulse.app.domain.models.BotState.ANALYSING) {
-                                    // Placeholder logic since the model is simple enum for now
-                                    activeBotCoinId = "BTCUSDT"
-                                    activeBotStrategy = "scalping"
+                                if (status.isActive || status.state == com.cryptopulse.app.domain.models.BotState.ANALYSING) {
+                                    activeBotCoinId = status.coinId ?: "BTCUSDT"
+                                    activeBotStrategy = status.strategy ?: "ScalperV2"
                                 }
                             }
                         } catch (e: Exception) {

@@ -35,7 +35,36 @@ class StrategyParsingTest {
 
     @Test
     fun `unknown backend category falls back to CUSTOM`() {
-        assertEquals(StrategyCategory.CUSTOM, StrategyCategory.valueOf("CUSTOM"))
+        val sanitized = "Unknown Category".trim().uppercase().replace(" ", "_").replace("-", "_")
+        val result = try { StrategyCategory.valueOf(sanitized) } catch (e: Exception) { StrategyCategory.CUSTOM }
+        assertEquals(StrategyCategory.CUSTOM, result)
+    }
+
+    @Test
+    fun `sanitizer maps raw Trend Following string to TREND_FOLLOWING`() {
+        val raw = "Trend Following"
+        val sanitized = raw.trim().uppercase().replace(" ", "_").replace("-", "_")
+        assertEquals(StrategyCategory.TREND_FOLLOWING, StrategyCategory.valueOf(sanitized))
+    }
+
+    @Test
+    fun `sanitizer maps raw Mean Reversion string to MEAN_REVERSION`() {
+        val raw = "Mean Reversion"
+        val sanitized = raw.trim().uppercase().replace(" ", "_").replace("-", "_")
+        assertEquals(StrategyCategory.MEAN_REVERSION, StrategyCategory.valueOf(sanitized))
+    }
+
+    @Test
+    fun `risk parser maps Medium-High to HIGH`() {
+        val raw = "Medium-High"
+        val sanitized = raw.trim().uppercase().replace(" ", "_").replace("-", "_")
+        val risk = when (sanitized) {
+            "LOW" -> RiskLevel.LOW
+            "MEDIUM" -> RiskLevel.MEDIUM
+            "HIGH", "MEDIUM_HIGH" -> RiskLevel.HIGH
+            else -> RiskLevel.MEDIUM
+        }
+        assertEquals(RiskLevel.HIGH, risk)
     }
 
     @Test

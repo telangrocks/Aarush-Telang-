@@ -10,7 +10,7 @@ interface BotRepository {
 
     suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit>
     suspend fun deactivateBot(): NetworkResult<Unit>
-    suspend fun getStatus(): NetworkResult<BotState>
+    suspend fun getStatus(): NetworkResult<BotStatus>
     suspend fun executeTrade(alertId: String): NetworkResult<Unit>
     suspend fun executeMockTrade(): NetworkResult<Unit>
     suspend fun stopTrade(): NetworkResult<Unit>

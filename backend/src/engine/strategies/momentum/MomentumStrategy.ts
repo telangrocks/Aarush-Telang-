@@ -152,6 +152,11 @@ export class MomentumStrategy implements IStrategy {
       riskAssessment
     );
 
+    if (!this.manifest.supportsShort && tradingSignal.type === SignalType.SELL) {
+      tradingSignal.type = SignalType.HOLD;
+      tradingSignal.reasoning.push('Short signal suppressed: strategy is long-only');
+    }
+
     return {
       strategyId: MOMENTUM_STRATEGY_MANIFEST.id,
       timestamp: context.timestamp,

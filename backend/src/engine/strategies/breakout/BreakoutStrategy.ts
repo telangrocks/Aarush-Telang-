@@ -118,6 +118,11 @@ export class BreakoutStrategy implements IStrategy {
       riskAssessment
     );
 
+    if (!this.manifest.supportsShort && tradingSignal.type === SignalType.SELL) {
+      tradingSignal.type = SignalType.HOLD;
+      tradingSignal.reasoning.push('Short signal suppressed: strategy is long-only');
+    }
+
     return {
       strategyId: this.manifest.id,
       timestamp: context.timestamp,

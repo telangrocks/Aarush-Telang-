@@ -19,6 +19,7 @@ class TradeSessionRepositoryImpl @Inject constructor() : TradeSessionRepository 
 
     override fun setStrategyId(id: String) {
         _selectedStrategyId.value = id
+        _tradeSetupConfig.value = _tradeSetupConfig.value?.copy(strategyId = id)
     }
 
     override fun setTradeSetupConfig(config: TradeSetupConfig) {

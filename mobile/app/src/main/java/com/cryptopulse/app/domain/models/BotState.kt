@@ -15,3 +15,11 @@ enum class BotState {
     STOPPING,
     STOPPED
 }
+
+data class BotStatus(
+    val state: BotState,
+    val isActive: Boolean,
+    val coinId: String? = null,
+    val strategy: String? = null
+)
+

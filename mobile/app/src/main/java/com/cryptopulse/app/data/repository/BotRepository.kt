@@ -61,11 +61,17 @@ class BotRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun getStatus(): NetworkResult<BotState> = withContext(dispatcherProvider.io) {
+    override suspend fun getStatus(): NetworkResult<BotStatus> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.getStatus()) {
             is NetworkResult.Success -> {
                 val state = if (result.data.isActive) BotState.ANALYSING else BotState.STOPPED
-                NetworkResult.Success(state)
+                val botStatus = BotStatus(
+                    state = state,
+                    isActive = result.data.isActive,
+                    coinId = result.data.coinId,
+                    strategy = result.data.strategy
+                )
+                NetworkResult.Success(botStatus)
             }
             is NetworkResult.Error -> result
         }

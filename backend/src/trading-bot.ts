@@ -787,6 +787,13 @@ export class TradingBot {
             }
 
             const side: 'BUY' | 'SELL' = target.side || 'BUY';
+            const alertStrategy = (target.strategy || '').replace(/_NEW$/, '');
+            const normalizedStrategyId = StrategyRegistry.getInstance().normalizeStrategyId(alertStrategy);
+            const alertManifest = StrategyRegistry.getInstance().getManifest(normalizedStrategyId);
+            if (side === 'SELL' && alertManifest && !alertManifest.supportsShort) {
+              console.error(`[SAFETY GATE: FATAL] Rejected short execution for long-only strategy ${normalizedStrategyId}. AlertId: ${target.id}`);
+              return new Response(JSON.stringify({ error: `Cannot execute SELL order: Strategy '${normalizedStrategyId}' does not support short positions.` }), { status: 400 });
+            }
             const rawSymbol = coinId || target.symbol || 'BTC/USDT';
             const orderSymbol = rawSymbol.includes('/') ? rawSymbol : `${rawSymbol}/USDT`;
             const clientOrderId = target.id;
@@ -1599,7 +1606,8 @@ export class TradingBot {
             // Phase 1: Trading Signal Integration
             if (primaryResult?.hasSignal) {
               const sig = primaryResult.metadata.signal;
-              if (sig && (sig.type === 'BUY' || sig.type === 'SELL')) {
+              const isAllowedSignal = sig && (sig.type === 'BUY' || (sig.type === 'SELL' && manifest.supportsShort));
+              if (isAllowedSignal) {
                 const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
                 // Check if we recently added this alert to avoid spamming the queue
                 const recentAlert = alerts.find(a => a.symbol === coinId && a.status === 'pending' && a.strategy === `${strategy}_NEW`);

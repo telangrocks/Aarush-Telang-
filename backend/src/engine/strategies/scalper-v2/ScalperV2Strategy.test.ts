@@ -63,4 +63,34 @@ describe('ScalperV2Strategy', () => {
     expect(result.metadata.signal.type).toBe('HOLD');
     expect(result.metadata.reasoning.some((r: string) => r.includes('No strong directional bias') || r.includes('Confidence score') || r.includes('ATR is zero'))).toBe(true);
   });
+
+  it('should suppress SELL signals to HOLD because ScalperV2 is long-only', () => {
+    const strategy = new ScalperV2Strategy();
+
+    // Create a market snapshot that produces a bearish EMA condition
+    const snapshot: MarketSnapshot = {
+      symbol: 'BTC/USDT',
+      timestamp: Date.now(),
+      currentPrice: 80,
+      volume24h: 10000,
+      quoteVolume24h: 800000,
+      metadata: { priceChange24h: -10, priceChangePercent24h: -10, highPrice24h: 100, lowPrice24h: 75 },
+      candles: {
+        '5m': [
+          { timestamp: 1, open: 100, high: 105, low: 95, close: 100, volume: 1000 },
+          { timestamp: 2, open: 100, high: 100, low: 85, close: 90, volume: 1200 },
+          { timestamp: 3, open: 90, high: 90, low: 75, close: 80, volume: 2000 }
+        ]
+      } as any
+    };
+
+    const context = new StrategyContext(snapshot).freeze();
+    const result = strategy.evaluate(context);
+
+    // Because supportsShort is false, the signal must never be SELL
+    expect(result.metadata.signal.type).not.toBe('SELL');
+    if (result.metadata.reasoning.some((r: string) => r.includes('Short signal suppressed'))) {
+      expect(result.metadata.signal.type).toBe('HOLD');
+    }
+  });
 });

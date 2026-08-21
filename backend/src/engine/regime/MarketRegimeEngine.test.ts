@@ -73,10 +73,23 @@ describe('MarketRegimeEngine', () => {
     };
 
     expect(MarketRegimeEngine.isStrategyAllowed('momentum', trendingRegime).allowed).toBe(true);
+    expect(MarketRegimeEngine.isStrategyAllowed('Momentum', trendingRegime).allowed).toBe(true);
     expect(MarketRegimeEngine.isStrategyAllowed('breakout', trendingRegime).allowed).toBe(true);
+    expect(MarketRegimeEngine.isStrategyAllowed('Breakout', trendingRegime).allowed).toBe(true);
     expect(MarketRegimeEngine.isStrategyAllowed('mean_reversion', trendingRegime).allowed).toBe(false);
+    expect(MarketRegimeEngine.isStrategyAllowed('MeanReversion', trendingRegime).allowed).toBe(false);
 
     expect(MarketRegimeEngine.isStrategyAllowed('mean_reversion', rangingRegime).allowed).toBe(true);
+    expect(MarketRegimeEngine.isStrategyAllowed('MeanReversion', rangingRegime).allowed).toBe(true);
     expect(MarketRegimeEngine.isStrategyAllowed('momentum', rangingRegime).allowed).toBe(false);
+    expect(MarketRegimeEngine.isStrategyAllowed('Momentum', rangingRegime).allowed).toBe(false);
+
+    // ScalperV2 score check (>60)
+    expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', { regime: 'RANGING', score: 65, allowTrendStrategies: false, allowMeanReversion: true }).allowed).toBe(true);
+    expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', { regime: 'RANGING', score: 45, allowTrendStrategies: false, allowMeanReversion: true }).allowed).toBe(false);
+
+    // VWAP volatility check
+    expect(MarketRegimeEngine.isStrategyAllowed('VWAP', { regime: 'VOLATILE', score: 50, allowTrendStrategies: true, allowMeanReversion: false }).allowed).toBe(false);
+    expect(MarketRegimeEngine.isStrategyAllowed('VWAP', { regime: 'VOLATILE', score: 75, allowTrendStrategies: true, allowMeanReversion: false }).allowed).toBe(true);
   });
 });

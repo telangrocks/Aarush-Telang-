@@ -74,8 +74,11 @@ fun TradeSetupScreen(
                         text = if (uiState.isLoading) "Loading..." else "CONFIRM",
                         onClick = {
                             scope.launch {
-                                val strategyId = java.util.UUID.randomUUID().toString()
-                                val result = viewModel.validateAndConfirmTrade(strategyId, candidate, exchangeName, balance)
+                                val result = viewModel.validateAndConfirmTrade(
+                                    candidate = candidate,
+                                    exchangeName = exchangeName,
+                                    availableBalance = balance
+                                )
                                 if (result is TradeSetupConfigResult.Success) {
                                     onProceedToAnalysis()
                                 }
