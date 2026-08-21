@@ -73,18 +73,11 @@ class TradeValidatorTest {
     }
     
     @Test
-    fun `fat-finger protection should fail when variance exceeds 15 percent`() {
-        // Current market price is 50000, 15% variance allows [42500, 57500]
-        val paramsBelow = TradeValidationParams(symbol = "BTCUSDT", entryPriceStr = "40000.0", currentMarketPrice = 50000.0)
-        val resultBelow = TradeValidator.validate(paramsBelow, baseRules)
-        assertFalse("Price too far below market should fail", resultBelow.isValid)
-        assertEquals(ValidationErrorReason.PRICE_VARIANCE_EXCEEDED, resultBelow.errorCode)
-        assertTrue(resultBelow.errorMessage?.contains("50,000.00") == true)
-        
-        val paramsAbove = TradeValidationParams(symbol = "BTCUSDT", entryPriceStr = "60000.0", currentMarketPrice = 50000.0)
-        val resultAbove = TradeValidator.validate(paramsAbove, baseRules)
-        assertFalse("Price too far above market should fail", resultAbove.isValid)
-        assertEquals(ValidationErrorReason.PRICE_VARIANCE_EXCEEDED, resultAbove.errorCode)
-        assertTrue(resultAbove.errorMessage?.contains("50,000.00") == true)
+    fun `independent target entry price should pass when exchange bounds and tick size are valid`() {
+        // Market price is 0.13, target entry price is 2.00
+        val rules = baseRules.copy(minPrice = 0.01, maxPrice = 1000.0, tickSize = 0.01)
+        val params = TradeValidationParams(symbol = "DOGEUSDT", entryPriceStr = "2.00", currentMarketPrice = 0.13)
+        val result = TradeValidator.validate(params, rules)
+        assertTrue("Independent target price (2.00 on 0.13 market) within bounds should pass", result.isValid)
     }
 }

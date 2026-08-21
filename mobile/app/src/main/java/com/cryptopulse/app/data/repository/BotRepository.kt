@@ -71,8 +71,8 @@ class BotRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun executeTrade(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
-        when (val result = botRemoteDataSource.executeTrade()) {
+    override suspend fun executeTrade(alertId: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+        when (val result = botRemoteDataSource.executeTrade(alertId)) {
             is NetworkResult.Success -> NetworkResult.Success(Unit)
             is NetworkResult.Error -> result
         }

@@ -12,7 +12,7 @@ interface BotRemoteDataSource {
     suspend fun deactivate(): NetworkResult<ActivateBotResponseDto>
     suspend fun getStatus(): NetworkResult<BotStatusResponseDto>
     suspend fun getAnalysisStatus(): NetworkResult<AnalysisSnapshotDto>
-    suspend fun executeTrade(): NetworkResult<ExecuteTradeResponseDto>
+    suspend fun executeTrade(alertId: String): NetworkResult<ExecuteTradeResponseDto>
     suspend fun executeMockTrade(): NetworkResult<ExecuteTradeResponseDto>
     suspend fun stopTrade(): NetworkResult<StopTradeResponseDto>
     suspend fun getAlerts(): NetworkResult<List<BotAlertDto>>
@@ -34,8 +34,8 @@ class RetrofitBotRemoteDataSource @Inject constructor(
     override suspend fun getAnalysisStatus(): NetworkResult<AnalysisSnapshotDto> =
         safeApiCall { tradingBotService.getAnalysisStatus() }
 
-    override suspend fun executeTrade(): NetworkResult<ExecuteTradeResponseDto> =
-        safeApiCall { tradingBotService.executeTrade() }
+    override suspend fun executeTrade(alertId: String): NetworkResult<ExecuteTradeResponseDto> =
+        safeApiCall { tradingBotService.executeTrade(ExecuteTradeRequestDto(alertId)) }
 
     override suspend fun executeMockTrade(): NetworkResult<ExecuteTradeResponseDto> =
         safeApiCall { tradingBotService.executeMockTrade() }

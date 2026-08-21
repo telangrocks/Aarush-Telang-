@@ -60,21 +60,6 @@ object TradeValidator {
                 errorMessage = "Entry price must be a valid positive number."
             )
         }
-
-        // Fat-Finger protection
-        val marketPrice = params.currentMarketPrice
-        if (marketPrice > 0.0) {
-            val variance = Math.abs((entryPrice - marketPrice) / marketPrice)
-            if (variance > 0.15) {
-                val formattedMarketPrice = java.text.NumberFormat.getCurrencyInstance(java.util.Locale.US).format(marketPrice)
-                return TradeValidationResult(
-                    isValid = false,
-                    errorCode = ValidationErrorReason.PRICE_VARIANCE_EXCEEDED,
-                    errorMessage = "Price deviates too far from market price of $formattedMarketPrice"
-                )
-            }
-        }
-
         val isEntryPriceOnly = params.quantity == null && params.tradeValueUsdt == null
 
         if (rules.minPrice == null || rules.tickSize == null) {

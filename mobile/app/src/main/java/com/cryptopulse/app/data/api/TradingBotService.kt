@@ -21,7 +21,7 @@ interface TradingBotService {
     suspend fun getAnalysisStatus(): Response<AnalysisSnapshotDto>
 
     @POST(ApiConstants.BOT_EXECUTE_TRADE)
-    suspend fun executeTrade(): Response<ExecuteTradeResponseDto>
+    suspend fun executeTrade(@Body request: ExecuteTradeRequestDto): Response<ExecuteTradeResponseDto>
 
     @POST(ApiConstants.BOT_MOCK_TRADE)
     suspend fun executeMockTrade(): Response<ExecuteTradeResponseDto>

@@ -1227,13 +1227,16 @@ export class TradingBot {
         const mockOrderId = `mock_${crypto.randomUUID()}`;
 
         if (userId) {
+          const setupSnapshot = await this.state.storage.get<TradeSetupSnapshot>('setupSnapshot');
+          const targetPrice = setupSnapshot?.targetEntryPrice ?? currentPrice;
+
           await this.logAuditEvent(userId, 'MOCK_TRADE_EXECUTED', { symbol: coinId, side: 'BUY', mockOrderId, price: currentPrice, quantity, strategy });
           await this.env.DB.prepare(`
             INSERT INTO trade_positions (
               id, user_id, symbol, side, entry_price, target_entry_price, quantity, stop_loss, take_profit, status, entry_status, average_fill_price, filled_quantity, order_id, exchange, environment, entry_at, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
-            mockOrderId, userId, coinId, 'BUY', currentPrice, currentPrice, quantity, stopLoss, takeProfit, 'OPEN', 'FILLED', currentPrice, quantity, mockOrderId, user?.exchange_name || 'mock', 'demo', new Date().toISOString(), new Date().toISOString(), new Date().toISOString()
+            mockOrderId, userId, coinId, 'BUY', currentPrice, targetPrice, quantity, stopLoss, takeProfit, 'OPEN', 'FILLED', currentPrice, quantity, mockOrderId, user?.exchange_name || 'mock', 'demo', new Date().toISOString(), new Date().toISOString(), new Date().toISOString()
           ).run();
         }
 

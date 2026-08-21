@@ -569,6 +569,11 @@ class ExchangeViewModel @Inject constructor(
             _tradeError.value = "No active trade opportunity to execute. Please try again."
             return
         }
+        val alertId = (alert["id"] as? String)?.trim().orEmpty()
+        if (alertId.isEmpty()) {
+            _tradeError.value = "Invalid trade alert identifier. Cannot execute trade."
+            return
+        }
         val tradeSetup = _tradeSetup.value
         _tradeError.value = null
         _lastTrade.value = null
@@ -579,11 +584,10 @@ class ExchangeViewModel @Inject constructor(
             val token = tokenManager.getToken()
             if (token != null) {
                 val isMock = alert["isMockTrade"] as? Boolean ?: false
-                val result = if (isMock) botRepository.executeMockTrade() else botRepository.executeTrade()
+                val result = if (isMock) botRepository.executeMockTrade() else botRepository.executeTrade(alertId)
                 result.onSuccess {
                     _isUnknownState.value = false
                     isProcessingTrade = false
-                    val alertId = alert["id"] as? String ?: ""
                     botRepository.acknowledgeAlert(alertId)
                     _pendingAlert.value = null
                     
