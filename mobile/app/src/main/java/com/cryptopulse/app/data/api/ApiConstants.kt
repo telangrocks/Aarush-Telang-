@@ -21,6 +21,7 @@ object ApiConstants {
     const val BOT_STATUS = "/api/trading-bot/status"
     const val BOT_ANALYSIS_STATUS = "/api/trading-bot/analysis-status"
     const val BOT_EXECUTE_TRADE = "/api/trading-bot/execute-trade"
+    const val BOT_MOCK_TRADE = "/api/trading-bot/mock-trade"
     const val BOT_STOP_TRADE = "/api/trading-bot/stop-trade"
     const val BOT_ALERTS = "/api/trading-bot/alerts"
     const val BOT_ALERTS_ACKNOWLEDGE = "/api/trading-bot/alerts/acknowledge"

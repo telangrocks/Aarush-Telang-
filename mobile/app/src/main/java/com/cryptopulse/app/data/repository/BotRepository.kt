@@ -78,6 +78,13 @@ class BotRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun executeMockTrade(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+        when (val result = botRemoteDataSource.executeMockTrade()) {
+            is NetworkResult.Success -> NetworkResult.Success(Unit)
+            is NetworkResult.Error -> result
+        }
+    }
+
     override suspend fun stopTrade(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.stopTrade()) {
             is NetworkResult.Success -> NetworkResult.Success(Unit)

@@ -267,8 +267,14 @@ export class BybitAdapter extends BaseExchangeAdapter {
         for (const acc of list) {
           const coins = acc.coin || [];
           for (const c of coins) {
-            const free = new BigNumber(c.availableToWithdraw || c.free || c.equity || 0);
             const locked = new BigNumber(c.locked || c.used || 0);
+            
+            let freeAmt = c.availableToWithdraw || c.availableBalance || c.free;
+            if (!freeAmt && c.walletBalance) {
+              freeAmt = new BigNumber(c.walletBalance).minus(locked).toString();
+            }
+            
+            const free = new BigNumber(freeAmt || 0);
             const total = new BigNumber(c.walletBalance || c.equity || free.plus(locked));
             
             if (balancesByCoin.has(c.coin)) {
@@ -287,16 +293,6 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
 
     if (!anySuccess) {
-      // If wallet-balance fails entirely, verify authentication directly via /v5/user/query-api
-      try {
-        const keyInfo = await this.makeRequest('GET', '/v5/user/query-api', {}, true);
-        if (keyInfo) {
-          this.logger.info('[BybitAdapter] API Key authenticated successfully via /v5/user/query-api');
-          return [];
-        }
-      } catch (_) {
-        // Fall back to original wallet-balance error
-      }
       throw lastErr;
     }
 

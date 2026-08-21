@@ -118,7 +118,8 @@ class TradeSetupViewModel @Inject constructor(
     suspend fun validateAndConfirmTrade(
         strategyId: String,
         candidate: MarketCandidate,
-        exchangeName: String
+        exchangeName: String,
+        availableBalance: Double?
     ): TradeSetupConfigResult {
         _uiState.update { it.copy(isLoading = true, error = null) }
 
@@ -133,20 +134,12 @@ class TradeSetupViewModel @Inject constructor(
             return TradeSetupConfigResult.ValidationFailed(mapOf("entryPrice" to entryPriceError))
         }
 
-        // Fetch fresh balance before confirmation
-        val balanceResult = exchangeRepository.getBalances()
-        if (balanceResult is com.cryptopulse.app.core.network.NetworkResult.Error) {
-            _uiState.update { it.copy(error = "Failed to fetch current wallet balance. Please try again.", isLoading = false) }
-            return TradeSetupConfigResult.ValidationFailed(mapOf("balance" to "Failed to fetch balance"))
-        }
-
-        val balances = (balanceResult as? com.cryptopulse.app.core.network.NetworkResult.Success)?.data ?: emptyList()
         val quoteAsset = rules.quoteAsset
-        val availableBalance = balances.find { it.asset == quoteAsset }?.free ?: 0.0
+        val bal = availableBalance ?: 0.0
 
         // Perform a very basic check (for deeper checks we would need quantity/trade value setup)
         // Here we just ensure we have *some* balance. Real notional check happens later.
-        if (availableBalance <= 0.0) {
+        if (bal <= 0.0) {
             _uiState.update { it.copy(error = "Insufficient $quoteAsset balance for trade.", isLoading = false) }
             return TradeSetupConfigResult.ValidationFailed(mapOf("balance" to "Insufficient balance"))
         }

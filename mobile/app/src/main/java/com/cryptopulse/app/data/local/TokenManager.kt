@@ -22,7 +22,7 @@ sealed class TokenState {
     object Unauthenticated : TokenState()
 }
 
-class TokenManager(context: Context) {
+open class TokenManager(context: Context) {
     companion object {
         private const val PREFS_FILE = "secure_auth_prefs"
         private const val JWT_TOKEN_KEY = "jwt_token"
@@ -49,10 +49,10 @@ class TokenManager(context: Context) {
     }
 
     private val _tokenFlow = MutableStateFlow<TokenState>(TokenState.Uninitialized)
-    val tokenFlow: StateFlow<TokenState> = _tokenFlow.asStateFlow()
+    open val tokenFlow: StateFlow<TokenState> get() = _tokenFlow.asStateFlow()
 
     private val _refreshTokenFlow = MutableStateFlow<TokenState>(TokenState.Uninitialized)
-    val refreshTokenFlow: StateFlow<TokenState> = _refreshTokenFlow.asStateFlow()
+    open val refreshTokenFlow: StateFlow<TokenState> get() = _refreshTokenFlow.asStateFlow()
 
     init {
         _tokenFlow.value = TokenState.Loading
@@ -73,17 +73,17 @@ class TokenManager(context: Context) {
         }
     }
 
-    suspend fun getToken(): String? {
+    open suspend fun getToken(): String? {
         initDeferred.await()
         return (_tokenFlow.value as? TokenState.Authenticated)?.token
     }
 
-    suspend fun getRefreshToken(): String? {
+    open suspend fun getRefreshToken(): String? {
         initDeferred.await()
         return (_refreshTokenFlow.value as? TokenState.Authenticated)?.token
     }
 
-    suspend fun saveTokens(accessToken: String, refreshToken: String) = withContext(Dispatchers.IO) {
+    open suspend fun saveTokens(accessToken: String, refreshToken: String) = withContext(Dispatchers.IO) {
         initDeferred.await() // Ensure initialization is done before editing
         sharedPreferences.edit()
             .putString(JWT_TOKEN_KEY, accessToken)
@@ -93,7 +93,7 @@ class TokenManager(context: Context) {
         _refreshTokenFlow.value = TokenState.Authenticated(refreshToken)
     }
 
-    suspend fun clearTokens() = withContext(Dispatchers.IO) {
+    open suspend fun clearTokens() = withContext(Dispatchers.IO) {
         initDeferred.await()
         sharedPreferences.edit()
             .remove(JWT_TOKEN_KEY)
@@ -103,7 +103,7 @@ class TokenManager(context: Context) {
         _refreshTokenFlow.value = TokenState.Unauthenticated
     }
 
-    fun isTokenExpired(token: String?): Boolean {
+    open fun isTokenExpired(token: String?): Boolean {
         if (token.isNullOrEmpty()) return true
         try {
             val parts = token.split(".")

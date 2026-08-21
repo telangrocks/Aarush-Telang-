@@ -262,6 +262,7 @@ class MainActivity : FragmentActivity() {
                                 val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>()
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
                                 val balances by exchangeViewModel.balances.collectAsState()
+                                val balancesError by exchangeViewModel.balancesError.collectAsState()
                                 val formState by exchangeViewModel.formState.collectAsState()
 
                                 val candidate = selectedCandidate
@@ -278,11 +279,14 @@ class MainActivity : FragmentActivity() {
 
                                 val parts = candidate.pairName.split("/")
                                 val quoteAsset = if (parts.size >= 2) parts[1] else "USDT"
-                                val primaryBalance = balances.find { it.asset.equals(quoteAsset, ignoreCase = true) }?.free
+                                val primaryBalance = balances?.let { list ->
+                                    list.find { it.asset.equals(quoteAsset, ignoreCase = true) }?.free ?: 0.0
+                                }
 
                                 TradeSetupScreen(
                                     candidate = candidate,
                                     balance = primaryBalance,
+                                    balancesError = balancesError,
                                     asset = quoteAsset,
                                     exchangeName = formState.selectedExchange.replaceFirstChar { it.uppercase() },
                                     environmentName = formState.environment.replaceFirstChar { it.uppercase() },
@@ -314,8 +318,8 @@ class MainActivity : FragmentActivity() {
                                 val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
                                 val selectedStrategy = tradeSetupConfig?.strategyId ?: "ScalperV2"
 
-                                LaunchedEffect(candidate.symbol, selectedStrategy) {
-                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.symbol, selectedStrategy, tradeSetupConfig)
+                                LaunchedEffect(candidate.pairName, selectedStrategy) {
+                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, selectedStrategy, tradeSetupConfig)
                                 }
 
                                 LaunchedEffect(Unit) {
@@ -331,7 +335,7 @@ class MainActivity : FragmentActivity() {
                                     tradeSetupConfig = tradeSetupConfig,
                                     onBack = { navController.popBackStack() },
                                     onExecuteMockTrade = {
-                                        technicalAnalysisViewModel.triggerMockAlert(candidate.symbol, applicationContext)
+                                        technicalAnalysisViewModel.triggerMockAlert(candidate.pairName, applicationContext)
                                     }
                                 )
                             }

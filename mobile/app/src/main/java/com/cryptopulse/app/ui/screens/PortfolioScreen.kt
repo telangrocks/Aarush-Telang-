@@ -55,13 +55,18 @@ fun PortfolioScreen(
                     .padding(padding)
                     .padding(horizontal = 16.dp)
             ) {
+                val currentBalances = balances
                 if (balancesError != null) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(text = balancesError!!, color = LossRed, textAlign = TextAlign.Center)
                     }
-                } else if (balances.isEmpty()) {
+                } else if (currentBalances == null) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(color = CyanPrimary)
+                    }
+                } else if (currentBalances.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(text = "No current holdings.", color = TextSecondary, textAlign = TextAlign.Center)
                     }
                 } else {
                     Text(
@@ -75,7 +80,7 @@ fun PortfolioScreen(
                     LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(balances.filter { it.total > 0 }) { balance ->
+                        items(currentBalances.filter { it.total > 0 }) { balance ->
                             BalanceItemCard(
                                 asset = balance.asset,
                                 free = balance.free,

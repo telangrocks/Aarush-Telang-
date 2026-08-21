@@ -23,6 +23,9 @@ interface TradingBotService {
     @POST(ApiConstants.BOT_EXECUTE_TRADE)
     suspend fun executeTrade(): Response<ExecuteTradeResponseDto>
 
+    @POST(ApiConstants.BOT_MOCK_TRADE)
+    suspend fun executeMockTrade(): Response<ExecuteTradeResponseDto>
+
     @POST(ApiConstants.BOT_STOP_TRADE)
     suspend fun stopTrade(): Response<StopTradeResponseDto>
 

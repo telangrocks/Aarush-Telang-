@@ -74,7 +74,7 @@ class TradeSetupViewModelTest {
         
         exchangeRepository.mockBalances = listOf(BalanceItem("USDT", 1000.0, 0.0, total = 1000.0))
         
-        val result = viewModel.validateAndConfirmTrade("strat_123", testCandidate, "Binance")
+        val result = viewModel.validateAndConfirmTrade("strat_123", testCandidate, "Binance", 1000.0)
         
         assertTrue(result is TradeSetupConfigResult.Success)
         val config = (result as TradeSetupConfigResult.Success).config
@@ -93,7 +93,7 @@ class TradeSetupViewModelTest {
         // Mock balance without USDT (mapped from BTC/USDT)
         exchangeRepository.mockBalances = listOf(BalanceItem("BTC", 1.0, 0.0, total = 1.0))
         
-        val result = viewModel.validateAndConfirmTrade("strat_123", testCandidate, "Binance")
+        val result = viewModel.validateAndConfirmTrade("strat_123", testCandidate, "Binance", 0.0)
         
         assertTrue(result is TradeSetupConfigResult.ValidationFailed)
         val error = (result as TradeSetupConfigResult.ValidationFailed).errors["balance"]

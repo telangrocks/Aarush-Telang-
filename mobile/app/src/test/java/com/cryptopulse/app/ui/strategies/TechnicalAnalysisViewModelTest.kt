@@ -64,6 +64,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getStatus(): NetworkResult<BotState> = NetworkResult.Success(BotState.ANALYSING)
             override suspend fun executeTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun executeMockTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
@@ -95,7 +96,7 @@ class TechnicalAnalysisViewModelTest {
             createMockSessionRepository("scalper-v2"),
             createMockBotRepository(shouldSucceed = true),
             createMockTechnicalAnalysisRepository(),
-            uninitialized()
+            com.cryptopulse.app.service.TradeAlertManager()
         )
 
         var isSuccessInvoked = false
@@ -113,7 +114,7 @@ class TechnicalAnalysisViewModelTest {
             createMockSessionRepository("scalper-v2"),
             createMockBotRepository(shouldSucceed = true),
             createMockTechnicalAnalysisRepository(),
-            uninitialized()
+            com.cryptopulse.app.service.TradeAlertManager()
         )
 
         var isStoppedInvoked = false

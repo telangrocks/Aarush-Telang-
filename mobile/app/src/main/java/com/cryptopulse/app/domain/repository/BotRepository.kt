@@ -12,6 +12,7 @@ interface BotRepository {
     suspend fun deactivateBot(): NetworkResult<Unit>
     suspend fun getStatus(): NetworkResult<BotState>
     suspend fun executeTrade(): NetworkResult<Unit>
+    suspend fun executeMockTrade(): NetworkResult<Unit>
     suspend fun stopTrade(): NetworkResult<Unit>
     suspend fun getAlerts(): NetworkResult<List<BotAlert>>
     suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit>

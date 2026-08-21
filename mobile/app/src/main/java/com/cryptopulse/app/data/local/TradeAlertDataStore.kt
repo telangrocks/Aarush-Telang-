@@ -12,7 +12,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class TradeAlertDataStore @Inject constructor(private val dataStore: DataStore<Preferences>) {
+open class TradeAlertDataStore @Inject constructor(private val dataStore: DataStore<Preferences>) {
+    constructor() : this(object : DataStore<Preferences> {
+        override val data: Flow<Preferences> = kotlinx.coroutines.flow.emptyFlow()
+        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences = throw UnsupportedOperationException()
+    })
+
     companion object {
         val ACTIVE_ALERT_KEY = stringPreferencesKey("active_trade_alert")
     }

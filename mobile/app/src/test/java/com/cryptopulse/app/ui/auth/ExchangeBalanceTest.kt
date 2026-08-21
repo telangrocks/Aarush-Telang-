@@ -65,7 +65,7 @@ class ExchangeBalanceTest {
         viewModel.fetchBalances()
 
         assertEquals(errorMessage, viewModel.balancesError.value)
-        assertEquals(emptyList<BalanceItem>(), viewModel.balances.value)
+        assertNull(viewModel.balances.value)
     }
 }
 
@@ -106,6 +106,7 @@ class FakeBotRepositoryMinimal : com.cryptopulse.app.domain.repository.BotReposi
     override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun getStatus(): NetworkResult<com.cryptopulse.app.domain.models.BotState> = NetworkResult.Success(com.cryptopulse.app.domain.models.BotState.NOT_STARTED)
     override suspend fun executeTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+    override suspend fun executeMockTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun getAlerts(): NetworkResult<List<com.cryptopulse.app.domain.models.BotAlert>> = NetworkResult.Success(emptyList())
     override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
 }
@@ -137,7 +138,7 @@ class FakeTradeSessionRepositoryMinimal : com.cryptopulse.app.domain.repository.
     override fun clearSession() {}
 }
 
-class FakeTradeAlertManagerMinimal : com.cryptopulse.app.service.TradeAlertManager {
+class FakeTradeAlertManagerMinimal : com.cryptopulse.app.service.TradeAlertManager() {
     override fun onNewAlertReceived(alert: Map<String, Any>) {}
     override fun dismissOrExecuteAlert() {}
 }

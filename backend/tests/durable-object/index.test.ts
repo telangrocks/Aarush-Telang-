@@ -18,7 +18,8 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
       getProvider: vi.fn().mockResolvedValue({
         fetchBalance: vi.fn().mockResolvedValue([]),
         fetchMarkets: vi.fn().mockResolvedValue([]),
-        fetchTicker: vi.fn().mockResolvedValue({ last: { toNumber: () => 50000 }, volume: { toNumber: () => 1000000 }, quoteVolume: { toNumber: () => 1000000 }, high: { toNumber: () => 51000 }, low: { toNumber: () => 49000 }, limits: { cost: { min: { toNumber: () => 5 } } } })
+        fetchTicker: vi.fn().mockResolvedValue({ last: { toNumber: () => 50000 }, volume: { toNumber: () => 1000000 }, quoteVolume: { toNumber: () => 1000000 }, high: { toNumber: () => 51000 }, low: { toNumber: () => 49000 }, limits: { cost: { min: { toNumber: () => 5 } } } }),
+        queryApiPermissions: vi.fn().mockResolvedValue({ permissions: { ContractTrade: ["Order", "Position"], Spot: ["SpotTrade"], Wallet: [], Withdraw: [] } }),
       })
     },
     getExchangeAdapter: () => ({

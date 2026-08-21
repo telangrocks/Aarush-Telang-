@@ -178,10 +178,7 @@ class ExchangeViewModel @Inject constructor(
     private val _selectedCandidate = MutableStateFlow<MarketCandidate?>(null)
     val selectedCandidate: StateFlow<MarketCandidate?> = _selectedCandidate
 
-    init {
-        Log.d("VM_CHECK", "[DIAGNOSTIC] ExchangeViewModel hash=${System.identityHashCode(this)}")
-        Log.d("ExchangeViewModel", "[DIAGNOSTIC] ViewModel created: ${System.identityHashCode(this)}")
-    }
+
 
     private val _technicalAnalysis = MutableStateFlow<TechnicalAnalysisResult?>(null)
     val technicalAnalysis: StateFlow<TechnicalAnalysisResult?> = _technicalAnalysis
@@ -224,8 +221,8 @@ class ExchangeViewModel @Inject constructor(
     private val _botError = MutableStateFlow<String?>(null)
     val botError: StateFlow<String?> = _botError
 
-    private val _balances = MutableStateFlow<List<com.cryptopulse.app.domain.models.BalanceItem>>(emptyList())
-    val balances: StateFlow<List<com.cryptopulse.app.domain.models.BalanceItem>> = _balances
+    private val _balances = MutableStateFlow<List<com.cryptopulse.app.domain.models.BalanceItem>?>(null)
+    val balances: StateFlow<List<com.cryptopulse.app.domain.models.BalanceItem>?> = _balances.asStateFlow()
 
     private val _balancesError = MutableStateFlow<String?>(null)
     val balancesError: StateFlow<String?> = _balancesError
@@ -492,6 +489,7 @@ class ExchangeViewModel @Inject constructor(
     fun fetchBalances() {
         val activeEnv = _formState.value.environment
         Log.d(TAG, "[DIAGNOSTIC] fetchBalances triggered for environment: $activeEnv")
+        _balances.value = null // Set to loading state
         viewModelScope.launch {
             exchangeRepository.getBalances().onSuccess { body ->
                 Log.d(TAG, "[DIAGNOSTIC] fetchBalances Success: count=${body.size}")
@@ -580,7 +578,8 @@ class ExchangeViewModel @Inject constructor(
         viewModelScope.launch {
             val token = tokenManager.getToken()
             if (token != null) {
-                val result = botRepository.executeTrade()
+                val isMock = alert["isMockTrade"] as? Boolean ?: false
+                val result = if (isMock) botRepository.executeMockTrade() else botRepository.executeTrade()
                 result.onSuccess {
                     _isUnknownState.value = false
                     isProcessingTrade = false

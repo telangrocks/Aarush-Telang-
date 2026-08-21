@@ -77,13 +77,18 @@ class TechnicalAnalysisViewModel @Inject constructor(
                         "side" to (botAlert.side ?: "BUY"),
                         "timestamp" to (botAlert.timestamp ?: ""),
                         "signalPrice" to (botAlert.signalPrice ?: botAlert.entryPrice),
-                        "positionSize" to (botAlert.positionSize ?: 0.0)
+                        "positionSize" to (botAlert.positionSize ?: 0.0),
+                        "isMockTrade" to true
                     ).toMutableMap()
                     
                     botAlert.targetEntryPrice?.let { mockAlertMap["targetEntryPrice"] = it }
                     
                     tradeAlertManager.onNewAlertReceived(mockAlertMap)
+                } ?: run {
+                    android.widget.Toast.makeText(context, "No valid trade setup currently exists.", android.widget.Toast.LENGTH_LONG).show()
                 }
+            }.onFailure { e ->
+                android.widget.Toast.makeText(context, e.message ?: "Technical analysis unavailable. Please retry.", android.widget.Toast.LENGTH_LONG).show()
             }
         }
     }

@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.map
 
 val Context.exchangeDataStore: DataStore<Preferences> by preferencesDataStore(name = "exchange_prefs")
 
-class ExchangeConnectionManager(private val context: Context) {
+open class ExchangeConnectionManager(private val context: Context) {
 
     companion object {
         private val IS_CONNECTED = booleanPreferencesKey("is_exchange_connected")
@@ -21,19 +21,19 @@ class ExchangeConnectionManager(private val context: Context) {
         private val EXCHANGE_ENVIRONMENT = stringPreferencesKey("exchange_environment")
     }
 
-    val isConnected: Flow<Boolean> = context.exchangeDataStore.data.map { prefs ->
+    open val isConnected: Flow<Boolean> = context.exchangeDataStore.data.map { prefs ->
         prefs[IS_CONNECTED] ?: false
     }
 
-    val exchangeName: Flow<String?> = context.exchangeDataStore.data.map { prefs ->
+    open val exchangeName: Flow<String?> = context.exchangeDataStore.data.map { prefs ->
         prefs[EXCHANGE_NAME]
     }
 
-    val exchangeEnvironment: Flow<String?> = context.exchangeDataStore.data.map { prefs ->
+    open val exchangeEnvironment: Flow<String?> = context.exchangeDataStore.data.map { prefs ->
         prefs[EXCHANGE_ENVIRONMENT]
     }
 
-    suspend fun saveConnection(exchangeName: String, environment: String) {
+    open suspend fun saveConnection(exchangeName: String, environment: String) {
         context.exchangeDataStore.edit { prefs ->
             prefs[IS_CONNECTED] = true
             prefs[EXCHANGE_NAME] = exchangeName
@@ -41,7 +41,7 @@ class ExchangeConnectionManager(private val context: Context) {
         }
     }
 
-    suspend fun clearConnection() {
+    open suspend fun clearConnection() {
         context.exchangeDataStore.edit { prefs ->
             prefs.remove(IS_CONNECTED)
             prefs.remove(EXCHANGE_NAME)
@@ -49,7 +49,7 @@ class ExchangeConnectionManager(private val context: Context) {
         }
     }
 
-    suspend fun getConnectionInfo(): Triple<Boolean, String?, String?> {
+    open suspend fun getConnectionInfo(): Triple<Boolean, String?, String?> {
         val prefs = context.exchangeDataStore.data.firstOrNull()
         val isConnected = prefs?.get(IS_CONNECTED) ?: false
         val name = prefs?.get(EXCHANGE_NAME)

@@ -82,6 +82,10 @@ android {
         disable += "MissingClass"
     }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     kapt {
         correctErrorTypes = true
     }

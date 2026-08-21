@@ -37,6 +37,7 @@ import com.cryptopulse.app.ui.theme.*
 fun TradeSetupScreen(
     candidate: MarketCandidate,
     balance: Double?,
+    balancesError: String?,
     asset: String,
     exchangeName: String,
     environmentName: String,
@@ -74,7 +75,7 @@ fun TradeSetupScreen(
                         onClick = {
                             scope.launch {
                                 val strategyId = java.util.UUID.randomUUID().toString()
-                                val result = viewModel.validateAndConfirmTrade(strategyId, candidate, exchangeName)
+                                val result = viewModel.validateAndConfirmTrade(strategyId, candidate, exchangeName, balance)
                                 if (result is TradeSetupConfigResult.Success) {
                                     onProceedToAnalysis()
                                 }
@@ -120,6 +121,7 @@ fun TradeSetupScreen(
                     Spacer(Modifier.height(10.dp))
                     AvailableBalanceCard(
                         balance = balance,
+                        balancesError = balancesError,
                         asset = asset,
                         exchangeName = exchangeName,
                         environmentName = environmentName
@@ -206,11 +208,14 @@ fun TradeSetupScreen(
 @Composable
 fun AvailableBalanceCard(
     balance: Double?,
+    balancesError: String?,
     asset: String,
     exchangeName: String,
     environmentName: String
 ) {
-    val accessibleBalanceText = if (balance != null) {
+    val accessibleBalanceText = if (balancesError != null) {
+        "Error: $balancesError"
+    } else if (balance != null) {
         "Available balance ${String.format(java.util.Locale.US, "%,.2f", balance)} $asset on $exchangeName $environmentName."
     } else {
         "Fetching wallet balance."
@@ -251,7 +256,15 @@ fun AvailableBalanceCard(
 
             Spacer(Modifier.height(4.dp))
 
-            if (balance != null) {
+            if (balancesError != null) {
+                Text(
+                    text = "Error: $balancesError",
+                    color = LossRed,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                )
+            } else if (balance != null) {
                 val formatted = String.format("%,.2f", balance)
                 Text(
                     text = "$formatted $asset",
