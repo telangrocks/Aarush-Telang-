@@ -7,6 +7,7 @@ import com.cryptopulse.app.data.mapper.bot.toDomain
 import com.cryptopulse.app.domain.models.AnalysisSnapshot
 import com.cryptopulse.app.domain.models.TechnicalAnalysisResult
 import com.cryptopulse.app.domain.models.Checkpoint
+import com.cryptopulse.app.domain.models.BotAlert
 
 fun TechnicalAnalysisResponseDto.toDomain(): TechnicalAnalysisResult = TechnicalAnalysisResult(
     symbol = symbol,
@@ -31,7 +32,9 @@ fun TechnicalAnalysisResponseDto.toAnalysisSnapshot(): AnalysisSnapshot {
         marketAnalysis = marketAnalysis,
         tradingSignal = tradingSignal
     )
-    return snapshotDto.toDomain()
+    val domainSnapshot = snapshotDto.toDomain()
+    val domainOpportunity = opportunity?.let { BotAlert.fromMap(it) }
+    return domainSnapshot.copy(opportunity = domainOpportunity)
 }
 
 fun CheckpointDto.toDomain(): Checkpoint = Checkpoint(

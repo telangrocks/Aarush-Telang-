@@ -398,6 +398,7 @@ class MainActivity : FragmentActivity() {
                                     signalPrice = math.signalPrice,
                                     targetEntryPrice = math.targetEntryPrice,
                                     tradeAmountUsdt = math.positionSize,
+                                    viewModel = viewModel
                                 )
                             }
 

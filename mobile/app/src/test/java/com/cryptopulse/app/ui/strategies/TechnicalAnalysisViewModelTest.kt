@@ -16,6 +16,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import com.cryptopulse.app.data.api.dto.technicalanalysis.response.TechnicalAnalysisResponseDto
+import com.cryptopulse.app.data.mapper.technicalanalysis.toAnalysisSnapshot
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class TechnicalAnalysisViewModelTest {
 
@@ -124,5 +129,130 @@ class TechnicalAnalysisViewModelTest {
 
         testDispatcher.scheduler.advanceUntilIdle()
         assertTrue(isStoppedInvoked)
+    }
+
+    @Test
+    fun `toAnalysisSnapshot correctly maps non-null opportunity field from response DTO to BotAlert`() {
+        val responseDto = TechnicalAnalysisResponseDto(
+            symbol = "BTCUSDT",
+            strategy = "ScalperV2",
+            price = 50000.0,
+            change24h = 2.5,
+            volume = 1000000.0,
+            high24h = 51000.0,
+            low24h = 49000.0,
+            indicators = emptyMap(),
+            signals = emptyMap(),
+            checkpoints = emptyList(),
+            progress = 85,
+            conditionsMet = listOf("Trend Aligned"),
+            opportunity = mapOf(
+                "id" to "mock-alert-uuid-1234",
+                "symbol" to "BTCUSDT",
+                "entryPrice" to 50000.0,
+                "stopLoss" to 49000.0,
+                "takeProfit" to 52000.0,
+                "estimatedPnl" to 4.0,
+                "strategy" to "ScalperV2",
+                "side" to "BUY",
+                "timestamp" to "2026-08-22T12:00:00Z",
+                "signalPrice" to 50000.0,
+                "targetEntryPrice" to 50100.0,
+                "positionSize" to 100.0
+            ),
+            timestamp = "2026-08-22T12:00:00Z"
+        )
+
+        val mappedSnapshot = responseDto.toAnalysisSnapshot()
+
+        assertNotNull("Opportunity must not be null in mapped AnalysisSnapshot", mappedSnapshot.opportunity)
+        val alert = mappedSnapshot.opportunity!!
+        assertEquals("mock-alert-uuid-1234", alert.id)
+        assertEquals("BTCUSDT", alert.symbol)
+        assertEquals(50000.0, alert.entryPrice, 0.0001)
+        assertEquals(49000.0, alert.stopLoss, 0.0001)
+        assertEquals(52000.0, alert.takeProfit, 0.0001)
+        assertEquals(4.0, alert.estimatedPnl, 0.0001)
+        assertEquals("ScalperV2", alert.strategy)
+        assertEquals("BUY", alert.side)
+        assertEquals(50000.0, alert.signalPrice ?: 0.0, 0.0001)
+        assertEquals(50100.0, alert.targetEntryPrice ?: 0.0, 0.0001)
+        assertEquals(100.0, alert.positionSize ?: 0.0, 0.0001)
+    }
+
+    @Test
+    fun `triggerMockAlert receives mapped opportunity and notifies TradeAlertManager with isMockTrade true`() = runTest {
+        val testConfig = TradeSetupConfig(
+            strategyId = "ScalperV2",
+            symbol = "BTCUSDT",
+            entryPrice = 50000.0,
+            tradeValueUsdt = 100.0,
+            parameters = mapOf("leverage" to "10"),
+            riskParameters = mapOf("accountRiskPercent" to 1.0)
+        )
+        val sessionRepo = createMockSessionRepository("ScalperV2").apply {
+            setTradeSetupConfig(testConfig)
+        }
+
+        val mockOpportunity = BotAlert(
+            id = "mock-alert-uuid-5678",
+            symbol = "BTCUSDT",
+            entryPrice = 50000.0,
+            stopLoss = 49000.0,
+            takeProfit = 52000.0,
+            estimatedPnl = 4.0,
+            strategy = "ScalperV2",
+            side = "BUY",
+            timestamp = "2026-08-22T12:00:00Z",
+            signalPrice = 50000.0,
+            targetEntryPrice = 50100.0,
+            positionSize = 100.0
+        )
+        val mockSnapshot = AnalysisSnapshot(
+            engineStatus = EngineStatusDTO("ACTIVE", "ScalperV2", System.currentTimeMillis(), 0L, "OK"),
+            marketAnalysis = MarketAnalysisDTO("BTCUSDT", "ALIGNED", emptyList(), emptyList(), 85, emptyList()),
+            tradingSignal = SignalDTO("BUY", "LONG", 50000.0, 50100.0, 49000.0, 52000.0, "LOW", emptyList()),
+            opportunity = mockOpportunity
+        )
+
+        val mockTaRepo = object : TechnicalAnalysisRepository {
+            override suspend fun getAnalysis(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<TechnicalAnalysisResult> {
+                return NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(400, "Not used", "ERROR"))
+            }
+            override suspend fun getAnalysisSnapshot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<AnalysisSnapshot> {
+                return NetworkResult.Success(mockSnapshot)
+            }
+        }
+
+        var receivedAlertMap: Map<String, Any>? = null
+        val fakeAlertManager = object : com.cryptopulse.app.service.TradeAlertManager() {
+            override fun onNewAlertReceived(alertData: Map<String, Any>) {
+                receivedAlertMap = alertData
+            }
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = sessionRepo,
+            botRepository = createMockBotRepository(),
+            technicalAnalysisRepository = mockTaRepo,
+            tradeAlertManager = fakeAlertManager
+        )
+
+        viewModel.triggerMockAlert("BTCUSDT", android.content.ContextWrapper(null))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertNotNull("TradeAlertManager must receive alert map", receivedAlertMap)
+        assertEquals("mock-alert-uuid-5678", receivedAlertMap?.get("id"))
+        assertEquals("BTCUSDT", receivedAlertMap?.get("symbol"))
+        assertEquals(50000.0, receivedAlertMap?.get("entryPrice"))
+        assertEquals(49000.0, receivedAlertMap?.get("stopLoss"))
+        assertEquals(52000.0, receivedAlertMap?.get("takeProfit"))
+        assertEquals(4.0, receivedAlertMap?.get("estimatedPnl"))
+        assertEquals("ScalperV2", receivedAlertMap?.get("strategy"))
+        assertEquals("BUY", receivedAlertMap?.get("side"))
+        assertEquals(50000.0, receivedAlertMap?.get("signalPrice"))
+        assertEquals(50100.0, receivedAlertMap?.get("targetEntryPrice"))
+        assertEquals(100.0, receivedAlertMap?.get("positionSize"))
+        assertEquals(true, receivedAlertMap?.get("isMockTrade"))
     }
 }

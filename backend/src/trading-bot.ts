@@ -1245,11 +1245,22 @@ export class TradingBot {
           `).bind(
             mockOrderId, userId, coinId, 'BUY', currentPrice, targetPrice, quantity, stopLoss, takeProfit, 'OPEN', 'FILLED', currentPrice, quantity, mockOrderId, user?.exchange_name || 'mock', 'demo', new Date().toISOString(), new Date().toISOString(), new Date().toISOString()
           ).run();
-        }
+          const currentActive = (await this.state.storage.get<any[]>('activePositions')) || [];
+          currentActive.push({
+            id: mockOrderId,
+            symbol: coinId,
+            side: 'BUY',
+            entry_price: currentPrice,
+            quantity,
+            stop_loss: stopLoss,
+            take_profit: takeProfit
+          });
+          await this.state.storage.put('activePositions', currentActive);
 
-        await this.state.storage.put('tradeActive', true);
-        await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
-        await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
+          await this.state.storage.put('tradeActive', true);
+          await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
+          await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
+        }
 
         const mockResult = {
           success: true,
