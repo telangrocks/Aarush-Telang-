@@ -37,3 +37,56 @@ fun AnalysisSnapshotDto.toDomain(): AnalysisSnapshot = AnalysisSnapshot(
     }),
     opportunity = opportunity?.toDomain()
 )
+
+fun TradeExecutionStatusDto.toDomain(): TradeExecutionResult = TradeExecutionResult(
+    positionId = positionId ?: alertId ?: "",
+    alertId = alertId ?: positionId ?: "",
+    orderId = orderId ?: "",
+    symbol = symbol ?: "",
+    side = side ?: "BUY",
+    strategy = strategy ?: "",
+    exchange = exchange ?: "bybit",
+    environment = environment ?: "mainnet",
+    orderType = orderType ?: "MARKET",
+    status = status ?: "PENDING_ENTRY",
+    entryStatus = entryStatus ?: "PENDING_ENTRY",
+    requestedEntryPrice = targetEntryPrice ?: signalPrice ?: 0.0,
+    actualFillPrice = actualFillPrice ?: 0.0,
+    requestedQuantity = requestedQuantity ?: 0.0,
+    actualFilledQuantity = filledQuantity ?: 0.0,
+    remainingQuantity = remainingQuantity ?: 0.0,
+    stopLoss = stopLoss ?: 0.0,
+    takeProfit = takeProfit ?: 0.0,
+    slippagePercent = slippagePercent ?: 0.0,
+    submittedAt = submittedAt ?: "",
+    executedAt = executedAt ?: "",
+    isFilled = isFilled,
+    isMockTrade = false
+)
+
+fun ExecuteTradeResponseDto.toDomain(fallbackAlertId: String): TradeExecutionResult = TradeExecutionResult(
+    positionId = positionId ?: alertId ?: fallbackAlertId,
+    alertId = alertId ?: positionId ?: fallbackAlertId,
+    orderId = orderId ?: "",
+    symbol = symbol ?: "",
+    side = side ?: "BUY",
+    strategy = "",
+    exchange = "bybit",
+    environment = if (isMockTrade == true) "demo" else "mainnet",
+    orderType = "MARKET",
+    status = if (isMockTrade == true) "OPEN" else "PENDING_ENTRY",
+    entryStatus = if (isMockTrade == true) "FILLED" else "PENDING_ENTRY",
+    requestedEntryPrice = executionPrice ?: 0.0,
+    actualFillPrice = executionPrice ?: 0.0,
+    requestedQuantity = quantity ?: 0.0,
+    actualFilledQuantity = quantity ?: 0.0,
+    remainingQuantity = 0.0,
+    stopLoss = stopLoss ?: 0.0,
+    takeProfit = takeProfit ?: 0.0,
+    slippagePercent = 0.0,
+    submittedAt = executedAt ?: "",
+    executedAt = executedAt ?: "",
+    isFilled = isMockTrade == true && (executionPrice ?: 0.0) > 0.0,
+    isMockTrade = isMockTrade ?: false
+)
+

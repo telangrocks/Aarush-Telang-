@@ -1,0 +1,30 @@
+package com.cryptopulse.app.data.api.dto.bot.response
+
+data class TradeExecutionStatusDto(
+    val success: Boolean,
+    val positionId: String? = null,
+    val alertId: String? = null,
+    val orderId: String? = null,
+    val symbol: String? = null,
+    val side: String? = null,
+    val strategy: String? = null,
+    val exchange: String? = null,
+    val environment: String? = null,
+    val orderType: String? = null,
+    val status: String? = null,
+    val entryStatus: String? = null,
+    val targetEntryPrice: Double? = null,
+    val signalPrice: Double? = null,
+    val actualFillPrice: Double? = null,
+    val requestedQuantity: Double? = null,
+    val filledQuantity: Double? = null,
+    val remainingQuantity: Double? = null,
+    val stopLoss: Double? = null,
+    val takeProfit: Double? = null,
+    val slippagePercent: Double? = null,
+    val submittedAt: String? = null,
+    val executedAt: String? = null,
+    val isTerminal: Boolean = false,
+    val isFilled: Boolean = false,
+    val message: String? = null
+)

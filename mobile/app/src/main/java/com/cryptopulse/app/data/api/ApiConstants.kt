@@ -25,6 +25,7 @@ object ApiConstants {
     const val BOT_STOP_TRADE = "/api/trading-bot/stop-trade"
     const val BOT_ALERTS = "/api/trading-bot/alerts"
     const val BOT_ALERTS_ACKNOWLEDGE = "/api/trading-bot/alerts/acknowledge"
+    const val BOT_EXECUTION_STATUS = "/api/trading-bot/execution-status/{positionId}"
 
     const val FCM_REGISTER = "/api/fcm/register"
 }

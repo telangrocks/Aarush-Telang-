@@ -1284,3 +1284,36 @@ export async function handleAcknowledgeAlert(
     return c.json({ success: false, message: error.message || "Failed to acknowledge alert" });
   }
 }
+
+export async function handleGetExecutionStatus(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+    const positionId = c.req.param("positionId");
+
+    if (!positionId) {
+      c.status(400);
+      return c.json({ success: false, message: "positionId parameter is required." });
+    }
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request(`http://bot/execution-status?positionId=${encodeURIComponent(positionId)}`, {
+        method: "GET",
+      }),
+    );
+
+    const data = await response.json<any>();
+    c.status(response.status as any);
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ success: false, message: error.message || "Failed to get execution status" });
+  }
+}
+

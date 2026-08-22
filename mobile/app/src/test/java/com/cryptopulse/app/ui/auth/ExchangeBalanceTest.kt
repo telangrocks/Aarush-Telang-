@@ -105,11 +105,39 @@ class FakeBotRepositoryMinimal : com.cryptopulse.app.domain.repository.BotReposi
     override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun getStatus(): NetworkResult<com.cryptopulse.app.domain.models.BotStatus> = NetworkResult.Success(com.cryptopulse.app.domain.models.BotStatus(state = com.cryptopulse.app.domain.models.BotState.NOT_STARTED, isActive = false))
-    override suspend fun executeTrade(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
-    override suspend fun executeMockTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+    override suspend fun executeTrade(alertId: String): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecutionResult(alertId))
+    override suspend fun executeMockTrade(): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecutionResult("mock"))
+    override suspend fun getExecutionStatus(positionId: String): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecutionResult(positionId))
+    override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<com.cryptopulse.app.domain.models.TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecutionResult(positionId))
     override suspend fun getAlerts(): NetworkResult<List<com.cryptopulse.app.domain.models.BotAlert>> = NetworkResult.Success(emptyList())
     override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
 }
+
+private fun createDummyExecutionResult(id: String) = com.cryptopulse.app.domain.models.TradeExecutionResult(
+    positionId = id,
+    alertId = id,
+    orderId = "order_$id",
+    symbol = "BTC/USDT",
+    side = "BUY",
+    strategy = "ScalperV2",
+    exchange = "bybit",
+    environment = "mainnet",
+    orderType = "MARKET",
+    status = "OPEN",
+    entryStatus = "FILLED",
+    requestedEntryPrice = 95000.0,
+    actualFillPrice = 95000.0,
+    requestedQuantity = 0.001,
+    actualFilledQuantity = 0.001,
+    remainingQuantity = 0.0,
+    stopLoss = 93500.0,
+    takeProfit = 98000.0,
+    slippagePercent = 0.0,
+    submittedAt = "",
+    executedAt = "",
+    isFilled = true,
+    isMockTrade = false
+)
 
 class FakeFcmRepositoryMinimal : com.cryptopulse.app.domain.repository.FcmRepository {
     override suspend fun registerToken(token: String): NetworkResult<Unit> = NetworkResult.Success(Unit)

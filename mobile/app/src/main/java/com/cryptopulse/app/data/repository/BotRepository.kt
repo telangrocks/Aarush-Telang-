@@ -13,6 +13,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -77,19 +79,45 @@ class BotRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun executeTrade(alertId: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+    override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.executeTrade(alertId)) {
-            is NetworkResult.Success -> NetworkResult.Success(Unit)
+            is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain(alertId))
             is NetworkResult.Error -> result
         }
     }
 
-    override suspend fun executeMockTrade(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+    override suspend fun executeMockTrade(): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.executeMockTrade()) {
-            is NetworkResult.Success -> NetworkResult.Success(Unit)
+            is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain("mock_trade"))
             is NetworkResult.Error -> result
         }
     }
+
+    override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
+        when (val result = botRemoteDataSource.getExecutionStatus(positionId)) {
+            is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain())
+            is NetworkResult.Error -> result
+        }
+    }
+
+    override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flow {
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            when (val result = botRemoteDataSource.getExecutionStatus(positionId)) {
+                is NetworkResult.Success -> {
+                    val domainModel = result.data.toDomain()
+                    emit(domainModel)
+                    if (domainModel.isFilled || domainModel.entryStatus == "FAILED" || domainModel.entryStatus == "CANCELLED" || domainModel.entryStatus == "REJECTED") {
+                        return@flow
+                    }
+                }
+                is NetworkResult.Error -> {
+                    // Continue polling on transient errors during active window
+                }
+            }
+            delay(pollIntervalMs)
+        }
+    }.flowOn(dispatcherProvider.io)
 
     override suspend fun stopTrade(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.stopTrade()) {

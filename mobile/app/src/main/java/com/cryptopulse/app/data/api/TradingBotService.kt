@@ -34,4 +34,7 @@ interface TradingBotService {
 
     @POST(ApiConstants.BOT_ALERTS_ACKNOWLEDGE)
     suspend fun acknowledgeAlert(@Body request: AcknowledgeAlertRequestDto): Response<AcknowledgeAlertResponseDto>
+
+    @GET(ApiConstants.BOT_EXECUTION_STATUS)
+    suspend fun getExecutionStatus(@retrofit2.http.Path("positionId") positionId: String): Response<TradeExecutionStatusDto>
 }

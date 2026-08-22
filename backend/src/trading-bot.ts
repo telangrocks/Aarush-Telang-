@@ -653,6 +653,103 @@ export class TradingBot {
         const pending = alerts.filter((a) => a.status === 'pending');
         return new Response(JSON.stringify(pending), { status: 200 });
       }
+      case '/execution-status': {
+        const url = new URL(request.url);
+        const positionId = url.searchParams.get('positionId') || url.searchParams.get('id');
+        if (!positionId) {
+          return new Response(JSON.stringify({ success: false, message: 'positionId is required.' }), { status: 400 });
+        }
+
+        const userId: string | undefined = await this.state.storage.get('userId');
+        if (!userId) {
+          return new Response(JSON.stringify({ success: false, message: 'Bot not initialized with a user.' }), { status: 500 });
+        }
+
+        // 1. Read in-memory WAL intent (read-only)
+        const intentObj = (await this.state.storage.get(`intent:order:${positionId}`)) as any;
+
+        // 2. Query persistent D1 database (read-only)
+        let dbPos: any = null;
+        try {
+          dbPos = await this.env.DB.prepare(
+            `SELECT id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, filled_quantity, stop_loss, take_profit, status, entry_status, exchange, environment, strategy, order_id, entry_exchange_order_id, order_type, limit_price, entry_submitted_at, entry_at, created_at, updated_at
+             FROM trade_positions
+             WHERE id = ? AND user_id = ?`
+          ).bind(positionId, userId).first<any>();
+        } catch (dbErr: any) {
+          console.warn('[trading-bot] Error querying trade_positions from D1 for execution-status:', dbErr?.message);
+        }
+
+        if (!intentObj && !dbPos) {
+          return new Response(JSON.stringify({ success: false, message: 'Position not found.' }), { status: 404 });
+        }
+
+        const rawEntryStatus = dbPos?.entry_status || intentObj?.status || 'PENDING_ENTRY';
+        const entryStatus = rawEntryStatus === 'DISPATCHED' ? 'PENDING_ENTRY' : rawEntryStatus;
+        const positionStatus = dbPos?.status || (entryStatus === 'FILLED' || entryStatus === 'PARTIALLY_FILLED' ? 'OPEN' : 'PENDING_ENTRY');
+
+        const targetEntryPrice = dbPos?.target_entry_price ?? dbPos?.entry_price ?? (intentObj?.price ? parseFloat(intentObj.price) : null);
+        const signalPrice = dbPos?.entry_price ?? (intentObj?.price ? parseFloat(intentObj.price) : null);
+        const rawAvgFill = dbPos?.average_fill_price ?? (intentObj?.actualFillPrice ? parseFloat(intentObj.actualFillPrice) : null);
+        const actualFillPrice = rawAvgFill !== null && rawAvgFill > 0 ? rawAvgFill : null;
+
+        const requestedQuantity = dbPos?.quantity ?? (intentObj?.qty ? parseFloat(intentObj.qty) : 0);
+        const rawFilledQty = dbPos?.filled_quantity ?? (intentObj?.actualExecutedQuantity ? parseFloat(intentObj.actualExecutedQuantity) : 0);
+        const filledQuantity = rawFilledQty !== null && rawFilledQty > 0 ? rawFilledQty : 0;
+        const remainingQuantity = Math.max(0, requestedQuantity - filledQuantity);
+
+        const orderId = dbPos?.order_id || dbPos?.entry_exchange_order_id || intentObj?.actualOrderId || intentObj?.payloadSnapshot?.clientOrderId || null;
+        const symbol = dbPos?.symbol || intentObj?.symbol || 'BTC/USDT';
+        const side = (dbPos?.side || intentObj?.side || 'BUY').toUpperCase();
+        const strategy = dbPos?.strategy || intentObj?.payloadSnapshot?.strategy || 'ScalperV2';
+        const exchange = dbPos?.exchange || 'bybit';
+        const environment = dbPos?.environment || 'mainnet';
+        const orderType = dbPos?.order_type || (intentObj?.orderType ? intentObj.orderType.toUpperCase() : 'MARKET');
+
+        const stopLoss = dbPos?.stop_loss ?? (intentObj?.requestedStopLoss ? parseFloat(intentObj.requestedStopLoss) : null);
+        const takeProfit = dbPos?.take_profit ?? (intentObj?.requestedTakeProfit ? parseFloat(intentObj.requestedTakeProfit) : null);
+
+        let slippagePercent = 0;
+        if (targetEntryPrice && actualFillPrice && targetEntryPrice > 0) {
+          slippagePercent = parseFloat(((Math.abs(actualFillPrice - targetEntryPrice) / targetEntryPrice) * 100).toFixed(4));
+        }
+
+        // Authoritative Proof of Execution:
+        // entry_status MUST be 'FILLED' (or closed) AND exchange-confirmed average_fill_price > 0 AND filled_quantity > 0 AND order_id exists
+        const isFilled = (entryStatus === 'FILLED' || entryStatus === 'closed') && (actualFillPrice !== null && actualFillPrice > 0) && (filledQuantity > 0);
+        const isFailed = entryStatus === 'FAILED' || entryStatus === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' || entryStatus === 'REJECTED_BY_RISK_GATE' || entryStatus === 'CANCELLED' || entryStatus === 'canceled';
+        const isTerminal = isFilled || isFailed;
+
+        const responsePayload = {
+          success: true,
+          positionId,
+          alertId: positionId,
+          orderId,
+          symbol,
+          side,
+          strategy,
+          exchange,
+          environment,
+          orderType,
+          status: positionStatus,
+          entryStatus: isFilled ? 'FILLED' : entryStatus,
+          targetEntryPrice,
+          signalPrice,
+          actualFillPrice: isFilled ? actualFillPrice : null,
+          requestedQuantity,
+          filledQuantity,
+          remainingQuantity,
+          stopLoss,
+          takeProfit,
+          slippagePercent,
+          submittedAt: dbPos?.entry_submitted_at || (intentObj?.createdAt ? new Date(intentObj.createdAt).toISOString() : null),
+          executedAt: isFilled ? (dbPos?.updated_at || (intentObj?.lastReconciliationAttempt ? new Date(intentObj.lastReconciliationAttempt).toISOString() : new Date().toISOString())) : null,
+          isTerminal,
+          isFilled
+        };
+
+        return new Response(JSON.stringify(responsePayload), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       case '/acknowledge': {
         const { alertId } = await request.json<{ alertId: string }>();
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
@@ -1207,7 +1304,15 @@ export class TradingBot {
               await this.logAuditEvent(userId, 'TRADE_FAILED', { symbol: orderSymbol, side, message: orderResult.message, clientOrderId });
             }
 
-            return new Response(JSON.stringify({ success: orderResult.success, message: orderResult.message, side, order: orderResult }), { status: 200 });
+            return new Response(JSON.stringify({
+              success: orderResult.success,
+              message: orderResult.message,
+              side,
+              order: orderResult,
+              positionId: target.id,
+              alertId: target.id,
+              orderId: orderResult.orderId
+            }), { status: 200 });
           } finally {
             this.isExecutingTrade = false;
             await this.state.storage.put('isExecutingTrade', false);
@@ -1250,10 +1355,12 @@ export class TradingBot {
             id: mockOrderId,
             symbol: coinId,
             side: 'BUY',
-            entry_price: currentPrice,
+            entryPrice: currentPrice,
             quantity,
-            stop_loss: stopLoss,
-            take_profit: takeProfit
+            stopLoss,
+            takeProfit,
+            strategy,
+            enteredAt: new Date().toISOString(),
           });
           await this.state.storage.put('activePositions', currentActive);
 
@@ -1266,6 +1373,8 @@ export class TradingBot {
           success: true,
           isMockTrade: true,
           message: 'Mock Trade executed successfully in Paper Trading mode.',
+          positionId: mockOrderId,
+          alertId: mockOrderId,
           orderId: mockOrderId,
           symbol: coinId,
           side: 'BUY',

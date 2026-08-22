@@ -11,8 +11,10 @@ interface BotRepository {
     suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit>
     suspend fun deactivateBot(): NetworkResult<Unit>
     suspend fun getStatus(): NetworkResult<BotStatus>
-    suspend fun executeTrade(alertId: String): NetworkResult<Unit>
-    suspend fun executeMockTrade(): NetworkResult<Unit>
+    suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult>
+    suspend fun executeMockTrade(): NetworkResult<TradeExecutionResult>
+    suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult>
+    fun pollExecutionStatus(positionId: String, timeoutMs: Long = 30_000L, pollIntervalMs: Long = 1500L): kotlinx.coroutines.flow.Flow<TradeExecutionResult>
     suspend fun stopTrade(): NetworkResult<Unit>
     suspend fun getAlerts(): NetworkResult<List<BotAlert>>
     suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit>

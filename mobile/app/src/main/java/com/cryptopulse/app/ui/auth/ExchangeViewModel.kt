@@ -12,10 +12,12 @@ import com.cryptopulse.app.domain.repository.MarketRepository
 import com.cryptopulse.app.domain.repository.TechnicalAnalysisRepository
 import com.cryptopulse.app.domain.models.BotAlert
 import com.cryptopulse.app.domain.models.DomainException
+import com.cryptopulse.app.domain.models.ExecutionUiState
 import com.cryptopulse.app.domain.models.Kline
 import com.cryptopulse.app.ui.screens.MarketCandidate
 import com.cryptopulse.app.domain.models.TechnicalAnalysisResult
 import com.cryptopulse.app.domain.models.Ticker
+import com.cryptopulse.app.domain.models.TradeExecutionResult
 import com.cryptopulse.app.service.TradeAlertManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -198,6 +200,11 @@ class ExchangeViewModel @Inject constructor(
     private val _lastTrade = MutableStateFlow<TradeSetupState?>(null)
     val lastTrade: StateFlow<TradeSetupState?> = _lastTrade
 
+    private val _executionState = MutableStateFlow<ExecutionUiState>(ExecutionUiState.Idle)
+    val executionState: StateFlow<ExecutionUiState> = _executionState.asStateFlow()
+
+    private var executionPollingJob: Job? = null
+
     private val _liveAlertPrice = MutableStateFlow<Double?>(null)
     val liveAlertPrice: StateFlow<Double?> = _liveAlertPrice
 
@@ -229,7 +236,12 @@ class ExchangeViewModel @Inject constructor(
 
     fun clearCandidatesError() { _candidatesError.value = null }
     fun clearAnalysisError() { _analysisError.value = null }
-    fun clearTradeError() { _tradeError.value = null }
+    fun clearTradeError() {
+        _tradeError.value = null
+        if (_executionState.value is ExecutionUiState.Failed) {
+            _executionState.value = ExecutionUiState.Idle
+        }
+    }
     fun clearBotError() { _botError.value = null }
     fun clearBalancesError() { _balancesError.value = null }
 
@@ -551,6 +563,9 @@ class ExchangeViewModel @Inject constructor(
     fun dismissCurrentAlert() {
         stopLiveTicker()
         tradeAlertManager.dismissOrExecuteAlert()
+        executionPollingJob?.cancel()
+        executionPollingJob = null
+        _executionState.value = ExecutionUiState.Idle
         val alertId = _pendingAlert.value?.get("id") as? String
         if (alertId != null) {
             viewModelScope.launch {
@@ -563,21 +578,36 @@ class ExchangeViewModel @Inject constructor(
         _pendingAlert.value = null
     }
 
+    fun dismissExecutionConfirmation(onNavigate: () -> Unit) {
+        stopLiveTicker()
+        tradeAlertManager.dismissOrExecuteAlert()
+        executionPollingJob?.cancel()
+        executionPollingJob = null
+        _executionState.value = ExecutionUiState.Idle
+        _pendingAlert.value = null
+        onNavigate()
+    }
+
     fun executeCurrentTrade() {
         val alert = _pendingAlert.value
         if (alert == null) {
             _tradeError.value = "No active trade opportunity to execute. Please try again."
+            _executionState.value = ExecutionUiState.Failed("No active trade opportunity to execute. Please try again.")
             return
         }
         val alertId = (alert["id"] as? String)?.trim().orEmpty()
         if (alertId.isEmpty()) {
             _tradeError.value = "Invalid trade alert identifier. Cannot execute trade."
+            _executionState.value = ExecutionUiState.Failed("Invalid trade alert identifier. Cannot execute trade.")
             return
         }
         val tradeSetup = _tradeSetup.value
+        val symbol = (alert["symbol"] as? String) ?: "BTC/USDT"
+        val side = (alert["side"] as? String) ?: "BUY"
         _tradeError.value = null
         _lastTrade.value = null
         isProcessingTrade = true
+        _executionState.value = ExecutionUiState.Submitting(alertId)
         stopLiveTicker()
 
         viewModelScope.launch {
@@ -585,34 +615,75 @@ class ExchangeViewModel @Inject constructor(
             if (token != null) {
                 val isMock = alert["isMockTrade"] as? Boolean ?: false
                 val result = if (isMock) botRepository.executeMockTrade() else botRepository.executeTrade(alertId)
-                result.onSuccess {
+                result.onSuccess { execResult ->
                     _isUnknownState.value = false
                     isProcessingTrade = false
                     botRepository.acknowledgeAlert(alertId)
-                    _pendingAlert.value = null
-                    
-                    val entryPrice = (alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0
-                    val stopLoss = (alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: entryPrice * 0.99
-                    val takeProfit = (alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: entryPrice * 1.02
-                    
-                    _lastTrade.value = TradeSetupState(
-                        entryPrice = entryPrice,
-                        stopLossPrice = stopLoss,
-                        takeProfitPrice = takeProfit,
-                    )
+
+                    if (isMock || execResult.isFilled) {
+                        val finalResult = execResult.copy(
+                            symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else symbol,
+                            side = if (execResult.side.isNotBlank()) execResult.side else side,
+                            requestedEntryPrice = if (execResult.requestedEntryPrice > 0) execResult.requestedEntryPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
+                            actualFillPrice = if (execResult.actualFillPrice > 0) execResult.actualFillPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
+                            stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else ((alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: 0.0),
+                            takeProfit = if (execResult.takeProfit > 0) execResult.takeProfit else ((alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: 0.0),
+                            isFilled = true
+                        )
+                        _executionState.value = ExecutionUiState.Filled(finalResult)
+                        _lastTrade.value = TradeSetupState(
+                            entryPrice = finalResult.actualFillPrice,
+                            stopLossPrice = finalResult.stopLoss,
+                            takeProfitPrice = finalResult.takeProfit,
+                        )
+                    } else {
+                        val positionId = if (execResult.positionId.isNotBlank()) execResult.positionId else alertId
+                        _executionState.value = ExecutionUiState.AwaitingFill(
+                            positionId = positionId,
+                            alertId = alertId,
+                            symbol = symbol,
+                            side = side
+                        )
+                        executionPollingJob?.cancel()
+                        executionPollingJob = viewModelScope.launch {
+                            botRepository.pollExecutionStatus(positionId).collect { statusResult ->
+                                if (statusResult.isFilled) {
+                                    val finalFilledResult = statusResult.copy(
+                                        symbol = if (statusResult.symbol.isNotBlank()) statusResult.symbol else symbol,
+                                        side = if (statusResult.side.isNotBlank()) statusResult.side else side,
+                                        requestedEntryPrice = if (statusResult.requestedEntryPrice > 0) statusResult.requestedEntryPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
+                                        stopLoss = if (statusResult.stopLoss > 0) statusResult.stopLoss else ((alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: 0.0),
+                                        takeProfit = if (statusResult.takeProfit > 0) statusResult.takeProfit else ((alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: 0.0)
+                                    )
+                                    _executionState.value = ExecutionUiState.Filled(finalFilledResult)
+                                    _lastTrade.value = TradeSetupState(
+                                        entryPrice = finalFilledResult.actualFillPrice,
+                                        stopLossPrice = finalFilledResult.stopLoss,
+                                        takeProfitPrice = finalFilledResult.takeProfit,
+                                    )
+                                } else if (statusResult.entryStatus == "FAILED" || statusResult.entryStatus == "CANCELLED" || statusResult.entryStatus == "REJECTED") {
+                                    _executionState.value = ExecutionUiState.Failed("Order execution was cancelled or rejected by exchange.")
+                                    _tradeError.value = "Order execution was cancelled or rejected by exchange."
+                                }
+                            }
+                        }
+                    }
                 }.onFailure { e ->
                     isProcessingTrade = false
                     val errorMessage = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/execute-trade", exception = e).first
                     if (errorMessage.contains("UNKNOWN_STATE") || errorMessage.contains("Network failure") || errorMessage.contains("timeout")) {
                         _isUnknownState.value = true
                         _tradeError.value = "Order status unknown due to network timeout. The backend is safely reconciling. Please wait."
+                        _executionState.value = ExecutionUiState.Failed("Order status unknown due to network timeout. The backend is safely reconciling. Please wait.")
                     } else {
                         _tradeError.value = errorMessage
+                        _executionState.value = ExecutionUiState.Failed(errorMessage)
                     }
                 }
             } else {
                 isProcessingTrade = false
                 _tradeError.value = "Your session has expired. Please sign in again."
+                _executionState.value = ExecutionUiState.Failed("Your session has expired. Please sign in again.")
             }
         }
     }
