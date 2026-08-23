@@ -69,7 +69,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "ScalperV2"))
             override suspend fun executeTrade(alertId: String): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
-            override suspend fun executeMockTrade(): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
             override suspend fun getExecutionStatus(positionId: String): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
             override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<com.cryptopulse.app.domain.models.TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
@@ -183,7 +183,7 @@ class TechnicalAnalysisViewModelTest {
     }
 
     @Test
-    fun `triggerMockAlert receives mapped opportunity and notifies TradeAlertManager with isMockTrade true`() = runTest {
+    fun `triggerTradeAlert receives mapped opportunity and notifies TradeAlertManager with isMockTrade false`() = runTest {
         val testConfig = TradeSetupConfig(
             strategyId = "ScalperV2",
             symbol = "BTCUSDT",
@@ -240,7 +240,7 @@ class TechnicalAnalysisViewModelTest {
             tradeAlertManager = fakeAlertManager
         )
 
-        viewModel.triggerMockAlert("BTCUSDT", android.content.ContextWrapper(null))
+        viewModel.triggerTradeAlert("BTCUSDT", android.content.ContextWrapper(null))
         testDispatcher.scheduler.advanceUntilIdle()
 
         assertNotNull("TradeAlertManager must receive alert map", receivedAlertMap)
@@ -255,7 +255,7 @@ class TechnicalAnalysisViewModelTest {
         assertEquals(50000.0, receivedAlertMap?.get("signalPrice"))
         assertEquals(50100.0, receivedAlertMap?.get("targetEntryPrice"))
         assertEquals(100.0, receivedAlertMap?.get("positionSize"))
-        assertEquals(true, receivedAlertMap?.get("isMockTrade"))
+        assertEquals(false, receivedAlertMap?.get("isMockTrade"))
     }
 }
 

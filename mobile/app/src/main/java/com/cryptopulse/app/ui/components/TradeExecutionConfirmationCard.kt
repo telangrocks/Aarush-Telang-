@@ -81,7 +81,7 @@ fun TradeExecutionConfirmationCard(
             Spacer(modifier = Modifier.height(12.dp))
 
             Text(
-                text = if (result.isMockTrade) "Paper Trade Executed" else "Trade Executed at Exchange",
+                text = "Trade Executed at ${result.exchange.replaceFirstChar { it.uppercase() }}",
                 color = Color.White,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.ExtraBold,

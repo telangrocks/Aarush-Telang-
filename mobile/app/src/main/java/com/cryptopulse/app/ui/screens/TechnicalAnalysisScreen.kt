@@ -40,7 +40,7 @@ fun TechnicalAnalysisScreen(
     analysisState: AnalysisSnapshot?,
     tradeSetupConfig: TradeSetupConfig? = null,
     onBack: () -> Unit,
-    onExecuteMockTrade: () -> Unit
+    onExecuteTrade: () -> Unit
 ) {
     val context = LocalContext.current
     val bgGradient = remember { Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020))) }
@@ -61,13 +61,13 @@ fun TechnicalAnalysisScreen(
                         .padding(horizontal = 20.dp, vertical = 12.dp)
                 ) {
                     GradientButton(
-                        text = "EXECUTE MOCK TRADE",
+                        text = "EXECUTE BYBIT TRADE",
                         onClick = {
-                            onExecuteMockTrade()
+                            onExecuteTrade()
                         },
                         enabled = true,
                         leadingIcon = Icons.Default.Bolt,
-                        testTag = "execute_mock_trade_button"
+                        testTag = "execute_trade_button"
                     )
                 }
             }

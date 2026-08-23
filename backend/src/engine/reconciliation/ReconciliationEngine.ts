@@ -137,4 +137,83 @@ export class ReconciliationEngine {
       throw err;
     }
   }
+
+  public static async reconcilePositionLifecycle(
+    adapter: any,
+    dbPosition: any,
+    currentTimeMs: number
+  ): Promise<{ status: 'OPEN' | 'CLOSED'; closePrice?: number; realizedPnl?: number; closeReason?: string; closedAt?: string } | null> {
+    if (!dbPosition || dbPosition.status === 'CLOSED' || dbPosition.status === 'CANCELLED') {
+      return null; // Terminal states cannot regress
+    }
+
+    try {
+      // 1. Query active positions from Bybit
+      const activePositions = (await adapter.fetchPositions(dbPosition.category || 'linear')) || [];
+      const matchingActive = activePositions.find((p: any) => p.symbol === dbPosition.symbol);
+
+      if (matchingActive && matchingActive.size && !matchingActive.size.isZero()) {
+        return { status: 'OPEN' };
+      }
+
+      // 2. Position is no longer open on exchange (size is 0). Query closed P&L records
+      let closedPnlList: any[] = [];
+      if (typeof adapter.fetchClosedPnl === 'function') {
+        closedPnlList = (await adapter.fetchClosedPnl(dbPosition.symbol, dbPosition.category || 'linear')) || [];
+      }
+
+      if (closedPnlList && closedPnlList.length > 0) {
+        const latestClosed = closedPnlList[0];
+        let reason = 'exchange_close';
+        if (latestClosed.execType === 'BustTrade') {
+          reason = 'liquidation';
+        } else if (latestClosed.orderType === 'Market' || latestClosed.execType === 'Trade') {
+          const side = (dbPosition.side || 'BUY').toUpperCase();
+          if (side === 'BUY') {
+            if (dbPosition.take_profit && latestClosed.avgExitPrice >= dbPosition.take_profit * 0.999) {
+              reason = 'take_profit';
+            } else if (dbPosition.stop_loss && latestClosed.avgExitPrice <= dbPosition.stop_loss * 1.001) {
+              reason = 'stop_loss';
+            } else {
+              reason = 'manual';
+            }
+          } else {
+            if (dbPosition.take_profit && latestClosed.avgExitPrice <= dbPosition.take_profit * 1.001) {
+              reason = 'take_profit';
+            } else if (dbPosition.stop_loss && latestClosed.avgExitPrice >= dbPosition.stop_loss * 0.999) {
+              reason = 'stop_loss';
+            } else {
+              reason = 'manual';
+            }
+          }
+        }
+
+        return {
+          status: 'CLOSED',
+          closePrice: latestClosed.avgExitPrice,
+          realizedPnl: latestClosed.closedPnl,
+          closeReason: reason,
+          closedAt: new Date(latestClosed.updatedTime || currentTimeMs).toISOString()
+        };
+      }
+
+      // 3. Fallback: check closed orders
+      const closedOrders = (await adapter.fetchClosedOrders(dbPosition.symbol)) || [];
+      const exitOrder = closedOrders.find((o: any) => o.status === 'closed' && (o.side !== dbPosition.side?.toLowerCase()));
+      if (exitOrder) {
+        const exitAvg = exitOrder.average?.toNumber ? exitOrder.average.toNumber() : Number(exitOrder.average || 0);
+        return {
+          status: 'CLOSED',
+          closePrice: exitAvg > 0 ? exitAvg : undefined,
+          closeReason: 'exchange_close',
+          closedAt: new Date(exitOrder.timestamp || currentTimeMs).toISOString()
+        };
+      }
+
+      return null;
+    } catch (err: any) {
+      console.warn('[RECONCILIATION] Error reconciling position lifecycle:', err.message);
+      return null;
+    }
+  }
 }

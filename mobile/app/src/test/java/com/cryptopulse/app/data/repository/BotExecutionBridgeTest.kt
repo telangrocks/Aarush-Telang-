@@ -81,7 +81,7 @@ class BotExecutionBridgeTest {
             override suspend fun getStatus() = NetworkResult.Success(BotStatusResponseDto(true, "BTCUSDT", "ScalperV2"))
             override suspend fun getAnalysisStatus() = NetworkResult.Success(AnalysisSnapshotDto())
             override suspend fun executeTrade(alertId: String) = NetworkResult.Success(ExecuteTradeResponseDto(true, "Order accepted", alertId, alertId, "order_123"))
-            override suspend fun executeMockTrade() = NetworkResult.Success(ExecuteTradeResponseDto(true, "Mock OK"))
+            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "Mock OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "Stopped"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))

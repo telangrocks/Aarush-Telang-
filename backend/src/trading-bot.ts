@@ -14,6 +14,7 @@ import { MarketRegimeEngine } from './engine/regime/MarketRegimeEngine';
 import { StructuredLogger } from './infrastructure/telemetry/Telemetry';
 import { UnifiedError } from './exchanges/models/UnifiedError';
 import { resolveCanonicalRoutingRegion } from './utils/region';
+import { ReconciliationEngine } from './engine/reconciliation/ReconciliationEngine';
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
@@ -684,6 +685,116 @@ export class TradingBot {
           return new Response(JSON.stringify({ success: false, message: 'Position not found.' }), { status: 404 });
         }
 
+        // Authoritative Bybit Reconciliation: If not yet filled and on Bybit, reconcile state
+        const currentEntryStatus = dbPos?.entry_status || intentObj?.status || 'PENDING_ENTRY';
+        const isAlreadyFilled = currentEntryStatus === 'FILLED' || currentEntryStatus === 'closed';
+
+        if (!isAlreadyFilled && (dbPos?.exchange === 'bybit' || intentObj?.exchangeName === 'bybit')) {
+          try {
+            const userKeys = await this.env.DB.prepare(
+              'SELECT exchange_api_key, exchange_api_key_encrypted, exchange_api_key_iv, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
+            ).bind(userId).first<any>();
+
+            if (userKeys?.exchange_name === 'bybit') {
+              let decryptedApiKey = userKeys.exchange_api_key || '';
+              let decryptedSecret = '';
+              if (userKeys.exchange_api_key_encrypted && userKeys.exchange_api_key_iv && userKeys.exchange_api_key_salt && this.env.ENCRYPTION_KEY) {
+                decryptedApiKey = await decrypt({ iv: userKeys.exchange_api_key_iv, encrypted: userKeys.exchange_api_key_encrypted, salt: userKeys.exchange_api_key_salt }, this.env.ENCRYPTION_KEY);
+              }
+              if (userKeys.exchange_api_secret_encrypted && userKeys.exchange_api_secret_iv && userKeys.exchange_api_secret_salt && this.env.ENCRYPTION_KEY) {
+                decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted, salt: userKeys.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
+              }
+
+              const provider = await ExchangeManager.getProvider('bybit', {
+                environment: normalizeEnvironment(userKeys.exchange_environment),
+                apiKey: decryptedApiKey,
+                secret: decryptedSecret,
+                region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
+                ...this.resolveEgressConfig('bybit'),
+              });
+
+              if (intentObj) {
+                await ReconciliationEngine.reconcile(provider, intentObj, Date.now());
+                await this.state.storage.put(`intent:order:${positionId}`, intentObj);
+
+                if (intentObj.status === 'FILLED' || intentObj.status === 'PARTIALLY_FILLED') {
+                  const avgPrice = parseFloat(intentObj.actualFillPrice || '0');
+                  const filledQty = parseFloat(intentObj.actualExecutedQuantity || '0');
+                  const now = new Date().toISOString();
+
+                  await this.env.DB.prepare(
+                    `UPDATE trade_positions 
+                     SET entry_status = ?, average_fill_price = ?, filled_quantity = ?, status = 'OPEN', updated_at = ?
+                     WHERE id = ? AND user_id = ?`
+                  ).bind(intentObj.status, avgPrice > 0 ? avgPrice : null, filledQty, now, positionId, userId).run();
+
+                  dbPos = await this.env.DB.prepare(
+                    `SELECT id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, filled_quantity, stop_loss, take_profit, status, entry_status, exchange, environment, strategy, order_id, entry_exchange_order_id, order_type, limit_price, entry_submitted_at, entry_at, created_at, updated_at
+                     FROM trade_positions WHERE id = ? AND user_id = ?`
+                  ).bind(positionId, userId).first<any>();
+                } else if (intentObj.status === 'FAILED' || intentObj.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION') {
+                  const now = new Date().toISOString();
+                  await this.env.DB.prepare(
+                    `UPDATE trade_positions SET entry_status = 'FAILED', status = 'CANCELLED', updated_at = ? WHERE id = ? AND user_id = ?`
+                  ).bind(now, positionId, userId).run();
+
+                  dbPos = await this.env.DB.prepare(
+                    `SELECT id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, filled_quantity, stop_loss, take_profit, status, entry_status, exchange, environment, strategy, order_id, entry_exchange_order_id, order_type, limit_price, entry_submitted_at, entry_at, created_at, updated_at
+                     FROM trade_positions WHERE id = ? AND user_id = ?`
+                  ).bind(positionId, userId).first<any>();
+                }
+              }
+            }
+          } catch (reconErr: any) {
+            console.warn('[trading-bot] Execution status reconciliation error:', reconErr?.message || reconErr);
+          }
+        }
+
+        // Authoritative Bybit Position Lifecycle Reconciliation: If position is OPEN and on Bybit, verify if closed on exchange
+        if (dbPos && dbPos.status === 'OPEN' && dbPos.entry_status === 'FILLED' && dbPos.exchange === 'bybit') {
+          try {
+            const userKeys = await this.env.DB.prepare(
+              'SELECT exchange_api_key, exchange_api_key_encrypted, exchange_api_key_iv, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
+            ).bind(userId).first<any>();
+
+            if (userKeys?.exchange_name === 'bybit') {
+              let decryptedApiKey = userKeys.exchange_api_key || '';
+              let decryptedSecret = '';
+              if (userKeys.exchange_api_key_encrypted && userKeys.exchange_api_key_iv && userKeys.exchange_api_key_salt && this.env.ENCRYPTION_KEY) {
+                decryptedApiKey = await decrypt({ iv: userKeys.exchange_api_key_iv, encrypted: userKeys.exchange_api_key_encrypted, salt: userKeys.exchange_api_key_salt }, this.env.ENCRYPTION_KEY);
+              }
+              if (userKeys.exchange_api_secret_encrypted && userKeys.exchange_api_secret_iv && userKeys.exchange_api_secret_salt && this.env.ENCRYPTION_KEY) {
+                decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted, salt: userKeys.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
+              }
+
+              const provider = await ExchangeManager.getProvider('bybit', {
+                environment: normalizeEnvironment(userKeys.exchange_environment),
+                apiKey: decryptedApiKey,
+                secret: decryptedSecret,
+                region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
+                ...this.resolveEgressConfig('bybit'),
+              });
+
+              const closeResult = await ReconciliationEngine.reconcilePositionLifecycle(provider, dbPos, Date.now());
+              if (closeResult && closeResult.status === 'CLOSED') {
+                const now = closeResult.closedAt || new Date().toISOString();
+                await this.env.DB.prepare(
+                  `UPDATE trade_positions 
+                   SET status = 'CLOSED', closed_at = ?, close_price = ?, realized_pnl = ?, close_reason = ?, updated_at = ?
+                   WHERE id = ? AND user_id = ? AND status = 'OPEN'`
+                ).bind(now, closeResult.closePrice ?? null, closeResult.realizedPnl ?? null, closeResult.closeReason ?? 'exchange_close', now, positionId, userId).run();
+
+                dbPos = await this.env.DB.prepare(
+                  `SELECT id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, filled_quantity, stop_loss, take_profit, status, entry_status, exchange, environment, strategy, order_id, entry_exchange_order_id, order_type, limit_price, entry_submitted_at, entry_at, closed_at, close_price, realized_pnl, close_reason, created_at, updated_at
+                   FROM trade_positions WHERE id = ? AND user_id = ?`
+                ).bind(positionId, userId).first<any>();
+              }
+            }
+          } catch (posReconErr: any) {
+            console.warn('[trading-bot] Position lifecycle reconciliation error:', posReconErr?.message || posReconErr);
+          }
+        }
+
         const rawEntryStatus = dbPos?.entry_status || intentObj?.status || 'PENDING_ENTRY';
         const entryStatus = rawEntryStatus === 'DISPATCHED' ? 'PENDING_ENTRY' : rawEntryStatus;
         const positionStatus = dbPos?.status || (entryStatus === 'FILLED' || entryStatus === 'PARTIALLY_FILLED' ? 'OPEN' : 'PENDING_ENTRY');
@@ -1095,7 +1206,6 @@ export class TradingBot {
                     console.warn(`[DIAGNOSTIC] [STAGE: UNKNOWN_STATE] Network failure during dispatch for ${intentObj.intentId}. Transitioning to UNKNOWN. Initiating reconciliation.`);
                     
                     // Trigger immediate first pass reconciliation
-                    const { ReconciliationEngine } = require('./engine/reconciliation/ReconciliationEngine');
                     await ReconciliationEngine.reconcile(writeProvider, intentObj, Date.now());
                     await this.state.storage.transaction(async (txn) => {
                       await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
@@ -1320,71 +1430,265 @@ export class TradingBot {
         });
       }
       case '/mock-trade': {
-        const userId: string | undefined = await this.state.storage.get('userId');
-        const coinId = ((await this.state.storage.get('coinId')) as string) || 'DOGE';
-        const strategy = ((await this.state.storage.get('strategy')) as string) || 'ScalperV2';
+        const body = await request.json<any>().catch(() => ({}));
+        const userId: string | undefined = body.userId || (await this.state.storage.get('userId'));
+        const alertId: string = body.alertId || crypto.randomUUID();
+        const symbol: string | undefined = body.symbol || ((await this.state.storage.get('coinId')) as string);
+        const strategy: string | undefined = body.strategy || ((await this.state.storage.get('strategy')) as string);
+        const side: 'BUY' | 'SELL' = body.side?.toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+        const positionSizeUsdt: number = typeof body.positionSizeUsdt === 'number' && body.positionSizeUsdt > 0
+          ? body.positionSizeUsdt
+          : (((await this.state.storage.get('positionSize')) as number) || 100);
 
-        const user = userId
-          ? await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>()
-          : null;
-        const adapter = user?.exchange_name ? await ExchangeManager.getProvider(user.exchange_name, { environment: normalizeEnvironment(user.exchange_environment), region: resolveCanonicalRoutingRegion(user.exchange_region), ...this.resolveEgressConfig(user.exchange_name) }) : null;
+        if (!userId) {
+          return new Response(JSON.stringify({ success: false, message: 'Unauthorized: Missing user context.' }), { status: 401 });
+        }
+        if (!symbol) {
+          return new Response(JSON.stringify({ success: false, message: 'Trading symbol is required.' }), { status: 400 });
+        }
+        if (!strategy) {
+          return new Response(JSON.stringify({ success: false, message: 'Trading strategy is required.' }), { status: 400 });
+        }
 
+        // 1. Idempotency Guard
+        const existingIntent = (await this.state.storage.get(`intent:order:${alertId}`)) as any;
+        if (existingIntent) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              errorCode: 'DUPLICATE_ORDER',
+              message: `Order for alert ${alertId} has already been executed.`,
+              orderId: existingIntent.id,
+              positionId: existingIntent.id,
+            }),
+            { status: 409 },
+          );
+        }
 
-        const ticker = adapter ? await adapter.fetchTicker(coinId).catch(() => null) : null;
-        const currentPrice = ticker?.last?.toNumber() || 0.0725;
-        const positionSizeUsdt = ((await this.state.storage.get('positionSize')) as number) || 100;
-        const quantity = parseFloat((positionSizeUsdt / currentPrice).toFixed(4));
-        const stopLoss = parseFloat((currentPrice * 0.985).toFixed(5));
-        const takeProfit = parseFloat((currentPrice * 1.03).toFixed(5));
-        const mockOrderId = `mock_${crypto.randomUUID()}`;
+        // 2. Canonical symbol format
+        const orderSymbol = symbol.includes('/') ? symbol : `${symbol.replace('USDT', '')}/USDT`;
 
-        if (userId) {
-          const setupSnapshot = await this.state.storage.get<TradeSetupSnapshot>('setupSnapshot');
-          const targetPrice = setupSnapshot?.targetEntryPrice ?? currentPrice;
+        const user = await this.env.DB.prepare(
+          'SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?',
+        )
+          .bind(userId)
+          .first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
 
-          await this.logAuditEvent(userId, 'MOCK_TRADE_EXECUTED', { symbol: coinId, side: 'BUY', mockOrderId, price: currentPrice, quantity, strategy });
-          await this.env.DB.prepare(`
-            INSERT INTO trade_positions (
-              id, user_id, symbol, side, entry_price, target_entry_price, quantity, stop_loss, take_profit, status, entry_status, average_fill_price, filled_quantity, order_id, exchange, environment, entry_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(
-            mockOrderId, userId, coinId, 'BUY', currentPrice, targetPrice, quantity, stopLoss, takeProfit, 'OPEN', 'FILLED', currentPrice, quantity, mockOrderId, user?.exchange_name || 'mock', 'demo', new Date().toISOString(), new Date().toISOString(), new Date().toISOString()
-          ).run();
-          const currentActive = (await this.state.storage.get<any[]>('activePositions')) || [];
-          currentActive.push({
-            id: mockOrderId,
-            symbol: coinId,
-            side: 'BUY',
+        const exchangeName = (user?.exchange_name || 'bybit') as ExchangeName;
+        const adapter = await ExchangeManager.getProvider(exchangeName, {
+          environment: normalizeEnvironment(user?.exchange_environment),
+          region: resolveCanonicalRoutingRegion(user?.exchange_region),
+          ...this.resolveEgressConfig(exchangeName),
+        }).catch(() => null);
+
+        const ticker = adapter ? await adapter.fetchTicker(orderSymbol).catch(() => null) : null;
+        const livePrice = ticker?.last?.toNumber?.() || (typeof ticker?.last === 'number' ? ticker.last : 0);
+        const currentPrice = livePrice > 0 ? livePrice : (body.signalPrice || body.targetEntryPrice || 0);
+
+        if (!currentPrice || currentPrice <= 0) {
+          return new Response(
+            JSON.stringify({ success: false, message: `Unable to retrieve valid market price for ${orderSymbol}.` }),
+            { status: 503 },
+          );
+        }
+
+        const targetEntryPrice = typeof body.targetEntryPrice === 'number' && body.targetEntryPrice > 0 ? body.targetEntryPrice : currentPrice;
+        const stopLoss = typeof body.stopLoss === 'number' && body.stopLoss > 0
+          ? body.stopLoss
+          : parseFloat((currentPrice * (side === 'BUY' ? 0.985 : 1.015)).toFixed(5));
+        const takeProfit = typeof body.takeProfit === 'number' && body.takeProfit > 0
+          ? body.takeProfit
+          : parseFloat((currentPrice * (side === 'BUY' ? 1.03 : 0.97)).toFixed(5));
+
+        // 3. Directional SL/TP Validation
+        if (side === 'BUY') {
+          if (stopLoss >= currentPrice) {
+            return new Response(
+              JSON.stringify({ success: false, message: `Invalid Stop Loss: Stop loss ($${stopLoss}) must be below entry price ($${currentPrice}) for BUY.` }),
+              { status: 400 },
+            );
+          }
+          if (takeProfit <= currentPrice) {
+            return new Response(
+              JSON.stringify({ success: false, message: `Invalid Take Profit: Take profit ($${takeProfit}) must be above entry price ($${currentPrice}) for BUY.` }),
+              { status: 400 },
+            );
+          }
+        } else {
+          if (stopLoss <= currentPrice) {
+            return new Response(
+              JSON.stringify({ success: false, message: `Invalid Stop Loss: Stop loss ($${stopLoss}) must be above entry price ($${currentPrice}) for SELL.` }),
+              { status: 400 },
+            );
+          }
+          if (takeProfit >= currentPrice) {
+            return new Response(
+              JSON.stringify({ success: false, message: `Invalid Take Profit: Take profit ($${takeProfit}) must be below entry price ($${currentPrice}) for SELL.` }),
+              { status: 400 },
+            );
+          }
+        }
+
+        // 4. Precision Rules & TradeValidator
+        let stepSize = 0.00001;
+        let tickSize = 0.01;
+        let minNotional = 5;
+        let minQty = 0.00001;
+
+        if (adapter) {
+          try {
+            const markets = await adapter.fetchMarkets().catch(() => []);
+            const matched = markets.find(
+              (m: any) => m.symbol === orderSymbol || m.id === orderSymbol.replace('/', '') || m.symbol === orderSymbol.replace('/', ''),
+            );
+            if (matched) {
+              if (matched.precision?.amount) stepSize = matched.precision.amount;
+              if (matched.precision?.price) tickSize = matched.precision.price;
+              if (matched.limits?.cost?.min) {
+                const costMin = matched.limits.cost.min as any;
+                minNotional = typeof costMin?.toNumber === 'function' ? costMin.toNumber() : (typeof costMin === 'number' ? costMin : 5);
+              }
+              if (matched.limits?.amount?.min) {
+                const amtMin = matched.limits.amount.min as any;
+                minQty = typeof amtMin?.toNumber === 'function' ? amtMin.toNumber() : (typeof amtMin === 'number' ? amtMin : 0.00001);
+              }
+            }
+          } catch (mErr: any) {
+            console.warn('[trading-bot] Failed to fetch markets for mock trade precision rules, using defaults:', mErr?.message);
+          }
+        }
+
+        const rulesRes = TradeValidator.validate(
+          {
+            symbol: orderSymbol,
             entryPrice: currentPrice,
+            tradeValueUsdt: positionSizeUsdt,
+          },
+          {
+            schemaVersion: '2.0',
+            symbol: orderSymbol,
+            exchange: exchangeName,
+            baseAsset: orderSymbol.split('/')[0] || 'BTC',
+            quoteAsset: orderSymbol.split('/')[1] || 'USDT',
+            minNotional,
+            minQty,
+            maxQty: 999999,
+            stepSize,
+            tickSize,
+            minPrice: 0,
+            maxPrice: 999999999,
+            contractSize: 1,
+            lastUpdated: Date.now(),
+          },
+        );
+
+        if (!rulesRes.isValid) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              errorCode: rulesRes.errorCode,
+              message: rulesRes.errorMessage || 'Trade parameters failed exchange rule validation.',
+            }),
+            { status: 400 },
+          );
+        }
+
+        const quantity = rulesRes.quantizedQuantity || parseFloat((positionSizeUsdt / currentPrice).toFixed(4));
+        const mockOrderId = `mock_${crypto.randomUUID()}`;
+        const now = new Date().toISOString();
+
+        await this.logAuditEvent(userId, 'MOCK_TRADE_EXECUTED', {
+          symbol: orderSymbol,
+          side,
+          mockOrderId,
+          price: currentPrice,
+          quantity,
+          strategy,
+          alertId,
+        });
+
+        // 5. Persist to D1
+        await this.env.DB.prepare(
+          `INSERT INTO trade_positions (
+            id, user_id, symbol, side, entry_price, target_entry_price, quantity,
+            stop_loss, take_profit, status, entry_status, average_fill_price,
+            filled_quantity, order_id, exchange, environment, strategy, entry_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+          .bind(
+            mockOrderId,
+            userId,
+            orderSymbol,
+            side,
+            currentPrice,
+            targetEntryPrice,
             quantity,
             stopLoss,
             takeProfit,
+            'OPEN',
+            'FILLED',
+            currentPrice,
+            quantity,
+            mockOrderId,
+            exchangeName,
+            'demo',
             strategy,
-            enteredAt: new Date().toISOString(),
-          });
-          await this.state.storage.put('activePositions', currentActive);
+            now,
+            now,
+            now,
+          )
+          .run();
 
-          await this.state.storage.put('tradeActive', true);
-          await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
-          await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
-        }
+        // 6. Persist to DO Storage
+        const currentActive = (await this.state.storage.get<any[]>('activePositions')) || [];
+        currentActive.push({
+          id: mockOrderId,
+          alertId,
+          userId,
+          symbol: orderSymbol,
+          side,
+          entryPrice: currentPrice,
+          targetEntryPrice,
+          quantity,
+          stopLoss,
+          takeProfit,
+          strategy,
+          exchange: exchangeName,
+          environment: 'demo',
+          orderId: mockOrderId,
+          enteredAt: now,
+        });
+        await this.state.storage.put('activePositions', currentActive);
+
+        // Record Idempotency Intent
+        await this.state.storage.put(`intent:order:${alertId}`, {
+          id: mockOrderId,
+          alertId,
+          symbol: orderSymbol,
+          status: 'FILLED',
+          createdAt: Date.now(),
+        });
+
+        await this.state.storage.put('tradeActive', true);
+        await this.state.storage.put('tradeEntryTimestamp', now);
+        await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
 
         const mockResult = {
           success: true,
           isMockTrade: true,
           message: 'Mock Trade executed successfully in Paper Trading mode.',
           positionId: mockOrderId,
-          alertId: mockOrderId,
+          alertId,
           orderId: mockOrderId,
-          symbol: coinId,
-          side: 'BUY',
+          symbol: orderSymbol,
+          side,
           executionPrice: currentPrice,
           positionSizeUsdt,
           quantity,
           stopLoss,
           takeProfit,
-          riskRewardRatio: '1:2',
-          executedAt: new Date().toISOString(),
+          strategy,
+          executedAt: now,
         };
 
         return new Response(JSON.stringify(mockResult), { status: 200 });
@@ -1877,31 +2181,41 @@ export class TradingBot {
       
       for (const position of results as any[]) {
         try {
+          // Strictly restrict local price-trigger monitoring to Mock/Paper Trading positions.
+          // For Bybit Demo and Real, Bybit owns live position and SL/TP monitoring.
+          if (position.exchange !== 'mock' || position.environment !== 'demo') {
+            continue;
+          }
+
           const ticker = await adapter.fetchTicker(position.symbol);
           if (!ticker) continue;
 
           const currentPrice = ticker.last.toNumber();
           let closeReason: string | null = null;
+          const posStopLoss = position.stopLoss ?? position.stop_loss;
+          const posTakeProfit = position.takeProfit ?? position.take_profit;
+          const posEntryPrice = position.entryPrice ?? position.entry_price;
+          const posQty = position.quantity ?? position.amount ?? 0;
 
-            if (position.side === 'BUY') {
-              if (currentPrice <= position.stop_loss) {
-                closeReason = 'stop_loss';
-              } else if (currentPrice >= position.take_profit) {
-                closeReason = 'take_profit';
-              }
-            } else {
-              if (currentPrice >= position.stop_loss) {
-                closeReason = 'stop_loss';
-              } else if (currentPrice <= position.take_profit) {
-                closeReason = 'take_profit';
-              }
+          if (position.side === 'BUY' || position.side === 'buy') {
+            if (posStopLoss && currentPrice <= posStopLoss) {
+              closeReason = 'stop_loss';
+            } else if (posTakeProfit && currentPrice >= posTakeProfit) {
+              closeReason = 'take_profit';
             }
+          } else {
+            if (posStopLoss && currentPrice >= posStopLoss) {
+              closeReason = 'stop_loss';
+            } else if (posTakeProfit && currentPrice <= posTakeProfit) {
+              closeReason = 'take_profit';
+            }
+          }
 
-          if (closeReason) {
-            const priceDiff = position.side === 'BUY'
-              ? currentPrice - position.entry_price
-              : position.entry_price - currentPrice;
-            const realizedPnl = (priceDiff / position.entry_price) * position.quantity * position.entry_price;
+          if (closeReason && posEntryPrice > 0) {
+            const priceDiff = (position.side === 'BUY' || position.side === 'buy')
+              ? currentPrice - posEntryPrice
+              : posEntryPrice - currentPrice;
+            const realizedPnl = (priceDiff / posEntryPrice) * posQty * posEntryPrice;
             const now = new Date().toISOString();
 
             // Fire-and-forget telemetry push to D1

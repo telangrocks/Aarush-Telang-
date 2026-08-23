@@ -86,9 +86,9 @@ class BotRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun executeMockTrade(): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
-        when (val result = botRemoteDataSource.executeMockTrade()) {
-            is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain("mock_trade"))
+    override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
+        when (val result = botRemoteDataSource.executeMockTrade(request)) {
+            is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain(request.alertId.ifBlank { "mock_trade" }))
             is NetworkResult.Error -> result
         }
     }

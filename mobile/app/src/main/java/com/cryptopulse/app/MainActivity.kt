@@ -334,8 +334,8 @@ class MainActivity : FragmentActivity() {
                                     analysisState = analysisState,
                                     tradeSetupConfig = tradeSetupConfig,
                                     onBack = { navController.popBackStack() },
-                                    onExecuteMockTrade = {
-                                        technicalAnalysisViewModel.triggerMockAlert(candidate.pairName, applicationContext)
+                                    onExecuteTrade = {
+                                        technicalAnalysisViewModel.triggerTradeAlert(candidate.pairName, applicationContext)
                                     }
                                 )
                             }

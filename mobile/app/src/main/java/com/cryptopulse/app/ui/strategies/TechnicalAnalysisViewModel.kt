@@ -50,7 +50,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
         }
     }
 
-    fun triggerMockAlert(symbol: String, context: android.content.Context) {
+    fun triggerTradeAlert(symbol: String, context: android.content.Context) {
         viewModelScope.launch {
             val originalConfig = sessionRepository.tradeSetupConfig.value
             if (originalConfig == null) {
@@ -59,14 +59,10 @@ class TechnicalAnalysisViewModel @Inject constructor(
             }
             val strategyId = sessionRepository.selectedStrategyId.value ?: originalConfig.strategyId ?: "ScalperV2"
             
-            val mockConfig = originalConfig.copy(
-                parameters = originalConfig.parameters + ("forceMockSignal" to "BUY")
-            )
-            
-            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategyId, mockConfig)
+            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategyId, originalConfig)
             result.onSuccess { snapshot ->
                 snapshot.opportunity?.let { botAlert ->
-                    val mockAlertMap = mapOf<String, Any>(
+                    val alertMap = mapOf<String, Any>(
                         "id" to botAlert.id,
                         "symbol" to botAlert.symbol,
                         "entryPrice" to botAlert.entryPrice,
@@ -78,12 +74,12 @@ class TechnicalAnalysisViewModel @Inject constructor(
                         "timestamp" to (botAlert.timestamp ?: ""),
                         "signalPrice" to (botAlert.signalPrice ?: botAlert.entryPrice),
                         "positionSize" to (botAlert.positionSize ?: 0.0),
-                        "isMockTrade" to true
+                        "isMockTrade" to false
                     ).toMutableMap()
                     
-                    botAlert.targetEntryPrice?.let { mockAlertMap["targetEntryPrice"] = it }
+                    botAlert.targetEntryPrice?.let { alertMap["targetEntryPrice"] = it }
                     
-                    tradeAlertManager.onNewAlertReceived(mockAlertMap)
+                    tradeAlertManager.onNewAlertReceived(alertMap)
                 } ?: run {
                     android.widget.Toast.makeText(context, "No valid trade setup currently exists.", android.widget.Toast.LENGTH_LONG).show()
                 }
@@ -91,6 +87,11 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 android.widget.Toast.makeText(context, e.message ?: "Technical analysis unavailable. Please retry.", android.widget.Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    @Deprecated("Use triggerTradeAlert instead", ReplaceWith("triggerTradeAlert(symbol, context)"))
+    fun triggerMockAlert(symbol: String, context: android.content.Context) {
+        triggerTradeAlert(symbol, context)
     }
 
     fun activateBot(

@@ -12,7 +12,7 @@ interface BotRepository {
     suspend fun deactivateBot(): NetworkResult<Unit>
     suspend fun getStatus(): NetworkResult<BotStatus>
     suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult>
-    suspend fun executeMockTrade(): NetworkResult<TradeExecutionResult>
+    suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult>
     suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult>
     fun pollExecutionStatus(positionId: String, timeoutMs: Long = 30_000L, pollIntervalMs: Long = 1500L): kotlinx.coroutines.flow.Flow<TradeExecutionResult>
     suspend fun stopTrade(): NetworkResult<Unit>

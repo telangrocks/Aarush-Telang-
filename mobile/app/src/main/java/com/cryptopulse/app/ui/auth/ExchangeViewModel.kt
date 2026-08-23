@@ -589,6 +589,8 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun executeCurrentTrade() {
+        if (isProcessingTrade) return
+
         val alert = _pendingAlert.value
         if (alert == null) {
             _tradeError.value = "No active trade opportunity to execute. Please try again."
@@ -604,6 +606,29 @@ class ExchangeViewModel @Inject constructor(
         val tradeSetup = _tradeSetup.value
         val symbol = (alert["symbol"] as? String) ?: "BTC/USDT"
         val side = (alert["side"] as? String) ?: "BUY"
+        val strategy = (alert["strategy"] as? String) ?: "ScalperV2"
+        val entryPrice = (alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0
+        val targetEntryPrice = (alert["targetEntryPrice"] as? Double) ?: tradeSetup?.entryPrice
+        val signalPrice = (alert["signalPrice"] as? Double) ?: entryPrice
+        val stopLoss = (alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: (entryPrice * 0.985)
+        val takeProfit = (alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: (entryPrice * 1.03)
+        val positionSizeUsdt = (alert["positionSize"] as? Double) ?: 100.0
+        val isMock = alert["isMockTrade"] as? Boolean ?: false
+
+        val requestDto = com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto(
+            alertId = alertId,
+            symbol = symbol,
+            side = side,
+            orderType = "MARKET",
+            targetEntryPrice = targetEntryPrice,
+            signalPrice = signalPrice,
+            stopLoss = stopLoss,
+            takeProfit = takeProfit,
+            positionSizeUsdt = positionSizeUsdt,
+            strategy = strategy,
+            isMockTrade = isMock
+        )
+
         _tradeError.value = null
         _lastTrade.value = null
         isProcessingTrade = true
@@ -613,14 +638,13 @@ class ExchangeViewModel @Inject constructor(
         viewModelScope.launch {
             val token = tokenManager.getToken()
             if (token != null) {
-                val isMock = alert["isMockTrade"] as? Boolean ?: false
-                val result = if (isMock) botRepository.executeMockTrade() else botRepository.executeTrade(alertId)
+                val result = botRepository.executeTrade(alertId)
                 result.onSuccess { execResult ->
                     _isUnknownState.value = false
                     isProcessingTrade = false
                     botRepository.acknowledgeAlert(alertId)
 
-                    if (isMock || execResult.isFilled) {
+                    if (execResult.isFilled) {
                         val finalResult = execResult.copy(
                             symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else symbol,
                             side = if (execResult.side.isNotBlank()) execResult.side else side,

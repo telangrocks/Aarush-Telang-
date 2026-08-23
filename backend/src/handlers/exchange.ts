@@ -1190,14 +1190,26 @@ export async function handleMockTrade(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
+    let body: any = {};
+    try {
+      body = await c.req.json();
+    } catch (e) {
+      // Empty or non-JSON body
+    }
+
     const botId = c.env.TRADING_BOTS.idFromName(userId);
     const bot = c.env.TRADING_BOTS.get(botId);
 
     const response = await bot.fetch(
-      new Request("http://bot/mock-trade", { method: "POST" }),
+      new Request("http://bot/mock-trade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, userId }),
+      }),
     );
 
     const data = await response.json<any>();
+    c.status(response.status as any);
     return c.json(data);
   } catch (e: unknown) {
     const error = e as Error;

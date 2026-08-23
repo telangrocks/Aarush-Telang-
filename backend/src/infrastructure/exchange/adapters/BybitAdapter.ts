@@ -579,11 +579,23 @@ export class BybitAdapter extends BaseExchangeAdapter {
     if ((order as any).takeProfit) {
       const tpBN = new BigNumber((order as any).takeProfit);
       params.takeProfit = tpBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+      params.tpTriggerBy = (order as any).tpTriggerBy || 'LastPrice';
+      params.tpOrderType = (order as any).tpOrderType || 'Market';
     }
 
     if ((order as any).stopLoss) {
       const slBN = new BigNumber((order as any).stopLoss);
       params.stopLoss = slBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+      params.slTriggerBy = (order as any).slTriggerBy || 'LastPrice';
+      params.slOrderType = (order as any).slOrderType || 'Market';
+    }
+
+    if ((order as any).takeProfit || (order as any).stopLoss) {
+      params.tpslMode = (order as any).tpslMode || 'Full';
+    }
+
+    if (category === 'linear' && params.positionIdx === undefined) {
+      params.positionIdx = 0;
     }
 
     const result = await this.makeRequest('POST', '/v5/order/create', params, true);
@@ -734,6 +746,33 @@ export class BybitAdapter extends BaseExchangeAdapter {
         currency: 'USDT',
       },
       timestamp: parseInt(item.execTime, 10),
+    }));
+  }
+
+  public async fetchClosedPnl(symbol?: string, category?: string): Promise<any[]> {
+    const rawSymbol = symbol ? this.normalizeSymbol(symbol).canonicalSymbol.replace('/', '').toUpperCase() : undefined;
+    const reqCategory = category || 'linear';
+    const params: Record<string, any> = { category: reqCategory };
+    if (rawSymbol) params.symbol = rawSymbol;
+
+    const result = await this.makeRequest('GET', '/v5/position/closed-pnl', params, true);
+    const list = result?.list || [];
+
+    return list.map((item: any) => ({
+      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
+      orderId: item.orderId,
+      side: item.side?.toLowerCase() as 'buy' | 'sell',
+      qty: parseFloat(item.qty || '0'),
+      orderPrice: parseFloat(item.orderPrice || '0'),
+      orderType: item.orderType,
+      execType: item.execType,
+      closedPnl: parseFloat(item.closedPnl || '0'),
+      avgEntryPrice: parseFloat(item.avgEntryPrice || '0'),
+      avgExitPrice: parseFloat(item.avgExitPrice || '0'),
+      closedSize: parseFloat(item.closedSize || '0'),
+      leverage: parseFloat(item.leverage || '1'),
+      createdTime: parseInt(item.createdTime, 10),
+      updatedTime: parseInt(item.updatedTime, 10),
     }));
   }
 }
