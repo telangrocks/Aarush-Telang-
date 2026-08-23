@@ -649,6 +649,28 @@ export class TradingBot {
         };
         return new Response(JSON.stringify(response), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
+      case '/register-alert': {
+        const { alert } = await request.json<{ alert: TradeAlert }>();
+        if (!alert || !alert.id) {
+          return new Response(JSON.stringify({ success: false, message: 'Invalid alert payload.' }), { status: 400 });
+        }
+
+        console.log(`[ALERT_REGISTER] id=${alert.id} symbol=${alert.symbol} strategy=${alert.strategy}`);
+        const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+        const existingIndex = alerts.findIndex((a) => a.id === alert.id);
+        if (existingIndex >= 0) {
+          alerts[existingIndex] = { ...alerts[existingIndex], ...alert, status: 'pending' };
+        } else {
+          alerts.push({ ...alert, status: 'pending' });
+        }
+        await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+        console.log(`[ALERT_REGISTERED] id=${alert.id} storage=alerts status=pending`);
+
+        return new Response(JSON.stringify({ success: true, alertId: alert.id }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
       case '/alerts': {
         const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
         const pending = alerts.filter((a) => a.status === 'pending');

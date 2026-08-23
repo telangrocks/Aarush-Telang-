@@ -1036,6 +1036,42 @@ export async function handleGetTechnicalAnalysis(
     const snapshot = await dataEngine.getSnapshot(symbol, manifest.supportedTimeframes || ['5m']);
     const snapshotDto = AnalysisSnapshotMapper.map(evalResult, manifest, snapshot, 'ACTIVE', false);
 
+    if (snapshotDto.opportunity) {
+      const opp = snapshotDto.opportunity;
+      console.log(`[ALERT_REGISTER] id=${opp.id} symbol=${opp.symbol} strategy=${opp.strategy}`);
+      const botId = c.env.TRADING_BOTS.idFromName(userId);
+      const bot = c.env.TRADING_BOTS.get(botId);
+      const alertPayload = {
+        id: opp.id,
+        symbol: opp.symbol,
+        signalPrice: opp.signalPrice,
+        targetEntryPrice: opp.targetEntryPrice,
+        entryPrice: opp.entryPrice,
+        stopLoss: opp.stopLoss,
+        takeProfit: opp.takeProfit,
+        estimatedPnl: opp.estimatedPnl,
+        positionSize: opp.positionSize,
+        strategy: opp.strategy,
+        side: opp.side,
+        timestamp: opp.timestamp,
+        status: 'pending',
+      };
+      
+      const regResp = await bot.fetch(
+        new Request("http://bot/register-alert", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ alert: alertPayload }),
+        })
+      );
+      if (!regResp.ok) {
+        const errText = await regResp.text();
+        console.error(`[ALERT_REGISTER_FAILED] id=${opp.id} status=${regResp.status} err=${errText}`);
+      } else {
+        console.log(`[ALERT_REGISTERED] id=${opp.id} storage=alerts status=pending`);
+      }
+    }
+
     return c.json(snapshotDto);
   } catch (e: unknown) {
     const error = e as Error;
@@ -1147,13 +1183,13 @@ export async function handleExecuteTrade(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
-    let alertId: string | undefined;
+    let reqBody: any = {};
     try {
-      const body = await c.req.json();
-      alertId = body.alertId;
+      reqBody = await c.req.json();
     } catch (e) {
       // Ignore if no JSON body
     }
+    const alertId = reqBody?.alertId;
 
     if (!alertId) {
       c.status(400);
@@ -1167,7 +1203,7 @@ export async function handleExecuteTrade(
       new Request("http://bot/execute-trade", { 
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ alertId })
+        body: JSON.stringify(reqBody)
       }),
     );
 

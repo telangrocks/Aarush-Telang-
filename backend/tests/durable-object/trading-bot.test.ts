@@ -261,4 +261,77 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     // This proves the engine logic doesn't loop duplicate orders by itself.
     await expect(bot.alarm()).resolves.not.toThrow();
   });
+
+  it("Architecture B: /register-alert persists TradeAlert idempotently, exposes via /alerts, and allows /execute-trade", async () => {
+    mockDb.prepare = vi.fn().mockImplementation((query: string) => {
+      if (query.includes('PRAGMA table_info')) {
+        return {
+           all: vi.fn().mockResolvedValue({ results: [{ name: 'target_entry_price' }, { name: 'entry_status' }] })
+        };
+      }
+      return {
+        bind: vi.fn().mockReturnValue({
+          run: vi.fn().mockResolvedValue({ success: true }),
+          first: vi.fn().mockResolvedValue({
+            exchange_name: 'bybit',
+            exchange_environment: 'demo',
+            exchange_region: 'global',
+            exchange_api_key: 'key',
+            exchange_api_secret_iv: 'bW9ja19pdk1vY2tJdk1vY2s=',
+            exchange_api_secret_encrypted: 'sec'
+          })
+        })
+      };
+    });
+
+    const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set('userId', 'user-abc');
+
+    const testAlert = {
+      id: 'test-uuid-999',
+      symbol: 'STX/USDT',
+      signalPrice: 0.222,
+      targetEntryPrice: 0.222,
+      entryPrice: 0.222,
+      stopLoss: 0.210,
+      takeProfit: 0.245,
+      estimatedPnl: 10,
+      positionSize: 100,
+      strategy: 'ScalperV2',
+      side: 'BUY',
+      timestamp: new Date().toISOString(),
+      status: 'pending'
+    };
+
+    // 1. Register alert
+    const regReq = new Request('http://bot/register-alert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alert: testAlert })
+    });
+    const regRes = await bot.fetch(regReq);
+    expect(regRes.status).toBe(200);
+    const regData = await regRes.json<any>();
+    expect(regData.success).toBe(true);
+    expect(regData.alertId).toBe('test-uuid-999');
+
+    // 2. Fetch /alerts to prove presence
+    const alertsReq = new Request('http://bot/alerts', { method: 'GET' });
+    const alertsRes = await bot.fetch(alertsReq);
+    expect(alertsRes.status).toBe(200);
+    const alertsData = await alertsRes.json<any[]>();
+    expect(alertsData.length).toBe(1);
+    expect(alertsData[0].id).toBe('test-uuid-999');
+    expect(alertsData[0].status).toBe('pending');
+
+    // 3. Execute trade
+    const execReq = new Request('http://bot/execute-trade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'user-abc', alertId: 'test-uuid-999' })
+    });
+    const execRes = await bot.fetch(execReq);
+    expect(execRes.status).toBe(200);
+  });
 });
+
