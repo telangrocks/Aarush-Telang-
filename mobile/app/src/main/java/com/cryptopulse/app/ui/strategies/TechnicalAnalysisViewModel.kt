@@ -59,7 +59,11 @@ class TechnicalAnalysisViewModel @Inject constructor(
             }
             val strategyId = sessionRepository.selectedStrategyId.value ?: originalConfig.strategyId ?: "ScalperV2"
             
-            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategyId, originalConfig)
+            val testConfig = originalConfig.copy(
+                parameters = originalConfig.parameters + ("forceMockSignal" to "BUY")
+            )
+
+            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategyId, testConfig)
             result.onSuccess { snapshot ->
                 snapshot.opportunity?.let { botAlert ->
                     val alertMap = mapOf<String, Any>(
@@ -74,7 +78,8 @@ class TechnicalAnalysisViewModel @Inject constructor(
                         "timestamp" to (botAlert.timestamp ?: ""),
                         "signalPrice" to (botAlert.signalPrice ?: botAlert.entryPrice),
                         "positionSize" to (botAlert.positionSize ?: 0.0),
-                        "isMockTrade" to false
+                        "isMockTrade" to false,
+                        "signalOrigin" to "TEST_TRIGGER"
                     ).toMutableMap()
                     
                     botAlert.targetEntryPrice?.let { alertMap["targetEntryPrice"] = it }

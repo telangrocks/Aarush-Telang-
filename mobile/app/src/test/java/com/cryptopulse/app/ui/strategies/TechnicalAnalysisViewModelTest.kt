@@ -217,11 +217,13 @@ class TechnicalAnalysisViewModelTest {
             opportunity = mockOpportunity
         )
 
+        var capturedConfig: TradeSetupConfig? = null
         val mockTaRepo = object : TechnicalAnalysisRepository {
             override suspend fun getAnalysis(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<TechnicalAnalysisResult> {
                 return NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(400, "Not used", "ERROR"))
             }
             override suspend fun getAnalysisSnapshot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<AnalysisSnapshot> {
+                capturedConfig = config
                 return NetworkResult.Success(mockSnapshot)
             }
         }
@@ -256,6 +258,8 @@ class TechnicalAnalysisViewModelTest {
         assertEquals(50100.0, receivedAlertMap?.get("targetEntryPrice"))
         assertEquals(100.0, receivedAlertMap?.get("positionSize"))
         assertEquals(false, receivedAlertMap?.get("isMockTrade"))
+        assertEquals("TEST_TRIGGER", receivedAlertMap?.get("signalOrigin"))
+        assertEquals("BUY", capturedConfig?.parameters?.get("forceMockSignal"))
     }
 }
 
