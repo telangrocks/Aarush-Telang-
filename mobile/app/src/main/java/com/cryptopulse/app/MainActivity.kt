@@ -329,13 +329,19 @@ class MainActivity : FragmentActivity() {
                                     }
                                 }
 
+                                val previewError by technicalAnalysisViewModel.previewError.collectAsState()
+
                                 TechnicalAnalysisScreen(
                                     candidate = candidate,
                                     analysisState = analysisState,
                                     tradeSetupConfig = tradeSetupConfig,
+                                    previewError = previewError,
                                     onBack = { navController.popBackStack() },
                                     onExecuteTrade = {
                                         technicalAnalysisViewModel.triggerTradeAlert(candidate.pairName, applicationContext)
+                                    },
+                                    onRetry = {
+                                        technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, selectedStrategy, tradeSetupConfig)
                                     }
                                 )
                             }

@@ -37,17 +37,33 @@ class TechnicalAnalysisViewModel @Inject constructor(
     private val _activationError = MutableStateFlow<String?>(null)
     val activationError: StateFlow<String?> = _activationError.asStateFlow()
 
+    private val _previewError = MutableStateFlow<String?>(null)
+    val previewError: StateFlow<String?> = _previewError.asStateFlow()
+
+    private val _isLoadingPreview = MutableStateFlow(false)
+    val isLoadingPreview: StateFlow<Boolean> = _isLoadingPreview.asStateFlow()
+
     init {
         botRepository.startObserving()
     }
 
     fun loadPreviewAnalysis(symbol: String, strategy: String, config: TradeSetupConfig? = null) {
+        _isLoadingPreview.value = true
+        _previewError.value = null
         viewModelScope.launch {
             val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategy, config)
             result.onSuccess { snapshot ->
+                _isLoadingPreview.value = false
                 botRepository.updateAnalysisState(snapshot)
+            }.onFailure { error ->
+                _isLoadingPreview.value = false
+                _previewError.value = error.message ?: "Technical analysis unavailable. Please verify your exchange connection."
             }
         }
+    }
+
+    fun clearPreviewError() {
+        _previewError.value = null
     }
 
     fun triggerTradeAlert(symbol: String, context: android.content.Context) {

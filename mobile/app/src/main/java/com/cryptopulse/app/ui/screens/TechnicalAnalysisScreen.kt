@@ -39,8 +39,10 @@ fun TechnicalAnalysisScreen(
     candidate: MarketCandidate,
     analysisState: AnalysisSnapshot?,
     tradeSetupConfig: TradeSetupConfig? = null,
+    previewError: String? = null,
     onBack: () -> Unit,
-    onExecuteTrade: () -> Unit
+    onExecuteTrade: () -> Unit,
+    onRetry: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val bgGradient = remember { Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020))) }
@@ -108,7 +110,44 @@ fun TechnicalAnalysisScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                if (analysisState == null) {
+                if (previewError != null && analysisState == null) {
+                    GlowCard {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = "Error",
+                                tint = LossRed,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = "Technical Analysis Unavailable",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = previewError,
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(Modifier.height(14.dp))
+                            Button(
+                                onClick = onRetry,
+                                colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary)
+                            ) {
+                                Text("RETRY ANALYSIS", color = NavyDeep, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                } else if (analysisState == null) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()

@@ -970,29 +970,60 @@ export async function handleGetTechnicalAnalysis(
     }
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
         exchange_region: string | null;
+        exchange_api_key: string | null;
         exchange_api_key_iv: string | null;
         exchange_api_key_encrypted: string | null;
         exchange_api_key_salt: string | null;
         exchange_api_secret_iv: string | null;
         exchange_api_secret_encrypted: string | null;
         exchange_api_secret_salt: string | null;
+        exchange_api_passphrase_iv: string | null;
+        exchange_api_passphrase_encrypted: string | null;
+        exchange_api_passphrase_salt: string | null;
       }>();
 
-    const hasApiKey = Boolean(user?.exchange_api_key_encrypted);
-    if (!user?.exchange_name || !hasApiKey || !user?.exchange_api_secret_encrypted) {
+    const hasApiKey = Boolean(user?.exchange_api_key_encrypted || user?.exchange_api_key);
+    if (!user?.exchange_name || !hasApiKey || (!user?.exchange_api_secret_encrypted && !user?.exchange_api_key)) {
       c.status(400);
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
+    let apiKey: string | undefined = undefined;
+    if (c.env.ENCRYPTION_KEY && user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
+      try {
+        apiKey = await decrypt({ iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt }, c.env.ENCRYPTION_KEY);
+      } catch (_) {}
+    }
+    if (!apiKey && user.exchange_api_key) {
+      apiKey = user.exchange_api_key;
+    }
+
+    let secret: string | undefined = undefined;
+    if (c.env.ENCRYPTION_KEY && user.exchange_api_secret_iv && user.exchange_api_secret_encrypted) {
+      try {
+        secret = await decrypt({ iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt }, c.env.ENCRYPTION_KEY);
+      } catch (_) {}
+    }
+
+    let password: string | undefined = undefined;
+    if (c.env.ENCRYPTION_KEY && user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
+      try {
+        password = await decrypt({ iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt }, c.env.ENCRYPTION_KEY);
+      } catch (_) {}
+    }
+
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
+      apiKey,
+      secret,
+      password,
       region: resolveCanonicalRoutingRegion(user.exchange_region),
       ...resolveEgressConfig(user.exchange_name, c.env),
     });
@@ -1022,8 +1053,23 @@ export async function handleGetTechnicalAnalysis(
       });
     }
 
-    const balanceResult = await adapter.fetchBalance().catch(() => null);
-    const accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
+    let accountBalance = 1000;
+    try {
+      const balanceResult = await adapter.fetchBalance();
+      accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
+    } catch (balErr: unknown) {
+      const classified = classifyException(balErr, user.exchange_name);
+      if (classified.code === "AUTHENTICATION_FAILED" || classified.code === "INVALID_API_KEY") {
+        c.status(401);
+        return c.json({
+          error: "Exchange authentication failed. Please reconnect your exchange.",
+          code: classified.code,
+          hint: classified.hint
+        });
+      }
+      new StructuredLogger().warn(`[TechnicalAnalysis] Balance fetch non-fatal fallback on ${user.exchange_name}`, { error: String(balErr) });
+    }
+
     const results = await orchestrator.executeCycle(symbol, normalizedId, config, accountBalance);
     const evalResult = results[0] || {
       strategyId: manifest.id,
@@ -1076,7 +1122,21 @@ export async function handleGetTechnicalAnalysis(
   } catch (e: unknown) {
     const error = e as Error;
     const msg = error?.message || String(e);
-    if (msg.includes('is not registered') || msg.includes('required') || msg.includes('Invalid symbol') || msg.includes('not available')) {
+    if (e instanceof UnifiedError) {
+      if (e.code === 'INVALID_REQUEST' || e.code === 'UNSUPPORTED_OPERATION') {
+        c.status(400);
+        return c.json({ error: "Error processing technical analysis", message: msg });
+      }
+      if (e.code === 'AUTHENTICATION_FAILED' || e.code === 'INVALID_API_KEY') {
+        c.status(401);
+        return c.json({ error: "Exchange authentication failed", message: msg });
+      }
+      if (e.code === 'EXCHANGE_NOT_REACHABLE' || e.code === 'EXCHANGE_TIMEOUT' || e.code === 'RATE_LIMIT_EXCEEDED') {
+        c.status(502);
+        return c.json({ error: "Exchange connection issue", message: msg });
+      }
+    }
+    if (msg.includes('is not registered') || msg.includes('Invalid symbol')) {
       c.status(400);
       return c.json({ error: "Error processing technical analysis", message: msg });
     }
