@@ -1,4 +1,4 @@
-import { BybitAdapter } from './infrastructure/exchange/adapters/BybitAdapter';
+import { BybitAdapter } from '../../src/infrastructure/exchange/adapters/BybitAdapter';
 
 async function runLiveValidation() {
   console.log('====================================================');
@@ -102,3 +102,4 @@ async function runLiveValidation() {
 }
 
 runLiveValidation().catch(console.error);
+

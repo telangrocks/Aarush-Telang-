@@ -1,5 +1,5 @@
-import { BybitAdapter } from './infrastructure/exchange/adapters/BybitAdapter';
-import { MarketDataEngine, AdapterCandleProvider } from './engine/market-data';
+import { BybitAdapter } from '../../src/infrastructure/exchange/adapters/BybitAdapter';
+import { MarketDataEngine, AdapterCandleProvider } from '../../src/engine/market-data';
 
 async function runLiveVerification() {
   console.log('================================================================');
@@ -191,3 +191,4 @@ async function runLiveVerification() {
 }
 
 runLiveVerification().catch(console.error);
+
