@@ -7,12 +7,15 @@ import androidx.lifecycle.viewModelScope
 import com.cryptopulse.app.data.api.TradingBotService
 import com.cryptopulse.app.domain.repository.TradeSessionRepository
 import com.cryptopulse.app.domain.repository.TechnicalAnalysisRepository
+import com.cryptopulse.app.domain.repository.StrategyRepository
 import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.models.AnalysisSnapshot
+import com.cryptopulse.app.domain.models.Strategy
 import com.cryptopulse.app.domain.models.TradeSetupConfig
 import com.cryptopulse.app.ui.screens.MarketCandidate
 import com.cryptopulse.app.service.TradeAlertManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,12 +27,26 @@ class TechnicalAnalysisViewModel @Inject constructor(
     private val sessionRepository: TradeSessionRepository,
     private val botRepository: BotRepository,
     private val technicalAnalysisRepository: TechnicalAnalysisRepository,
+    private val strategyRepository: StrategyRepository,
     private val tradeAlertManager: TradeAlertManager
 ) : ViewModel() {
 
     val tradeSetupConfig: StateFlow<TradeSetupConfig?> = sessionRepository.tradeSetupConfig
-    val analysisState: StateFlow<AnalysisSnapshot?> = botRepository.analysisState
+    val activeBotState: StateFlow<AnalysisSnapshot?> = botRepository.activeBotAnalysisState
+    val isBotActive: StateFlow<Boolean> = botRepository.isBotActive
+    val committedStrategyId: StateFlow<String?> = botRepository.committedStrategyId
     val isConnected: StateFlow<Boolean> = botRepository.isConnected
+
+    private val _exploringStrategyId = MutableStateFlow<String>("ScalperV2")
+    val exploringStrategyId: StateFlow<String> = _exploringStrategyId.asStateFlow()
+    val activeStrategyId: StateFlow<String?> = _exploringStrategyId.asStateFlow()
+
+    private val _explorationState = MutableStateFlow<AnalysisSnapshot?>(null)
+    val explorationState: StateFlow<AnalysisSnapshot?> = _explorationState.asStateFlow()
+    val analysisState: StateFlow<AnalysisSnapshot?> = _explorationState.asStateFlow()
+
+    private val _availableStrategies = MutableStateFlow<List<Strategy>>(emptyList())
+    val availableStrategies: StateFlow<List<Strategy>> = _availableStrategies.asStateFlow()
 
     private val _isActivating = MutableStateFlow(false)
     val isActivating: StateFlow<Boolean> = _isActivating.asStateFlow()
@@ -43,21 +60,69 @@ class TechnicalAnalysisViewModel @Inject constructor(
     private val _isLoadingPreview = MutableStateFlow(false)
     val isLoadingPreview: StateFlow<Boolean> = _isLoadingPreview.asStateFlow()
 
+    private var analysisJob: Job? = null
+    private var explorationRequestId: Long = 0L
+
     init {
+        loadAvailableStrategies()
+    }
+
+    fun onScreenStarted() {
         botRepository.startObserving()
     }
 
+    fun onScreenStopped() {
+        if (!isBotActive.value) {
+            botRepository.stopObserving()
+        }
+    }
+
+    fun loadAvailableStrategies() {
+        viewModelScope.launch {
+            val result = strategyRepository.getStrategies()
+            result.onSuccess { strategies ->
+                _availableStrategies.value = strategies
+            }
+        }
+    }
+
+    fun selectStrategy(strategy: String, symbol: String) {
+        _exploringStrategyId.value = strategy
+        val originalConfig = sessionRepository.tradeSetupConfig.value
+        val cleanConfig = originalConfig?.copy(
+            strategyId = strategy,
+            parameters = emptyMap() // Let new strategy apply its authoritative defaults from StrategyRegistry
+        )
+        loadPreviewAnalysis(symbol, strategy, cleanConfig)
+    }
+
     fun loadPreviewAnalysis(symbol: String, strategy: String, config: TradeSetupConfig? = null) {
+        val requestId = ++explorationRequestId
         _isLoadingPreview.value = true
         _previewError.value = null
-        viewModelScope.launch {
-            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategy, config)
+        _exploringStrategyId.value = strategy
+
+        analysisJob?.cancel()
+        val targetStrategy = strategy
+
+        analysisJob = viewModelScope.launch {
+            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, targetStrategy, config)
+            
+            // Stale-response protection: Discard response if newer strategy was requested
+            if (requestId != explorationRequestId) {
+                return@launch
+            }
+
             result.onSuccess { snapshot ->
-                _isLoadingPreview.value = false
-                botRepository.updateAnalysisState(snapshot)
+                if (requestId == explorationRequestId) {
+                    _isLoadingPreview.value = false
+                    _explorationState.value = snapshot // Writes exclusively to explorationState
+                }
             }.onFailure { error ->
-                _isLoadingPreview.value = false
-                _previewError.value = error.message ?: "Technical analysis unavailable. Please verify your exchange connection."
+                if (requestId == explorationRequestId) {
+                    _isLoadingPreview.value = false
+                    _previewError.value = error.message ?: "Technical analysis unavailable. Please verify your exchange connection."
+                }
             }
         }
     }
@@ -73,46 +138,81 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 android.widget.Toast.makeText(context, "No active Trade Setup found.", android.widget.Toast.LENGTH_LONG).show()
                 return@launch
             }
-            val strategyId = sessionRepository.selectedStrategyId.value ?: originalConfig.strategyId ?: "ScalperV2"
-            
-            val testConfig = originalConfig.copy(
-                parameters = originalConfig.parameters + ("forceMockSignal" to "BUY")
+            val targetStrategyId = _exploringStrategyId.value
+                ?: sessionRepository.selectedStrategyId.value
+                ?: originalConfig.strategyId
+                ?: "ScalperV2"
+
+            val executionConfig = originalConfig.copy(
+                strategyId = targetStrategyId,
+                parameters = if (targetStrategyId == originalConfig.strategyId) originalConfig.parameters else emptyMap()
             )
 
-            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, strategyId, testConfig)
-            result.onSuccess { snapshot ->
-                snapshot.opportunity?.let { botAlert ->
-                    val alertMap = mapOf<String, Any>(
-                        "id" to botAlert.id,
-                        "symbol" to botAlert.symbol,
-                        "entryPrice" to botAlert.entryPrice,
-                        "stopLoss" to botAlert.stopLoss,
-                        "takeProfit" to botAlert.takeProfit,
-                        "estimatedPnl" to botAlert.estimatedPnl,
-                        "strategy" to (botAlert.strategy ?: strategyId),
-                        "side" to (botAlert.side ?: "BUY"),
-                        "timestamp" to (botAlert.timestamp ?: ""),
-                        "signalPrice" to (botAlert.signalPrice ?: botAlert.entryPrice),
-                        "positionSize" to (botAlert.positionSize ?: 0.0),
-                        "isMockTrade" to false,
-                        "signalOrigin" to "TEST_TRIGGER"
-                    ).toMutableMap()
-                    
-                    botAlert.targetEntryPrice?.let { alertMap["targetEntryPrice"] = it }
-                    
-                    tradeAlertManager.onNewAlertReceived(alertMap)
-                } ?: run {
-                    android.widget.Toast.makeText(context, "No valid trade setup currently exists.", android.widget.Toast.LENGTH_LONG).show()
-                }
+            val result = botRepository.triggerAlert(symbol, targetStrategyId, executionConfig)
+            result.onSuccess { botAlert ->
+                val alertMap = mapOf<String, Any>(
+                    "id" to botAlert.id,
+                    "symbol" to botAlert.symbol,
+                    "entryPrice" to botAlert.entryPrice,
+                    "stopLoss" to botAlert.stopLoss,
+                    "takeProfit" to botAlert.takeProfit,
+                    "estimatedPnl" to botAlert.estimatedPnl,
+                    "strategy" to (botAlert.strategy ?: targetStrategyId),
+                    "side" to (botAlert.side ?: "BUY"),
+                    "timestamp" to (botAlert.timestamp ?: ""),
+                    "signalPrice" to (botAlert.signalPrice ?: botAlert.entryPrice),
+                    "positionSize" to (botAlert.positionSize ?: 0.0),
+                    "signalOrigin" to "MANUAL_TRIGGER"
+                ).toMutableMap()
+
+                botAlert.targetEntryPrice?.let { alertMap["targetEntryPrice"] = it }
+                val intentName = botAlert.entryIntent ?: originalConfig.entryIntent.name
+                alertMap["entryIntent"] = intentName
+
+                tradeAlertManager.onNewAlertReceived(alertMap)
             }.onFailure { e ->
-                android.widget.Toast.makeText(context, e.message ?: "Technical analysis unavailable. Please retry.", android.widget.Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(context, e.message ?: "Failed to generate trade alert. Please retry.", android.widget.Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    @Deprecated("Use triggerTradeAlert instead", ReplaceWith("triggerTradeAlert(symbol, context)"))
-    fun triggerMockAlert(symbol: String, context: android.content.Context) {
-        triggerTradeAlert(symbol, context)
+    fun commitStrategyAndActivateBot(
+        symbol: String,
+        strategy: String,
+        onSuccess: () -> Unit
+    ) {
+        _isActivating.value = true
+        _activationError.value = null
+
+        val baseConfig = sessionRepository.tradeSetupConfig.value
+        val committedConfig = baseConfig?.copy(
+            strategyId = strategy,
+            entryPrice = baseConfig.entryPrice,
+            riskParameters = baseConfig.riskParameters,
+            entryIntent = baseConfig.entryIntent
+        ) ?: TradeSetupConfig(
+            strategyId = strategy,
+            symbol = symbol,
+            entryPrice = 0.0
+        )
+
+        viewModelScope.launch {
+            val result = botRepository.activateBot(
+                symbol = symbol,
+                strategy = strategy,
+                config = committedConfig
+            )
+            result.onSuccess {
+                _isActivating.value = false
+                sessionRepository.setTradeSetupConfig(committedConfig)
+                sessionRepository.setStrategyId(strategy)
+                botRepository.startObserving()
+                onSuccess()
+            }.onFailure { e ->
+                _isActivating.value = false
+                _activationError.value = e.message ?: "Failed to activate trading bot."
+            }
+        }
     }
 
     fun activateBot(
@@ -166,6 +266,8 @@ class TechnicalAnalysisViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        botRepository.stopObserving()
+        if (!isBotActive.value) {
+            botRepository.stopObserving()
+        }
     }
 }

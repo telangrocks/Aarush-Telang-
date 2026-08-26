@@ -44,6 +44,7 @@ import {
   handleGetBotAlerts,
   handleAcknowledgeAlert,
   handleGetExecutionStatus,
+  handleTriggerManualTradeAlert,
 } from "./handlers/exchange";
 import { handleRegisterFcmToken } from "./handlers/notifications";
 
@@ -341,6 +342,7 @@ api.post("/trading-bot/stop-trade", handleStopTradingBot);
 api.get("/trading-bot/alerts", handleGetBotAlerts);
 api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
 api.get("/trading-bot/execution-status/:positionId", handleGetExecutionStatus);
+api.post("/trading-bot/trigger-alert", handleTriggerManualTradeAlert);
 
 
 

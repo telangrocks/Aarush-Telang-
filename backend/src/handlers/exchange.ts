@@ -824,6 +824,12 @@ import { StrategyRegistry } from "../engine/strategies/StrategyRegistry";
 import { StrategyOrchestrator } from "../engine/orchestrator/StrategyOrchestrator";
 import { MarketDataEngine, AdapterCandleProvider } from "../engine/market-data";
 import { AnalysisSnapshotMapper } from "../api/engine/AnalysisSnapshotMapper";
+import { StopLossCalculator } from "../engine/risk/StopLossCalculator";
+import { TakeProfitCalculator } from "../engine/risk/TakeProfitCalculator";
+import { OrderSizing } from "../engine/risk/OrderSizing";
+import { RiskParameters } from "../engine/risk/RiskParameters";
+import { calculateATR } from "../engine/indicator/indicators/ATR";
+import { TradeAlert } from "../trading-bot";
 
 export async function handleGetStrategies(
   c: Context<{ Bindings: Env }>,
@@ -998,25 +1004,43 @@ export async function handleGetTechnicalAnalysis(
     let apiKey: string | undefined = undefined;
     if (c.env.ENCRYPTION_KEY && user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
       try {
-        apiKey = await decrypt({ iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt }, c.env.ENCRYPTION_KEY);
-      } catch (_) {}
+        const decrypted = await decrypt(
+          { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
+          c.env.ENCRYPTION_KEY,
+        );
+        apiKey = cleanCredential(decrypted);
+      } catch (decErr: any) {
+        console.warn("[TechnicalAnalysis] API key decryption failed:", decErr?.message);
+      }
     }
     if (!apiKey && user.exchange_api_key) {
-      apiKey = user.exchange_api_key;
+      apiKey = cleanCredential(user.exchange_api_key);
     }
 
     let secret: string | undefined = undefined;
     if (c.env.ENCRYPTION_KEY && user.exchange_api_secret_iv && user.exchange_api_secret_encrypted) {
       try {
-        secret = await decrypt({ iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt }, c.env.ENCRYPTION_KEY);
-      } catch (_) {}
+        const decrypted = await decrypt(
+          { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt },
+          c.env.ENCRYPTION_KEY,
+        );
+        secret = cleanCredential(decrypted);
+      } catch (decErr: any) {
+        console.warn("[TechnicalAnalysis] API secret decryption failed:", decErr?.message);
+      }
     }
 
     let password: string | undefined = undefined;
     if (c.env.ENCRYPTION_KEY && user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
       try {
-        password = await decrypt({ iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt }, c.env.ENCRYPTION_KEY);
-      } catch (_) {}
+        const decrypted = await decrypt(
+          { iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt },
+          c.env.ENCRYPTION_KEY,
+        );
+        password = cleanCredential(decrypted);
+      } catch (decErr: any) {
+        console.warn("[TechnicalAnalysis] API passphrase decryption failed:", decErr?.message);
+      }
     }
 
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
@@ -1046,7 +1070,7 @@ export async function handleGetTechnicalAnalysis(
     const manifest = registry.getManifest(normalizedId) 
       || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
     if (!manifest) {
-      c.status(400);
+      c.status(404);
       return c.json({ 
         error: `Strategy '${strategy}' is not registered.`, 
         availableStrategies: registry.getAllManifests().map(m => m.id) 
@@ -1058,15 +1082,6 @@ export async function handleGetTechnicalAnalysis(
       const balanceResult = await adapter.fetchBalance();
       accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
     } catch (balErr: unknown) {
-      const classified = classifyException(balErr, user.exchange_name);
-      if (classified.code === "AUTHENTICATION_FAILED" || classified.code === "INVALID_API_KEY") {
-        c.status(401);
-        return c.json({
-          error: "Exchange authentication failed. Please reconnect your exchange.",
-          code: classified.code,
-          hint: classified.hint
-        });
-      }
       new StructuredLogger().warn(`[TechnicalAnalysis] Balance fetch non-fatal fallback on ${user.exchange_name}`, { error: String(balErr) });
     }
 
@@ -1082,64 +1097,56 @@ export async function handleGetTechnicalAnalysis(
     const snapshot = await dataEngine.getSnapshot(symbol, manifest.supportedTimeframes || ['5m']);
     const snapshotDto = AnalysisSnapshotMapper.map(evalResult, manifest, snapshot, 'ACTIVE', false);
 
-    if (snapshotDto.opportunity) {
-      const opp = snapshotDto.opportunity;
-      console.log(`[ALERT_REGISTER] id=${opp.id} symbol=${opp.symbol} strategy=${opp.strategy}`);
-      const botId = c.env.TRADING_BOTS.idFromName(userId);
-      const bot = c.env.TRADING_BOTS.get(botId);
-      const alertPayload = {
-        id: opp.id,
-        symbol: opp.symbol,
-        signalPrice: opp.signalPrice,
-        targetEntryPrice: opp.targetEntryPrice,
-        entryPrice: opp.entryPrice,
-        stopLoss: opp.stopLoss,
-        takeProfit: opp.takeProfit,
-        estimatedPnl: opp.estimatedPnl,
-        positionSize: opp.positionSize,
-        strategy: opp.strategy,
-        side: opp.side,
-        timestamp: opp.timestamp,
-        status: 'pending',
-      };
-      
-      const regResp = await bot.fetch(
-        new Request("http://bot/register-alert", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ alert: alertPayload }),
-        })
-      );
-      if (!regResp.ok) {
-        const errText = await regResp.text();
-        console.error(`[ALERT_REGISTER_FAILED] id=${opp.id} status=${regResp.status} err=${errText}`);
-      } else {
-        console.log(`[ALERT_REGISTERED] id=${opp.id} storage=alerts status=pending`);
-      }
-    }
-
     return c.json(snapshotDto);
   } catch (e: unknown) {
     const error = e as Error;
     const msg = error?.message || String(e);
-    if (e instanceof UnifiedError) {
-      if (e.code === 'INVALID_REQUEST' || e.code === 'UNSUPPORTED_OPERATION') {
-        c.status(400);
-        return c.json({ error: "Error processing technical analysis", message: msg });
-      }
-      if (e.code === 'AUTHENTICATION_FAILED' || e.code === 'INVALID_API_KEY') {
-        c.status(401);
-        return c.json({ error: "Exchange authentication failed", message: msg });
-      }
-      if (e.code === 'EXCHANGE_NOT_REACHABLE' || e.code === 'EXCHANGE_TIMEOUT' || e.code === 'RATE_LIMIT_EXCEEDED') {
-        c.status(502);
-        return c.json({ error: "Exchange connection issue", message: msg });
-      }
+    const code = (e as any)?.code;
+
+    // Authentication / Credential errors -> 401
+    const isAuthError =
+      code === 'AUTHENTICATION_FAILED' ||
+      code === 'INVALID_API_KEY' ||
+      code === 'INVALID_API_SECRET' ||
+      code === 'MISSING_REQUIRED_CREDENTIALS' ||
+      code === 'PERMISSION_DENIED' ||
+      code === 'INVALID_SIGNATURE' ||
+      code === 'IP_NOT_WHITELISTED';
+
+    if (isAuthError) {
+      c.status(401);
+      return c.json({ error: "Exchange authentication failed", code, message: msg });
     }
-    if (msg.includes('is not registered') || msg.includes('Invalid symbol')) {
+
+    // Missing symbol or strategy -> 404
+    if (
+      msg.includes('is not registered') ||
+      msg.includes('not found') ||
+      code === 'SYMBOL_NOT_FOUND' ||
+      msg.includes('is not available on your connected exchange')
+    ) {
+      c.status(404);
+      return c.json({ error: "Resource not found", message: msg });
+    }
+
+    // Client Bad Request / Invalid Request -> 400
+    if (code === 'INVALID_REQUEST' || code === 'UNSUPPORTED_OPERATION') {
       c.status(400);
-      return c.json({ error: "Error processing technical analysis", message: msg });
+      return c.json({ error: "Invalid request parameters", message: msg });
     }
+
+    // Exchange Connectivity / Timeout / Maintenance -> 502
+    if (
+      code === 'EXCHANGE_NOT_REACHABLE' ||
+      code === 'EXCHANGE_TIMEOUT' ||
+      code === 'RATE_LIMIT_EXCEEDED' ||
+      code === 'EXCHANGE_UNDER_MAINTENANCE' ||
+      code === 'SERVICE_TEMPORARILY_UNAVAILABLE'
+    ) {
+      c.status(502);
+      return c.json({ error: "Exchange connection issue", message: msg });
+    }
+
     c.status(500);
     return c.json({ error: "Error processing technical analysis", message: msg });
   }
@@ -1424,4 +1431,196 @@ export async function handleGetExecutionStatus(
     return c.json({ success: false, message: error.message || "Failed to get execution status" });
   }
 }
+
+export async function handleTriggerManualTradeAlert(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    const userId = payload?.sub;
+    if (!userId) {
+      c.status(401);
+      return c.json({ error: "Unauthorized. Please login again." });
+    }
+
+    const { symbol, strategy, config } = await c.req.json<{
+      symbol: string;
+      strategy?: string;
+      config?: any;
+    }>();
+
+    if (!symbol) {
+      c.status(400);
+      return c.json({ error: "Trading symbol is required." });
+    }
+
+    const user = await c.env.DB.prepare(
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?",
+    )
+      .bind(userId)
+      .first<any>();
+
+    if (!user || !user.exchange_name) {
+      c.status(400);
+      return c.json({ error: "No exchange connected. Please connect an exchange first." });
+    }
+
+    let apiKey: string | undefined = undefined;
+    if (c.env.ENCRYPTION_KEY && user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
+      apiKey = await decrypt(
+        { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
+        c.env.ENCRYPTION_KEY,
+      );
+    } else {
+      apiKey = user.exchange_api_key ?? undefined;
+    }
+
+    let secret: string | undefined = undefined;
+    if (c.env.ENCRYPTION_KEY && user.exchange_api_secret_iv && user.exchange_api_secret_encrypted) {
+      secret = await decrypt(
+        { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt },
+        c.env.ENCRYPTION_KEY,
+      );
+    }
+
+    let password: string | undefined = undefined;
+    if (c.env.ENCRYPTION_KEY && user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
+      password = await decrypt(
+        { iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt },
+        c.env.ENCRYPTION_KEY,
+      );
+    }
+
+    const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
+      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
+      apiKey,
+      secret,
+      password,
+      region: resolveCanonicalRoutingRegion(user.exchange_region),
+      ...resolveEgressConfig(user.exchange_name, c.env),
+    });
+
+    const registry = StrategyRegistry.getInstance();
+    const strategyId = strategy || config?.strategyId || "ScalperV2";
+    const normalizedId = registry.normalizeStrategyId(strategyId);
+    const manifest = registry.getManifest(normalizedId) || registry.getAllManifests().find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
+    const side: 'BUY' | 'SELL' = (manifest && !manifest.supportsShort) ? 'BUY' : (config?.side === 'SELL' ? 'SELL' : 'BUY');
+
+    const orderSymbol = symbol.includes('/') ? symbol : `${symbol.replace('USDT', '')}/USDT`;
+    const ticker = await adapter.fetchTicker(orderSymbol).catch(() => null);
+    const livePrice = typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0);
+    const currentPrice = livePrice > 0 ? livePrice : (config?.entryPrice || 50000.0);
+
+    let accountBalance = 1000;
+    try {
+      const balanceResult = await adapter.fetchBalance();
+      accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
+    } catch (_) {}
+
+    const targetEntryPrice = typeof config?.entryPrice === 'number' && config.entryPrice > 0 ? config.entryPrice : currentPrice;
+    const rp = config?.riskParameters || {};
+    const riskPercent = typeof rp.accountRiskPercent === 'number' && rp.accountRiskPercent >= 0.1 && rp.accountRiskPercent <= 5.0 ? rp.accountRiskPercent : 1.0;
+    const rrRatio = typeof rp.riskRewardRatio === 'number' && rp.riskRewardRatio >= 1.0 && rp.riskRewardRatio <= 5.0 ? rp.riskRewardRatio : 2.0;
+    const atrMultiplier = typeof rp.atrStopLossMultiplier === 'number' && rp.atrStopLossMultiplier >= 0.5 && rp.atrStopLossMultiplier <= 5.0 ? rp.atrStopLossMultiplier : 1.5;
+
+    let currentAtr = 0;
+    try {
+      const klines = await adapter.fetchKlines(orderSymbol, '5m', 20);
+      if (klines && klines.length >= 14) {
+        const mapped = klines.map((k: any) => ({
+          high: typeof k.high === 'number' ? k.high : parseFloat(k.high || 0),
+          low: typeof k.low === 'number' ? k.low : parseFloat(k.low || 0),
+          close: typeof k.close === 'number' ? k.close : parseFloat(k.close || 0),
+          open: typeof k.open === 'number' ? k.open : parseFloat(k.open || 0),
+          volume: typeof k.volume === 'number' ? k.volume : parseFloat(k.volume || 0),
+          timestamp: typeof k.timestamp === 'number' ? k.timestamp : Date.now(),
+        }));
+        const atrValues = calculateATR(mapped, 14);
+        currentAtr = (atrValues && atrValues.length > 0) ? atrValues[atrValues.length - 1] : 0;
+      }
+    } catch (_) {}
+
+    if (!currentAtr || currentAtr <= 0) {
+      currentAtr = currentPrice * 0.005;
+    }
+
+    const riskParams: RiskParameters = {
+      accountRiskPercent: riskPercent,
+      riskRewardRatio: rrRatio,
+      atrStopLossMultiplier: atrMultiplier,
+      maxExposureLimit: 25.0
+    };
+
+    const stopLossDistance = StopLossCalculator.calculateDistance(currentAtr, riskParams);
+    const takeProfitDistance = TakeProfitCalculator.calculateDistance(stopLossDistance, riskParams);
+    const positionSize = OrderSizing.calculateSize(accountBalance, stopLossDistance, targetEntryPrice, riskParams);
+
+    const stopLoss = side === 'BUY' ? Math.max(0.01, targetEntryPrice - stopLossDistance) : targetEntryPrice + stopLossDistance;
+    const takeProfit = side === 'BUY' ? targetEntryPrice + takeProfitDistance : Math.max(0.01, targetEntryPrice - takeProfitDistance);
+    const estimatedPnl = Math.abs(takeProfit - targetEntryPrice) * (targetEntryPrice > 0 ? positionSize / targetEntryPrice : 0);
+    const entryIntent = (config?.entryIntent as any) || 'WAIT_FOR_PRICE';
+
+    let tickSize = 0.01;
+    try {
+      const markets = await adapter.fetchMarkets();
+      const market = markets.find(m => m.symbol === orderSymbol || m.id === orderSymbol.replace('/', ''));
+      if (market?.precision?.price) {
+        tickSize = typeof market.precision.price === 'number' ? market.precision.price : parseFloat(market.precision.price);
+      }
+    } catch (_) {}
+
+    const getPrecisionFromTickSize = (tick: number): number => {
+      if (!tick || tick >= 1) return 2;
+      const str = tick.toString();
+      const dec = str.split('.')[1];
+      return dec ? dec.length : 2;
+    };
+    const decimals = getPrecisionFromTickSize(tickSize);
+    const quantizedStopLoss = tickSize > 0 ? Math.round(stopLoss / tickSize) * tickSize : stopLoss;
+    const quantizedTakeProfit = tickSize > 0 ? Math.round(takeProfit / tickSize) * tickSize : takeProfit;
+
+    const alert: TradeAlert = {
+      id: crypto.randomUUID(),
+      symbol: orderSymbol,
+      strategy: normalizedId,
+      side: side,
+      targetEntryPrice: targetEntryPrice,
+      entryIntent: entryIntent,
+      entryPrice: targetEntryPrice,
+      signalPrice: currentPrice,
+      stopLoss: parseFloat(quantizedStopLoss.toFixed(decimals)),
+      takeProfit: parseFloat(quantizedTakeProfit.toFixed(decimals)),
+      positionSize: parseFloat(positionSize.toFixed(2)),
+      estimatedPnl: parseFloat(estimatedPnl.toFixed(2)),
+      timestamp: new Date().toISOString(),
+      status: 'pending'
+    };
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+    const regResp = await bot.fetch(
+      new Request("http://bot/register-alert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alert }),
+      })
+    );
+
+    if (!regResp.ok) {
+      const errText = await regResp.text();
+      new StructuredLogger().error(`[TriggerAlert] Failed to register alert in DO: ${errText}`);
+      c.status(500);
+      return c.json({ error: "Failed to register trade alert in trading session." });
+    }
+
+    console.log(`[MANUAL_ALERT_TRIGGERED] alertId=${alert.id} symbol=${alert.symbol} strategy=${alert.strategy}`);
+    return c.json(alert);
+  } catch (e: unknown) {
+    const error = e as Error;
+    new StructuredLogger().error("[TriggerAlert] Error handling manual alert trigger", { error: error.message });
+    c.status(500);
+    return c.json({ error: "Failed to generate manual trade alert", message: error.message });
+  }
+}
+
 

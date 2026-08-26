@@ -179,6 +179,14 @@ export class VWAPStrategy implements IStrategy {
       reasoning.push('Confidence below threshold');
     }
 
+    const volMultiplier = avgVolume > 0 ? (currentCandle.volume / avgVolume) : 1.0;
+    const customIndicators = [
+      { name: 'VWAP Fair Value', value: `$${currentVwap.toFixed(2)}`, signal: currentPrice > currentVwap ? 'BULLISH' : 'BEARISH' },
+      { name: 'VWAP Deviation', value: `${deviationPercent.toFixed(2)}%`, signal: deviationPercent <= this.config.vwapRules.maxDeviationThresholdPercent ? 'BULLISH' : 'BEARISH' },
+      { name: 'Volume Multiplier', value: `${volMultiplier.toFixed(2)}x`, signal: volMultiplier >= this.config.vwapRules.minVolumeMultiplier ? 'BULLISH' : 'NEUTRAL' },
+      { name: 'Price Displacement', value: `${displacementPercent.toFixed(2)}%`, signal: displacementPercent >= this.config.vwapRules.minSidewaysDisplacementPercent ? 'BULLISH' : 'NEUTRAL' }
+    ];
+
     return {
       strategyId: this.manifest.id,
       timestamp: context.timestamp,
@@ -192,7 +200,10 @@ export class VWAPStrategy implements IStrategy {
           reasoning
         },
         indicatorSnapshot,
-        conditionResult
+        conditionResult,
+        confidenceScore,
+        strategyConfig: this.config,
+        customIndicators
       }
     };
   }
@@ -201,7 +212,8 @@ export class VWAPStrategy implements IStrategy {
     context: Readonly<StrategyContext>,
     reasoning: string[],
     indicatorSnapshot?: any,
-    conditionResult?: any
+    conditionResult?: any,
+    customIndicators?: any[]
   ): EvaluationResult {
     return {
       strategyId: this.manifest.id,
@@ -211,7 +223,9 @@ export class VWAPStrategy implements IStrategy {
       metadata: {
         reasoning,
         indicatorSnapshot: indicatorSnapshot || { timestamp: context.timestamp, timeframes: {} },
-        conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] }
+        conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] },
+        strategyConfig: this.config,
+        customIndicators: customIndicators || []
       }
     };
   }

@@ -210,7 +210,7 @@ fun TradeAlertScreen(
                     is ExecutionUiState.Filled -> {
                         TradeExecutionConfirmationCard(
                             result = state.result,
-                            onViewInPortfolio = {
+                            onViewCandidates = {
                                 viewModel.dismissExecutionConfirmation { onTradeExecuted() }
                             },
                             onDismiss = {

@@ -38,11 +38,12 @@ const ANALYSIS_INTERVAL_MS = 15_000;
  */
 const POSITION_CHECK_INTERVAL_MS = 60_000;
 
-interface TradeAlert {
+export interface TradeAlert {
   id: string;
   symbol: string;
   signalPrice: number;
   targetEntryPrice?: number;
+  entryIntent?: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER';
   /** @deprecated Retained for v1.0 backward compatibility */
   entryPrice: number;
   stopLoss: number;
@@ -60,6 +61,7 @@ export interface TradeSetupSnapshot {
   readonly coinId: string;
   readonly strategy: string;
   readonly targetEntryPrice?: number;
+  readonly entryIntent?: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER';
   readonly positionSize?: number;
   readonly activatedAt: string;
   readonly exchangeName?: string;
@@ -917,6 +919,79 @@ export class TradingBot {
               return new Response(JSON.stringify({ error: 'Bot not properly initialized with a user.' }), { status: 500 });
             }
 
+            const coinId = (await this.state.storage.get('coinId')) as string;
+
+            let alertId: string | undefined;
+            let requestBody: any = {};
+            try {
+              requestBody = await request.clone().json() as any;
+              alertId = requestBody?.alertId;
+            } catch (e) {}
+
+            if (!alertId) {
+              return new Response(JSON.stringify({ error: 'alertId is required.' }), { status: 400 });
+            }
+
+            // Idempotency Check: If an intent already exists for this alertId, return success (execution already handled)
+            const existingIntentForAlert = await this.state.storage.get(`intent:order:${alertId}`) as any;
+            if (existingIntentForAlert) {
+              console.log(`[DIAGNOSTIC] Idempotent retry detected for alertId ${alertId}. Returning success.`);
+              return new Response(JSON.stringify({
+                success: true,
+                message: 'Execution already handled.',
+                orderId: alertId,
+                status: existingIntentForAlert.status === 'FILLED' ? 'filled' : 'open',
+              }), { status: 200 });
+            }
+
+            const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+            const target: TradeAlert | undefined = alerts.find((a) => a.id === alertId && (a.status === 'pending' || a.status === 'acknowledged'));
+            
+            if (!target) {
+              return new Response(JSON.stringify({ error: 'Trade alert not found, expired, or already executed.' }), { status: 409 });
+            }
+
+            // Signal TTL Enforcement (5 minutes = 300,000ms)
+            const MAX_SIGNAL_AGE_MS = 300000;
+            const signalAgeMs = Date.now() - new Date(target.timestamp).getTime();
+            if (signalAgeMs > MAX_SIGNAL_AGE_MS) {
+              console.warn(`[SAFETY GATE] Rejected stale signal execution. Age: ${signalAgeMs}ms. AlertId: ${target.id}`);
+              target.status = 'expired';
+              await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+              return new Response(JSON.stringify({ error: `Signal has expired. Maximum allowed execution latency is 5 minutes.` }), { status: 400 });
+            }
+
+            const side: 'BUY' | 'SELL' = target.side || 'BUY';
+            const committedStrategy: string | undefined = await this.state.storage.get('strategy');
+            const alertStrategy = (target.strategy || '').replace(/_NEW$/, '');
+            const normalizedStrategyId = StrategyRegistry.getInstance().normalizeStrategyId(alertStrategy);
+            if (committedStrategy) {
+              const normalizedCommittedId = StrategyRegistry.getInstance().normalizeStrategyId(committedStrategy);
+              if (normalizedStrategyId.toLowerCase() !== normalizedCommittedId.toLowerCase()) {
+                console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Alert strategy '${normalizedStrategyId}' does not match committed bot strategy '${normalizedCommittedId}'. AlertId: ${target.id}`);
+                return new Response(JSON.stringify({ error: `Execution rejected: Trade alert strategy '${normalizedStrategyId}' does not match committed bot strategy '${normalizedCommittedId}'.` }), { status: 409 });
+              }
+            }
+            const alertManifest = StrategyRegistry.getInstance().getManifest(normalizedStrategyId);
+            if (side === 'SELL' && alertManifest && !alertManifest.supportsShort) {
+              console.error(`[SAFETY GATE: FATAL] Rejected short execution for long-only strategy ${normalizedStrategyId}. AlertId: ${target.id}`);
+              return new Response(JSON.stringify({ error: `Cannot execute SELL order: Strategy '${normalizedStrategyId}' does not support short positions.` }), { status: 400 });
+            }
+
+            // [SAFETY GATE: STRICT SCHEMA READINESS CHECK]
+            try {
+              const tableInfo = await this.env.DB.prepare("PRAGMA table_info('trade_positions')").all();
+              const hasTargetEntryPrice = tableInfo.results.some((r: any) => r.name === 'target_entry_price');
+              const hasEntryStatus = tableInfo.results.some((r: any) => r.name === 'entry_status');
+              if (!hasTargetEntryPrice || !hasEntryStatus) {
+                console.error(`[SAFETY GATE: FATAL] Database schema is incomplete. Migration 0016 or 0024 missing. Missing required columns. Execution HALTED.`);
+                return new Response(JSON.stringify({ error: 'System deployment incomplete. Missing required D1 database migrations. Execution halted to prevent un-trackable exchange inventory.' }), { status: 503 });
+              }
+            } catch (schemaErr: any) {
+              console.error(`[SAFETY GATE: FATAL] Failed to verify D1 schema readiness: ${schemaErr.message}`);
+              return new Response(JSON.stringify({ error: 'Failed to verify persistence readiness. Execution halted.' }), { status: 500 });
+            }
+
             const userKeys = await this.env.DB.prepare(
               'SELECT exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt, exchange_name, exchange_environment, exchange_region, fcm_token FROM users WHERE id = ?'
             ).bind(userId).first<any>();
@@ -957,73 +1032,6 @@ export class TradingBot {
               region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
               ...this.resolveEgressConfig(userKeys.exchange_name),
             });
-
-            const coinId = (await this.state.storage.get('coinId')) as string;
-
-            let alertId: string | undefined;
-            try {
-              const body = await request.clone().json() as any;
-              alertId = body.alertId;
-            } catch (e) {}
-
-            if (!alertId) {
-              return new Response(JSON.stringify({ error: 'alertId is required.' }), { status: 400 });
-            }
-
-            // [SAFETY GATE: STRICT SCHEMA READINESS CHECK]
-            // We must absolutely guarantee the persistence layer is capable of tracking this execution
-            // BEFORE we ever dispatch a non-idempotent intent to the remote exchange.
-            // Requirement: Migration 0024 (target_entry_price) MUST exist.
-            try {
-              const tableInfo = await this.env.DB.prepare("PRAGMA table_info('trade_positions')").all();
-              const hasTargetEntryPrice = tableInfo.results.some((r: any) => r.name === 'target_entry_price');
-              const hasEntryStatus = tableInfo.results.some((r: any) => r.name === 'entry_status');
-              if (!hasTargetEntryPrice || !hasEntryStatus) {
-                console.error(`[SAFETY GATE: FATAL] Database schema is incomplete. Migration 0016 or 0024 missing. Missing required columns. Execution HALTED.`);
-                return new Response(JSON.stringify({ error: 'System deployment incomplete. Missing required D1 database migrations. Execution halted to prevent un-trackable exchange inventory.' }), { status: 503 });
-              }
-            } catch (schemaErr: any) {
-              console.error(`[SAFETY GATE: FATAL] Failed to verify D1 schema readiness: ${schemaErr.message}`);
-              return new Response(JSON.stringify({ error: 'Failed to verify persistence readiness. Execution halted.' }), { status: 500 });
-            }
-
-            // Idempotency Check: If an intent already exists for this alertId, return success (execution already handled)
-            const existingIntentForAlert = await this.state.storage.get(`intent:order:${alertId}`) as any;
-            if (existingIntentForAlert) {
-              console.log(`[DIAGNOSTIC] Idempotent retry detected for alertId ${alertId}. Returning success.`);
-              return new Response(JSON.stringify({
-                success: true,
-                message: 'Execution already handled.',
-                orderId: alertId,
-                status: existingIntentForAlert.status === 'FILLED' ? 'filled' : 'open',
-              }), { status: 200 });
-            }
-
-            const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-            const target: TradeAlert | undefined = alerts.find((a) => a.id === alertId && (a.status === 'pending' || a.status === 'acknowledged'));
-            
-            if (!target) {
-              return new Response(JSON.stringify({ error: 'Trade alert not found, expired, or already executed.' }), { status: 409 });
-            }
-
-            // Signal TTL Enforcement (5 minutes = 300,000ms)
-            const MAX_SIGNAL_AGE_MS = 300000;
-            const signalAgeMs = Date.now() - new Date(target.timestamp).getTime();
-            if (signalAgeMs > MAX_SIGNAL_AGE_MS) {
-              console.warn(`[SAFETY GATE] Rejected stale signal execution. Age: ${signalAgeMs}ms. AlertId: ${target.id}`);
-              target.status = 'expired';
-              await this.state.storage.put('alerts', this.pruneAlerts(alerts));
-              return new Response(JSON.stringify({ error: `Signal has expired. Maximum allowed execution latency is 5 minutes.` }), { status: 400 });
-            }
-
-            const side: 'BUY' | 'SELL' = target.side || 'BUY';
-            const alertStrategy = (target.strategy || '').replace(/_NEW$/, '');
-            const normalizedStrategyId = StrategyRegistry.getInstance().normalizeStrategyId(alertStrategy);
-            const alertManifest = StrategyRegistry.getInstance().getManifest(normalizedStrategyId);
-            if (side === 'SELL' && alertManifest && !alertManifest.supportsShort) {
-              console.error(`[SAFETY GATE: FATAL] Rejected short execution for long-only strategy ${normalizedStrategyId}. AlertId: ${target.id}`);
-              return new Response(JSON.stringify({ error: `Cannot execute SELL order: Strategy '${normalizedStrategyId}' does not support short positions.` }), { status: 400 });
-            }
             const rawSymbol = coinId || target.symbol || 'BTC/USDT';
             const orderSymbol = rawSymbol.includes('/') ? rawSymbol : `${rawSymbol}/USDT`;
             const clientOrderId = target.id;
@@ -1046,8 +1054,12 @@ export class TradingBot {
           await this.logAuditEvent(userId, 'TRADE_SUBMITTED', { symbol: orderSymbol, side, clientOrderId, strategy: target.strategy, entryPrice: target.entryPrice });
 
             let orderResult: any = { success: true, message: 'Trade executed (simulated).', orderId: clientOrderId };
+            const entryIntent: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER' = requestBody?.entryIntent || target.entryIntent || 'WAIT_FOR_PRICE';
             let orderType: 'MARKET' | 'LIMIT' = 'MARKET';
             let limitPrice: number | undefined = undefined;
+            let triggerPrice: number | undefined = undefined;
+            let triggerDirection: 1 | 2 | undefined = undefined;
+            let timeInForce: 'GTC' | 'IOC' = 'GTC';
             let executionSnapshot: TradeExecutionSnapshot | null = null;
 
             try {
@@ -1056,10 +1068,19 @@ export class TradingBot {
                 const currentPrice = (typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0)) || target.signalPrice || target.entryPrice;
                 const targetPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
                 
-                const deltaPercent = currentPrice > 0 ? (Math.abs(targetPrice - currentPrice) / currentPrice) : 0;
-                if (target.targetEntryPrice && deltaPercent > 0.0005) {
+                if (entryIntent === 'WAIT_FOR_PRICE') {
                   orderType = 'LIMIT';
-                  limitPrice = target.targetEntryPrice;
+                  limitPrice = targetPrice;
+                  timeInForce = 'GTC';
+                } else if (entryIntent === 'IMMEDIATE') {
+                  orderType = 'MARKET';
+                  limitPrice = undefined;
+                  timeInForce = 'IOC';
+                } else if (entryIntent === 'TRIGGER') {
+                  orderType = 'MARKET';
+                  triggerPrice = targetPrice;
+                  triggerDirection = triggerPrice >= currentPrice ? 1 : 2;
+                  timeInForce = 'GTC';
                 }
 
                 const positionSizeUsdt = target.positionSize || 100;
@@ -1067,6 +1088,8 @@ export class TradingBot {
                 let tickSize = 0.01;
                 let minNotional = 5;
                 let minQty = 0.00001;
+                let priceLimitRatioX: number = 0.10;
+                let priceLimitRatioY: number = 0.10;
 
                 try {
                   const markets = await adapter.fetchMarkets();
@@ -1074,6 +1097,8 @@ export class TradingBot {
                   if (matched) {
                     if (matched.precision?.amount) stepSize = matched.precision.amount;
                     if (matched.precision?.price) tickSize = matched.precision.price;
+                    if ((matched as any).priceLimitRatioX) priceLimitRatioX = (matched as any).priceLimitRatioX;
+                    if ((matched as any).priceLimitRatioY) priceLimitRatioY = (matched as any).priceLimitRatioY;
                     if (matched.limits?.cost?.min) {
                       const costMin = matched.limits.cost.min as any;
                       minNotional = typeof costMin?.toNumber === 'function' ? costMin.toNumber() : (typeof costMin === 'number' ? costMin : 5);
@@ -1089,7 +1114,12 @@ export class TradingBot {
 
                 const rulesRes = TradeValidator.validate({
                   symbol: orderSymbol,
-                  entryPrice: limitPrice || currentPrice,
+                  side: target.side,
+                  orderType: orderType,
+                  entryIntent: entryIntent,
+                  entryPrice: limitPrice || triggerPrice || currentPrice,
+                  currentMarketPrice: currentPrice,
+                  markPrice: currentPrice,
                   tradeValueUsdt: positionSizeUsdt
                 }, {
                   schemaVersion: "2.0",
@@ -1105,6 +1135,9 @@ export class TradingBot {
                   minPrice: 0,
                   maxPrice: 999999999,
                   contractSize: 1,
+                  priceLimitRatioX: priceLimitRatioX,
+                  priceLimitRatioY: priceLimitRatioY,
+                  markPrice: currentPrice,
                   lastUpdated: Date.now()
                 });
 
@@ -1156,10 +1189,14 @@ export class TradingBot {
                    type: executionSnapshot.orderType.toLowerCase(),
                    amount: new BigNumber(executionSnapshot.quantizedQuantity),
                    clientOrderId: executionSnapshot.clientOrderId,
+                   timeInForce: timeInForce,
                    params: {}
                 };
-                if (req.type === 'limit') req.timeInForce = 'IOC';
                 if (executionSnapshot.limitPrice) req.price = new BigNumber(executionSnapshot.limitPrice);
+                if (triggerPrice) {
+                  req.triggerPrice = new BigNumber(triggerPrice);
+                  req.triggerDirection = triggerDirection;
+                }
                 if (executionSnapshot.takeProfit) req.takeProfit = executionSnapshot.takeProfit;
                 if (executionSnapshot.stopLoss) req.stopLoss = executionSnapshot.stopLoss;
 
@@ -1455,12 +1492,22 @@ export class TradingBot {
         const body = await request.json<any>().catch(() => ({}));
         const userId: string | undefined = body.userId || (await this.state.storage.get('userId'));
         const alertId: string = body.alertId || crypto.randomUUID();
-        const symbol: string | undefined = body.symbol || ((await this.state.storage.get('coinId')) as string);
-        const strategy: string | undefined = body.strategy || ((await this.state.storage.get('strategy')) as string);
-        const side: 'BUY' | 'SELL' = body.side?.toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+
+        const alerts = ((await this.state.storage.get('alerts')) as any[]) || [];
+        let target = alerts.find((a: any) => a.id === alertId);
+        if (!target) {
+          const newAlert = (await this.state.storage.get('newAlert')) as any;
+          if (newAlert && newAlert.id === alertId) {
+            target = newAlert;
+          }
+        }
+
+        const symbol: string | undefined = body.symbol || target?.symbol || ((await this.state.storage.get('coinId')) as string);
+        const strategy: string | undefined = body.strategy || target?.strategy || ((await this.state.storage.get('strategy')) as string);
+        const side: 'BUY' | 'SELL' = (body.side || target?.side)?.toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
         const positionSizeUsdt: number = typeof body.positionSizeUsdt === 'number' && body.positionSizeUsdt > 0
           ? body.positionSizeUsdt
-          : (((await this.state.storage.get('positionSize')) as number) || 100);
+          : (typeof target?.positionSize === 'number' && target.positionSize > 0 ? target.positionSize : (((await this.state.storage.get('positionSize')) as number) || 100));
 
         if (!userId) {
           return new Response(JSON.stringify({ success: false, message: 'Unauthorized: Missing user context.' }), { status: 401 });

@@ -4,6 +4,11 @@ import { SymbolTradingRules, ValidationErrorReason } from "../exchanges/types";
 export interface TradeValidationParams {
   symbol: string;
   entryPrice: number;
+  side?: 'BUY' | 'SELL' | 'buy' | 'sell';
+  orderType?: 'LIMIT' | 'MARKET' | 'limit' | 'market';
+  entryIntent?: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER';
+  markPrice?: number;
+  currentMarketPrice?: number;
   tradeValueUsdt?: number;
   quantity?: number;
   stopLoss?: number;
@@ -92,6 +97,41 @@ export class TradeValidator {
             errorMessage: `Entry price ($${entryPriceBN.toFixed()}) does not align with exchange tick size (${tickSizeBN.toFixed()}).`,
             metrics: { durationMs: performance.now() - startTime, stepReached: 3 },
           };
+        }
+      }
+    }
+
+    // 3.5 Dynamic Price Band Validation (Bybit Dynamic Mark Price Bands)
+    const refPrice = params.markPrice || params.currentMarketPrice || rules.markPrice;
+    if (refPrice && refPrice > 0) {
+      const refPriceBN = new BigNumber(refPrice);
+      const ratioX = rules.priceLimitRatioX ? new BigNumber(rules.priceLimitRatioX) : new BigNumber(0.10);
+      const ratioY = rules.priceLimitRatioY ? new BigNumber(rules.priceLimitRatioY) : new BigNumber(0.10);
+
+      const isBuy = !params.side || params.side.toUpperCase() === 'BUY';
+      const isLimitOrWait = !params.orderType || params.orderType.toUpperCase() === 'LIMIT' || params.entryIntent === 'WAIT_FOR_PRICE';
+
+      if (isLimitOrWait) {
+        if (isBuy && ratioX.isGreaterThan(0)) {
+          const maxBandPrice = refPriceBN.multipliedBy(new BigNumber(1).plus(ratioX));
+          if (entryPriceBN.isGreaterThan(maxBandPrice)) {
+            return {
+              isValid: false,
+              errorCode: ValidationErrorReason.PRICE_ABOVE_MAXIMUM,
+              errorMessage: `Limit Buy price ($${entryPriceBN.toFixed()}) exceeds exchange dynamic price band ($${maxBandPrice.toFixed()}). Current mark price is $${refPriceBN.toFixed()}.`,
+              metrics: { durationMs: performance.now() - startTime, stepReached: 3.5 },
+            };
+          }
+        } else if (!isBuy && ratioY.isGreaterThan(0)) {
+          const minBandPrice = refPriceBN.multipliedBy(new BigNumber(1).minus(ratioY));
+          if (entryPriceBN.isLessThan(minBandPrice)) {
+            return {
+              isValid: false,
+              errorCode: ValidationErrorReason.PRICE_BELOW_MINIMUM,
+              errorMessage: `Limit Sell price ($${entryPriceBN.toFixed()}) is below exchange dynamic price band ($${minBandPrice.toFixed()}). Current mark price is $${refPriceBN.toFixed()}.`,
+              metrics: { durationMs: performance.now() - startTime, stepReached: 3.5 },
+            };
+          }
         }
       }
     }

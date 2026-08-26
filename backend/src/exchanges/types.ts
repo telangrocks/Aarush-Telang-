@@ -36,6 +36,9 @@ export interface SymbolTradingRules {
   maxPrice: number;
   contractSize: number;
   maxPosition?: number;
+  priceLimitRatioX?: number | string;
+  priceLimitRatioY?: number | string;
+  markPrice?: number;
   additionalFilters?: ExchangeFilterConstraint[];
   lastUpdated: number;
 }

@@ -508,7 +508,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
           price: { min: new BigNumber(minPrice) },
           cost: { min: new BigNumber(minNotional) },
         },
-      });
+        priceLimitRatioX: item.priceLimitRatioX ? parseFloat(item.priceLimitRatioX) : undefined,
+        priceLimitRatioY: item.priceLimitRatioY ? parseFloat(item.priceLimitRatioY) : undefined,
+      } as any);
     }
     return markets;
   }
@@ -558,6 +560,18 @@ export class BybitAdapter extends BaseExchangeAdapter {
       qty: qtyStr,
       timeInForce: order.timeInForce || 'GTC',
     };
+
+    if ((order as any).triggerPrice) {
+      const triggerBN = new BigNumber((order as any).triggerPrice);
+      params.triggerPrice = triggerBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
+      params.triggerBy = (order as any).triggerBy || 'LastPrice';
+      if ((order as any).triggerDirection) {
+        params.triggerDirection = (order as any).triggerDirection;
+      }
+      if ((order as any).orderFilter) {
+        params.orderFilter = (order as any).orderFilter;
+      }
+    }
 
     if ((order as any).reduceOnly === true) {
       params.reduceOnly = true;

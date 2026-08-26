@@ -3,6 +3,33 @@ package com.cryptopulse.app.domain.models
 import androidx.compose.runtime.Immutable
 
 @Immutable
+data class FactorContribution(
+    val factor: String,
+    val weight: Int,
+    val score: Int,
+    val level: String
+)
+
+@Immutable
+data class StrategyParameter(
+    val key: String,
+    val label: String,
+    val value: String
+)
+
+@Immutable
+data class StrategyMetadata(
+    val strategyId: String,
+    val displayName: String,
+    val primaryTimeframe: String,
+    val timeframesAnalyzed: List<String>,
+    val category: String,
+    val riskProfile: String,
+    val parameters: List<StrategyParameter>,
+    val factorContributions: List<FactorContribution>
+)
+
+@Immutable
 data class EngineStatusDTO(
     val state: String?,
     val activeStrategy: String?,
@@ -54,5 +81,7 @@ data class AnalysisSnapshot(
     val engineStatus: EngineStatusDTO?,
     val marketAnalysis: MarketAnalysisDTO?,
     val tradingSignal: SignalDTO?,
-    val opportunity: BotAlert?
+    val opportunity: BotAlert?,
+    val strategyMetadata: StrategyMetadata? = null
 )
+

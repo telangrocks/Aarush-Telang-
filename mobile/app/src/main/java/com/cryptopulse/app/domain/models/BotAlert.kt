@@ -13,6 +13,7 @@ data class BotAlert(
     val signalPrice: Double? = null,
     val targetEntryPrice: Double? = null,
     val positionSize: Double? = null,
+    val entryIntent: String? = null,
 ) {
     companion object {
         fun fromMap(map: Map<String, Any>): BotAlert = BotAlert(
@@ -28,6 +29,7 @@ data class BotAlert(
             signalPrice = (map["signalPrice"] as? Number)?.toDouble() ?: (map["entryPrice"] as? Number)?.toDouble(),
             targetEntryPrice = (map["targetEntryPrice"] as? Number)?.toDouble(),
             positionSize = (map["positionSize"] as? Number)?.toDouble(),
+            entryIntent = map["entryIntent"] as? String,
         )
     }
 }

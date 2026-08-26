@@ -15,7 +15,19 @@ fun BotAlertDto.toDomain(): BotAlert = BotAlert(
     timestamp = timestamp,
     signalPrice = signalPrice,
     targetEntryPrice = targetEntryPrice,
-    positionSize = positionSize
+    positionSize = positionSize,
+    entryIntent = entryIntent
+)
+
+fun StrategyMetadataDto.toDomain(): StrategyMetadata = StrategyMetadata(
+    strategyId = strategyId ?: "ScalperV2",
+    displayName = displayName ?: "Scalper V2",
+    primaryTimeframe = primaryTimeframe ?: "15m",
+    timeframesAnalyzed = timeframesAnalyzed ?: listOf("15m"),
+    category = category ?: "Trading",
+    riskProfile = riskProfile ?: "Medium",
+    parameters = parameters?.map { StrategyParameter(it.key ?: "", it.label ?: "", it.value ?: "") } ?: emptyList(),
+    factorContributions = factorContributions?.map { FactorContribution(it.factor ?: "", it.weight ?: 25, it.score ?: 50, it.level ?: "MEDIUM") } ?: emptyList()
 )
 
 fun AnalysisSnapshotDto.toDomain(): AnalysisSnapshot = AnalysisSnapshot(
@@ -35,7 +47,8 @@ fun AnalysisSnapshotDto.toDomain(): AnalysisSnapshot = AnalysisSnapshot(
     tradingSignal = (tradingSignal?.let { s -> 
         SignalDTO(s.type ?: "HOLD", s.entryContext ?: "NONE", s.signalPrice ?: 0.0, s.targetEntryPrice ?: 0.0, s.stopLoss ?: 0.0, s.takeProfit ?: 0.0, s.riskClassification ?: "MEDIUM", s.reasoning ?: emptyList()) 
     }),
-    opportunity = opportunity?.toDomain()
+    opportunity = opportunity?.toDomain(),
+    strategyMetadata = strategyMetadata?.toDomain()
 )
 
 fun TradeExecutionStatusDto.toDomain(): TradeExecutionResult = TradeExecutionResult(
@@ -72,10 +85,10 @@ fun ExecuteTradeResponseDto.toDomain(fallbackAlertId: String): TradeExecutionRes
     side = side ?: "BUY",
     strategy = "",
     exchange = "bybit",
-    environment = if (isMockTrade == true) "demo" else "mainnet",
+    environment = "demo",
     orderType = "MARKET",
-    status = if (isMockTrade == true) "OPEN" else "PENDING_ENTRY",
-    entryStatus = if (isMockTrade == true) "FILLED" else "PENDING_ENTRY",
+    status = "PENDING_ENTRY",
+    entryStatus = "PENDING_ENTRY",
     requestedEntryPrice = executionPrice ?: 0.0,
     actualFillPrice = executionPrice ?: 0.0,
     requestedQuantity = quantity ?: 0.0,
@@ -86,7 +99,7 @@ fun ExecuteTradeResponseDto.toDomain(fallbackAlertId: String): TradeExecutionRes
     slippagePercent = 0.0,
     submittedAt = executedAt ?: "",
     executedAt = executedAt ?: "",
-    isFilled = isMockTrade == true && (executionPrice ?: 0.0) > 0.0,
-    isMockTrade = isMockTrade ?: false
+    isFilled = false,
+    isMockTrade = false
 )
 

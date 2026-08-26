@@ -11,9 +11,9 @@ import com.cryptopulse.app.domain.models.TradeSetupConfig
 
 @Composable
 fun RiskManagementScreen(
-    strategy: Strategy,
+    strategy: Strategy? = null,
     viewModel: RiskManagementViewModel,
-    onActivateBot: (TradeSetupConfig) -> Unit,
+    onProceedToAnalysis: (TradeSetupConfig) -> Unit,
     onBack: () -> Unit
 ) {
     LaunchedEffect(strategy) {
@@ -30,7 +30,9 @@ fun RiskManagementScreen(
         Text("Risk Management", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))
 
-        Text("Selected Strategy: ${state.selectedStrategy?.name ?: ""}")
+        if (state.selectedStrategy != null) {
+            Text("Selected Strategy: ${state.selectedStrategy?.name ?: ""}")
+        }
         Text("Selected Pair: ${state.tradeSetupConfig?.symbol ?: ""}")
         Spacer(modifier = Modifier.height(24.dp))
 
@@ -80,12 +82,12 @@ fun RiskManagementScreen(
             onClick = {
                 val updatedConfig = viewModel.getUpdatedConfig()
                 if (updatedConfig != null) {
-                    onActivateBot(updatedConfig)
+                    onProceedToAnalysis(updatedConfig)
                 }
             },
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("ACTIVATE TRADING BOT")
+            Text("PROCEED TO TECHNICAL ANALYSIS")
         }
         Spacer(modifier = Modifier.height(8.dp))
         OutlinedButton(

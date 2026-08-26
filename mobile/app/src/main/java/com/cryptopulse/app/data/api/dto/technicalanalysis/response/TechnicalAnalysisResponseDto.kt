@@ -3,6 +3,7 @@ package com.cryptopulse.app.data.api.dto.technicalanalysis.response
 import com.cryptopulse.app.data.api.dto.bot.response.EngineStatusDto
 import com.cryptopulse.app.data.api.dto.bot.response.MarketAnalysisDto
 import com.cryptopulse.app.data.api.dto.bot.response.SignalDto
+import com.cryptopulse.app.data.api.dto.bot.response.StrategyMetadataDto
 
 data class CheckpointDto(val name: String, val status: String)
 
@@ -23,5 +24,7 @@ data class TechnicalAnalysisResponseDto(
     val timestamp: String,
     val engineStatus: EngineStatusDto? = null,
     val marketAnalysis: MarketAnalysisDto? = null,
-    val tradingSignal: SignalDto? = null
+    val tradingSignal: SignalDto? = null,
+    val strategyMetadata: StrategyMetadataDto? = null
 )
+

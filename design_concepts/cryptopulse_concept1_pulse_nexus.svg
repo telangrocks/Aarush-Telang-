@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="50%" stop-color="#0B0F19" />
+      <stop offset="100%" stop-color="#05070D" />
+    </linearGradient>
+
+    <!-- Border Glow Gradient -->
+    <linearGradient id="borderGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F5FF" stop-opacity="0.8" />
+      <stop offset="40%" stop-color="#3B82F6" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#00F5FF" stop-opacity="0.1" />
+    </linearGradient>
+
+    <!-- Primary Neon Gradient (Pulse) -->
+    <linearGradient id="pulseGrad1" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0066FF" />
+      <stop offset="35%" stop-color="#00F5FF" />
+      <stop offset="75%" stop-color="#00FFC2" />
+      <stop offset="100%" stop-color="#10B981" />
+    </linearGradient>
+
+    <!-- Secondary Accent Gradient -->
+    <linearGradient id="accentGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#6366F1" />
+    </linearGradient>
+
+    <!-- Core Radial Ambient Glow -->
+    <radialGradient id="ambientGlow1" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00F5FF" stop-opacity="0.25" />
+      <stop offset="50%" stop-color="#0066FF" stop-opacity="0.08" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Filter for subtle luxury drop shadow & neon glow -->
+    <filter id="glow1" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <filter id="intenseGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="blur1" />
+      <feGaussianBlur stdDeviation="4" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur1" />
+        <feMergeNode in="blur2" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Squircle App Icon Container -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGrad1)" stroke="url(#borderGrad1)" stroke-width="3" />
+  
+  <!-- Subtle Inner Grid / Matrix Pattern for Algorithmic Feel -->
+  <g opacity="0.06">
+    <circle cx="256" cy="256" r="160" fill="none" stroke="#00F5FF" stroke-width="1.5" stroke-dasharray="4 6" />
+    <circle cx="256" cy="256" r="210" fill="none" stroke="#00F5FF" stroke-width="1" stroke-dasharray="2 8" />
+    <line x1="256" y1="40" x2="256" y2="472" stroke="#00F5FF" stroke-width="1" stroke-dasharray="4 8" />
+    <line x1="40" y1="256" x2="472" y2="256" stroke="#00F5FF" stroke-width="1" stroke-dasharray="4 8" />
+  </g>
+
+  <!-- Ambient Core Glow -->
+  <rect x="56" y="56" width="400" height="400" rx="90" fill="url(#ambientGlow1)" />
+
+  <!-- Logo Mark: The Pulse Nexus -->
+  <g transform="translate(0, 0)">
+    <!-- Back Candlestick Bars (Automated Trading Volume/Signals) -->
+    <!-- Bar 1 (Left Signal) -->
+    <line x1="168" y1="200" x2="168" y2="340" stroke="#1E293B" stroke-width="4" stroke-linecap="round" />
+    <rect x="156" y="230" width="24" height="70" rx="6" fill="#1E293B" />
+    
+    <!-- Bar 2 (Mid-Left Upward Signal) -->
+    <line x1="214" y1="160" x2="214" y2="360" stroke="#334155" stroke-width="4" stroke-linecap="round" opacity="0.6" />
+    <rect x="202" y="195" width="24" height="110" rx="6" fill="url(#accentGrad1)" opacity="0.4" />
+
+    <!-- Ambient Shadow Under Main Pulse -->
+    <path d="M 104 270 L 170 270 L 205 210 L 245 320 L 290 150 L 335 285 L 365 240 L 408 240"
+          fill="none" stroke="#00F5FF" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" opacity="0.2" filter="url(#glow1)" />
+
+    <!-- Main High-Frequency Pulse Track (The Heartbeat of the Market) -->
+    <path d="M 104 270 L 170 270 L 205 210 L 245 320 L 290 150 L 335 285 L 365 240 L 408 240"
+          fill="none" stroke="url(#pulseGrad1)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" filter="url(#intenseGlow)" />
+
+    <!-- Core Dynamic Geometric Overlay: C-P Synthesis Ring / Hexagon Nodes -->
+    <!-- Left C Arc Flow -->
+    <path d="M 230 140 C 150 150, 110 210, 110 270 C 110 340, 165 390, 245 390 C 310 390, 360 355, 385 305" 
+          fill="none" stroke="url(#pulseGrad1)" stroke-width="8" stroke-linecap="round" opacity="0.85" stroke-dasharray="160 30" />
+
+    <!-- Right Upward Momentum Arrow / Signal Peak Indicator -->
+    <g transform="translate(290, 150)">
+      <circle cx="0" cy="0" r="14" fill="#00FFC2" filter="url(#glow1)" />
+      <circle cx="0" cy="0" r="7" fill="#FFFFFF" />
+      <polygon points="0,-26 -8,-10 8,-10" fill="#00FFC2" filter="url(#glow1)" />
+    </g>
+
+    <!-- Signal Trigger Nodes (Automated AI Trade Execution Points) -->
+    <circle cx="205" cy="210" r="5" fill="#38BDF8" />
+    <circle cx="245" cy="320" r="5" fill="#00F5FF" />
+    <circle cx="335" cy="285" r="5" fill="#00FFC2" />
+    <circle cx="365" cy="240" r="5" fill="#34D399" />
+    <circle cx="104" cy="270" r="6" fill="#0066FF" />
+    <circle cx="408" cy="240" r="6" fill="#10B981" />
+  </g>
+</svg>

@@ -99,6 +99,49 @@ class TradeSetupViewModelTest {
         val error = (result as TradeSetupConfigResult.ValidationFailed).errors["balance"]
         assertEquals("Insufficient balance", error)
     }
+
+    @Test
+    fun `candidate switch auto-populates entry price for new symbol with correct tick precision`() {
+        val penguCandidate = MarketCandidate(
+            symbol = "PENGUUSDT",
+            pairName = "PENGU/USDT",
+            minNotional = 5.0,
+            minOrderQty = 1.0,
+            qtyStep = 1.0,
+            tickSize = 0.000001,
+            minPrice = 0.000001,
+            maxPrice = 100.0,
+            maxQty = 1000000.0,
+            currentMarketPrice = 0.009647
+        )
+
+        // First select BTC
+        viewModel.setConstraints(testCandidate, "Bybit")
+        assertEquals("50000.00", viewModel.uiState.value.entryPrice)
+
+        // Now switch to PENGU
+        viewModel.setConstraints(penguCandidate, "Bybit")
+        val state = viewModel.uiState.value
+        assertEquals("PENGUUSDT", state.currentSymbol)
+        assertEquals("0.009647", state.entryPrice)
+        assertNull(state.entryPriceError)
+    }
+
+    @Test
+    fun `updating entry intent persists correctly in TradeSetupConfig`() = runTest {
+        viewModel.setConstraints(testCandidate, "Bybit")
+        viewModel.updateEntryPrice("49000.00", testCandidate, "Bybit")
+        viewModel.updateEntryIntent(com.cryptopulse.app.domain.models.EntryIntent.TRIGGER)
+
+        exchangeRepository.mockBalances = listOf(BalanceItem("USDT", 1000.0, 0.0, total = 1000.0))
+
+        val result = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 1000.0)
+        assertTrue(result is TradeSetupConfigResult.Success)
+
+        val config = (result as TradeSetupConfigResult.Success).config
+        assertEquals(com.cryptopulse.app.domain.models.EntryIntent.TRIGGER, config.entryIntent)
+        assertEquals(com.cryptopulse.app.domain.models.EntryIntent.TRIGGER, sessionRepository.savedConfig?.entryIntent)
+    }
 }
 
 class FakeTradeSessionRepository : TradeSessionRepository {

@@ -15,11 +15,17 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+import com.cryptopulse.app.domain.models.EntryIntent
+import java.util.Locale
+
 data class TradeSetupUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
+    val currentSymbol: String? = null,
+    val isEntryPriceManuallyEdited: Boolean = false,
     val entryPrice: String = "",
     val entryPriceError: String? = null,
+    val selectedEntryIntent: EntryIntent = EntryIntent.WAIT_FOR_PRICE,
     val minNotional: Double? = null,
     val minOrderQty: Double? = null,
     val qtyStep: Double? = null,
@@ -43,12 +49,32 @@ class TradeSetupViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(TradeSetupUiState())
     val uiState: StateFlow<TradeSetupUiState> = _uiState.asStateFlow()
 
+    private fun formatPriceToTickSize(price: Double, tickSize: Double?): String {
+        if (price <= 0.0) return ""
+        if (tickSize == null || tickSize >= 1.0) {
+            return String.format(Locale.US, "%.2f", price)
+        }
+        val tickStr = java.math.BigDecimal.valueOf(tickSize).stripTrailingZeros().toPlainString()
+        val decimals = if (tickStr.contains(".")) tickStr.substringAfter(".").length else 2
+        return String.format(Locale.US, "%.${decimals}f", price)
+    }
+
     fun setConstraints(
         candidate: MarketCandidate,
         exchangeName: String
     ) {
         _uiState.update { currentState ->
+            val isNewSymbol = currentState.currentSymbol != candidate.symbol
+            val initialEntryPrice = if (isNewSymbol && (!currentState.isEntryPriceManuallyEdited || currentState.entryPrice.isBlank())) {
+                formatPriceToTickSize(candidate.currentMarketPrice, candidate.tickSize)
+            } else {
+                currentState.entryPrice
+            }
+
             val updatedState = currentState.copy(
+                currentSymbol = candidate.symbol,
+                entryPrice = initialEntryPrice,
+                isEntryPriceManuallyEdited = if (isNewSymbol) false else currentState.isEntryPriceManuallyEdited,
                 minNotional = candidate.minNotional,
                 minOrderQty = candidate.minOrderQty,
                 qtyStep = candidate.qtyStep,
@@ -58,9 +84,9 @@ class TradeSetupViewModel @Inject constructor(
                 maxQty = candidate.maxQty
             )
             val rules = buildRules(updatedState, candidate, exchangeName)
-            val valRes = validateEntryPriceOnly(currentState.entryPrice, candidate.currentMarketPrice, rules)
+            val valRes = validateEntryPriceOnly(updatedState.entryPrice, candidate.currentMarketPrice, rules)
             updatedState.copy(
-                entryPriceError = if (currentState.entryPrice.isNotBlank() && !valRes.isValid) valRes.errorMessage else null
+                entryPriceError = if (updatedState.entryPrice.isNotBlank() && !valRes.isValid) valRes.errorMessage else null
             )
         }
     }
@@ -89,12 +115,20 @@ class TradeSetupViewModel @Inject constructor(
         )
     }
 
+    fun updateEntryIntent(intent: EntryIntent) {
+        _uiState.update { it.copy(selectedEntryIntent = intent) }
+    }
+
     fun updateEntryPrice(value: String, candidate: MarketCandidate, exchangeName: String) {
         _uiState.update { currentState ->
             val rules = buildRules(currentState, candidate, exchangeName)
             val valRes = validateEntryPriceOnly(value, candidate.currentMarketPrice, rules)
             val err = if (value.isBlank()) "Entry price is required." else if (!valRes.isValid) valRes.errorMessage else null
-            currentState.copy(entryPrice = value, entryPriceError = err)
+            currentState.copy(
+                entryPrice = value,
+                isEntryPriceManuallyEdited = true,
+                entryPriceError = err
+            )
         }
     }
 
@@ -149,7 +183,8 @@ class TradeSetupViewModel @Inject constructor(
             symbol = candidate.symbol,
             entryPrice = currentState.entryPrice.toDouble(),
             tradeValueUsdt = null,
-            parameters = emptyMap()
+            parameters = emptyMap(),
+            entryIntent = currentState.selectedEntryIntent
         )
         sessionRepository.setTradeSetupConfig(config)
         _uiState.update { it.copy(isLoading = false) }

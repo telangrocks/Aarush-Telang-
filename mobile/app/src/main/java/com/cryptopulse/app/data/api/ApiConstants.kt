@@ -21,11 +21,13 @@ object ApiConstants {
     const val BOT_STATUS = "/api/trading-bot/status"
     const val BOT_ANALYSIS_STATUS = "/api/trading-bot/analysis-status"
     const val BOT_EXECUTE_TRADE = "/api/trading-bot/execute-trade"
+    @Deprecated("Do not use in production Android flow. Production executions must use BOT_EXECUTE_TRADE.", level = DeprecationLevel.WARNING)
     const val BOT_MOCK_TRADE = "/api/trading-bot/mock-trade"
     const val BOT_STOP_TRADE = "/api/trading-bot/stop-trade"
     const val BOT_ALERTS = "/api/trading-bot/alerts"
     const val BOT_ALERTS_ACKNOWLEDGE = "/api/trading-bot/alerts/acknowledge"
     const val BOT_EXECUTION_STATUS = "/api/trading-bot/execution-status/{positionId}"
+    const val BOT_TRIGGER_ALERT = "/api/trading-bot/trigger-alert"
 
     const val FCM_REGISTER = "/api/fcm/register"
 }

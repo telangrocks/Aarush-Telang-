@@ -19,8 +19,10 @@ class TechnicalAnalysisRepositoryImpl @Inject constructor(
     private val dispatcherProvider: DispatcherProvider
 ) : TechnicalAnalysisRepository {
 
+    private val gson = com.google.gson.Gson()
+
     override suspend fun getAnalysis(symbol: String, strategy: String, config: com.cryptopulse.app.domain.models.TradeSetupConfig?): NetworkResult<TechnicalAnalysisResult> = withContext(dispatcherProvider.io) {
-        val request = TechnicalAnalysisRequestDto(symbol, strategy, config?.let { com.google.gson.Gson().fromJson(com.google.gson.Gson().toJson(it), Map::class.java) as Map<String, Any> })
+        val request = TechnicalAnalysisRequestDto(symbol, strategy, config?.let { gson.fromJson(gson.toJson(it), Map::class.java) as Map<String, Any> })
         when (val result = technicalAnalysisRemoteDataSource.getAnalysis(request)) {
             is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain())
             is NetworkResult.Error -> result
@@ -28,7 +30,7 @@ class TechnicalAnalysisRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getAnalysisSnapshot(symbol: String, strategy: String, config: com.cryptopulse.app.domain.models.TradeSetupConfig?): NetworkResult<AnalysisSnapshot> = withContext(dispatcherProvider.io) {
-        val request = TechnicalAnalysisRequestDto(symbol, strategy, config?.let { com.google.gson.Gson().fromJson(com.google.gson.Gson().toJson(it), Map::class.java) as Map<String, Any> })
+        val request = TechnicalAnalysisRequestDto(symbol, strategy, config?.let { gson.fromJson(gson.toJson(it), Map::class.java) as Map<String, Any> })
         when (val result = technicalAnalysisRemoteDataSource.getAnalysis(request)) {
             is NetworkResult.Success -> NetworkResult.Success(result.data.toAnalysisSnapshot())
             is NetworkResult.Error -> result

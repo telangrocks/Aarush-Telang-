@@ -14,6 +14,30 @@ data class ConditionSummaryDto(
     val status: String? = null
 )
 
+data class FactorContributionDto(
+    val factor: String? = null,
+    val weight: Int? = null,
+    val score: Int? = null,
+    val level: String? = null
+)
+
+data class StrategyParameterDto(
+    val key: String? = null,
+    val label: String? = null,
+    val value: String? = null
+)
+
+data class StrategyMetadataDto(
+    val strategyId: String? = null,
+    val displayName: String? = null,
+    val primaryTimeframe: String? = null,
+    val timeframesAnalyzed: List<String>? = null,
+    val category: String? = null,
+    val riskProfile: String? = null,
+    val parameters: List<StrategyParameterDto>? = null,
+    val factorContributions: List<FactorContributionDto>? = null
+)
+
 data class EngineStatusDto(
     val state: String? = null,
     val activeStrategy: String? = null,
@@ -46,5 +70,7 @@ data class AnalysisSnapshotDto(
     val engineStatus: EngineStatusDto? = null,
     val marketAnalysis: MarketAnalysisDto? = null,
     val tradingSignal: SignalDto? = null,
-    val opportunity: BotAlertDto? = null
+    val opportunity: BotAlertDto? = null,
+    val strategyMetadata: StrategyMetadataDto? = null
 )
+

@@ -85,6 +85,7 @@ class BotExecutionBridgeTest {
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "Stopped"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
+            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Success(BotAlertDto("a1", "BTCUSDT", 50000.0, 49000.0, 52000.0, 200.0, "ScalperV2", "BUY", "2026-08-24T00:00:00Z", 50000.0, 50000.0))
 
             override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> {
                 callCount++

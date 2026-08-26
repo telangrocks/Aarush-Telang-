@@ -132,7 +132,9 @@ export class BreakoutStrategy implements IStrategy {
         reasoning: tradingSignal.reasoning,
         signal: tradingSignal,
         indicatorSnapshot,
-        conditionResult
+        conditionResult,
+        confidenceScore,
+        strategyConfig: this.config,
       }
     };
   }

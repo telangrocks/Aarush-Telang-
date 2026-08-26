@@ -17,5 +17,6 @@ data class TradeSetupConfig(
     val entryPrice: Double,
     val tradeValueUsdt: Double? = null,
     val parameters: Map<String, String> = emptyMap(),
-    val riskParameters: Map<String, Double> = emptyMap()
+    val riskParameters: Map<String, Double> = emptyMap(),
+    val entryIntent: EntryIntent = EntryIntent.WAIT_FOR_PRICE
 )

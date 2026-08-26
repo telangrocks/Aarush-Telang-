@@ -613,7 +613,6 @@ class ExchangeViewModel @Inject constructor(
         val stopLoss = (alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: (entryPrice * 0.985)
         val takeProfit = (alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: (entryPrice * 1.03)
         val positionSizeUsdt = (alert["positionSize"] as? Double) ?: 100.0
-        val isMock = alert["isMockTrade"] as? Boolean ?: false
 
         val requestDto = com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto(
             alertId = alertId,
@@ -625,8 +624,7 @@ class ExchangeViewModel @Inject constructor(
             stopLoss = stopLoss,
             takeProfit = takeProfit,
             positionSizeUsdt = positionSizeUsdt,
-            strategy = strategy,
-            isMockTrade = isMock
+            strategy = strategy
         )
 
         _tradeError.value = null

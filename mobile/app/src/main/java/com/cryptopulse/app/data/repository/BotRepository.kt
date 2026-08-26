@@ -32,6 +32,15 @@ class BotRepositoryImpl @Inject constructor(
     private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
     override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
 
+    private val _activeBotAnalysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+    override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _activeBotAnalysisState.asStateFlow()
+
+    private val _committedStrategyId = MutableStateFlow<String?>(null)
+    override val committedStrategyId: StateFlow<String?> = _committedStrategyId.asStateFlow()
+
+    private val _isBotActive = MutableStateFlow(false)
+    override val isBotActive: StateFlow<Boolean> = _isBotActive.asStateFlow()
+
     private val _isConnected = MutableStateFlow(false)
     override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
@@ -49,8 +58,13 @@ class BotRepositoryImpl @Inject constructor(
         )
         when (val result = botRemoteDataSource.activate(request)) {
             is NetworkResult.Success -> {
-                if (result.data.success) NetworkResult.Success(Unit)
-                else NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception(result.data.message)))
+                if (result.data.success) {
+                    _committedStrategyId.value = strategy
+                    _isBotActive.value = true
+                    NetworkResult.Success(Unit)
+                } else {
+                    NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception(result.data.message)))
+                }
             }
             is NetworkResult.Error -> result
         }
@@ -58,7 +72,11 @@ class BotRepositoryImpl @Inject constructor(
 
     override suspend fun deactivateBot(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.deactivate()) {
-            is NetworkResult.Success -> NetworkResult.Success(Unit)
+            is NetworkResult.Success -> {
+                _isBotActive.value = false
+                _committedStrategyId.value = null
+                NetworkResult.Success(Unit)
+            }
             is NetworkResult.Error -> result
         }
     }
@@ -67,6 +85,8 @@ class BotRepositoryImpl @Inject constructor(
         when (val result = botRemoteDataSource.getStatus()) {
             is NetworkResult.Success -> {
                 val state = if (result.data.isActive) BotState.ANALYSING else BotState.STOPPED
+                _isBotActive.value = result.data.isActive
+                _committedStrategyId.value = result.data.strategy
                 val botStatus = BotStatus(
                     state = state,
                     isActive = result.data.isActive,
@@ -86,6 +106,7 @@ class BotRepositoryImpl @Inject constructor(
         }
     }
 
+    @Deprecated("Do not use in production. Real trades must use executeTrade(alertId).", level = DeprecationLevel.WARNING)
     override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.executeMockTrade(request)) {
             is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain(request.alertId.ifBlank { "mock_trade" }))
@@ -108,7 +129,7 @@ class BotRepositoryImpl @Inject constructor(
                     val domainModel = result.data.toDomain()
                     emit(domainModel)
                     if (domainModel.isFilled || domainModel.entryStatus == "FAILED" || domainModel.entryStatus == "CANCELLED" || domainModel.entryStatus == "REJECTED") {
-                        return@flow
+                        break
                     }
                 }
                 is NetworkResult.Error -> {
@@ -140,6 +161,18 @@ class BotRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = withContext(dispatcherProvider.io) {
+        val request = com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto(
+            symbol = symbol,
+            strategy = strategy,
+            config = config?.let { com.google.gson.Gson().fromJson(com.google.gson.Gson().toJson(it), Map::class.java) as Map<String, Any> }
+        )
+        when (val result = botRemoteDataSource.triggerAlert(request)) {
+            is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain())
+            is NetworkResult.Error -> result
+        }
+    }
+
     override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {
         _analysisState.value = snapshot
     }
@@ -155,7 +188,12 @@ class BotRepositoryImpl @Inject constructor(
             while (pollingJob?.isActive == true) {
                 when (val result = botRemoteDataSource.getAnalysisStatus()) {
                     is NetworkResult.Success -> {
-                        _analysisState.value = result.data.toDomain()
+                        val dto = result.data
+                        val domainSnapshot = dto.toDomain()
+                        _analysisState.value = domainSnapshot
+                        _activeBotAnalysisState.value = domainSnapshot
+                        _committedStrategyId.value = dto.strategyMetadata?.strategyId ?: dto.engineStatus?.activeStrategy
+                        _isBotActive.value = dto.engineStatus?.state != null && dto.engineStatus.state != "STOPPED"
                     }
                     is NetworkResult.Error -> {
                         _isConnected.value = false

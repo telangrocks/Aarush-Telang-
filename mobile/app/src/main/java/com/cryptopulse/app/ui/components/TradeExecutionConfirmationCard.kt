@@ -27,7 +27,7 @@ import java.util.Locale
 @Composable
 fun TradeExecutionConfirmationCard(
     result: TradeExecutionResult,
-    onViewInPortfolio: () -> Unit,
+    onViewCandidates: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -252,8 +252,8 @@ fun TradeExecutionConfirmationCard(
                 }
 
                 GradientButton(
-                    text = "View Portfolio",
-                    onClick = onViewInPortfolio,
+                    text = "VIEW TOP 10 OPPORTUNITIES",
+                    onClick = onViewCandidates,
                     modifier = Modifier.weight(1.4f)
                 )
             }

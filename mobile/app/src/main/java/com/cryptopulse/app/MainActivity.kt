@@ -11,8 +11,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
@@ -79,6 +81,9 @@ class MainActivity : FragmentActivity() {
 
     @Inject
     lateinit var fcmRepository: com.cryptopulse.app.domain.repository.FcmRepository
+
+    @Inject
+    lateinit var tradeSessionRepository: com.cryptopulse.app.domain.repository.TradeSessionRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -209,15 +214,10 @@ class MainActivity : FragmentActivity() {
                                 val parentEntry = remember(backStackEntry) {
                                     navController.getBackStackEntry("authenticated_flow")
                                 }
-                                val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
                                 val riskViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.RiskManagementViewModel>()
                                 val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
                                 val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
-                                
-                                val strategyId = strategyViewModel.selectedStrategyId.collectAsState().value
-                                val strategiesState = strategyViewModel.uiState.collectAsState().value
-                                val strategy = (strategiesState as? com.cryptopulse.app.ui.strategies.StrategySelectionState.Success)?.strategies?.find { it.id == strategyId }
                                 
                                 val candidate = selectedCandidate
                                 if (candidate == null) {
@@ -227,30 +227,19 @@ class MainActivity : FragmentActivity() {
                                     return@composable
                                 }
 
-                                if (strategy != null) {
-                                    com.cryptopulse.app.ui.strategies.RiskManagementScreen(
-                                        strategy = strategy,
-                                        viewModel = riskViewModel,
-                                        onActivateBot = { updatedConfig ->
-                                            technicalAnalysisViewModel.activateBot(
-                                                symbol = candidate.symbol,
-                                                strategy = strategy.id,
-                                                config = updatedConfig,
-                                                onSuccess = {
-                                                    com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
-                                                    navController.navigate("technical_analysis") {
-                                                        popUpTo("trade_setup") { inclusive = true }
-                                                    }
-                                                }
-                                            )
-                                        },
-                                        onBack = { navController.popBackStack() }
-                                    )
-                                } else {
-                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                                        Text("Strategy not found")
-                                    }
-                                }
+                                com.cryptopulse.app.ui.strategies.RiskManagementScreen(
+                                    strategy = null,
+                                    viewModel = riskViewModel,
+                                    onProceedToAnalysis = { updatedConfig ->
+                                        tradeSessionRepository.setTradeSetupConfig(updatedConfig)
+                                        val initialStrategy = updatedConfig.strategyId ?: "ScalperV2"
+                                        technicalAnalysisViewModel.selectStrategy(initialStrategy, candidate.symbol)
+                                        navController.navigate("technical_analysis") {
+                                            popUpTo("trade_setup") { inclusive = true }
+                                        }
+                                    },
+                                    onBack = { navController.popBackStack() }
+                                )
                             }
 
 
@@ -292,7 +281,7 @@ class MainActivity : FragmentActivity() {
                                     environmentName = formState.environment.replaceFirstChar { it.uppercase() },
                                     onBack = { navController.popBackStack() },
                                     onProceedToAnalysis = {
-                                        navController.navigate("strategy_selection")
+                                        navController.navigate("risk_management")
                                     },
                                     viewModel = tradeSetupViewModel,
                                 )
@@ -304,8 +293,19 @@ class MainActivity : FragmentActivity() {
                                 }
                                 val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
                                 val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
-                                val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                                val analysisState by technicalAnalysisViewModel.analysisState.collectAsState()
+
+                                DisposableEffect(technicalAnalysisViewModel) {
+                                    technicalAnalysisViewModel.onScreenStarted()
+                                    onDispose {
+                                        technicalAnalysisViewModel.onScreenStopped()
+                                    }
+                                }
+
+                                val selectedCandidate by viewModel.selectedCandidate.collectAsStateWithLifecycle(initialValue = null)
+                                val analysisState by technicalAnalysisViewModel.analysisState.collectAsStateWithLifecycle()
+                                val availableStrategies by technicalAnalysisViewModel.availableStrategies.collectAsStateWithLifecycle()
+                                val activeStrategyId by technicalAnalysisViewModel.activeStrategyId.collectAsStateWithLifecycle()
+                                val isLoadingPreview by technicalAnalysisViewModel.isLoadingPreview.collectAsStateWithLifecycle()
 
                                 val candidate = selectedCandidate
                                 if (candidate == null) {
@@ -315,11 +315,13 @@ class MainActivity : FragmentActivity() {
                                     return@composable
                                 }
 
-                                val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
-                                val selectedStrategy = tradeSetupConfig?.strategyId ?: "ScalperV2"
+                                val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsStateWithLifecycle()
+                                val initialStrategy = tradeSetupConfig?.strategyId ?: "ScalperV2"
 
-                                LaunchedEffect(candidate.pairName, selectedStrategy) {
-                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, selectedStrategy, tradeSetupConfig)
+                                LaunchedEffect(candidate.pairName, initialStrategy) {
+                                    if (activeStrategyId == null) {
+                                        technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, initialStrategy, tradeSetupConfig)
+                                    }
                                 }
 
                                 LaunchedEffect(Unit) {
@@ -329,19 +331,41 @@ class MainActivity : FragmentActivity() {
                                     }
                                 }
 
-                                val previewError by technicalAnalysisViewModel.previewError.collectAsState()
+                                val previewError by technicalAnalysisViewModel.previewError.collectAsStateWithLifecycle()
+                                val isBotActive by technicalAnalysisViewModel.isBotActive.collectAsStateWithLifecycle()
+                                val committedStrategyId by technicalAnalysisViewModel.committedStrategyId.collectAsStateWithLifecycle()
+                                val isActivating by technicalAnalysisViewModel.isActivating.collectAsStateWithLifecycle()
 
                                 TechnicalAnalysisScreen(
                                     candidate = candidate,
                                     analysisState = analysisState,
                                     tradeSetupConfig = tradeSetupConfig,
+                                    availableStrategies = availableStrategies,
+                                    activeStrategyId = activeStrategyId ?: initialStrategy,
+                                    isBotActive = isBotActive,
+                                    committedStrategyId = committedStrategyId,
+                                    isLoading = isLoadingPreview,
+                                    isActivating = isActivating,
                                     previewError = previewError,
+                                    onSelectStrategy = { newId ->
+                                        technicalAnalysisViewModel.selectStrategy(newId, candidate.pairName)
+                                    },
+                                    onCommitStrategy = { strategyToCommit ->
+                                        technicalAnalysisViewModel.commitStrategyAndActivateBot(
+                                            symbol = candidate.symbol,
+                                            strategy = strategyToCommit,
+                                            onSuccess = {
+                                                com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
+                                            }
+                                        )
+                                    },
                                     onBack = { navController.popBackStack() },
                                     onExecuteTrade = {
                                         technicalAnalysisViewModel.triggerTradeAlert(candidate.pairName, applicationContext)
                                     },
                                     onRetry = {
-                                        technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, selectedStrategy, tradeSetupConfig)
+                                        val stratToRetry = activeStrategyId ?: initialStrategy
+                                        technicalAnalysisViewModel.selectStrategy(stratToRetry, candidate.pairName)
                                     }
                                 )
                             }
@@ -392,8 +416,8 @@ class MainActivity : FragmentActivity() {
                                 TradeAlertScreen(
                                     onBack = { navController.popBackStack() },
                                     onTradeExecuted = {
-                                        navController.navigate("portfolio") {
-                                            popUpTo("technical_analysis") { inclusive = false }
+                                        navController.navigate("market_candidates") {
+                                            popUpTo("market_candidates") { inclusive = false }
                                         }
                                     },
                                     candidate = marketCandidate,

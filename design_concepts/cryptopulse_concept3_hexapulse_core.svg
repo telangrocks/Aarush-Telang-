@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080D1A" />
+      <stop offset="50%" stop-color="#050811" />
+      <stop offset="100%" stop-color="#010307" />
+    </linearGradient>
+
+    <linearGradient id="borderGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F2FE" stop-opacity="0.7" />
+      <stop offset="50%" stop-color="#4FACFE" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#000" stop-opacity="0.8" />
+    </linearGradient>
+
+    <linearGradient id="hexaGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F2FE" />
+      <stop offset="50%" stop-color="#4FACFE" />
+      <stop offset="100%" stop-color="#7F00FF" />
+    </linearGradient>
+
+    <linearGradient id="laserGrad3" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#4FACFE" />
+      <stop offset="60%" stop-color="#00F2FE" />
+      <stop offset="100%" stop-color="#FFFFFF" />
+    </linearGradient>
+
+    <filter id="hexaGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Container -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGrad3)" stroke="url(#borderGrad3)" stroke-width="2.5" />
+
+  <!-- Outer Cryptographic Hexagon Shield -->
+  <polygon points="256,76 396,156 396,316 256,396 116,316 116,156" 
+           fill="none" stroke="url(#hexaGrad3)" stroke-width="12" stroke-linejoin="round" stroke-linecap="round" opacity="0.9" />
+
+  <!-- Inner Concentric Precision Hexagon -->
+  <polygon points="256,110 366,174 366,302 256,366 146,302 146,174" 
+           fill="#0B1224" stroke="#1E293B" stroke-width="3" opacity="0.6" />
+
+  <!-- High-Energy Pulse Wave through the Center Core -->
+  <g filter="url(#hexaGlow)">
+    <!-- Pulse Wave -->
+    <path d="M 130 256 L 190 256 L 225 190 L 260 310 L 295 160 L 330 256 L 382 256"
+          fill="none" stroke="url(#laserGrad3)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+
+    <!-- Upward Surge Arrow from Peak -->
+    <polygon points="295,130 282,166 308,166" fill="#00F2FE" />
+    
+    <!-- AI Core Node Lights -->
+    <circle cx="256" cy="76" r="8" fill="#00F2FE" />
+    <circle cx="396" cy="156" r="8" fill="#4FACFE" />
+    <circle cx="396" cy="316" r="8" fill="#7F00FF" />
+    <circle cx="256" cy="396" r="8" fill="#7F00FF" />
+    <circle cx="116" cy="316" r="8" fill="#4FACFE" />
+    <circle cx="116" cy="156" r="8" fill="#00F2FE" />
+
+    <!-- Center Apex Pulse Point -->
+    <circle cx="295" cy="160" r="10" fill="#FFFFFF" />
+    <circle cx="295" cy="160" r="5" fill="#00F2FE" />
+  </g>
+</svg>

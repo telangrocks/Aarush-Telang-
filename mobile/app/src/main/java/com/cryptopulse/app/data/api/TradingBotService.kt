@@ -23,6 +23,7 @@ interface TradingBotService {
     @POST(ApiConstants.BOT_EXECUTE_TRADE)
     suspend fun executeTrade(@Body request: ExecuteTradeRequestDto): Response<ExecuteTradeResponseDto>
 
+    @Deprecated("Do not use in production Android flow. Production executions must use executeTrade.", level = DeprecationLevel.WARNING)
     @POST(ApiConstants.BOT_MOCK_TRADE)
     suspend fun executeMockTrade(@Body request: ExecuteTradeRequestDto): Response<ExecuteTradeResponseDto>
 
@@ -37,4 +38,7 @@ interface TradingBotService {
 
     @GET(ApiConstants.BOT_EXECUTION_STATUS)
     suspend fun getExecutionStatus(@retrofit2.http.Path("positionId") positionId: String): Response<TradeExecutionStatusDto>
+
+    @POST(ApiConstants.BOT_TRIGGER_ALERT)
+    suspend fun triggerAlert(@Body request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto): Response<BotAlertDto>
 }

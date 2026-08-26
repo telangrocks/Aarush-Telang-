@@ -190,12 +190,74 @@ fun TradeSetupScreen(
                                     )
                                 } else if (candidate.currentMarketPrice > 0.0) {
                                     Text(
-                                        text = "Current price: $${"%.2f".format(candidate.currentMarketPrice)}",
+                                        text = "Current price: $${"%.4f".format(candidate.currentMarketPrice)}",
                                         color = TextSecondary,
                                         fontSize = 12.sp
                                     )
                                 }
                             }
+                        )
+                    }
+
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            text = "EXECUTION INTENT",
+                            color = CyanPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            letterSpacing = 1.sp
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(
+                                com.cryptopulse.app.domain.models.EntryIntent.WAIT_FOR_PRICE to "Wait for Price",
+                                com.cryptopulse.app.domain.models.EntryIntent.IMMEDIATE to "Immediate",
+                                com.cryptopulse.app.domain.models.EntryIntent.TRIGGER to "Trigger"
+                            ).forEach { (intent, label) ->
+                                val isSelected = uiState.selectedEntryIntent == intent
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { viewModel.updateEntryIntent(intent) },
+                                    label = {
+                                        Text(
+                                            text = label,
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = CyanPrimary.copy(alpha = 0.2f),
+                                        selectedLabelColor = CyanPrimary,
+                                        containerColor = Color(0xFF141E33),
+                                        labelColor = TextSecondary
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        borderColor = if (isSelected) CyanPrimary else Color(0xFF2A3650),
+                                        selectedBorderColor = CyanPrimary,
+                                        enabled = true,
+                                        selected = isSelected
+                                    ),
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        val intentDescription = when (uiState.selectedEntryIntent) {
+                            com.cryptopulse.app.domain.models.EntryIntent.WAIT_FOR_PRICE ->
+                                "Rests on order book as a Maker limit order at target price."
+                            com.cryptopulse.app.domain.models.EntryIntent.IMMEDIATE ->
+                                "Executes immediately at prevailing market price."
+                            com.cryptopulse.app.domain.models.EntryIntent.TRIGGER ->
+                                "Activates as a conditional order when target trigger price is reached."
+                        }
+                        Text(
+                            text = intentDescription,
+                            color = TextSecondary,
+                            fontSize = 11.sp
                         )
                     }
 

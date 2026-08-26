@@ -5,5 +5,6 @@ data class ActivateBotRequestDto(
     val strategy: String,
     val positionSize: Double? = null,
     val targetEntryPrice: Double? = null,
-    val config: Map<String, Any>? = null
+    val config: Map<String, Any>? = null,
+    val entryIntent: String? = null
 )

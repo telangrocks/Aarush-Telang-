@@ -187,6 +187,11 @@ export class MeanReversionStrategy implements IStrategy {
       reasoning.push('Confidence below threshold');
     }
 
+    const customIndicators = [
+      { name: 'EMA Separation', value: `${emaSeparation.toFixed(2)}%`, signal: emaSeparation <= this.config.trendFilter.maxEmaSeparationPercent ? 'BULLISH' : 'BEARISH' },
+      { name: '2-Step Reversal', value: isReversingFromOversold ? 'Oversold Bounce' : isReversingFromOverbought ? 'Overbought Rejection' : 'Neutral', signal: isReversingFromOversold ? 'BULLISH' : isReversingFromOverbought ? 'BEARISH' : 'NEUTRAL' }
+    ];
+
     return {
       strategyId: this.manifest.id,
       timestamp: context.timestamp,
@@ -200,7 +205,10 @@ export class MeanReversionStrategy implements IStrategy {
           reasoning
         },
         indicatorSnapshot,
-        conditionResult
+        conditionResult,
+        confidenceScore,
+        strategyConfig: this.config,
+        customIndicators
       }
     };
   }
@@ -209,7 +217,8 @@ export class MeanReversionStrategy implements IStrategy {
     context: Readonly<StrategyContext>,
     reasoning: string[],
     indicatorSnapshot?: any,
-    conditionResult?: any
+    conditionResult?: any,
+    customIndicators?: any[]
   ): EvaluationResult {
     return {
       strategyId: this.manifest.id,
@@ -219,7 +228,9 @@ export class MeanReversionStrategy implements IStrategy {
       metadata: {
         reasoning,
         indicatorSnapshot: indicatorSnapshot || { timestamp: context.timestamp, timeframes: {} },
-        conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] }
+        conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] },
+        strategyConfig: this.config,
+        customIndicators: customIndicators || []
       }
     };
   }

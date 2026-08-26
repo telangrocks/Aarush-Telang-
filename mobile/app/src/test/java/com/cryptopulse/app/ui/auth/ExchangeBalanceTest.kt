@@ -97,6 +97,9 @@ class FakeTechnicalAnalysisRepositoryMinimal : com.cryptopulse.app.domain.reposi
 class FakeBotRepositoryMinimal : com.cryptopulse.app.domain.repository.BotRepository {
     override val isConnected: kotlinx.coroutines.flow.StateFlow<Boolean> = MutableStateFlow(false)
     override val analysisState: kotlinx.coroutines.flow.StateFlow<com.cryptopulse.app.domain.models.AnalysisSnapshot?> = MutableStateFlow(null)
+    override val activeBotAnalysisState: kotlinx.coroutines.flow.StateFlow<com.cryptopulse.app.domain.models.AnalysisSnapshot?> = MutableStateFlow(null)
+    override val committedStrategyId: kotlinx.coroutines.flow.StateFlow<String?> = MutableStateFlow(null)
+    override val isBotActive: kotlinx.coroutines.flow.StateFlow<Boolean> = MutableStateFlow(false)
     override fun startObserving() {}
     override fun stopObserving() {}
     override fun updateAnalysisState(snapshot: com.cryptopulse.app.domain.models.AnalysisSnapshot?) {}
@@ -111,6 +114,7 @@ class FakeBotRepositoryMinimal : com.cryptopulse.app.domain.repository.BotReposi
     override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<com.cryptopulse.app.domain.models.TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecutionResult(positionId))
     override suspend fun getAlerts(): NetworkResult<List<com.cryptopulse.app.domain.models.BotAlert>> = NetworkResult.Success(emptyList())
     override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+    override suspend fun triggerAlert(symbol: String, strategy: String, config: com.cryptopulse.app.domain.models.TradeSetupConfig?): NetworkResult<com.cryptopulse.app.domain.models.BotAlert> = NetworkResult.Success(com.cryptopulse.app.domain.models.BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 200.0, strategy, "BUY", "2026-08-24T00:00:00Z"))
 }
 
 private fun createDummyExecutionResult(id: String) = com.cryptopulse.app.domain.models.TradeExecutionResult(

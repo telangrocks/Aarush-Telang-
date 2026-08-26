@@ -26,16 +26,16 @@ class RiskManagementViewModel @Inject constructor(
     private val _state = MutableStateFlow(RiskManagementState())
     val state: StateFlow<RiskManagementState> = _state.asStateFlow()
 
-    fun initialize(strategy: Strategy) {
+    fun initialize(strategy: Strategy? = null) {
         val config = sessionRepository.tradeSetupConfig.value
-        val defaults = strategy.defaultRiskParameters
+        val defaults = strategy?.defaultRiskParameters ?: emptyMap()
         _state.update {
             it.copy(
                 selectedStrategy = strategy,
                 tradeSetupConfig = config,
-                accountRiskPercent = defaults["accountRiskPercent"],
-                riskRewardRatio = defaults["riskRewardRatio"],
-                atrStopLossMultiplier = defaults["atrStopLossMultiplier"]
+                accountRiskPercent = defaults["accountRiskPercent"] ?: 1.0,
+                riskRewardRatio = defaults["riskRewardRatio"] ?: 2.0,
+                atrStopLossMultiplier = defaults["atrStopLossMultiplier"] ?: 1.5
             )
         }
     }
