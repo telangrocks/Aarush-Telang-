@@ -819,19 +819,22 @@ export async function handleGetPersonalizedMarketCandidates(
     if (!markets || !markets.length) {
       console.warn("[DIAGNOSTIC] Stage 7: fetchMarkets returned empty. Fallback to top pairs.");
       markets = [
-        { id: "BTCUSDT", symbol: "BTC/USDT", base: "BTC", quote: "USDT" },
-        { id: "ETHUSDT", symbol: "ETH/USDT", base: "ETH", quote: "USDT" },
-        { id: "BNBUSDT", symbol: "BNB/USDT", base: "BNB", quote: "USDT" },
+        { id: "BTCUSDT", symbol: "BTC/USDT", base: "BTC", quote: "USDT", active: true },
+        { id: "ETHUSDT", symbol: "ETH/USDT", base: "ETH", quote: "USDT", active: true },
+        { id: "BNBUSDT", symbol: "BNB/USDT", base: "BNB", quote: "USDT", active: true },
       ];
     }
+
+    // Filter out inactive/delisted markets before ticker ingestion
+    const activeMarkets = markets.filter((m: any) => m.active !== false);
 
     // Execute bulk ticker fetch to prevent O(N) subrequest limits (Phase 6 architecture fix)
     const rawTickers: any[] = [];
     try {
-      const allTickers = await adapter.fetchTickers(markets.map(m => m.symbol));
+      const allTickers = await adapter.fetchTickers(activeMarkets.map((m: any) => m.symbol));
       const tickerMap = new Map<string, any>(allTickers.map((t: any) => [t.symbol, t]));
 
-      for (const m of markets) {
+      for (const m of activeMarkets) {
         const t = tickerMap.get(m.symbol);
         if (!t) {
           console.warn(`[DIAGNOSTIC] Stage 7: Ticker missing in bulk response for ${m.symbol}, skipping.`);

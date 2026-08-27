@@ -42,6 +42,35 @@ function calculateRSI(closes: number[], period = 14): number {
   return 100 - 100 / (1 + rs);
 }
 
+function extractBaseAsset(symbol: string): string {
+  if (!symbol) return "";
+  const clean = symbol.trim().toUpperCase();
+  if (clean.includes("/")) return clean.split("/")[0];
+  if (clean.includes("-")) return clean.split("-")[0];
+  if (clean.includes("_")) return clean.split("_")[0];
+  for (const q of ["USDT", "USDC", "BUSD", "USD", "BTC", "ETH", "EUR", "INR"]) {
+    if (clean.endsWith(q) && clean.length > q.length) {
+      return clean.slice(0, clean.length - q.length);
+    }
+  }
+  return clean;
+}
+
+const STABLECOINS = new Set([
+  "USDT", "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP",
+  "USDE", "PYUSD", "FRAX", "USDD", "GUSD", "USDJ", "EURT",
+  "USDY", "LUSD", "CRVUSD"
+]);
+const LEVERAGED_TOKEN_REGEX = /.*(2L|3L|4L|5L|10L|2S|3S|4S|5S|10S|UP|DOWN|BULL|BEAR)(USDT|USDC|DAI)?$/i;
+
+function isExcludedAsset(symbolStr: string): boolean {
+  const clean = String(symbolStr || "").trim().toUpperCase();
+  const base = extractBaseAsset(clean);
+  if (STABLECOINS.has(clean) || STABLECOINS.has(base)) return true;
+  if (LEVERAGED_TOKEN_REGEX.test(clean) || LEVERAGED_TOKEN_REGEX.test(base)) return true;
+  return false;
+}
+
 export async function analyzeMarket(
   tickers: any[],
   adapter: IExchangeProvider,
@@ -55,25 +84,22 @@ export async function analyzeMarket(
 
   const MIN_VOLUME_USDT = 500_000;
   const MAX_DECLINE_PERCENT = -50;
-  
-  const STABLECOINS = ["USDT", "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP"];
-  const LEVERAGED_TOKEN_REGEX = /.*(2L|3L|5L|2S|3S|5S)(USDT|USDC|DAI)?$/i;
-  
+
   // Filter out weak/illiquid/declining coins, stablecoins, and leveraged tokens
-  let filtered = tickers.filter(
-    (ticker) =>
-      (Number(ticker.quoteVolume24h ?? ticker.volume24h ?? 1_000_000)) >= MIN_VOLUME_USDT &&
-      (Number(ticker.priceChangePercent24h ?? 0)) >= MAX_DECLINE_PERCENT &&
-      !STABLECOINS.includes(String(ticker.symbol || "")) &&
-      !LEVERAGED_TOKEN_REGEX.test(String(ticker.symbol || ""))
-  );
+  let filtered = tickers.filter((ticker) => {
+    const quoteVol = Number(ticker.quoteVolume24h ?? (ticker.price ? Number(ticker.volume24h || 0) * Number(ticker.price) : Number(ticker.volume24h || 0)));
+    const declinePct = Number(ticker.priceChangePercent24h ?? 0);
+    const sym = String(ticker.symbol || "");
+    return (
+      quoteVol >= MIN_VOLUME_USDT &&
+      declinePct >= MAX_DECLINE_PERCENT &&
+      !isExcludedAsset(sym)
+    );
+  });
 
   if (!filtered.length) {
     console.warn(`[MARKET_ANALYSIS_WARN] Primary volume filter yielded 0 candidates. Falling back to non-stablecoin/leveraged tickers.`);
-    filtered = tickers.filter((ticker) => 
-      !STABLECOINS.includes(String(ticker.symbol || "")) && 
-      !LEVERAGED_TOKEN_REGEX.test(String(ticker.symbol || ""))
-    );
+    filtered = tickers.filter((ticker) => !isExcludedAsset(String(ticker.symbol || "")));
   }
 
   console.log(`[MARKET_ANALYSIS_FILTER] Filtered ${tickers.length} tickers down to ${filtered.length} eligible candidates.`);
@@ -124,7 +150,14 @@ export async function analyzeMarket(
             console.warn(`[MARKET_ANALYSIS] fetchKlines 15m failed for ${candidate.symbol}:`, res15m.reason?.message);
           }
 
-          if (!Array.isArray(klines1h) || !Array.isArray(klines15m) || klines1h.length < 20 || klines15m.length < 20) {
+          const valid1h = (Array.isArray(klines1h) ? klines1h : []).map((k) => Number(k.close || 0)).filter((c) => c > 0);
+          const valid15m = (Array.isArray(klines15m) ? klines15m : []).map((k) => Number(k.close || 0)).filter((c) => c > 0);
+
+          // Discard live unconfirmed candle (last element in ascending time series) to calculate indicators on closed candles
+          const closes1h = valid1h.length > 1 ? valid1h.slice(0, -1) : valid1h;
+          const closes15m = valid15m.length > 1 ? valid15m.slice(0, -1) : valid15m;
+
+          if (closes1h.length < 20 || closes15m.length < 20) {
             return {
               ...candidate,
               tradeSide: "NEUTRAL" as any,
@@ -132,12 +165,10 @@ export async function analyzeMarket(
             };
           }
 
-          const closes1h = klines1h.map((k) => Number(k.close || 0)).filter((c) => c > 0);
           const ema20_1h = calculateEMA(closes1h, 20);
           const ema50_1h = calculateEMA(closes1h, 50);
           const rsi1h = calculateRSI(closes1h, 14);
 
-          const closes15m = klines15m.map((k) => Number(k.close || 0)).filter((c) => c > 0);
           const ema20_15m = calculateEMA(closes15m, 20);
           const ema50_15m = calculateEMA(closes15m, 50);
           const rsi15m = calculateRSI(closes15m, 14);
@@ -150,9 +181,14 @@ export async function analyzeMarket(
           if (ema20_15m > ema50_15m && rsi15m > 50) side15m = "BUY";
           else if (ema20_15m < ema50_15m && rsi15m < 50) side15m = "SELL";
 
-          let finalSide = "NEUTRAL";
-          if (side1h !== "HOLD" && side1h === side15m) {
-            finalSide = side1h;
+          let finalSide: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
+          if (side1h === "BUY" && side15m === "BUY") {
+            finalSide = "BUY";
+          } else if (side1h === "SELL" && side15m === "SELL") {
+            finalSide = "SELL";
+          } else if ((side1h === "BUY" && side15m === "SELL") || (side1h === "SELL" && side15m === "BUY")) {
+            // Explicit conflict resolution: Downgrade opposing multi-timeframe signals to NEUTRAL
+            finalSide = "NEUTRAL";
           } else if (side1h !== "HOLD") {
             finalSide = side1h;
           } else if (side15m !== "HOLD") {
