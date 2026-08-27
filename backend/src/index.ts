@@ -242,7 +242,6 @@ const PUBLIC_AUTH_PATHS = new Set([
   "/api/verify-pin",
   "/api/reset-pin",
   "/api/confirm-pin-reset",
-  "/api/exchange/validate",
 ]);
 
 api.use("*", (c, next) => {

@@ -37,6 +37,17 @@ export class ExchangeManager {
     return `${exchangeId.toLowerCase()}:${product}:${canonicalEnv}:${canonicalReg}:${credHash}`;
   }
 
+  /**
+   * Evicts a user's cached exchange provider from the ProviderPool upon credential invalidation.
+   */
+  public static async invalidateUserProvider(exchangeId: string, config: ProviderConfig): Promise<void> {
+    try {
+      const cacheKey = await this.getHashedCacheKey(exchangeId, config);
+      this.pool.delete(cacheKey);
+    } catch (e) {
+      console.warn(`[ExchangeManager] Failed to invalidate provider for ${exchangeId}:`, e);
+    }
+  }
 
   /**
    * Retrieves a connected Exchange Provider from the bounded ProviderPool.

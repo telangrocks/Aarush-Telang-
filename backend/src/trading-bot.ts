@@ -508,7 +508,18 @@ export class TradingBot {
         
         // Phase 1 Integration: Strategy is selected from registry implicitly via strategyId
         
-        const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?').bind(userId).first<any>();
+        const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region, exchange_connection_status, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?').bind(userId).first<any>();
+
+        if (user?.exchange_connection_status === 'INVALID') {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: 'Exchange connection is invalid. Please reconnect your exchange in settings before activating the trading bot.',
+              code: 'AUTHENTICATION_FAILED',
+            }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
 
         const setupSnapshot: TradeSetupSnapshot = Object.freeze({
           userId,

@@ -13,6 +13,7 @@ export type ExchangeErrorCode =
   | "IP_NOT_WHITELISTED"
   | "SPOT_TRADING_NOT_ENABLED"
   | "PERMISSION_DENIED"
+  | "READ_ONLY_API_KEY"
   | "INVALID_SIGNATURE"
   | "TIMESTAMP_OUT_OF_SYNC"
   | "ACCOUNT_SUSPENDED"
@@ -50,6 +51,11 @@ export interface ExchangeErrorInfo {
 }
 
 export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
+  READ_ONLY_API_KEY: {
+    code: "READ_ONLY_API_KEY",
+    friendlyMessage: "Your Bybit API key is Read-Only. Trading permissions are required.",
+    hint: "Please generate or update your Bybit API key with 'Trade' permissions (Orders and Positions) enabled.",
+  },
   INVALID_API_KEY: {
     code: "INVALID_API_KEY",
     friendlyMessage: "The API Key you entered isn't recognised by the exchange.",

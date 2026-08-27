@@ -251,6 +251,36 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
   }
 
+  public async checkApiKeyPermissions(): Promise<{
+    isValid: boolean;
+    readOnly: boolean;
+    hasTradingPermission: boolean;
+    permissions: Record<string, string[]>;
+    rawResult?: any;
+  }> {
+    const result = await this.makeRequest('GET', '/v5/user/query-api', {}, true);
+    if (!result) {
+      throw new UnifiedError('Invalid response from Bybit permission check.', 'SERVICE_TEMPORARILY_UNAVAILABLE', undefined, undefined, 502);
+    }
+    const rawReadOnly = result.readOnly ?? (result as any).result?.readOnly;
+    const isReadOnly = rawReadOnly === 1 || rawReadOnly === '1' || rawReadOnly === true;
+    const perms = result.permissions ?? (result as any).result?.permissions ?? {};
+    const contractTrade: string[] = Array.isArray(perms.ContractTrade) ? perms.ContractTrade : [];
+    const hasContractOrder = contractTrade.some(
+      (p: string) => typeof p === 'string' && (p.toLowerCase() === 'order' || p.toLowerCase() === 'orders')
+    );
+
+    const hasTradingPermission = !isReadOnly && hasContractOrder;
+
+    return {
+      isValid: true,
+      readOnly: isReadOnly,
+      hasTradingPermission,
+      permissions: perms,
+      rawResult: result,
+    };
+  }
+
   public async fetchBalance(): Promise<Balance[]> {
     const requestedAccountType = (this.config as any)?.accountType ? String((this.config as any).accountType).toUpperCase() : null;
     const accountTypesToTry = requestedAccountType ? [requestedAccountType] : ['UNIFIED', 'SPOT', 'CONTRACT'];

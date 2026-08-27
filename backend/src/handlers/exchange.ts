@@ -29,6 +29,53 @@ function resolveEgressConfig(exchangeName: string, env: Env) {
   };
 }
 
+export function isPermanentAuthFailure(code: string): boolean {
+  return (
+    code === "INVALID_API_KEY" ||
+    code === "INVALID_SIGNATURE" ||
+    code === "AUTHENTICATION_FAILED" ||
+    code === "PERMISSION_DENIED" ||
+    code === "INSUFFICIENT_PERMISSIONS" ||
+    code === "READ_ONLY_API_KEY" ||
+    code === "IP_NOT_WHITELISTED"
+  );
+}
+
+export async function invalidateExchangeConnection(
+  db: any,
+  userId: string,
+  failureCode: string,
+  friendlyMessage?: string,
+  tradingBotsBinding?: any,
+  exchangeConfig?: { exchangeName: string; config: any }
+): Promise<void> {
+  // 1. Authoritative D1 State Invalidation (First)
+  await db
+    .prepare(
+      "UPDATE users SET exchange_connection_status = 'INVALID', exchange_invalidated_at = datetime('now'), exchange_failure_code = ? WHERE id = ?"
+    )
+    .bind(failureCode, userId)
+    .run();
+
+  // 2. In-Memory Provider Eviction (Second)
+  if (exchangeConfig) {
+    try {
+      await ExchangeManager.invalidateUserProvider(exchangeConfig.exchangeName, exchangeConfig.config);
+    } catch (e) {
+      console.warn(`[invalidation] ProviderPool eviction warning for user ${userId}:`, e);
+    }
+  }
+
+  // 3. Notify Durable Object bot if present
+  if (tradingBotsBinding && typeof tradingBotsBinding.idFromName === "function") {
+    try {
+      const botId = tradingBotsBinding.idFromName(userId);
+      const bot = tradingBotsBinding.get(botId);
+      await bot.fetch(new Request("http://bot/exchange-invalidated", { method: "POST" })).catch(() => null);
+    } catch (_) {}
+  }
+}
+
 export async function handleValidateExchange(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
@@ -126,6 +173,27 @@ export async function handleValidateExchange(
       if (provider && typeof provider.getHost === "function") {
         actualHost = provider.getHost();
       }
+      if (typeof provider.checkApiKeyPermissions === "function") {
+        const permCheck = await provider.checkApiKeyPermissions();
+        if (permCheck.readOnly) {
+          throw new UnifiedError(
+            "Your Bybit API key is Read-Only. Trading permissions are required.",
+            "READ_ONLY_API_KEY",
+            undefined,
+            undefined,
+            400
+          );
+        }
+        if (!permCheck.hasTradingPermission) {
+          throw new UnifiedError(
+            "Access denied. Your API key does not have the necessary permissions.",
+            "PERMISSION_DENIED",
+            undefined,
+            undefined,
+            400
+          );
+        }
+      }
       await provider.fetchBalance();
       console.log(`[EXCHANGE_VALIDATE_SUCCESS] correlationId=${correlationId} exchange=${exchangeName} cfRay=${cfRay}`);
       
@@ -203,7 +271,6 @@ export async function handleValidateExchange(
         hint: hint,
         version: classified.version || "1.0",
         correlationId,
-        detail: classified.technicalDetail,
         exchangeCode: origCode,
         httpStatus: origStatus,
         diagnosticProof: failProof,
@@ -228,7 +295,6 @@ export async function handleValidateExchange(
       hint: classified.hint,
       version: classified.version || "1.0",
       correlationId,
-      detail: classified.technicalDetail,
     });
   }
 }
@@ -297,6 +363,27 @@ export async function handleConnectExchange(
         region: resolvedRegion,
         ...resolveEgressConfig(exchangeName, c.env),
       });
+      if (typeof (provider as any).checkApiKeyPermissions === "function") {
+        const permCheck = await (provider as any).checkApiKeyPermissions();
+        if (permCheck.readOnly) {
+          throw new UnifiedError(
+            "Your Bybit API key is Read-Only. Trading permissions are required.",
+            "READ_ONLY_API_KEY",
+            undefined,
+            undefined,
+            400
+          );
+        }
+        if (!permCheck.hasTradingPermission) {
+          throw new UnifiedError(
+            "Access denied. Your API key does not have the necessary permissions.",
+            "PERMISSION_DENIED",
+            undefined,
+            undefined,
+            400
+          );
+        }
+      }
       await provider.fetchBalance();
       console.log(`[exchange-auth] connect validation successful for ${exchangeName}`);
     } catch (valErr: unknown) {
@@ -314,7 +401,6 @@ export async function handleConnectExchange(
         code: classified.code,
         message: classified.friendlyMessage,
         hint: hint,
-        detail: classified.technicalDetail,
         exchangeCode: origCode,
         httpStatus: origStatus,
       });
@@ -354,6 +440,13 @@ export async function handleConnectExchange(
       )
       .run();
 
+    // Reset connection status to CONNECTED upon valid connection
+    try {
+      await c.env.DB.prepare(
+        `UPDATE users SET exchange_connection_status = 'CONNECTED', exchange_invalidated_at = NULL, exchange_failure_code = NULL WHERE id = ?`
+      ).bind(userId).run();
+    } catch (_) {}
+
     // Reset bot state and clear instrument locking upon exchange connection/reconnection
     try {
       if (c.env.TRADING_BOTS && typeof c.env.TRADING_BOTS.idFromName === "function") {
@@ -387,13 +480,14 @@ export async function handleGetExchangeStatus(
     const userId = payload.sub;
 
     const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_encrypted, exchange_api_secret_encrypted, exchange_api_secret_iv FROM users WHERE id = ?",
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_connection_status, exchange_api_key_encrypted, exchange_api_secret_encrypted, exchange_api_secret_iv FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
         exchange_region: string | null;
+        exchange_connection_status: string | null;
         exchange_api_key_encrypted: string | null;
         exchange_api_secret_encrypted: string | null;
         exchange_api_secret_iv: string | null;
@@ -404,7 +498,8 @@ export async function handleGetExchangeStatus(
       user?.exchange_name.toLowerCase() === "bybit" &&
       user?.exchange_api_key_encrypted &&
       user?.exchange_api_secret_encrypted &&
-      user?.exchange_api_secret_iv
+      user?.exchange_api_secret_iv &&
+      user?.exchange_connection_status === "CONNECTED"
     );
 
     return c.json({
@@ -423,18 +518,25 @@ export async function handleGetExchangeStatus(
 export async function handleGetExchangeBalances(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
+  let user: any = null;
+  let decryptedKey: string | undefined = undefined;
+  let decryptedSecret: string | undefined = undefined;
+  let decryptedPassphrase: string | undefined = undefined;
+  let userId: string = "";
+
   try {
     const payload = c.get("jwtPayload") as { sub: string };
-    const userId = payload.sub;
+    userId = payload.sub;
 
-    const user = await c.env.DB.prepare(
-      "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?",
+    user = await c.env.DB.prepare(
+      "SELECT exchange_name, exchange_environment, exchange_region, exchange_connection_status, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?",
     )
       .bind(userId)
       .first<{
         exchange_name: string | null;
         exchange_environment: string | null;
         exchange_region: string | null;
+        exchange_connection_status: string | null;
         exchange_api_key_iv: string | null;
         exchange_api_key_encrypted: string | null;
         exchange_api_key_salt: string | null;
@@ -455,7 +557,16 @@ export async function handleGetExchangeBalances(
       });
     }
 
-    let decryptedKey: string;
+    if (user?.exchange_connection_status === "INVALID") {
+      c.status(401);
+      return c.json({
+        success: false,
+        code: "AUTHENTICATION_FAILED",
+        message: "Exchange credentials are invalid. Please reconnect your exchange in settings.",
+        hint: "Your exchange API keys were invalidated or revoked. Please reconnect in settings.",
+      });
+    }
+
     try {
       decryptedKey = await decrypt(
         { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
@@ -471,12 +582,11 @@ export async function handleGetExchangeBalances(
       });
     }
 
-    const decryptedSecret = await decrypt(
+    decryptedSecret = await decrypt(
       { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt },
       c.env.ENCRYPTION_KEY,
     );
 
-    let decryptedPassphrase = undefined;
     if (user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
       decryptedPassphrase = await decrypt(
         { iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt },
@@ -514,7 +624,28 @@ export async function handleGetExchangeBalances(
   } catch (e: unknown) {
     const classified = classifyException(e, "exchange-balance");
     console.error(`[exchange-balance] exception (${classified.technicalDetail}):`, e);
-    c.status(400);
+    if (isPermanentAuthFailure(classified.code)) {
+      await invalidateExchangeConnection(
+        c.env.DB,
+        userId,
+        classified.code,
+        classified.friendlyMessage,
+        c.env.TRADING_BOTS,
+        user?.exchange_name ? {
+          exchangeName: user.exchange_name,
+          config: {
+            environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
+            apiKey: decryptedKey,
+            secret: decryptedSecret,
+            password: decryptedPassphrase,
+            region: resolveCanonicalRoutingRegion(user.exchange_region),
+          }
+        } : undefined
+      );
+      c.status(401);
+    } else {
+      c.status(400);
+    }
     return c.json({
       success: false,
       code: classified.code,
