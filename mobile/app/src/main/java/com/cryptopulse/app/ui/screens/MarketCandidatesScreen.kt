@@ -28,6 +28,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
@@ -132,7 +133,13 @@ fun MarketCandidatesScreen(
                                 .testTag("market_candidates_error"),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .widthIn(max = 480.dp)
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
                                 Icon(
                                     Icons.Default.WifiOff,
                                     contentDescription = null,
@@ -145,7 +152,7 @@ fun MarketCandidatesScreen(
                                     color = TextSecondary,
                                     fontSize = 14.sp,
                                     textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 32.dp)
+                                    modifier = Modifier.padding(horizontal = 16.dp)
                                 )
                                 state.hint?.let { hint ->
                                     Spacer(Modifier.height(4.dp))
@@ -154,7 +161,7 @@ fun MarketCandidatesScreen(
                                         color = TextSecondary.copy(alpha = 0.7f),
                                         fontSize = 12.sp,
                                         textAlign = TextAlign.Center,
-                                        modifier = Modifier.padding(horizontal = 32.dp)
+                                        modifier = Modifier.padding(horizontal = 16.dp)
                                     )
                                 }
                                 Spacer(Modifier.height(16.dp))
@@ -162,7 +169,7 @@ fun MarketCandidatesScreen(
                                     text = "Retry",
                                     onClick = { viewModel.clearCandidatesError(); viewModel.fetchMarketCandidates() },
                                     leadingIcon = Icons.Default.Refresh,
-                                    modifier = Modifier.fillMaxWidth(0.6f),
+                                    modifier = Modifier.fillMaxWidth(0.7f).widthIn(max = 280.dp),
                                     testTag = "market_candidates_retry"
                                 )
                             }
@@ -195,7 +202,13 @@ fun MarketCandidatesScreen(
                                 .testTag("market_candidates_empty"),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .widthIn(max = 480.dp)
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
                                 Icon(
                                     Icons.Default.SearchOff,
                                     contentDescription = null,
@@ -208,14 +221,14 @@ fun MarketCandidatesScreen(
                                     color = TextSecondary,
                                     fontSize = 14.sp,
                                     textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 32.dp)
+                                    modifier = Modifier.padding(horizontal = 16.dp)
                                 )
                                 Spacer(Modifier.height(16.dp))
                                 GradientButton(
                                     text = "Rescan Market",
                                     onClick = { viewModel.fetchMarketCandidates() },
                                     leadingIcon = Icons.Default.Refresh,
-                                    modifier = Modifier.fillMaxWidth(0.6f),
+                                    modifier = Modifier.fillMaxWidth(0.7f).widthIn(max = 280.dp),
                                     testTag = "market_candidates_rescan"
                                 )
                             }
@@ -233,7 +246,13 @@ fun MarketCandidatesScreen(
                                     .testTag("market_candidates_error"),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .widthIn(max = 480.dp)
+                                        .padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
                                     Icon(
                                         Icons.Default.WifiOff,
                                         contentDescription = null,
@@ -246,14 +265,14 @@ fun MarketCandidatesScreen(
                                         color = TextSecondary,
                                         fontSize = 14.sp,
                                         textAlign = TextAlign.Center,
-                                        modifier = Modifier.padding(horizontal = 32.dp)
+                                        modifier = Modifier.padding(horizontal = 16.dp)
                                     )
                                     Spacer(Modifier.height(16.dp))
                                     GradientButton(
                                         text = "Retry",
                                         onClick = { viewModel.clearCandidatesError(); viewModel.fetchMarketCandidates() },
                                         leadingIcon = Icons.Default.Refresh,
-                                        modifier = Modifier.fillMaxWidth(0.6f),
+                                        modifier = Modifier.fillMaxWidth(0.7f).widthIn(max = 280.dp),
                                         testTag = "market_candidates_retry"
                                     )
                                 }
@@ -286,7 +305,13 @@ fun MarketCandidatesScreen(
                                     .testTag("market_candidates_empty"),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .widthIn(max = 480.dp)
+                                        .padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
                                     Icon(
                                         Icons.Default.SearchOff,
                                         contentDescription = null,
@@ -299,14 +324,14 @@ fun MarketCandidatesScreen(
                                         color = TextSecondary,
                                         fontSize = 14.sp,
                                         textAlign = TextAlign.Center,
-                                        modifier = Modifier.padding(horizontal = 32.dp)
+                                        modifier = Modifier.padding(horizontal = 16.dp)
                                     )
                                     Spacer(Modifier.height(16.dp))
                                     GradientButton(
                                         text = "Rescan Market",
                                         onClick = { viewModel.fetchMarketCandidates() },
                                         leadingIcon = Icons.Default.Refresh,
-                                        modifier = Modifier.fillMaxWidth(0.6f),
+                                        modifier = Modifier.fillMaxWidth(0.7f).widthIn(max = 280.dp),
                                         testTag = "market_candidates_rescan"
                                     )
                                 }
@@ -316,117 +341,126 @@ fun MarketCandidatesScreen(
                     }
                 }
 
-            LazyColumn(
-                state = listState,
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .padding(horizontal = 16.dp)
-                    .testTag("market_candidates_list"),
-                verticalArrangement = Arrangement.spacedBy(0.dp),
+                    .padding(padding),
+                contentAlignment = Alignment.TopCenter
             ) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 680.dp)
+                        .padding(horizontal = 16.dp)
+                        .testTag("market_candidates_list"),
+                    verticalArrangement = Arrangement.spacedBy(0.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
 
-                item {
-                    Spacer(Modifier.height(16.dp))
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
+                    item {
+                        Spacer(Modifier.height(16.dp))
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(30.dp)
-                                    .background(
-                                        Brush.radialGradient(
-                                            listOf(Color(0xFF5B2D9E), Color(0xFF2A1060))
-                                        ),
-                                        CircleShape
-                                    ),
-                                contentAlignment = Alignment.Center,
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
                             ) {
-                                Icon(
-                                    Icons.Default.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = Color(0xFFBB86FC),
-                                    modifier = Modifier.size(16.dp)
+                                Box(
+                                    modifier = Modifier
+                                        .size(30.dp)
+                                        .background(
+                                            Brush.radialGradient(
+                                                listOf(Color(0xFF5B2D9E), Color(0xFF2A1060))
+                                            ),
+                                            CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        Icons.Default.AutoAwesome,
+                                        contentDescription = null,
+                                        tint = Color(0xFFBB86FC),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    text = "Today's Most Profitable Pairs",
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 20.sp,
+                                    letterSpacing = 0.3.sp,
                                 )
                             }
-                            Spacer(Modifier.width(10.dp))
+                            Spacer(Modifier.height(5.dp))
                             Text(
-                                text = "Today's Most Profitable Pairs",
-                                color = TextPrimary,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 20.sp,
-                                letterSpacing = 0.3.sp,
+                                text = "Ranked by the CryptoPulse Technical Screening Algorithm",
+                                color = CyanPrimary.copy(alpha = 0.75f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                letterSpacing = 0.2.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth(),
                             )
                         }
-                        Spacer(Modifier.height(5.dp))
-                        Text(
-                            text = "Ranked by the CryptoPulse Technical Screening Algorithm",
-                            color = CyanPrimary.copy(alpha = 0.75f),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            letterSpacing = 0.2.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                        Spacer(Modifier.height(16.dp))
                     }
-                    Spacer(Modifier.height(16.dp))
-                }
 
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(NavyCard, RoundedCornerShape(10.dp))
-                            .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
-                            .padding(vertical = 10.dp, horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                    ) {
-                        val authTime = mappedCandidates.firstOrNull()?.exchangeTimestamp?.takeIf { it > 0L }
-                        val displayTime = authTime?.let { java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(it)) } ?: currentTime
-                        MetadataItem(icon = Icons.Default.CalendarToday, label = "DATE", value = getCurrentDate())
-                        VerticalDivider()
-                        MetadataItem(icon = Icons.Default.Schedule, label = "LAST UPDATED", value = displayTime)
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(NavyCard, RoundedCornerShape(10.dp))
+                                .border(1.dp, NavyBorder, RoundedCornerShape(10.dp))
+                                .padding(vertical = 10.dp, horizontal = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            val authTime = mappedCandidates.firstOrNull()?.exchangeTimestamp?.takeIf { it > 0L }
+                            val displayTime = authTime?.let { java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(it)) } ?: currentTime
+                            MetadataItem(icon = Icons.Default.CalendarToday, label = "DATE", value = getCurrentDate())
+                            VerticalDivider()
+                            MetadataItem(icon = Icons.Default.Schedule, label = "LAST UPDATED", value = displayTime)
+                        }
+                        Spacer(Modifier.height(14.dp))
                     }
-                    Spacer(Modifier.height(14.dp))
-                }
 
-                item {
-                    Divider(color = NavyBorder, thickness = 1.dp, modifier = Modifier.padding(vertical = 4.dp))
-                }
-
-                itemsIndexed(mappedCandidates, key = { _, candidate -> candidate.pairName.ifEmpty { candidate.symbol } }) { _, candidate ->
-                    android.util.Log.d("MarketCandidatesScreen", "[DIAGNOSTIC] Rendering item: symbol=${candidate.symbol}, pair=${candidate.pairName}, rank=${candidate.rank}, price=$${candidate.currentMarketPrice}")
-                    CandidateRow(candidate = candidate, onClick = {
-                        viewModel.selectCandidate(candidate)
-                        onCandidateClick(candidate)
-                    })
-                }
-
-                item {
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0x1400B4FF), RoundedCornerShape(10.dp))
-                            .border(1.dp, CyanPrimary.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Default.Info, null, tint = CyanPrimary, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "These candidates are selected based on multi-layer technical analysis, volume, volatility, momentum and breakout potential.",
-                            color = TextSecondary,
-                            fontSize = 11.sp,
-                            lineHeight = 17.sp,
-                        )
+                    item {
+                        HorizontalDivider(color = NavyBorder, thickness = 1.dp, modifier = Modifier.padding(vertical = 4.dp))
                     }
-                    Spacer(Modifier.height(20.dp))
+
+                    itemsIndexed(mappedCandidates, key = { _, candidate -> candidate.pairName.ifEmpty { candidate.symbol } }) { _, candidate ->
+                        android.util.Log.d("MarketCandidatesScreen", "[DIAGNOSTIC] Rendering item: symbol=${candidate.symbol}, pair=${candidate.pairName}, rank=${candidate.rank}, price=$${candidate.currentMarketPrice}")
+                        CandidateRow(candidate = candidate, onClick = {
+                            viewModel.selectCandidate(candidate)
+                            onCandidateClick(candidate)
+                        })
+                    }
+
+                    item {
+                        Spacer(Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0x1400B4FF), RoundedCornerShape(10.dp))
+                                .border(1.dp, CyanPrimary.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Info, null, tint = CyanPrimary, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "These candidates are selected based on multi-layer technical analysis, volume, volatility, momentum and breakout potential.",
+                                color = TextSecondary,
+                                fontSize = 11.sp,
+                                lineHeight = 17.sp,
+                            )
+                        }
+                        Spacer(Modifier.height(24.dp))
+                    }
                 }
             }
         }
@@ -441,7 +475,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp)
+            .padding(vertical = 5.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(
                 Brush.verticalGradient(
@@ -472,12 +506,12 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 1. Ticker (Avatar + Pair Symbol)
             Row(
-                modifier = Modifier.weight(1.35f),
+                modifier = Modifier.weight(1.25f),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
@@ -492,6 +526,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                         color = candidate.coinColor,
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 10.sp,
+                        maxLines = 1,
                         textAlign = TextAlign.Center,
                     )
                 }
@@ -503,6 +538,8 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 14.sp,
                         letterSpacing = 0.2.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         text = if (candidate.pairName.contains("/"))
@@ -511,13 +548,14 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                         color = TextMuted,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Medium,
+                        maxLines = 1,
                     )
                 }
             }
 
             // 2. Live Market Price (USDT)
             Column(
-                modifier = Modifier.weight(1.1f),
+                modifier = Modifier.weight(1.05f),
                 horizontalAlignment = Alignment.Start
             ) {
                 Text(
@@ -526,6 +564,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.5.sp,
+                    maxLines = 1,
                 )
                 Spacer(Modifier.height(3.dp))
                 Text(
@@ -536,6 +575,8 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                     color = TextPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                 )
             }
@@ -551,6 +592,7 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.5.sp,
+                    maxLines = 1,
                 )
                 Spacer(Modifier.height(3.dp))
                 Text(
@@ -558,32 +600,36 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                     color = CyanPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
                     style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                 )
             }
 
             // 4. Trading Constraints
             Column(
-                modifier = Modifier.weight(1.1f),
+                modifier = Modifier.weight(1.15f),
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(
                     text = "Min Qty: ${Formatters.formatConstraint(candidate.minOrderQty ?: 0.0)}",
                     color = TextSecondary,
-                    fontSize = 10.sp,
+                    fontSize = 9.5.sp,
+                    maxLines = 1,
                     style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                 )
                 Text(
                     text = "Qty Step: ${Formatters.formatConstraint(candidate.qtyStep ?: 0.0)}",
                     color = TextSecondary,
-                    fontSize = 10.sp,
+                    fontSize = 9.5.sp,
+                    maxLines = 1,
                     style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                 )
                 Text(
                     text = "Tick Size: ${Formatters.formatConstraint(candidate.tickSize ?: 0.0)}",
                     color = TextSecondary,
-                    fontSize = 10.sp,
+                    fontSize = 9.5.sp,
+                    maxLines = 1,
                     style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                 )
             }
