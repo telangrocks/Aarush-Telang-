@@ -111,43 +111,62 @@ fun TechnicalAnalysisScreen(
             topBar = { CryptoPulseTopBar(onBack = onBack) },
             containerColor = Color.Transparent,
             bottomBar = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(NavyDeep)
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                Surface(
+                    color = NavyDeep,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    GradientButton(
-                        text = if (isActivating) "STARTING BOT..." else "USE ${activeStrategyDisplayName.uppercase()} & START BOT",
-                        onClick = {
-                            onCommitStrategy(resolvedStrategyId)
-                        },
-                        enabled = !isActivating && !isLoading,
-                        testTag = "commit_and_start_bot_button"
-                    )
-                    GradientButton(
-                        text = "EXECUTE TRADE",
-                        onClick = {
-                            onExecuteTrade()
-                        },
-                        enabled = true,
-                        leadingIcon = Icons.Default.Bolt,
-                        testTag = "execute_trade_button"
-                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .widthIn(max = 680.dp)
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            GradientButton(
+                                text = if (isActivating) "STARTING BOT..." else "USE ${activeStrategyDisplayName.uppercase()} & START BOT",
+                                onClick = {
+                                    onCommitStrategy(resolvedStrategyId)
+                                },
+                                enabled = !isActivating && !isLoading,
+                                testTag = "commit_and_start_bot_button"
+                            )
+                            GradientButton(
+                                text = "EXECUTE TRADE",
+                                onClick = {
+                                    onExecuteTrade()
+                                },
+                                enabled = true,
+                                leadingIcon = Icons.Default.Bolt,
+                                testTag = "execute_trade_button"
+                            )
+                        }
+                    }
                 }
             }
         ) { padding ->
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp)
+                    .padding(padding),
+                contentAlignment = Alignment.TopCenter
             ) {
-                Spacer(Modifier.height(8.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 680.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Spacer(Modifier.height(8.dp))
 
-                val primaryTf = remember(analysisState?.strategyMetadata?.primaryTimeframe, matchingStrategy) {
+                    val primaryTf = remember(analysisState?.strategyMetadata?.primaryTimeframe, matchingStrategy) {
                     analysisState?.strategyMetadata?.primaryTimeframe
                         ?: matchingStrategy?.supportedTimeframes?.firstOrNull()
                         ?: "15m"
@@ -702,11 +721,12 @@ fun TechnicalAnalysisScreen(
                         }
                     }
 
-                    Spacer(Modifier.height(40.dp))
+                    Spacer(Modifier.height(48.dp))
                 }
             }
         }
     }
+}
 }
 
 
