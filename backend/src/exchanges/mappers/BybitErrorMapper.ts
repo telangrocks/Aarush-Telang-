@@ -39,9 +39,20 @@ export class BybitErrorMapper implements IExchangeErrorMapper {
       10010: 'IP_NOT_WHITELISTED', // Unmatched IP address
       10014: 'INVALID_SIGNATURE', // Invalid parameter
       10018: 'IP_NOT_WHITELISTED', // IP restricted
+      33004: 'INVALID_API_KEY', // API key not found / not recognized on endpoint
       130006: 'INSUFFICIENT_BALANCE', // Insufficient balance
       130021: 'SPOT_TRADING_NOT_ENABLED',
     };
+
+    if (retCode === 33004) {
+      return {
+        code: 'INVALID_API_KEY',
+        friendlyMessage: 'The API Key you entered was not recognized by Bybit.',
+        hint: 'Verify your API Key for typos. If the key is valid, make sure the Environment toggle (Demo vs Real) matches where the key was created on Bybit.',
+        technicalDetail,
+        version: '1.0',
+      };
+    }
 
     const targetCode = codeMap[retCode];
     if (targetCode) {

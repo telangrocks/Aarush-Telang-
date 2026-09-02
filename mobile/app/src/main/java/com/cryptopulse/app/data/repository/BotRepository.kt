@@ -17,17 +17,39 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.cryptopulse.app.data.local.TokenManager
+import com.cryptopulse.app.data.local.TokenState
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.isActive
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class BotRepositoryImpl @Inject constructor(
     private val botRemoteDataSource: BotRemoteDataSource,
-    private val dispatcherProvider: DispatcherProvider
+    private val dispatcherProvider: DispatcherProvider,
+    private val tokenManager: TokenManager
 ) : BotRepository {
+
+    constructor(
+        botRemoteDataSource: BotRemoteDataSource,
+        dispatcherProvider: DispatcherProvider
+    ) : this(botRemoteDataSource, dispatcherProvider, TokenManager(FakeContextForBot()))
 
     private val scope = CoroutineScope(dispatcherProvider.io + Job())
     private var pollingJob: Job? = null
+    private val pollingMutex = Mutex()
+
+    init {
+        scope.launch {
+            tokenManager.tokenFlow.collect { state ->
+                if (state is TokenState.Unauthenticated || state is TokenState.Uninitialized) {
+                    stopObserving()
+                }
+            }
+        }
+    }
 
     private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
     override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
@@ -182,24 +204,35 @@ class BotRepositoryImpl @Inject constructor(
     }
 
     override fun startObserving() {
-        if (pollingJob?.isActive == true) return
-        pollingJob = scope.launch {
-            _isConnected.value = true
-            while (pollingJob?.isActive == true) {
-                when (val result = botRemoteDataSource.getAnalysisStatus()) {
-                    is NetworkResult.Success -> {
-                        val dto = result.data
-                        val domainSnapshot = dto.toDomain()
-                        _analysisState.value = domainSnapshot
-                        _activeBotAnalysisState.value = domainSnapshot
-                        _committedStrategyId.value = dto.strategyMetadata?.strategyId ?: dto.engineStatus?.activeStrategy
-                        _isBotActive.value = dto.engineStatus?.state != null && dto.engineStatus.state != "STOPPED"
-                    }
-                    is NetworkResult.Error -> {
-                        _isConnected.value = false
+        scope.launch {
+            pollingMutex.withLock {
+                if (pollingJob?.isActive == true) return@withLock
+                
+                val token = tokenManager.getToken()
+                if (token.isNullOrEmpty()) {
+                    _isConnected.value = false
+                    return@withLock
+                }
+
+                _isConnected.value = true
+                pollingJob = scope.launch {
+                    while (isActive) {
+                        when (val result = botRemoteDataSource.getAnalysisStatus()) {
+                            is NetworkResult.Success -> {
+                                val dto = result.data
+                                val domainSnapshot = dto.toDomain()
+                                _analysisState.value = domainSnapshot
+                                _activeBotAnalysisState.value = domainSnapshot
+                                _committedStrategyId.value = dto.strategyMetadata?.strategyId ?: dto.engineStatus?.activeStrategy
+                                _isBotActive.value = dto.engineStatus?.state != null && dto.engineStatus.state != "STOPPED"
+                            }
+                            is NetworkResult.Error -> {
+                                _isConnected.value = false
+                            }
+                        }
+                        delay(3000L)
                     }
                 }
-                delay(3000L)
             }
         }
     }
@@ -209,4 +242,8 @@ class BotRepositoryImpl @Inject constructor(
         pollingJob = null
         _isConnected.value = false
     }
+}
+
+private class FakeContextForBot : android.content.ContextWrapper(null) {
+    override fun getApplicationContext(): android.content.Context = this
 }

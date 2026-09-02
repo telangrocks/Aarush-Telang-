@@ -14,7 +14,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
@@ -44,8 +43,6 @@ import com.cryptopulse.app.ui.screens.MarketCandidatesScreen
 import com.cryptopulse.app.ui.screens.TradeSetupScreen
 import com.cryptopulse.app.ui.screens.UserOnboardingScreen
 import com.cryptopulse.app.ui.screens.TradeAlertScreen
-import com.cryptopulse.app.ui.screens.PortfolioScreen
-import com.cryptopulse.app.ui.screens.StrategySelectionScreen
 import com.cryptopulse.app.ui.screens.TechnicalAnalysisScreen
 import com.cryptopulse.app.service.BackgroundMonitoringService
 import com.cryptopulse.app.service.AlertBus
@@ -85,6 +82,9 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var tradeSessionRepository: com.cryptopulse.app.domain.repository.TradeSessionRepository
 
+    @Inject
+    lateinit var sessionManager: com.cryptopulse.app.data.session.SessionManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -108,9 +108,7 @@ class MainActivity : FragmentActivity() {
                             // If authenticated_flow is not on backstack, state is already destroyed
                         }
                         coroutineScope.launch {
-                            authRepository.logout()
-                            exchangeConnectionManager.clearConnection()
-                            BackgroundMonitoringService.stopService(this@MainActivity)
+                            sessionManager.performLogout(this@MainActivity)
                         }
                         navController.navigate("onboarding") {
                             popUpTo("authenticated_flow") {
@@ -136,6 +134,7 @@ class MainActivity : FragmentActivity() {
                                 exchangeConnectionManager = exchangeConnectionManager,
                                 exchangeRepository = exchangeRepository,
                                 botRepository = botRepository,
+                                tradeSessionRepository = tradeSessionRepository,
                             )
                         }
                         composable("onboarding") {
@@ -184,32 +183,6 @@ class MainActivity : FragmentActivity() {
                                     onBack = { navController.popBackStack() }
                                 )
                             }
-                            composable("strategy_selection") { backStackEntry ->
-                                val parentEntry = remember(backStackEntry) {
-                                    navController.getBackStackEntry("authenticated_flow")
-                                }
-                                val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
-                                val strategyViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.StrategySelectionViewModel>()
-                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
-                                val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
-
-                                val candidate = selectedCandidate
-                                if (candidate == null) {
-                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
-                                    }
-                                    return@composable
-                                }
-
-                                StrategySelectionScreen(
-                                    candidate = candidate,
-                                    onBack = { navController.popBackStack() },
-                                    onProceedToExecution = {
-                                        navController.navigate("risk_management")
-                                    },
-                                    viewModel = strategyViewModel
-                                )
-                            }
                             composable("risk_management") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
                                     navController.getBackStackEntry("authenticated_flow")
@@ -233,9 +206,9 @@ class MainActivity : FragmentActivity() {
                                     onProceedToAnalysis = { updatedConfig ->
                                         tradeSessionRepository.setTradeSetupConfig(updatedConfig)
                                         val initialStrategy = updatedConfig.strategyId ?: "ScalperV2"
-                                        technicalAnalysisViewModel.selectStrategy(initialStrategy, candidate.symbol)
+                                        technicalAnalysisViewModel.selectStrategy(initialStrategy, candidate.pairName)
                                         navController.navigate("technical_analysis") {
-                                            popUpTo("trade_setup") { inclusive = true }
+                                            popUpTo("market_candidates") { inclusive = false }
                                         }
                                     },
                                     onBack = { navController.popBackStack() }
@@ -294,34 +267,46 @@ class MainActivity : FragmentActivity() {
                                 val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
                                 val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
 
-                                DisposableEffect(technicalAnalysisViewModel) {
-                                    technicalAnalysisViewModel.onScreenStarted()
+                                val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                                val candidate = selectedCandidate
+
+                                DisposableEffect(technicalAnalysisViewModel, candidate?.pairName) {
+                                    technicalAnalysisViewModel.onScreenStarted(candidate?.pairName)
                                     onDispose {
                                         technicalAnalysisViewModel.onScreenStopped()
                                     }
                                 }
 
-                                val selectedCandidate by viewModel.selectedCandidate.collectAsStateWithLifecycle(initialValue = null)
-                                val analysisState by technicalAnalysisViewModel.analysisState.collectAsStateWithLifecycle()
-                                val availableStrategies by technicalAnalysisViewModel.availableStrategies.collectAsStateWithLifecycle()
-                                val activeStrategyId by technicalAnalysisViewModel.activeStrategyId.collectAsStateWithLifecycle()
-                                val isLoadingPreview by technicalAnalysisViewModel.isLoadingPreview.collectAsStateWithLifecycle()
+                                val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
+                                val candidatesError by viewModel.candidatesError.collectAsState()
+                                val analysisState by technicalAnalysisViewModel.analysisState.collectAsState()
+                                val availableStrategies by technicalAnalysisViewModel.availableStrategies.collectAsState()
+                                val activeStrategyId by technicalAnalysisViewModel.activeStrategyId.collectAsState()
+                                val isLoadingPreview by technicalAnalysisViewModel.isLoadingPreview.collectAsState()
 
-                                val candidate = selectedCandidate
+                                LaunchedEffect(Unit) {
+                                    if (viewModel.selectedCandidate.value == null) {
+                                        tradeSetupConfig?.let { config ->
+                                            viewModel.restoreSession(config.symbol, config.strategyId)
+                                        }
+                                    }
+                                }
+
                                 if (candidate == null) {
                                     androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
+                                        if (candidatesError != null) {
+                                            Text(candidatesError ?: "Market candidate unavailable", color = MaterialTheme.colorScheme.error)
+                                        } else {
+                                            androidx.compose.material3.CircularProgressIndicator(color = com.cryptopulse.app.ui.theme.CyanPrimary)
+                                        }
                                     }
                                     return@composable
                                 }
 
-                                val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsStateWithLifecycle()
                                 val initialStrategy = tradeSetupConfig?.strategyId ?: "ScalperV2"
 
                                 LaunchedEffect(candidate.pairName, initialStrategy) {
-                                    if (activeStrategyId == null) {
-                                        technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, initialStrategy, tradeSetupConfig)
-                                    }
+                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, initialStrategy, tradeSetupConfig)
                                 }
 
                                 LaunchedEffect(Unit) {
@@ -331,10 +316,10 @@ class MainActivity : FragmentActivity() {
                                     }
                                 }
 
-                                val previewError by technicalAnalysisViewModel.previewError.collectAsStateWithLifecycle()
-                                val isBotActive by technicalAnalysisViewModel.isBotActive.collectAsStateWithLifecycle()
-                                val committedStrategyId by technicalAnalysisViewModel.committedStrategyId.collectAsStateWithLifecycle()
-                                val isActivating by technicalAnalysisViewModel.isActivating.collectAsStateWithLifecycle()
+                                val previewError by technicalAnalysisViewModel.previewError.collectAsState()
+                                val isBotActive by technicalAnalysisViewModel.isBotActive.collectAsState()
+                                val committedStrategyId by technicalAnalysisViewModel.committedStrategyId.collectAsState()
+                                val isActivating by technicalAnalysisViewModel.isActivating.collectAsState()
 
                                 TechnicalAnalysisScreen(
                                     candidate = candidate,
@@ -429,17 +414,6 @@ class MainActivity : FragmentActivity() {
                                     targetEntryPrice = math.targetEntryPrice,
                                     tradeAmountUsdt = math.positionSize,
                                     viewModel = viewModel
-                                )
-                            }
-
-                            composable("portfolio") { backStackEntry ->
-                                val parentEntry = remember(backStackEntry) {
-                                    navController.getBackStackEntry("authenticated_flow")
-                                }
-                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
-                                PortfolioScreen(
-                                    viewModel = viewModel,
-                                    onBack = { navController.popBackStack() }
                                 )
                             }
                         }

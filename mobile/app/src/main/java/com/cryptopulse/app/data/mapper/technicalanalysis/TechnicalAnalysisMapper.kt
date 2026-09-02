@@ -10,20 +10,20 @@ import com.cryptopulse.app.domain.models.Checkpoint
 import com.cryptopulse.app.domain.models.BotAlert
 
 fun TechnicalAnalysisResponseDto.toDomain(): TechnicalAnalysisResult = TechnicalAnalysisResult(
-    symbol = symbol,
-    strategy = strategy,
-    price = price,
-    change24h = change24h,
-    volume = volume,
-    high24h = high24h,
-    low24h = low24h,
-    indicators = indicators,
-    signals = signals,
-    checkpoints = checkpoints.map { it.toDomain() },
-    progress = progress,
-    conditionsMet = conditionsMet,
+    symbol = symbol ?: "",
+    strategy = strategy ?: "",
+    price = price ?: 0.0,
+    change24h = change24h ?: 0.0,
+    volume = volume ?: 0.0,
+    high24h = high24h ?: 0.0,
+    low24h = low24h ?: 0.0,
+    indicators = indicators ?: emptyMap(),
+    signals = signals ?: emptyMap(),
+    checkpoints = checkpoints?.filterNotNull()?.map { it.toDomain() } ?: emptyList(),
+    progress = progress ?: 0,
+    conditionsMet = conditionsMet?.filterNotNull() ?: emptyList(),
     opportunity = opportunity,
-    timestamp = timestamp
+    timestamp = timestamp ?: ""
 )
 
 fun TechnicalAnalysisResponseDto.toAnalysisSnapshot(): AnalysisSnapshot {
@@ -39,6 +39,6 @@ fun TechnicalAnalysisResponseDto.toAnalysisSnapshot(): AnalysisSnapshot {
 }
 
 fun CheckpointDto.toDomain(): Checkpoint = Checkpoint(
-    name = name,
-    status = status
+    name = name ?: "",
+    status = status ?: "PENDING"
 )

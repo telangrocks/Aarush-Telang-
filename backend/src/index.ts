@@ -66,6 +66,7 @@ export interface Env {
   TRADING_BOTS: DurableObjectNamespace;
   /** Workers AI binding — used to call Moonshot AI Kimi K3 (moonshotai/kimi-k3). Optional so non-AI routes/tests don't require it. */
   AI?: Ai;
+  ENVIRONMENT?: string;
 }
 
 function validateEnv(env: Env): void {

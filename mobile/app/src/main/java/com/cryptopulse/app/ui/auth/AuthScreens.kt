@@ -120,25 +120,13 @@ fun AuthScreen(
             ) {
                 Spacer(Modifier.height(8.dp))
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Login,
-                        contentDescription = null,
-                        tint = CyanPrimary,
-                        modifier = Modifier.size(26.dp)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        text = "SIGN IN",
-                        color = CyanPrimary,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 22.sp,
-                        letterSpacing = 1.5.sp,
-                    )
-                }
+                Text(
+                    text = "SIGN IN",
+                    color = CyanPrimary,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 22.sp,
+                    letterSpacing = 1.5.sp,
+                )
 
                 Spacer(Modifier.height(6.dp))
 
@@ -154,22 +142,13 @@ fun AuthScreen(
 
                 GlowCard {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.AccountCircle,
-                                contentDescription = null,
-                                tint = CyanPrimary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "ENTER CREDENTIALS",
-                                color = CyanPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                letterSpacing = 1.2.sp,
-                            )
-                        }
+                        Text(
+                            text = "ENTER CREDENTIALS",
+                            color = CyanPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            letterSpacing = 1.2.sp,
+                        )
 
                         Spacer(Modifier.height(16.dp))
 
@@ -217,8 +196,6 @@ fun AuthScreen(
                     text = if (viewModel.isLoading) "Signing in…" else "Sign In",
                     onClick = { viewModel.login() },
                     enabled = !viewModel.isLoading,
-                    leadingIcon = Icons.Default.Login,
-                    trailingIcon = Icons.Default.ArrowForward,
                     testTag = "auth_sign_in_button",
                 )
 

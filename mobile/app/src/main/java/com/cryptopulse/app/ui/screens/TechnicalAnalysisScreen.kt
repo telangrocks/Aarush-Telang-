@@ -4,6 +4,7 @@ import com.cryptopulse.app.core.network.*
 
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -123,7 +124,6 @@ fun TechnicalAnalysisScreen(
                             onCommitStrategy(resolvedStrategyId)
                         },
                         enabled = !isActivating && !isLoading,
-                        leadingIcon = Icons.Default.PlayArrow,
                         testTag = "commit_and_start_bot_button"
                     )
                     GradientButton(
@@ -400,7 +400,7 @@ fun TechnicalAnalysisScreen(
                             Spacer(Modifier.height(10.dp))
 
                             LinearProgressIndicator(
-                                progress = { strategyScore / 100f },
+                                progress = { (strategyScore / 100f).coerceIn(0f, 1f) },
                                 modifier = Modifier.fillMaxWidth().height(6.dp),
                                 color = if (isQualified) ProfitGreen else CyanPrimary,
                                 trackColor = NavyBorder
@@ -463,10 +463,10 @@ fun TechnicalAnalysisScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    items(
+                                    itemsIndexed(
                                         items = indicators,
-                                        key = { it.name }
-                                    ) { indicator ->
+                                        key = { index, indicator -> "${indicator.name}_$index" }
+                                    ) { _, indicator ->
                                         val signalColor = when (indicator.signal) {
                                             "BULLISH" -> ProfitGreen
                                             "BEARISH" -> LossRed
@@ -559,10 +559,10 @@ fun TechnicalAnalysisScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    items(
+                                    itemsIndexed(
                                         items = checkpoints,
-                                        key = { it.id.ifBlank { it.name } }
-                                    ) { checkpoint ->
+                                        key = { index, checkpoint -> "${checkpoint.id.ifBlank { checkpoint.name }}_$index" }
+                                    ) { _, checkpoint ->
                                         val isPassed = checkpoint.status == "PASSED"
                                         Surface(
                                             color = NavyDeep.copy(alpha = 0.6f),

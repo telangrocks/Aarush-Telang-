@@ -24,17 +24,17 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.repository.ExchangeRepository
+import com.cryptopulse.app.domain.repository.TradeSessionRepository
+import com.cryptopulse.app.domain.models.TradeSetupConfig
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import com.cryptopulse.app.data.local.BiometricAuthManager
-import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.components.CryptoPulseLogoIcon
 import com.cryptopulse.app.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.fragment.app.FragmentActivity
-import androidx.hilt.navigation.compose.hiltViewModel
 
 /**
  * Splash screen matching the reference design:
@@ -51,8 +51,8 @@ fun SplashScreen(
     exchangeConnectionManager: ExchangeConnectionManager,
     exchangeRepository: ExchangeRepository,
     botRepository: BotRepository,
+    tradeSessionRepository: TradeSessionRepository,
 ) {
-    val exchangeViewModel = hiltViewModel<ExchangeViewModel>()
 
     // ── Animation state ───────────────────────────────────────────────────
     var visible by remember { mutableStateOf(false) }
@@ -144,7 +144,13 @@ fun SplashScreen(
 
             val targetCoinId = activeBotCoinId
             if (targetCoinId != null) {
-                exchangeViewModel.restoreSession(targetCoinId, activeBotStrategy)
+                tradeSessionRepository.setTradeSetupConfig(
+                    TradeSetupConfig(
+                        strategyId = activeBotStrategy ?: "ScalperV2",
+                        symbol = targetCoinId,
+                        entryPrice = 0.0
+                    )
+                )
             }
         } catch (e: Exception) {
             destination = "onboarding"
@@ -175,20 +181,20 @@ fun SplashScreen(
             )
     ) {
 
-        // Bottom city skyline illustration drawn on Canvas
-        CitySkylinesBackground(
+        // Ambient radial light glow at center-bottom
+        AmbientGlowBackground(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.48f)
+                .fillMaxHeight(0.50f)
                 .align(Alignment.BottomCenter),
             glowRadiusFraction = glowRadius
         )
 
-        // ── Main content, centred in the upper ~55% ───────────────────────
+        // ── Main content, centred in the upper ~58% ───────────────────────
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.60f)
+                .fillMaxHeight(0.65f)
                 .align(Alignment.TopCenter)
                 .alpha(alpha)
                 .padding(horizontal = 32.dp),
@@ -196,10 +202,10 @@ fun SplashScreen(
             verticalArrangement = Arrangement.Center,
         ) {
 
-            // Logo icon
-            CryptoPulseLogoIcon(size = 86.dp)
+            // Refurbished Master Logo Mark
+            CryptoPulseLogoIcon(size = 96.dp)
 
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(20.dp))
 
             // CRYPTOPULSE wordmark
             Row {
@@ -232,7 +238,7 @@ fun SplashScreen(
 
             Spacer(Modifier.height(36.dp))
 
-            // Separator + "CRAFTED BY"
+            // Separator + "FOUNDED BY"
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
@@ -240,7 +246,7 @@ fun SplashScreen(
                 Box(Modifier.width(40.dp).height(1.dp).background(NavyBorder))
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    text = "CRAFTED BY",
+                    text = "FOUNDED BY",
                     color = TextMuted,
                     fontSize = 9.sp,
                     letterSpacing = 2.sp,
@@ -252,28 +258,28 @@ fun SplashScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            // Creator name
+            // Founder Name
             Text(
-                text = "SHRIKANT TELANG",
+                text = "Shrikant Telang",
                 color = TextPrimary,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 20.sp,
-                letterSpacing = 3.sp,
+                fontWeight = FontWeight.Bold,
+                fontSize = 19.sp,
+                letterSpacing = 2.sp,
             )
 
             Spacer(Modifier.height(8.dp))
 
             // Diamond bullet
-            Text(text = "◆", color = CyanPrimary, fontSize = 10.sp)
+            Text(text = "◆", color = CyanPrimary, fontSize = 9.sp)
         }
     }
 }
 
 /**
- * Canvas-drawn cyberpunk city skyline with a radial glow and floating coin glyphs.
+ * Ambient background glow for a refined, premium launch entrance.
  */
 @Composable
-private fun CitySkylinesBackground(
+private fun AmbientGlowBackground(
     modifier: Modifier,
     glowRadiusFraction: Float,
 ) {
@@ -281,88 +287,20 @@ private fun CitySkylinesBackground(
         val w = size.width
         val h = size.height
 
-        // Radial glow at horizon
-        val glowCenter = Offset(w / 2f, h * 0.18f)
+        val glowCenter = Offset(w / 2f, h * 0.40f)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    Color(0x5500B4FF),
-                    Color(0x2200B4FF),
+                    Color(0x3300B4FF),
+                    Color(0x1100B4FF),
                     Color.Transparent,
                 ),
                 center = glowCenter,
-                radius = w * glowRadiusFraction,
+                radius = w * glowRadiusFraction * 1.5f,
             ),
-            radius = w * glowRadiusFraction,
+            radius = w * glowRadiusFraction * 1.5f,
             center = glowCenter,
         )
-
-        // Skyline silhouette (simple building shapes in navy-dark)
-        val buildingColor = Color(0xFF071428)
-        val buildingAccent = Color(0x4400B4FF)
-
-        // Building profiles — (x_frac, width_frac, height_frac)
-        val buildings = listOf(
-            Triple(0.0f,  0.12f, 0.55f),
-            Triple(0.10f, 0.08f, 0.72f),
-            Triple(0.17f, 0.06f, 0.45f),
-            Triple(0.22f, 0.14f, 0.85f),
-            Triple(0.35f, 0.09f, 0.60f),
-            Triple(0.43f, 0.14f, 0.95f),
-            Triple(0.56f, 0.10f, 0.75f),
-            Triple(0.65f, 0.07f, 0.50f),
-            Triple(0.71f, 0.16f, 0.88f),
-            Triple(0.86f, 0.08f, 0.62f),
-            Triple(0.93f, 0.07f, 0.42f),
-        )
-
-        for ((xf, wf, hf) in buildings) {
-            val bx = w * xf
-            val bw = w * wf
-            val bh = h * hf
-            val by = h - bh
-            drawRect(color = buildingColor, topLeft = Offset(bx, by), size = androidx.compose.ui.geometry.Size(bw, bh))
-            // Window glow lines
-            drawLine(
-                color = buildingAccent,
-                start = Offset(bx + bw * 0.3f, by + bh * 0.1f),
-                end   = Offset(bx + bw * 0.3f, by + bh * 0.5f),
-                strokeWidth = 1f,
-            )
-        }
-
-        // Floating coin circle glyph positions (centre of screen, scattered)
-        val coinPositions = listOf(
-            Offset(w * 0.08f, h * 0.35f),   // BTC left
-            Offset(w * 0.20f, h * 0.55f),   // ETH
-            Offset(w * 0.50f, h * 0.08f),   // BTC centre (large)
-            Offset(w * 0.78f, h * 0.42f),   // BNB right
-            Offset(w * 0.90f, h * 0.22f),   // SOL top-right
-        )
-        val coinRadii = listOf(18f, 14f, 30f, 16f, 13f)
-        val coinColors = listOf(
-            Color(0xFFF7931A), // BTC orange
-            Color(0xFF627EEA), // ETH purple
-            Color(0xFFF7931A), // BTC orange (large)
-            Color(0xFFF3BA2F), // BNB gold
-            Color(0xFF9945FF), // SOL purple
-        )
-        val coinLabels = listOf("₿", "Ξ", "₿", "B", "S")
-
-        for (i in coinPositions.indices) {
-            val c = coinPositions[i]
-            val r = coinRadii[i]
-            val col = coinColors[i]
-            // Outer glow
-            drawCircle(color = col.copy(alpha = 0.15f), radius = r * 1.7f, center = c)
-            // Circle border
-            drawCircle(color = col.copy(alpha = 0.55f), radius = r, center = c, style = Stroke(width = 1.5f))
-        }
-
-        // Circular targeting ring around centre BTC
-        val ring = coinPositions[2]
-        drawCircle(color = Color(0x2200B4FF), radius = coinRadii[2] * 2.5f, center = ring, style = Stroke(1f))
-        drawCircle(color = Color(0x1100B4FF), radius = coinRadii[2] * 3.5f, center = ring, style = Stroke(1f))
     }
 }
 

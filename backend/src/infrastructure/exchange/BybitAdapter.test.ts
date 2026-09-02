@@ -61,4 +61,76 @@ describe('BybitAdapter V5 Unit Tests', () => {
     expect(capturedParams.takeProfit).toBe('67000.5');
     expect(capturedParams.stopLoss).toBe('63000.25');
   });
+
+  describe('Permission Parsing & Validation Fixtures', () => {
+    it('correctly validates Bybit Real UTA account with ContractTrade orders', async () => {
+      await adapter.connect({ environment: 'mainnet', apiKey: 'liveKey', secret: 'liveSec' });
+      (adapter as any).makeRequest = async () => ({
+        readOnly: 0,
+        permissions: {
+          ContractTrade: ['Order', 'Position'],
+          Spot: ['SpotTrade'],
+          Wallet: ['AccountBalance']
+        },
+      });
+
+      const perms = await adapter.checkApiKeyPermissions();
+      expect(perms.isValid).toBe(true);
+      expect(perms.readOnly).toBe(false);
+      expect(perms.hasTradingPermission).toBe(true);
+    });
+
+    it('correctly detects Read-Only API key', async () => {
+      await adapter.connect({ environment: 'mainnet', apiKey: 'roKey', secret: 'roSec' });
+      (adapter as any).makeRequest = async () => ({
+        readOnly: 1,
+        permissions: { Wallet: ['AccountBalance'] },
+      });
+
+      const perms = await adapter.checkApiKeyPermissions();
+      expect(perms.isValid).toBe(true);
+      expect(perms.readOnly).toBe(true);
+      expect(perms.hasTradingPermission).toBe(false);
+    });
+
+    it('correctly validates Bybit Demo simulated trading keys', async () => {
+      await adapter.connect({ environment: 'demo', apiKey: 'demoKey', secret: 'demoSec' });
+      (adapter as any).makeRequest = async () => ({
+        readOnly: 0,
+        permissions: {},
+      });
+
+      const perms = await adapter.checkApiKeyPermissions();
+      expect(perms.isValid).toBe(true);
+      expect(perms.readOnly).toBe(false);
+      expect(perms.hasTradingPermission).toBe(true);
+    });
+  });
+
+  describe('Wallet Balance UNIFIED Fast Path', () => {
+    it('returns immediately upon successful UNIFIED account balance without calling SPOT/CONTRACT', async () => {
+      await adapter.connect({ environment: 'demo', apiKey: 'demoKey', secret: 'demoSec' });
+      const calledAccountTypes: string[] = [];
+
+      (adapter as any).makeRequest = async (_method: string, _path: string, params: any) => {
+        calledAccountTypes.push(params.accountType);
+        return {
+          list: [
+            {
+              coin: [
+                { coin: 'USDT', walletBalance: '10000', availableToWithdraw: '9500', locked: '500' }
+              ]
+            }
+          ]
+        };
+      };
+
+      const balances = await adapter.fetchBalance();
+      expect(balances.length).toBe(1);
+      expect(balances[0].currency).toBe('USDT');
+      expect(balances[0].free.toString()).toBe('9500');
+      expect(balances[0].total.toString()).toBe('10000');
+      expect(calledAccountTypes).toEqual(['UNIFIED']);
+    });
+  });
 });

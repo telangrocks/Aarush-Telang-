@@ -55,21 +55,27 @@ function applyConfigOverrides<T extends Record<string, any>>(defaultConfig: T, o
   }
 
   if (overrides.riskParameters) {
-    const rp = overrides.riskParameters;
-    if (rp.accountRiskPercent !== undefined) {
-      if (typeof rp.accountRiskPercent !== 'number' || rp.accountRiskPercent < 0.1 || rp.accountRiskPercent > 5.0) {
+    const rp = { ...overrides.riskParameters };
+    if (rp.accountRiskPercent !== undefined && rp.accountRiskPercent !== null) {
+      const num = Number(rp.accountRiskPercent);
+      if (isNaN(num) || num < 0.1 || num > 5.0) {
         throw new Error(`Invalid accountRiskPercent: ${rp.accountRiskPercent}. Must be between 0.1 and 5.0.`);
       }
+      rp.accountRiskPercent = num;
     }
-    if (rp.riskRewardRatio !== undefined) {
-      if (typeof rp.riskRewardRatio !== 'number' || rp.riskRewardRatio < 1.0 || rp.riskRewardRatio > 5.0) {
+    if (rp.riskRewardRatio !== undefined && rp.riskRewardRatio !== null) {
+      const num = Number(rp.riskRewardRatio);
+      if (isNaN(num) || num < 1.0 || num > 5.0) {
         throw new Error(`Invalid riskRewardRatio: ${rp.riskRewardRatio}. Must be between 1.0 and 5.0.`);
       }
+      rp.riskRewardRatio = num;
     }
-    if (rp.atrStopLossMultiplier !== undefined) {
-      if (typeof rp.atrStopLossMultiplier !== 'number' || rp.atrStopLossMultiplier < 0.5 || rp.atrStopLossMultiplier > 5.0) {
+    if (rp.atrStopLossMultiplier !== undefined && rp.atrStopLossMultiplier !== null) {
+      const num = Number(rp.atrStopLossMultiplier);
+      if (isNaN(num) || num < 0.5 || num > 5.0) {
         throw new Error(`Invalid atrStopLossMultiplier: ${rp.atrStopLossMultiplier}. Must be between 0.5 and 5.0.`);
       }
+      rp.atrStopLossMultiplier = num;
     }
 
     // Safely apply overrides, explicitly preserving system-controlled parameters

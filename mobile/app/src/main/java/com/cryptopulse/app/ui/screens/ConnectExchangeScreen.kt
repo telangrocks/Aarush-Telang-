@@ -81,6 +81,8 @@ fun ConnectExchangeScreen(
             navController.navigate("market_candidates") {
                 popUpTo("connect_exchange") { inclusive = true }
             }
+        } else {
+            viewModel.checkExistingConnection()
         }
     }
 
@@ -122,152 +124,177 @@ fun ConnectExchangeScreen(
                 .fillMaxSize()
                 .background(bgGradient)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 12.dp)
-                    .testTag("connect_exchange_root"),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Spacer(Modifier.height(4.dp))
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
+            if (uiState is ExchangeUiState.CheckingConnection) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Store,
-                        contentDescription = null,
-                        tint = CyanPrimary,
-                        modifier = Modifier.size(24.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "CONNECT EXCHANGE",
-                        color = CyanPrimary,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 20.sp,
-                        letterSpacing = 1.5.sp,
-                    )
-                }
-
-                Spacer(Modifier.height(4.dp))
-
-                Text(
-                    text = "Select your exchange and enter API credentials",
-                    color = TextSecondary,
-                    fontSize = 12.sp,
-                    textAlign = TextAlign.Center,
-                )
-
-                Spacer(Modifier.height(16.dp))
-
-                GlowCard {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
-                        AuthFieldLabel("EXCHANGE")
-                        Spacer(Modifier.height(4.dp))
-                        StaticBybitBadge()
-
-
-                        Spacer(Modifier.height(12.dp))
-
-                        AuthFieldLabel("ENVIRONMENT")
-                        Spacer(Modifier.height(4.dp))
-                        EnvironmentToggle(
-                            selectedEnvironment = formState.environment,
-                            onEnvironmentSelected = viewModel::onEnvironmentSelected,
+                        CircularProgressIndicator(
+                            color = CyanPrimary,
+                            modifier = Modifier.size(36.dp)
                         )
-
-                        Spacer(Modifier.height(12.dp))
-
-                        AuthFieldLabel("API KEY")
-                        Spacer(Modifier.height(4.dp))
-                        DarkTextField(
-                            value = formState.apiKey,
-                            onValueChange = viewModel::onApiKeyChanged,
-                            placeholder = "Enter your API Key",
-                            isError = formState.apiKeyError != null,
-                            testTag = "api_key_input",
-                            trailingIcon = {
-                                Icon(Icons.Default.Key, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
-                            },
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            text = "Checking exchange connection...",
+                            color = TextSecondary,
+                            fontSize = 14.sp
                         )
-                        if (formState.apiKeyError != null) {
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = formState.apiKeyError!!,
-                                color = LossRed,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(start = 4.dp),
-                            )
-                        }
-
-                        Spacer(Modifier.height(12.dp))
-
-                        AuthFieldLabel("API SECRET")
-                        Spacer(Modifier.height(4.dp))
-                        DarkTextField(
-                            value = formState.apiSecret,
-                            onValueChange = viewModel::onApiSecretChanged,
-                            placeholder = "Enter your API Secret",
-                            visualTransformation = if (apiSecretVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                            isError = formState.apiSecretError != null,
-                            testTag = "api_secret_input",
-                            trailingIcon = {
-                                IconButton(onClick = { apiSecretVisible = !apiSecretVisible }) {
-                                    Icon(
-                                        imageVector = if (apiSecretVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                        contentDescription = if (apiSecretVisible) "Hide API Secret" else "Show API Secret",
-                                        tint = TextSecondary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            },
-                        )
-                        if (formState.apiSecretError != null) {
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = formState.apiSecretError!!,
-                                color = LossRed,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(start = 4.dp),
-                            )
-                        }
-
-
                     }
                 }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 24.dp, vertical = 12.dp)
+                        .testTag("connect_exchange_root"),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Spacer(Modifier.height(4.dp))
 
-                Spacer(Modifier.height(16.dp))
-                
-                if (uiState !is ExchangeUiState.Connected) {
-                    BybitConnectivityChecklist()
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Store,
+                            contentDescription = null,
+                            tint = CyanPrimary,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "CONNECT EXCHANGE",
+                            color = CyanPrimary,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 20.sp,
+                            letterSpacing = 1.5.sp,
+                        )
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        text = "Select your exchange and enter API credentials",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center,
+                    )
+
                     Spacer(Modifier.height(16.dp))
+
+                    GlowCard {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            AuthFieldLabel("EXCHANGE")
+                            Spacer(Modifier.height(4.dp))
+                            StaticBybitBadge()
+
+
+                            Spacer(Modifier.height(12.dp))
+
+                            AuthFieldLabel("ENVIRONMENT")
+                            Spacer(Modifier.height(4.dp))
+                            EnvironmentToggle(
+                                selectedEnvironment = formState.environment,
+                                onEnvironmentSelected = viewModel::onEnvironmentSelected,
+                            )
+
+                            Spacer(Modifier.height(12.dp))
+
+                            AuthFieldLabel("API KEY")
+                            Spacer(Modifier.height(4.dp))
+                            DarkTextField(
+                                value = formState.apiKey,
+                                onValueChange = viewModel::onApiKeyChanged,
+                                placeholder = "Enter your API Key",
+                                isError = formState.apiKeyError != null,
+                                testTag = "api_key_input",
+                                trailingIcon = {
+                                    Icon(Icons.Default.Key, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                },
+                            )
+                            if (formState.apiKeyError != null) {
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = formState.apiKeyError!!,
+                                    color = LossRed,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(start = 4.dp),
+                                )
+                            }
+
+                            Spacer(Modifier.height(12.dp))
+
+                            AuthFieldLabel("API SECRET")
+                            Spacer(Modifier.height(4.dp))
+                            DarkTextField(
+                                value = formState.apiSecret,
+                                onValueChange = viewModel::onApiSecretChanged,
+                                placeholder = "Enter your API Secret",
+                                visualTransformation = if (apiSecretVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                isError = formState.apiSecretError != null,
+                                testTag = "api_secret_input",
+                                trailingIcon = {
+                                    IconButton(onClick = { apiSecretVisible = !apiSecretVisible }) {
+                                        Icon(
+                                            imageVector = if (apiSecretVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                            contentDescription = if (apiSecretVisible) "Hide API Secret" else "Show API Secret",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                },
+                            )
+                            if (formState.apiSecretError != null) {
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = formState.apiSecretError!!,
+                                    color = LossRed,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(start = 4.dp),
+                                )
+                            }
+
+
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                    
+                    if (uiState !is ExchangeUiState.Connected) {
+                        BybitConnectivityChecklist()
+                        Spacer(Modifier.height(16.dp))
+                    }
+
+                    GradientButton(
+                        text = when {
+                            uiState is ExchangeUiState.Connecting -> "Processing…"
+                            formState.validationMessage != null -> "Retry"
+                            else -> "Validate & Connect"
+                        },
+                        onClick = { viewModel.validateAndConnect() },
+                        enabled = formState.apiKey.isNotBlank() && formState.apiSecret.isNotBlank(),
+                        leadingIcon = when (uiState) {
+                            is ExchangeUiState.Connected -> Icons.Default.CheckCircle
+                            is ExchangeUiState.Error -> Icons.Default.Error
+                            else -> Icons.Default.ArrowForward
+                        },
+                        testTag = "exchange_connect_button",
+                    )
+
+                    Spacer(Modifier.height(12.dp))
                 }
-
-                GradientButton(
-                    text = when {
-                        uiState is ExchangeUiState.Connecting -> "Processing…"
-                        formState.validationMessage != null -> "Retry"
-                        else -> "Validate & Connect"
-                    },
-                    onClick = { viewModel.validateAndConnect() },
-                    enabled = formState.apiKey.isNotBlank() && formState.apiSecret.isNotBlank(),
-                    leadingIcon = when (uiState) {
-                        is ExchangeUiState.Connected -> Icons.Default.CheckCircle
-                        is ExchangeUiState.Error -> Icons.Default.Error
-                        else -> Icons.Default.ArrowForward
-                    },
-                    testTag = "exchange_connect_button",
-                )
-
-                Spacer(Modifier.height(12.dp))
             }
         }
     }

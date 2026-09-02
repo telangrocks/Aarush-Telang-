@@ -354,17 +354,21 @@ export async function handleConnectExchange(
 
     const resolvedRegion = normalizeRegion(region);
 
+    const providerConfig = {
+      environment: normEnv,
+      apiKey: cleanApiKey,
+      secret: cleanApiSecret,
+      password: cleanApiPassphrase,
+      region: resolvedRegion,
+      ...resolveEgressConfig(exchangeName, c.env),
+    };
+
+    const validationStartTime = Date.now();
+    let provider: any = null;
     try {
-      const provider = await ExchangeManager.getProvider(exchangeName as ExchangeName, {
-        environment: normEnv,
-        apiKey: cleanApiKey,
-        secret: cleanApiSecret,
-        password: cleanApiPassphrase,
-        region: resolvedRegion,
-        ...resolveEgressConfig(exchangeName, c.env),
-      });
-      if (typeof (provider as any).checkApiKeyPermissions === "function") {
-        const permCheck = await (provider as any).checkApiKeyPermissions();
+      provider = await ExchangeManager.createUncachedProvider(exchangeName as ExchangeName, providerConfig);
+      if (typeof provider.checkApiKeyPermissions === "function") {
+        const permCheck = await provider.checkApiKeyPermissions();
         if (permCheck.readOnly) {
           throw new UnifiedError(
             "Your Bybit API key is Read-Only. Trading permissions are required.",
@@ -385,8 +389,11 @@ export async function handleConnectExchange(
         }
       }
       await provider.fetchBalance();
-      console.log(`[exchange-auth] connect validation successful for ${exchangeName}`);
+      console.log(`[exchange-auth] connect validation successful for ${exchangeName} (${normEnv}) in ${Date.now() - validationStartTime}ms`);
     } catch (valErr: unknown) {
+      if (provider) {
+        try { await provider.disconnect(); } catch (_) {}
+      }
       const classified = classifyException(valErr, exchangeName);
       console.error(`[exchange-auth] connect validation failed for ${exchangeName} (${classified.technicalDetail}):`, valErr);
       c.status(400);
@@ -404,6 +411,10 @@ export async function handleConnectExchange(
         exchangeCode: origCode,
         httpStatus: origStatus,
       });
+    } finally {
+      if (provider) {
+        try { await provider.disconnect(); } catch (_) {}
+      }
     }
 
     const encryptedKey = await encrypt(cleanApiKey, c.env.ENCRYPTION_KEY);
@@ -445,6 +456,11 @@ export async function handleConnectExchange(
       await c.env.DB.prepare(
         `UPDATE users SET exchange_connection_status = 'CONNECTED', exchange_invalidated_at = NULL, exchange_failure_code = NULL WHERE id = ?`
       ).bind(userId).run();
+    } catch (_) {}
+
+    // Invalidate any previously cached provider instance for this user/slot
+    try {
+      await ExchangeManager.disconnectProvider(exchangeName, providerConfig);
     } catch (_) {}
 
     // Reset bot state and clear instrument locking upon exchange connection/reconnection
@@ -1219,18 +1235,38 @@ export async function handleGetTechnicalAnalysis(
       new StructuredLogger().warn(`[TechnicalAnalysis] Balance fetch non-fatal fallback on ${user.exchange_name}`, { error: String(balErr) });
     }
 
-    const results = await orchestrator.executeCycle(symbol, normalizedId, config, accountBalance);
-    const evalResult = results[0] || {
+    let results: any[] = [];
+    try {
+      results = await orchestrator.executeCycle(symbol, normalizedId, config, accountBalance);
+    } catch (cycleErr: unknown) {
+      new StructuredLogger().warn(`[TechnicalAnalysis] executeCycle non-fatal fallback for ${symbol}/${normalizedId}`, { error: String(cycleErr) });
+    }
+
+    const evalResult = (results && results[0]) || {
       strategyId: manifest.id,
       timestamp: Date.now(),
       confidenceScore: 50,
       hasSignal: false,
-      metadata: { reasoning: ['Evaluation pending'] }
+      metadata: { reasoning: ['Evaluation pending initial cycle'] }
     };
 
-    const snapshot = await dataEngine.getSnapshot(symbol, manifest.supportedTimeframes || ['5m']);
-    const snapshotDto = AnalysisSnapshotMapper.map(evalResult, manifest, snapshot, 'ACTIVE', false);
+    let snapshot: any;
+    try {
+      snapshot = await dataEngine.getSnapshot(symbol, manifest.supportedTimeframes || ['5m']);
+    } catch (snapErr: unknown) {
+      new StructuredLogger().warn(`[TechnicalAnalysis] getSnapshot fallback for ${symbol}`, { error: String(snapErr) });
+      snapshot = {
+        symbol,
+        timestamp: Date.now(),
+        currentPrice: ticker.last.toNumber(),
+        volume24h: ticker.volume.toNumber(),
+        quoteVolume24h: ticker.quoteVolume.toNumber(),
+        candles: { '1m': [], '3m': [], '5m': [], '15m': [], '30m': [], '1h': [], '4h': [] },
+        metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: ticker.high.toNumber(), lowPrice24h: ticker.low.toNumber() },
+      };
+    }
 
+    const snapshotDto = AnalysisSnapshotMapper.map(evalResult, manifest, snapshot, 'ACTIVE', false);
     return c.json(snapshotDto);
   } catch (e: unknown) {
     const error = e as Error;
@@ -1423,6 +1459,16 @@ export async function handleExecuteTrade(
 export async function handleMockTrade(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
+  if (c.env.ENVIRONMENT === 'production') {
+    c.status(403);
+    return c.json({
+      success: false,
+      code: "MOCK_TRADING_DISABLED",
+      error: "Mock trading is disabled in production.",
+      message: "Mock trading is disabled in production.",
+    });
+  }
+
   try {
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;

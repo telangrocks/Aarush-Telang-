@@ -63,36 +63,87 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return mapped;
   }
 
+  private static timeSyncCache: Map<string, { offset: number; lastSync: number }> = new Map();
+  private static activeTimeSyncPromise: Map<string, Promise<number>> = new Map();
+
   private serverTimeOffsetMs = 0;
   private lastTimeSyncMs = 0;
 
-  private async fetchServerTimeOffset(): Promise<number> {
-    try {
-      const url = `${this.getHost()}/v5/market/time`;
-      const res = await this.fetchWithTimeout(url, { headers: { 'User-Agent': 'CryptoPulse/1.0' } }, 5000);
-      if (res.ok) {
-        const json = await res.json() as any;
-        const serverTime = json?.time ? parseInt(json.time, 10) : NaN;
-        if (!isNaN(serverTime)) {
-          this.serverTimeOffsetMs = serverTime - Date.now();
-          this.lastTimeSyncMs = Date.now();
-          return this.serverTimeOffsetMs;
-        }
-      }
-    } catch (_) {
-      // Fall back to local clock if time fetch fails
+  private async fetchServerTimeOffset(force = false): Promise<number> {
+    const host = this.getHost();
+    const now = Date.now();
+    const cached = BybitAdapter.timeSyncCache.get(host);
+    if (!force && cached && (now - cached.lastSync < 300000)) {
+      this.serverTimeOffsetMs = cached.offset;
+      this.lastTimeSyncMs = cached.lastSync;
+      return cached.offset;
     }
-    return this.serverTimeOffsetMs;
+
+    if (BybitAdapter.activeTimeSyncPromise.has(host)) {
+      try {
+        const offset = await BybitAdapter.activeTimeSyncPromise.get(host)!;
+        this.serverTimeOffsetMs = offset;
+        this.lastTimeSyncMs = Date.now();
+        return offset;
+      } catch (_) {}
+    }
+
+    const syncPromise = (async () => {
+      try {
+        const url = `${host}/v5/market/time`;
+        const res = await this.fetchWithTimeout(url, { headers: { 'User-Agent': 'CryptoPulse/1.0' } }, 5000);
+        if (res.ok) {
+          const json = await res.json() as any;
+          let serverTime = NaN;
+          if (typeof json?.time === 'number') {
+            serverTime = json.time;
+          } else if (typeof json?.time === 'string') {
+            serverTime = parseInt(json.time, 10);
+          } else if (json?.result?.timeSecond) {
+            serverTime = parseInt(json.result.timeSecond, 10) * 1000;
+          } else if (json?.result?.timeNano) {
+            serverTime = Math.floor(parseInt(json.result.timeNano, 10) / 1e6);
+          }
+
+          if (!isNaN(serverTime)) {
+            const offset = serverTime - Date.now();
+            BybitAdapter.timeSyncCache.set(host, { offset, lastSync: Date.now() });
+            return offset;
+          }
+        }
+      } catch (_) {
+        // Fall back to local clock if time fetch fails
+      } finally {
+        BybitAdapter.activeTimeSyncPromise.delete(host);
+      }
+      return 0;
+    })();
+
+    BybitAdapter.activeTimeSyncPromise.set(host, syncPromise);
+    const offset = await syncPromise;
+    this.serverTimeOffsetMs = offset;
+    this.lastTimeSyncMs = Date.now();
+    return offset;
   }
 
   private async getSyncedTimestamp(): Promise<string> {
-    if (!this.lastTimeSyncMs || (Date.now() - this.lastTimeSyncMs > 300000)) {
+    const host = this.getHost();
+    const cached = BybitAdapter.timeSyncCache.get(host);
+    if (!cached || (Date.now() - cached.lastSync > 300000)) {
       await this.fetchServerTimeOffset();
+    } else {
+      this.serverTimeOffsetMs = cached.offset;
     }
     return (Date.now() + this.serverTimeOffsetMs).toString();
   }
 
-  private async makeRequest(method: 'GET' | 'POST', path: string, params: Record<string, any> = {}, isPrivate = false): Promise<any> {
+  private async makeRequest(
+    method: 'GET' | 'POST',
+    path: string,
+    params: Record<string, any> = {},
+    isPrivate = false,
+    isRetry = false
+  ): Promise<any> {
     const startTime = Date.now();
     const host = this.getHost();
     const cleanKey = (this.config?.apiKey || '').trim();
@@ -103,7 +154,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
 
     const ts = isPrivate ? await this.getSyncedTimestamp() : Date.now().toString();
-    const recvWindow = '5000';
+    const recvWindow = '20000';
     let url = `${host}${path}`;
     let bodyStr = '';
     let queryString = '';
@@ -175,13 +226,21 @@ export class BybitAdapter extends BaseExchangeAdapter {
       });
 
       if (!res.ok) {
+        let parsed: any = {};
+        try { parsed = JSON.parse(errText); } catch (_) {}
+        const retCode = parsed.retCode ?? parsed.ret_code ?? status;
+
+        // Auto-recovery on timestamp drift (retCode 10003 or 10002 with timestamp error message)
+        if (isPrivate && !isRetry && (retCode === 10003 || (retCode === 10002 && (String(parsed.retMsg).toLowerCase().includes('timestamp') || String(parsed.retMsg).toLowerCase().includes('recv_window'))))) {
+          await this.fetchServerTimeOffset(true);
+          return this.makeRequest(method, path, params, isPrivate, true);
+        }
+
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
         const headerObj: Record<string, string> = {};
         if (res.headers && typeof (res.headers as any).forEach === 'function') {
           (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
         }
-        let parsed: any = {};
-        try { parsed = JSON.parse(errText); } catch (_) {}
         const err = new UnifiedError(classified.friendlyMessage, classified.code, parsed.retCode ?? status, parsed.retMsg ?? errText, status);
         (err as any).rawResponseBody = errText;
         (err as any).rawStatus = status;
@@ -214,9 +273,16 @@ export class BybitAdapter extends BaseExchangeAdapter {
       }
 
       if (json.retCode !== 0 && json.ret_code !== 0) {
-        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
         const codeVal = json.retCode ?? json.ret_code;
         const msgVal = json.retMsg ?? json.ret_msg;
+
+        // Auto-recovery on timestamp drift (retCode 10003 or 10002 with timestamp message)
+        if (isPrivate && !isRetry && (codeVal === 10003 || (codeVal === 10002 && (String(msgVal).toLowerCase().includes('timestamp') || String(msgVal).toLowerCase().includes('recv_window'))))) {
+          await this.fetchServerTimeOffset(true);
+          return this.makeRequest(method, path, params, isPrivate, true);
+        }
+
+        const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
         const headerObj: Record<string, string> = {};
         if (res.headers && typeof (res.headers as any).forEach === 'function') {
           (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
@@ -265,12 +331,24 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const rawReadOnly = result.readOnly ?? (result as any).result?.readOnly;
     const isReadOnly = rawReadOnly === 1 || rawReadOnly === '1' || rawReadOnly === true;
     const perms = result.permissions ?? (result as any).result?.permissions ?? {};
+
     const contractTrade: string[] = Array.isArray(perms.ContractTrade) ? perms.ContractTrade : [];
+    const spotTrade: string[] = Array.isArray(perms.Spot) ? perms.Spot : [];
+    const derivativesTrade: string[] = Array.isArray(perms.Derivatives) ? perms.Derivatives : [];
+
     const hasContractOrder = contractTrade.some(
-      (p: string) => typeof p === 'string' && (p.toLowerCase() === 'order' || p.toLowerCase() === 'orders')
+      (p: string) => typeof p === 'string' && (p.toLowerCase() === 'order' || p.toLowerCase() === 'orders' || p.toLowerCase() === 'position' || p.toLowerCase() === 'positions')
+    );
+    const hasSpotOrder = spotTrade.some(
+      (p: string) => typeof p === 'string' && (p.toLowerCase() === 'spottrade' || p.toLowerCase() === 'order')
+    );
+    const hasDerivativesOrder = derivativesTrade.some(
+      (p: string) => typeof p === 'string' && (p.toLowerCase() === 'order' || p.toLowerCase() === 'derivativestrade')
     );
 
-    const hasTradingPermission = !isReadOnly && hasContractOrder;
+    const isDemoEnv = this.config?.environment === 'demo';
+    // On demo, if perms is empty or unpopulated but readOnly is false, allow simulated trading
+    const hasTradingPermission = !isReadOnly && (hasContractOrder || hasSpotOrder || hasDerivativesOrder || (isDemoEnv && Object.keys(perms).length === 0));
 
     return {
       isValid: true,
@@ -286,43 +364,46 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const accountTypesToTry = requestedAccountType ? [requestedAccountType] : ['UNIFIED', 'SPOT', 'CONTRACT'];
 
     let lastErr: any;
-    let anySuccess = false;
     const balancesByCoin = new Map<string, { free: BigNumber, locked: BigNumber, total: BigNumber }>();
 
     for (const accType of accountTypesToTry) {
       try {
         const result = await this.makeRequest('GET', '/v5/account/wallet-balance', { accountType: accType }, true);
-        anySuccess = true;
         const list = result?.list || [];
-        for (const acc of list) {
-          const coins = acc.coin || [];
-          for (const c of coins) {
-            const locked = new BigNumber(c.locked || c.used || 0);
-            
-            let freeAmt = c.availableToWithdraw || c.availableBalance || c.free;
-            if (!freeAmt && c.walletBalance) {
-              freeAmt = new BigNumber(c.walletBalance).minus(locked).toString();
+        if (list.length > 0) {
+          for (const acc of list) {
+            const coins = acc.coin || [];
+            for (const c of coins) {
+              const locked = new BigNumber(c.locked || c.used || 0);
+              let freeAmt = c.availableToWithdraw || c.availableBalance || c.free;
+              if (!freeAmt && c.walletBalance) {
+                freeAmt = new BigNumber(c.walletBalance).minus(locked).toString();
+              }
+              const free = new BigNumber(freeAmt || 0);
+              const total = new BigNumber(c.walletBalance || c.equity || free.plus(locked));
+
+              if (balancesByCoin.has(c.coin)) {
+                const existing = balancesByCoin.get(c.coin)!;
+                existing.free = existing.free.plus(free);
+                existing.locked = existing.locked.plus(locked);
+                existing.total = existing.total.plus(total);
+              } else {
+                balancesByCoin.set(c.coin, { free, locked, total });
+              }
             }
-            
-            const free = new BigNumber(freeAmt || 0);
-            const total = new BigNumber(c.walletBalance || c.equity || free.plus(locked));
-            
-            if (balancesByCoin.has(c.coin)) {
-              const existing = balancesByCoin.get(c.coin)!;
-              existing.free = existing.free.plus(free);
-              existing.locked = existing.locked.plus(locked);
-              existing.total = existing.total.plus(total);
-            } else {
-              balancesByCoin.set(c.coin, { free, locked, total });
-            }
+          }
+          // UNIFIED fast path: If UNIFIED returned balance list successfully, return immediately without querying SPOT/CONTRACT
+          if (accType === 'UNIFIED' && !requestedAccountType) {
+            break;
           }
         }
       } catch (err: any) {
         lastErr = err;
+        // If UNIFIED fails, continue to fallback SPOT / CONTRACT
       }
     }
 
-    if (!anySuccess) {
+    if (balancesByCoin.size === 0 && lastErr) {
       throw lastErr;
     }
 

@@ -33,6 +33,7 @@ import java.net.UnknownHostException
 import javax.inject.Inject
 
 sealed class ExchangeUiState {
+    object CheckingConnection : ExchangeUiState()
     object Idle : ExchangeUiState()
     object Validating : ExchangeUiState()
     object Connecting : ExchangeUiState()
@@ -319,6 +320,34 @@ class ExchangeViewModel @Inject constructor(
         return exMsgPair
     }
 
+    fun checkExistingConnection(forceRemote: Boolean = false) {
+        viewModelScope.launch {
+            _uiState.value = ExchangeUiState.CheckingConnection
+            val (localConnected, localExchange, localEnv) = exchangeConnectionManager.getConnectionInfo()
+            if (localConnected && !forceRemote) {
+                _uiState.value = ExchangeUiState.Connected(localExchange ?: "bybit")
+                fetchMarketCandidates()
+                return@launch
+            }
+
+            val token = tokenManager.getToken()
+            if (!token.isNullOrBlank()) {
+                val result = exchangeRepository.getConnectionStatus()
+                if (result is NetworkResult.Success && result.data.isConnected) {
+                    val status = result.data
+                    val exchange = status.exchangeName ?: "bybit"
+                    val env = status.environment ?: "demo"
+                    exchangeConnectionManager.saveConnection(exchange, env)
+                    _uiState.value = ExchangeUiState.Connected(exchange)
+                    fetchMarketCandidates()
+                    return@launch
+                }
+            }
+
+            _uiState.value = ExchangeUiState.Idle
+        }
+    }
+
     fun validateAndConnect() {
         val state = _formState.value
         val activeExchange = state.selectedExchange.lowercase()
@@ -465,8 +494,84 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun restoreSession(coinId: String, strategy: String?) {
-        val symbol = coinId.replace("/USDT", "").replace("USDT", "").uppercase()
-        _selectedCandidate.value = _candidates.value.find { it.symbol == symbol }
+        val rawSymbol = coinId.replace("/USDT", "").replace("USDT", "").uppercase()
+        val pairName = if (coinId.contains("/")) coinId else "$rawSymbol/USDT"
+
+        val existing = _candidates.value.find { it.symbol.equals(rawSymbol, ignoreCase = true) }
+        if (existing != null) {
+            _selectedCandidate.value = existing
+            return
+        }
+
+        viewModelScope.launch {
+            val result = marketRepository.getCandidates()
+            if (result is NetworkResult.Success) {
+                val uiList = result.data.map { domain ->
+                    MarketCandidate(
+                        rank = domain.rank,
+                        symbol = domain.symbol,
+                        pairName = domain.pairName,
+                        coinName = domain.symbol,
+                        notations = 0,
+                        currentMarketPrice = domain.currentMarketPrice,
+                        volume24h = domain.volume24h,
+                        quoteVolume24h = domain.quoteVolume24h,
+                        priceChangePercent24h = domain.priceChangePercent24h,
+                        score = domain.score,
+                        tradeSide = domain.tradeSide,
+                        minNotional = domain.minNotional,
+                        minOrderQty = domain.minOrderQty,
+                        qtyStep = domain.qtyStep,
+                        tickSize = domain.tickSize,
+                        minPrice = domain.minPrice,
+                        maxPrice = domain.maxPrice,
+                        maxQty = domain.maxQty,
+                        highPrice24h = domain.highPrice24h,
+                        lowPrice24h = domain.lowPrice24h,
+                        category = domain.category,
+                        exchangeTimestamp = domain.exchangeTimestamp,
+                        coinColor = androidx.compose.ui.graphics.Color.Gray
+                    )
+                }
+                _candidates.value = uiList
+                _readyForCandidates.value = true
+                val matched = uiList.find { it.symbol.equals(rawSymbol, ignoreCase = true) }
+                if (matched != null) {
+                    _selectedCandidate.value = matched
+                    return@launch
+                }
+            }
+
+            // Fallback to real exchange ticker if coin is outside candidate ranking
+            when (val tickerRes = marketRepository.getTicker(rawSymbol)) {
+                is NetworkResult.Success -> {
+                    val ticker = tickerRes.data
+                    _selectedCandidate.value = MarketCandidate(
+                        rank = 0,
+                        symbol = ticker.symbol,
+                        pairName = pairName,
+                        coinName = ticker.symbol,
+                        notations = 0,
+                        currentMarketPrice = ticker.price,
+                        volume24h = ticker.volume24h,
+                        quoteVolume24h = ticker.quoteVolume24h,
+                        priceChangePercent24h = ticker.priceChangePercent24h,
+                        highPrice24h = ticker.highPrice24h,
+                        lowPrice24h = ticker.lowPrice24h,
+                        minNotional = ticker.minNotional,
+                        minOrderQty = ticker.minOrderQty,
+                        maxQty = ticker.maxOrderQty,
+                        tickSize = ticker.tickSize,
+                        score = 0.0,
+                        tradeSide = "BUY",
+                        coinColor = androidx.compose.ui.graphics.Color.Gray
+                    )
+                }
+                is NetworkResult.Error -> {
+                    _candidatesError.value = "Failed to load active market session."
+                }
+            }
+        }
     }
 
     fun fetchTechnicalAnalysis(strategy: String, config: Map<String, Any>? = null) {
@@ -631,6 +736,7 @@ class ExchangeViewModel @Inject constructor(
         _lastTrade.value = null
         isProcessingTrade = true
         _executionState.value = ExecutionUiState.Submitting(alertId)
+        tradeAlertManager.dismissOrExecuteAlert()
         stopLiveTicker()
 
         viewModelScope.launch {

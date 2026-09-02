@@ -16,6 +16,7 @@ import com.cryptopulse.app.ui.screens.MarketCandidate
 import com.cryptopulse.app.service.TradeAlertManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -61,19 +62,77 @@ class TechnicalAnalysisViewModel @Inject constructor(
     val isLoadingPreview: StateFlow<Boolean> = _isLoadingPreview.asStateFlow()
 
     private var analysisJob: Job? = null
+    private var previewPollingJob: Job? = null
     private var explorationRequestId: Long = 0L
 
     init {
         loadAvailableStrategies()
+        viewModelScope.launch {
+            botRepository.activeBotAnalysisState.collect { botSnapshot ->
+                if (botSnapshot != null) {
+                    val committedId = botRepository.committedStrategyId.value
+                    val exploringId = _exploringStrategyId.value
+                    val snapshotStrategyId = botSnapshot.strategyMetadata?.strategyId ?: botSnapshot.engineStatus?.activeStrategy
+                    if (isBotActive.value && (committedId == null || committedId.equals(exploringId, ignoreCase = true) || (snapshotStrategyId != null && snapshotStrategyId.equals(exploringId, ignoreCase = true)))) {
+                        _explorationState.value = botSnapshot
+                        _isLoadingPreview.value = false
+                        _previewError.value = null
+                    }
+                }
+            }
+        }
     }
 
-    fun onScreenStarted() {
+    fun onScreenStarted(symbol: String? = null) {
         botRepository.startObserving()
+        startPreviewPolling(symbol)
     }
 
     fun onScreenStopped() {
+        stopPreviewPolling()
         if (!isBotActive.value) {
             botRepository.stopObserving()
+        }
+    }
+
+    fun startPreviewPolling(currentSymbol: String? = null) {
+        previewPollingJob?.cancel()
+        previewPollingJob = viewModelScope.launch {
+            while (isActive) {
+                kotlinx.coroutines.delay(5000L)
+                if (!isBotActive.value) {
+                    val config = sessionRepository.tradeSetupConfig.value
+                    val symbolToUse = currentSymbol ?: config?.symbol ?: "BTC/USDT"
+                    val strategyToUse = _exploringStrategyId.value
+                    loadPreviewAnalysisSilently(symbolToUse, strategyToUse, config)
+                }
+            }
+        }
+    }
+
+    fun stopPreviewPolling() {
+        previewPollingJob?.cancel()
+        previewPollingJob = null
+    }
+
+    private fun loadPreviewAnalysisSilently(symbol: String, strategy: String, config: TradeSetupConfig? = null) {
+        val requestId = ++explorationRequestId
+        val targetStrategy = strategy
+
+        viewModelScope.launch {
+            val result = technicalAnalysisRepository.getAnalysisSnapshot(symbol, targetStrategy, config)
+            if (requestId != explorationRequestId) return@launch
+
+            result.onSuccess { snapshot ->
+                if (requestId == explorationRequestId) {
+                    _explorationState.value = snapshot
+                    _previewError.value = null
+                }
+            }.onFailure { error ->
+                if (requestId == explorationRequestId && _explorationState.value == null) {
+                    _previewError.value = error.message ?: "Technical analysis unavailable."
+                }
+            }
         }
     }
 
@@ -91,14 +150,21 @@ class TechnicalAnalysisViewModel @Inject constructor(
         val originalConfig = sessionRepository.tradeSetupConfig.value
         val cleanConfig = originalConfig?.copy(
             strategyId = strategy,
-            parameters = emptyMap() // Let new strategy apply its authoritative defaults from StrategyRegistry
+            parameters = if (originalConfig.strategyId == strategy) originalConfig.parameters else emptyMap(),
+            riskParameters = originalConfig.riskParameters
+        ) ?: TradeSetupConfig(
+            strategyId = strategy,
+            symbol = symbol,
+            entryPrice = 0.0
         )
         loadPreviewAnalysis(symbol, strategy, cleanConfig)
     }
 
     fun loadPreviewAnalysis(symbol: String, strategy: String, config: TradeSetupConfig? = null) {
         val requestId = ++explorationRequestId
-        _isLoadingPreview.value = true
+        if (_explorationState.value == null) {
+            _isLoadingPreview.value = true
+        }
         _previewError.value = null
         _exploringStrategyId.value = strategy
 
@@ -117,11 +183,14 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 if (requestId == explorationRequestId) {
                     _isLoadingPreview.value = false
                     _explorationState.value = snapshot // Writes exclusively to explorationState
+                    _previewError.value = null
                 }
             }.onFailure { error ->
                 if (requestId == explorationRequestId) {
                     _isLoadingPreview.value = false
-                    _previewError.value = error.message ?: "Technical analysis unavailable. Please verify your exchange connection."
+                    if (_explorationState.value == null) {
+                        _previewError.value = error.message ?: "Technical analysis unavailable. Please verify your exchange connection."
+                    }
                 }
             }
         }

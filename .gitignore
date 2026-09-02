@@ -86,3 +86,8 @@ pnpm-lock.yaml
 # Local editor directory
 .kilo/
 
+# User documentation & media artifacts (local only)
+*.docx
+*.mp4
+IMP DATA/
+

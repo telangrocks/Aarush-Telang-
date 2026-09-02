@@ -1,6 +1,7 @@
 package com.cryptopulse.app.data.repository
 
 import com.cryptopulse.app.core.dispatcher.DispatcherProvider
+import com.cryptopulse.app.core.error.NetworkError
 import com.cryptopulse.app.core.network.NetworkResult
 import com.cryptopulse.app.data.api.dto.auth.request.*
 import com.cryptopulse.app.data.datasource.remote.auth.AuthRemoteDataSource
@@ -19,8 +20,14 @@ class AuthRepositoryImpl @Inject constructor(
     override suspend fun login(email: String, password: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
         when (val result = authRemoteDataSource.login(LoginRequestDto(email, password))) {
             is NetworkResult.Success -> {
-                tokenManager.saveTokens(result.data.accessToken ?: "", result.data.refreshToken ?: "")
-                NetworkResult.Success(Unit)
+                val access = result.data.accessToken
+                val refresh = result.data.refreshToken
+                if (!access.isNullOrBlank() && !refresh.isNullOrBlank()) {
+                    tokenManager.saveTokens(access, refresh)
+                    NetworkResult.Success(Unit)
+                } else {
+                    NetworkResult.Error(NetworkError.Serialization)
+                }
             }
             is NetworkResult.Error -> result
         }
@@ -28,7 +35,16 @@ class AuthRepositoryImpl @Inject constructor(
 
     override suspend fun register(email: String, password: String, confirm: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
         when (val result = authRemoteDataSource.register(RegisterRequestDto(email, password, confirm))) {
-            is NetworkResult.Success -> NetworkResult.Success(Unit)
+            is NetworkResult.Success -> {
+                val access = result.data.accessToken
+                val refresh = result.data.refreshToken
+                if (!access.isNullOrBlank() && !refresh.isNullOrBlank()) {
+                    tokenManager.saveTokens(access, refresh)
+                    NetworkResult.Success(Unit)
+                } else {
+                    NetworkResult.Error(NetworkError.Serialization)
+                }
+            }
             is NetworkResult.Error -> result
         }
     }
@@ -44,14 +60,28 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     override suspend fun refreshToken(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
-        val currentToken = tokenManager.getToken() ?: return@withContext NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception("No token")))
-        when (val result = authRemoteDataSource.refreshToken(RefreshRequestDto(currentToken))) {
+        val refreshToken = tokenManager.getRefreshToken()
+        if (refreshToken.isNullOrBlank()) {
+            return@withContext NetworkResult.Error(NetworkError.Unknown(Exception("No refresh token available")))
+        }
+        when (val result = authRemoteDataSource.refreshToken(RefreshRequestDto(refreshToken))) {
             is NetworkResult.Success -> {
-                tokenManager.saveTokens(result.data.accessToken ?: "", result.data.refreshToken ?: "")
-                NetworkResult.Success(Unit)
+                val access = result.data.accessToken
+                val newRefresh = result.data.refreshToken
+                if (!access.isNullOrBlank() && !newRefresh.isNullOrBlank()) {
+                    tokenManager.saveTokens(access, newRefresh)
+                    NetworkResult.Success(Unit)
+                } else {
+                    tokenManager.clearTokens()
+                    NetworkResult.Error(NetworkError.Serialization)
+                }
             }
             is NetworkResult.Error -> {
-                tokenManager.clearTokens()
+                // Only clear tokens on fatal 401/403 authentication failures (invalid/expired/revoked refresh token)
+                // Do NOT clear tokens on transient network drops or temporary 5xx server errors
+                if (result.error is NetworkError.HttpError && (result.error.code == 401 || result.error.code == 403)) {
+                    tokenManager.clearTokens()
+                }
                 result
             }
         }

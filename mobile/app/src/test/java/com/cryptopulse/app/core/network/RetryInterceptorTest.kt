@@ -125,7 +125,119 @@ class RetryInterceptorTest {
         } catch (e: IOException) {
             assertEquals("Network error", e.message)
         }
-        
+        assertEquals(3, callCount)
+    }
+
+    @Test
+    fun testGetRequest_retriesOn503_andSucceeds() {
+        val request = Request.Builder().url("http://test.com/api/market/candidates").get().build()
+        var callCount = 0
+
+        val chain = buildChain(request) { _, count ->
+            callCount = count
+            if (count < 2) {
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(503)
+                    .message("Service Unavailable")
+                    .body(okhttp3.ResponseBody.create(null, "503 error"))
+                    .build()
+            } else {
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, "ok"))
+                    .build()
+            }
+        }
+
+        val response = interceptor.intercept(chain)
+        assertEquals(200, response.code)
         assertEquals(2, callCount)
+    }
+
+    @Test
+    fun testGetRequest_retriesOn429_withRetryAfter() {
+        val request = Request.Builder().url("http://test.com/api/market/candidates").get().build()
+        var callCount = 0
+
+        val chain = buildChain(request) { _, count ->
+            callCount = count
+            if (count < 2) {
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(429)
+                    .header("Retry-After", "1")
+                    .message("Too Many Requests")
+                    .body(okhttp3.ResponseBody.create(null, "429 error"))
+                    .build()
+            } else {
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, "ok"))
+                    .build()
+            }
+        }
+
+        val response = interceptor.intercept(chain)
+        assertEquals(200, response.code)
+        assertEquals(2, callCount)
+    }
+
+    @Test
+    fun testPostTradingExecution_doesNotRetryOn503() {
+        val request = Request.Builder()
+            .url("http://test.com/api/trading-bot/execute-trade")
+            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .build()
+
+        var callCount = 0
+
+        val chain = buildChain(request) { _, count ->
+            callCount = count
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(503)
+                .message("Service Unavailable")
+                .body(okhttp3.ResponseBody.create(null, "503 error"))
+                .build()
+        }
+
+        val response = interceptor.intercept(chain)
+        assertEquals(503, response.code)
+        assertEquals(1, callCount) // MUST NOT RETRY MUTATIONS
+    }
+
+    @Test
+    fun testPostTradingExecution_doesNotRetryOn429() {
+        val request = Request.Builder()
+            .url("http://test.com/api/trading-bot/execute-trade")
+            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .build()
+
+        var callCount = 0
+
+        val chain = buildChain(request) { _, count ->
+            callCount = count
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(429)
+                .message("Too Many Requests")
+                .body(okhttp3.ResponseBody.create(null, "429 error"))
+                .build()
+        }
+
+        val response = interceptor.intercept(chain)
+        assertEquals(429, response.code)
+        assertEquals(1, callCount) // MUST NOT RETRY MUTATIONS
     }
 }

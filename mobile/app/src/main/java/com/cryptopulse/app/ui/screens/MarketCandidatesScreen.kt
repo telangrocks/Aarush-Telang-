@@ -437,11 +437,6 @@ fun MarketCandidatesScreen(
 @Composable
 private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
     val accessibleDescription = candidate.toAccessibilityDescription()
-    val isBuy = candidate.tradeSide.equals("BUY", ignoreCase = true)
-    val sideColor = if (isBuy) ProfitGreen else LossRed
-    val isPositive = candidate.priceChangePercent24h >= 0
-    val changeColor = if (isPositive) ProfitGreen else LossRed
-    val changePrefix = if (isPositive) "+" else ""
 
     Column(
         modifier = Modifier
@@ -473,38 +468,40 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
             }
     ) {
 
-        // ── PRIMARY SECTION: 5 items in a single row with consistent equal spacing ──
+        // ── PRIMARY SECTION: 4 structured columns with strict weights ──
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             // 1. Ticker (Avatar + Pair Symbol)
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.weight(1.35f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(36.dp)
                         .background(candidate.coinColor.copy(alpha = 0.15f), CircleShape)
-                        .border(1.5.dp, candidate.coinColor.copy(alpha = 0.45f), CircleShape),
+                        .border(1.5.dp, candidate.coinColor.copy(alpha = 0.5f), CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         text = candidate.symbol.take(4),
                         color = candidate.coinColor,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 9.sp,
+                        fontSize = 10.sp,
                         textAlign = TextAlign.Center,
                     )
                 }
-                Spacer(Modifier.width(6.dp))
-                Row(verticalAlignment = Alignment.Bottom) {
+                Spacer(Modifier.width(8.dp))
+                Column {
                     Text(
                         text = candidate.symbol,
                         color = TextPrimary,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 13.sp,
+                        fontSize = 14.sp,
                         letterSpacing = 0.2.sp,
                     )
                     Text(
@@ -512,99 +509,84 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
                             "/${candidate.pairName.split("/").getOrElse(1) { "USDT" }}"
                         else "/USDT",
                         color = TextMuted,
-                        fontSize = 9.sp,
-                        modifier = Modifier.padding(start = 1.dp, bottom = 1.dp),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
                     )
                 }
             }
 
-            // 2. Live Market Price
-            Text(
-                text = if (candidate.formattedPrice.isNotBlank())
-                    "\$${candidate.formattedPrice}"
-                else
-                    "\$${Formatters.formatCryptoPrice(candidate.currentMarketPrice)}",
-                color = TextPrimary,
-                fontWeight = FontWeight.Bold,
-                fontSize = 12.sp,
-                letterSpacing = 0.1.sp,
-            )
-
-
-
-            // 4. Technical Score
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // 2. Live Market Price (USDT)
+            Column(
+                modifier = Modifier.weight(1.1f),
+                horizontalAlignment = Alignment.Start
+            ) {
                 Text(
-                    text = "Technical Score",
+                    text = "PRICE (USDT)",
                     color = TextMuted,
-                    fontSize = 7.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 0.3.sp,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp,
                 )
+                Spacer(Modifier.height(3.dp))
                 Text(
-                    text = Formatters.formatScore(candidate.score),
-                    color = CyanPrimary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.ExtraBold,
+                    text = if (candidate.formattedPrice.isNotBlank())
+                        "\$${candidate.formattedPrice}"
+                    else
+                        "\$${Formatters.formatCryptoPrice(candidate.currentMarketPrice)}",
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                 )
             }
 
-            // 5. Trading Constraints
-            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.Center) {
+            // 3. Technical Score
+            Column(
+                modifier = Modifier.weight(0.85f),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "SCORE",
+                    color = TextMuted,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp,
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = Formatters.formatScore(candidate.score),
+                    color = CyanPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
+                )
+            }
+
+            // 4. Trading Constraints
+            Column(
+                modifier = Modifier.weight(1.1f),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.Center
+            ) {
                 Text(
                     text = "Min Qty: ${Formatters.formatConstraint(candidate.minOrderQty ?: 0.0)}",
                     color = TextSecondary,
                     fontSize = 10.sp,
+                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                 )
                 Text(
                     text = "Qty Step: ${Formatters.formatConstraint(candidate.qtyStep ?: 0.0)}",
                     color = TextSecondary,
                     fontSize = 10.sp,
+                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                 )
                 Text(
                     text = "Tick Size: ${Formatters.formatConstraint(candidate.tickSize ?: 0.0)}",
                     color = TextSecondary,
                     fontSize = 10.sp,
+                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                 )
             }
-        }
-
-        // ── DIVIDER ──────────────────────────────────────────────────────────
-        HorizontalDivider(
-            color = NavyBorder.copy(alpha = 0.45f),
-            thickness = 0.7.dp,
-            modifier = Modifier.padding(horizontal = 14.dp)
-        )
-
-        // ── SECONDARY SECTION: 24h stats ─────────────────────────────────────
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SecondaryStatItem(
-                label = "24h Change",
-                value = "$changePrefix${Formatters.formatPercentage(candidate.priceChangePercent24h)}",
-                valueColor = changeColor,
-            )
-            SecondaryStatItem(
-                label = "24h Volume",
-                value = Formatters.formatQuoteVolume(candidate.quoteVolume24h),
-            )
-            SecondaryStatItem(
-                label = "24h High",
-                value = if (candidate.highPrice24h > 0)
-                    "\$${Formatters.formatCryptoPrice(candidate.highPrice24h)}"
-                else "—",
-            )
-            SecondaryStatItem(
-                label = "24h Low",
-                value = if (candidate.lowPrice24h > 0)
-                    "\$${Formatters.formatCryptoPrice(candidate.lowPrice24h)}"
-                else "—",
-            )
         }
     }
 }
@@ -614,22 +596,28 @@ private fun CandidateRow(candidate: MarketCandidate, onClick: () -> Unit) {
 private fun SecondaryStatItem(
     label: String,
     value: String,
+    modifier: Modifier = Modifier,
     valueColor: Color = TextSecondary,
+    horizontalAlignment: Alignment.Horizontal = Alignment.CenterHorizontally,
 ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = horizontalAlignment
+    ) {
         Text(
-            text = label,
+            text = label.uppercase(),
             color = TextMuted,
             fontSize = 9.sp,
-            fontWeight = FontWeight.Medium,
+            fontWeight = FontWeight.Bold,
             letterSpacing = 0.4.sp,
         )
-        Spacer(Modifier.height(2.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = value,
             color = valueColor,
-            fontSize = 11.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
+            style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
         )
     }
 }

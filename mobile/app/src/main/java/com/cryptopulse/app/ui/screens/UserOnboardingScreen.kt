@@ -7,13 +7,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.PersonAdd
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -82,25 +79,13 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
             ) {
                 Spacer(Modifier.height(4.dp))
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PersonAdd,
-                        contentDescription = null,
-                        tint = CyanPrimary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "CREATE ACCOUNT",
-                        color = CyanPrimary,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 20.sp,
-                        letterSpacing = 1.5.sp,
-                    )
-                }
+                Text(
+                    text = "CREATE ACCOUNT",
+                    color = CyanPrimary,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 20.sp,
+                    letterSpacing = 1.5.sp,
+                )
 
                 Spacer(Modifier.height(4.dp))
 
@@ -216,8 +201,6 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                     },
                     onClick = { viewModel.register() },
                     enabled = !viewModel.isLoading,
-                    leadingIcon = Icons.Default.Shield,
-                    trailingIcon = Icons.Default.ArrowForward,
                     testTag = "onboarding_create_account_button",
                 )
 
@@ -226,8 +209,6 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                 GradientButton(
                     text = "Already Registered? Login",
                     onClick = { navController.navigate("auth") },
-                    leadingIcon = Icons.AutoMirrored.Filled.Login,
-                    trailingIcon = Icons.Default.ArrowForward,
                     testTag = "onboarding_login_button",
                 )
 

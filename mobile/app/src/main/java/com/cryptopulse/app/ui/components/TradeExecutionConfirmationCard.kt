@@ -28,7 +28,7 @@ import java.util.Locale
 fun TradeExecutionConfirmationCard(
     result: TradeExecutionResult,
     onViewCandidates: () -> Unit,
-    onDismiss: () -> Unit,
+    onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val priceFormatter = remember {
@@ -234,29 +234,12 @@ fun TradeExecutionConfirmationCard(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Action Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    border = ButtonDefaults.outlinedButtonBorder.copy(
-                        brush = Brush.horizontalGradient(listOf(TextSecondary, TextSecondary))
-                    )
-                ) {
-                    Text("Close", fontWeight = FontWeight.SemiBold)
-                }
-
-                GradientButton(
-                    text = "VIEW TOP 10 OPPORTUNITIES",
-                    onClick = onViewCandidates,
-                    modifier = Modifier.weight(1.4f)
-                )
-            }
+            // Action Button
+            GradientButton(
+                text = "VIEW TOP 10 OPPORTUNITIES",
+                onClick = onViewCandidates,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }

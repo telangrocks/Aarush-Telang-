@@ -104,6 +104,7 @@ class TechnicalAnalysisViewModelTest {
         return object : StrategyRepository {
             override suspend fun getStrategies(): NetworkResult<List<Strategy>> = NetworkResult.Success(strategies)
             override suspend fun getStrategyById(id: String): NetworkResult<Strategy?> = NetworkResult.Success(strategies.find { it.id == id })
+            override fun clearCache() {}
         }
     }
 
@@ -780,6 +781,110 @@ class TechnicalAnalysisViewModelTest {
 
         // 3. Cross-strategy parameter overrides from ScalperV2 must be stripped
         assertTrue(triggeredConfig?.parameters?.isEmpty() == true)
+    }
+
+    @Test
+    fun `active bot analysis state emissions update ViewModel analysisState dynamically`() = runTest {
+        val sessionRepo = createMockSessionRepository("ScalperV2")
+        val botAnalysisFlow = MutableStateFlow<AnalysisSnapshot?>(null)
+        val isBotActiveFlow = MutableStateFlow(true)
+        val committedStrategyFlow = MutableStateFlow<String?>("ScalperV2")
+
+        val customBotRepo = object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = botAnalysisFlow.asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = committedStrategyFlow.asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = isBotActiveFlow.asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "ScalperV2"))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strategy, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { botAnalysisFlow.value = snapshot }
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = sessionRepo,
+            botRepository = customBotRepo,
+            technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertNull("Initially analysisState is null", viewModel.analysisState.value)
+
+        // Emission 1: First live tick from background engine
+        val snapshot1 = createDummySnapshot("ScalperV2", "Scalper V2", 65)
+        botAnalysisFlow.value = snapshot1
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertNotNull("analysisState must receive emitted snapshot from botRepository", viewModel.analysisState.value)
+        assertEquals(65, viewModel.analysisState.value?.marketAnalysis?.confidenceScore)
+
+        // Emission 2: Second live tick with updated calculations
+        val snapshot2 = createDummySnapshot("ScalperV2", "Scalper V2", 88)
+        botAnalysisFlow.value = snapshot2
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(88, viewModel.analysisState.value?.marketAnalysis?.confidenceScore)
+    }
+
+    @Test
+    fun `startPreviewPolling periodically updates analysisState when bot is inactive`() = runTest {
+        val sessionRepo = createMockSessionRepository("Momentum")
+        var callCount = 0
+
+        val mockTaRepo = object : TechnicalAnalysisRepository {
+            override suspend fun getAnalysis(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<TechnicalAnalysisResult> = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(400, "Mock", "MOCK"))
+            override suspend fun getAnalysisSnapshot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<AnalysisSnapshot> {
+                callCount++
+                val score = 50 + (callCount * 10)
+                return NetworkResult.Success(createDummySnapshot(strategy, "Momentum", score))
+            }
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = sessionRepo,
+            botRepository = createMockBotRepository(shouldSucceed = true),
+            technicalAnalysisRepository = mockTaRepo,
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        viewModel.selectStrategy("Momentum", "BTC/USDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(60, viewModel.analysisState.value?.marketAnalysis?.confidenceScore)
+
+        // Start screen & polling
+        viewModel.onScreenStarted("BTC/USDT")
+        testDispatcher.scheduler.advanceTimeBy(5500L)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // Polling loop executed and refreshed analysisState with updated score
+        assertTrue("callCount must be >= 2 after polling tick", callCount >= 2)
+        assertEquals(70, viewModel.analysisState.value?.marketAnalysis?.confidenceScore)
+
+        // Advance another 5s
+        testDispatcher.scheduler.advanceTimeBy(5500L)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue("callCount must be >= 3 after second polling tick", callCount >= 3)
+        assertEquals(80, viewModel.analysisState.value?.marketAnalysis?.confidenceScore)
+
+        viewModel.onScreenStopped()
     }
 }
 

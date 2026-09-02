@@ -199,7 +199,7 @@ open class TradeAlertManager @Inject constructor(
         val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
             .setContentTitle("🚨 Attention! Trade Detected")
             .setContentText("$side $symbol | Entry: $${"%.2f".format(entryPrice)}")
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setSmallIcon(com.cryptopulse.app.R.drawable.ic_notification_cryptopulse)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)

@@ -27,7 +27,7 @@ object Formatters {
 
     fun formatPercentage(percent: Double): String {
         if (percent.isNaN() || percent.isInfinite()) return "+0.00%"
-        val sanitized = if (percent == -0.0) 0.0 else percent
+        val sanitized = if (percent == 0.0) 0.0 else percent
         val sign = if (sanitized >= 0) "+" else ""
         return String.format(DefaultLocale, "%s%.2f%%", sign, sanitized)
     }

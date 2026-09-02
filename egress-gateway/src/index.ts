@@ -118,8 +118,16 @@ export function createEgressGatewayApp(overrideSecret?: string) {
   return app;
 }
 
-// Start standalone server if executed directly
-if (typeof process !== "undefined" && process.argv && process.argv[1] && process.argv[1].includes("index")) {
+// Start standalone server if executed directly (not when imported in test runner)
+if (
+  typeof process !== "undefined" &&
+  process.argv &&
+  process.argv[1] &&
+  !process.argv[1].includes(".test.") &&
+  !process.argv[1].includes("vitest") &&
+  !process.argv[1].includes("jest") &&
+  /(?:[\\/]|^)index\.(?:ts|js)$/.test(process.argv[1])
+) {
   const port = parseInt(process.env.PORT || "8080", 10);
   const app = createEgressGatewayApp();
   console.log(`[EGRESS GATEWAY] Server listening on port ${port}...`);

@@ -110,4 +110,10 @@ class ExchangeViewModelCredentialIsolationTest {
         assertEquals("key_B", state.apiKey)
         assertEquals("", state.apiSecret)
     }
+
+    @Test
+    fun `test H - ExchangeUiState includes CheckingConnection state`() {
+        val checkingState: ExchangeUiState = ExchangeUiState.CheckingConnection
+        assertEquals(ExchangeUiState.CheckingConnection, checkingState)
+    }
 }

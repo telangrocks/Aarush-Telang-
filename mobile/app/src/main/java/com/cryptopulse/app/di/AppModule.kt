@@ -24,9 +24,12 @@ import kotlinx.coroutines.runBlocking
 import android.util.Log
 import com.cryptopulse.app.BuildConfig
 import okhttp3.logging.HttpLoggingInterceptor
+import okhttp3.Authenticator
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.Response
+import okhttp3.Route
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.io.IOException
@@ -48,47 +51,89 @@ object AppModule {
         return ExchangeConnectionManager(context)
     }
 
-    private class AuthInterceptor(
+    internal class TokenAuthenticator(
         private val tokenManager: TokenManager,
         private val authRepositoryLazy: Lazy<AuthRepository>
-    ) : Interceptor {
-        private var isRefreshing = false
+    ) : Authenticator {
+        private val lock = Any()
 
-        override fun intercept(chain: Interceptor.Chain): Response {
-            val token = runBlocking { tokenManager.getToken() }
-            val requestBuilder = chain.request().newBuilder()
+        override fun authenticate(route: Route?, response: Response): Request? {
+            val path = response.request.url.encodedPath
 
-            if (!token.isNullOrEmpty()) {
-                requestBuilder.addHeader("Authorization", "Bearer $token")
+            // 1. Never recursively authenticate public auth/refresh endpoints
+            if (path.endsWith("/api/refresh") || path.endsWith("/api/login") || path.endsWith("/api/register")) {
+                return null
             }
 
-            var response = chain.proceed(requestBuilder.build())
+            // 2. Loop protection: do not retry more than 2 consecutive 401s for the same request
+            if (responseCount(response) >= 2) {
+                return null
+            }
 
-            if (response.code == 401 && !token.isNullOrEmpty()) {
-                synchronized(this) {
-                    if (!isRefreshing) {
-                        isRefreshing = true
-                        try {
-                            val result = runBlocking { authRepositoryLazy.get().refreshToken() }
-                            if (result is NetworkResult.Success) {
-                                val newToken = runBlocking { tokenManager.getToken() }
-                                if (!newToken.isNullOrEmpty()) {
-                                    val newRequest = chain.request().newBuilder()
-                                        .removeHeader("Authorization")
-                                        .addHeader("Authorization", "Bearer $newToken")
-                                        .build()
-                                    response.close()
-                                    response = chain.proceed(newRequest)
-                                }
-                            }
-                        } finally {
-                            isRefreshing = false
-                        }
+            val failedToken = response.request.header("Authorization")?.removePrefix("Bearer ")
+
+            synchronized(lock) {
+                val currentToken = runBlocking { tokenManager.getToken() }
+
+                // 3. Double-checked locking: If another concurrent thread has already refreshed the token, reuse it!
+                if (!currentToken.isNullOrEmpty() && currentToken != failedToken) {
+                    return response.request.newBuilder()
+                        .header("Authorization", "Bearer $currentToken")
+                        .build()
+                }
+
+                // 4. Verify refresh token is present before requesting refresh
+                val refreshToken = runBlocking { tokenManager.getRefreshToken() }
+                if (refreshToken.isNullOrEmpty()) {
+                    return null
+                }
+
+                // 5. Execute token refresh
+                val refreshResult = runBlocking { authRepositoryLazy.get().refreshToken() }
+                if (refreshResult is NetworkResult.Success) {
+                    val newToken = runBlocking { tokenManager.getToken() }
+                    if (!newToken.isNullOrEmpty()) {
+                        return response.request.newBuilder()
+                            .header("Authorization", "Bearer $newToken")
+                            .build()
                     }
                 }
+
+                return null
+            }
+        }
+
+        private fun responseCount(response: Response): Int {
+            var count = 1
+            var prior = response.priorResponse
+            while (prior != null) {
+                count++
+                prior = prior.priorResponse
+            }
+            return count
+        }
+    }
+
+    internal class AuthInterceptor(
+        private val tokenManager: TokenManager
+    ) : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val path = request.url.encodedPath
+
+            // Do not attach Authorization header to public auth endpoints
+            if (path.endsWith("/api/login") || path.endsWith("/api/register") || path.endsWith("/api/refresh")) {
+                return chain.proceed(request)
             }
 
-            return response
+            val token = runBlocking { tokenManager.getToken() }
+            val requestBuilder = request.newBuilder()
+
+            if (!token.isNullOrEmpty()) {
+                requestBuilder.header("Authorization", "Bearer $token")
+            }
+
+            return chain.proceed(requestBuilder.build())
         }
     }
 
@@ -99,6 +144,8 @@ object AppModule {
         override fun intercept(chain: Interceptor.Chain): Response {
             val request = chain.request()
             val method = request.method
+
+            // Strictly enforce idempotent retry policy: NEVER retry POST/mutation requests
             if (method != "GET" && method != "HEAD") {
                 return chain.proceed(request)
             }
@@ -106,24 +153,52 @@ object AppModule {
             var retryCount = 0
             var lastException: IOException? = null
 
-            while (retryCount < MAX_RETRIES) {
+            while (retryCount <= MAX_RETRIES) {
                 try {
-                    return chain.proceed(request)
+                    val response = chain.proceed(request)
+                    val code = response.code
+
+                    // Check for retryable server errors and rate-limiting
+                    if ((code == 502 || code == 503 || code == 504 || code == 429) && retryCount < MAX_RETRIES) {
+                        val retryAfterHeader = response.header("Retry-After")
+                        val delayMs = if (code == 429 && retryAfterHeader != null) {
+                            (retryAfterHeader.toLongOrNull()?.times(1000L) ?: (INITIAL_DELAY_MS * (1L shl retryCount))).coerceIn(500L, 3000L)
+                        } else {
+                            INITIAL_DELAY_MS * (1L shl retryCount)
+                        }
+
+                        // Explicitly close failed response before retrying to prevent resource leaks
+                        response.close()
+                        retryCount++
+
+                        try {
+                            Thread.sleep(delayMs)
+                        } catch (e: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            throw IOException("Request interrupted during retry backoff", e)
+                        }
+                        continue
+                    }
+
+                    return response
                 } catch (e: IOException) {
                     lastException = e
-                }
-                retryCount++
-                if (retryCount < MAX_RETRIES) {
-                    try {
-                        Thread.sleep(INITIAL_DELAY_MS * retryCount)
-                    } catch (e: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        throw IOException("Retry interrupted", e)
+                    if (retryCount < MAX_RETRIES) {
+                        retryCount++
+                        val delayMs = INITIAL_DELAY_MS * (1L shl (retryCount - 1))
+                        try {
+                            Thread.sleep(delayMs)
+                        } catch (ie: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            throw IOException("Request interrupted during retry backoff", ie)
+                        }
+                    } else {
+                        break
                     }
                 }
             }
 
-            throw lastException ?: IOException("Unknown network error after $MAX_RETRIES retries")
+            throw lastException ?: IOException("Request failed after $MAX_RETRIES retries")
         }
     }
 
@@ -138,7 +213,8 @@ object AppModule {
             .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
-            .addInterceptor(AuthInterceptor(tokenManager, authRepository))
+            .authenticator(TokenAuthenticator(tokenManager, authRepository))
+            .addInterceptor(AuthInterceptor(tokenManager))
             .addInterceptor(RetryInterceptor())
 
         if (BuildConfig.DEBUG) {

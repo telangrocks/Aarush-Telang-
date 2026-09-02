@@ -8,6 +8,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.cryptopulse.app.domain.repository.AuthRepository
+import com.cryptopulse.app.domain.repository.ExchangeRepository
+import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import com.cryptopulse.app.domain.model.AuthResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -15,7 +17,9 @@ import kotlinx.coroutines.launch
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
-    private val repository: AuthRepository
+    private val repository: AuthRepository,
+    private val exchangeRepository: ExchangeRepository,
+    private val exchangeConnectionManager: ExchangeConnectionManager
 ) : ViewModel() {
 
     var email by mutableStateOf("")
@@ -127,6 +131,18 @@ class AuthViewModel @Inject constructor(
 
             when (val result = repository.login(trimmedEmail, password)) {
                 is NetworkResult.Success -> {
+                    try {
+                        val statusResult = exchangeRepository.getConnectionStatus()
+                        if (statusResult is NetworkResult.Success && statusResult.data.isConnected) {
+                            val status = statusResult.data
+                            exchangeConnectionManager.saveConnection(
+                                status.exchangeName ?: "bybit",
+                                status.environment ?: "demo"
+                            )
+                        } else {
+                            exchangeConnectionManager.clearConnection()
+                        }
+                    } catch (_: Exception) {}
                     isAuthenticated = true
                 }
                 is NetworkResult.Error -> {

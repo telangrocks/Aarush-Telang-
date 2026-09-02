@@ -43,4 +43,14 @@ describe("Exchange Error Classifier", () => {
     const result = classifyExchangeResponse(403, htmlBody, "bybit");
     expect(result.code).toBe("WAF_BLOCKED");
   });
+
+  it("classifies Bybit API key not recognized (33004) with environment guidance", () => {
+    const errorBody = JSON.stringify({
+      retCode: 33004,
+      retMsg: "The API key is invalid",
+    });
+    const result = classifyException(new Error(errorBody), "bybit");
+    expect(result.code).toBe("INVALID_API_KEY");
+    expect(result.hint).toContain("Environment toggle (Demo vs Real)");
+  });
 });
