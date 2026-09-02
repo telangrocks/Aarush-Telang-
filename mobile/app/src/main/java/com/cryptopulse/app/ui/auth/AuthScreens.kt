@@ -4,17 +4,7 @@ import com.cryptopulse.app.core.network.*
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -109,14 +99,17 @@ fun AuthScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(bgGradient)
+                .padding(padding),
+            contentAlignment = Alignment.Center
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
+                    .fillMaxWidth()
+                    .widthIn(max = 480.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
                 Spacer(Modifier.height(8.dp))
 
@@ -135,13 +128,19 @@ fun AuthScreen(
                     color = TextSecondary,
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
-                    lineHeight = 20.sp,
+                    lineHeight = 18.sp,
                 )
 
                 Spacer(Modifier.height(20.dp))
 
-                GlowCard {
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                GlowCard(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
                         Text(
                             text = "ENTER CREDENTIALS",
                             color = CyanPrimary,
@@ -150,31 +149,42 @@ fun AuthScreen(
                             letterSpacing = 1.2.sp,
                         )
 
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(14.dp))
 
                         AuthFieldLabel("EMAIL ADDRESS")
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(6.dp))
                         DarkTextField(
                             value = viewModel.email,
                             onValueChange = { viewModel.email = it },
                             placeholder = "Enter your email address",
                             keyboardType = KeyboardType.Email,
+                            isError = viewModel.emailError != null,
                             testTag = "auth_email_input",
                             trailingIcon = {
                                 Icon(Icons.Default.Email, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                             }
                         )
+                        if (viewModel.emailError != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = viewModel.emailError!!,
+                                color = LossRed,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
 
                         Spacer(Modifier.height(14.dp))
 
                         AuthFieldLabel("PASSWORD")
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(6.dp))
                         DarkTextField(
                             value = viewModel.password,
                             onValueChange = { viewModel.password = it },
                             placeholder = "Enter your password",
                             keyboardType = KeyboardType.Password,
                             visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            isError = viewModel.passwordError != null,
                             testTag = "auth_password_input",
                             trailingIcon = {
                                 IconButton(onClick = { passwordVisible = !passwordVisible }) {
@@ -187,10 +197,19 @@ fun AuthScreen(
                                 }
                             }
                         )
+                        if (viewModel.passwordError != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = viewModel.passwordError!!,
+                                color = LossRed,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
                     }
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(20.dp))
 
                 GradientButton(
                     text = if (viewModel.isLoading) "Signing in…" else "Sign In",
@@ -199,7 +218,7 @@ fun AuthScreen(
                     testTag = "auth_sign_in_button",
                 )
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(20.dp))
             }
         }
     }
