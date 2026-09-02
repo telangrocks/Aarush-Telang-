@@ -68,56 +68,63 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
             modifier = Modifier
                 .fillMaxSize()
                 .background(bgGradient)
+                .padding(padding),
+            contentAlignment = Alignment.Center
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
+                    .fillMaxWidth()
+                    .widthIn(max = 480.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(8.dp))
 
                 Text(
                     text = "CREATE ACCOUNT",
                     color = CyanPrimary,
                     fontWeight = FontWeight.ExtraBold,
-                    fontSize = 20.sp,
+                    fontSize = 22.sp,
                     letterSpacing = 1.5.sp,
                 )
 
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
 
                 Text(
                     text = "Start trading with a secure CryptoPulse account",
                     color = TextSecondary,
-                    fontSize = 12.sp,
+                    fontSize = 13.sp,
                     textAlign = TextAlign.Center,
+                    lineHeight = 18.sp,
                 )
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(20.dp))
 
-                GlowCard {
+                GlowCard(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
                     ) {
                         AuthFieldLabel("EMAIL ADDRESS")
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(6.dp))
                         DarkTextField(
                             value = viewModel.email,
                             onValueChange = { viewModel.email = it },
                             placeholder = "Enter your email address",
                             keyboardType = KeyboardType.Email,
                             isError = viewModel.emailError != null,
+                            testTag = "onboarding_email_input",
                             trailingIcon = {
                                 Icon(Icons.Default.Email, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                             }
                         )
                         if (viewModel.emailError != null) {
-                            Spacer(Modifier.height(2.dp))
+                            Spacer(Modifier.height(4.dp))
                             Text(
                                 text = viewModel.emailError!!,
                                 color = LossRed,
@@ -126,10 +133,10 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             )
                         }
 
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(14.dp))
 
                         AuthFieldLabel("PASSWORD")
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(6.dp))
                         DarkTextField(
                             value = viewModel.password,
                             onValueChange = { viewModel.password = it },
@@ -137,6 +144,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             keyboardType = KeyboardType.Password,
                             visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                             isError = viewModel.passwordError != null,
+                            testTag = "onboarding_password_input",
                             trailingIcon = {
                                 IconButton(onClick = { passwordVisible = !passwordVisible }) {
                                     Icon(
@@ -149,7 +157,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             }
                         )
                         if (viewModel.passwordError != null) {
-                            Spacer(Modifier.height(2.dp))
+                            Spacer(Modifier.height(4.dp))
                             Text(
                                 text = viewModel.passwordError!!,
                                 color = LossRed,
@@ -158,10 +166,10 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             )
                         }
 
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(14.dp))
 
                         AuthFieldLabel("CONFIRM PASSWORD")
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(6.dp))
                         DarkTextField(
                             value = viewModel.confirmPassword,
                             onValueChange = { viewModel.confirmPassword = it },
@@ -169,6 +177,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             keyboardType = KeyboardType.Password,
                             visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                             isError = viewModel.confirmPasswordError != null,
+                            testTag = "onboarding_confirm_password_input",
                             trailingIcon = {
                                 IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
                                     Icon(
@@ -181,7 +190,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             }
                         )
                         if (viewModel.confirmPasswordError != null) {
-                            Spacer(Modifier.height(2.dp))
+                            Spacer(Modifier.height(4.dp))
                             Text(
                                 text = viewModel.confirmPasswordError!!,
                                 color = LossRed,
@@ -192,7 +201,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                     }
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(20.dp))
 
                 GradientButton(
                     text = when {
@@ -212,7 +221,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                     testTag = "onboarding_login_button",
                 )
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(20.dp))
             }
         }
     }
