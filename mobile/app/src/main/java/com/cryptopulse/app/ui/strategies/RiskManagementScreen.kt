@@ -41,22 +41,34 @@ fun RiskManagementScreen(
         topBar = { CryptoPulseTopBar(onBack = onBack) },
         containerColor = Color.Transparent,
         bottomBar = {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(NavyDeep)
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
+            Surface(
+                color = NavyDeep,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                GradientButton(
-                    text = "PROCEED TO TECHNICAL ANALYSIS",
-                    onClick = {
-                        val updatedConfig = viewModel.getUpdatedConfig()
-                        if (updatedConfig != null) {
-                            onProceedToAnalysis(updatedConfig)
-                        }
-                    },
-                    enabled = true,
-                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .widthIn(max = 680.dp)
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        GradientButton(
+                            text = "PROCEED TO TECHNICAL ANALYSIS",
+                            onClick = {
+                                val updatedConfig = viewModel.getUpdatedConfig()
+                                if (updatedConfig != null) {
+                                    onProceedToAnalysis(updatedConfig)
+                                }
+                            },
+                            enabled = true,
+                        )
+                    }
+                }
             }
         }
     ) { padding ->
@@ -64,17 +76,22 @@ fun RiskManagementScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(bgGradient)
+                .padding(padding),
+            contentAlignment = Alignment.TopCenter
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
+                    .fillMaxWidth()
+                    .widthIn(max = 680.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
                 Spacer(Modifier.height(4.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = null,
@@ -94,7 +111,7 @@ fun RiskManagementScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Strategy and Pair Info Card
-                GlowCard {
+                GlowCard(modifier = Modifier.fillMaxWidth()) {
                     Column {
                         if (state.selectedStrategy != null) {
                             Text(
@@ -116,7 +133,7 @@ fun RiskManagementScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Account Risk per Trade
-                GlowCard {
+                GlowCard(modifier = Modifier.fillMaxWidth()) {
                     Column {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -132,10 +149,11 @@ fun RiskManagementScreen(
                             )
                             if (state.accountRiskPercent != null) {
                                 Text(
-                                    text = String.format("%.1f%%", state.accountRiskPercent!!),
+                                    text = String.format(java.util.Locale.US, "%.1f%%", state.accountRiskPercent!!),
                                     color = CyanPrimary,
                                     fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 14.sp
+                                    fontSize = 14.sp,
+                                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                                 )
                             }
                         }
@@ -165,7 +183,7 @@ fun RiskManagementScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Risk / Reward Ratio
-                GlowCard {
+                GlowCard(modifier = Modifier.fillMaxWidth()) {
                     Column {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -181,10 +199,11 @@ fun RiskManagementScreen(
                             )
                             if (state.riskRewardRatio != null) {
                                 Text(
-                                    text = String.format("1:%.1f", state.riskRewardRatio!!),
+                                    text = String.format(java.util.Locale.US, "1:%.1f", state.riskRewardRatio!!),
                                     color = ProfitGreen,
                                     fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 14.sp
+                                    fontSize = 14.sp,
+                                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                                 )
                             }
                         }
@@ -214,7 +233,7 @@ fun RiskManagementScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Stop Loss Distance (ATR)
-                GlowCard {
+                GlowCard(modifier = Modifier.fillMaxWidth()) {
                     Column {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -230,10 +249,11 @@ fun RiskManagementScreen(
                             )
                             if (state.atrStopLossMultiplier != null) {
                                 Text(
-                                    text = String.format("%.1fx", state.atrStopLossMultiplier!!),
+                                    text = String.format(java.util.Locale.US, "%.1fx", state.atrStopLossMultiplier!!),
                                     color = WarningOrange,
                                     fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 14.sp
+                                    fontSize = 14.sp,
+                                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
                                 )
                             }
                         }
@@ -260,7 +280,7 @@ fun RiskManagementScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(32.dp))
             }
         }
     }
