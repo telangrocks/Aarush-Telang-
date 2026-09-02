@@ -68,6 +68,7 @@ class SessionManagerTest {
 
         sessionManager.performLogout(FakeContextForSession())
 
+        assertTrue("Bot deactivation must be requested", fakeBotRepo.deactivateBotCalled)
         assertTrue("Bot observation must be stopped", fakeBotRepo.stopObservingCalled)
         assertTrue("Trade session must be cleared", fakeTradeSessionRepo.clearSessionCalled)
         assertTrue("Strategy cache must be cleared", fakeStrategyRepo.clearCacheCalled)
@@ -108,6 +109,7 @@ private class FakeAuthRepoForSession : AuthRepository {
 private class FakeBotRepoForSession : BotRepository {
     var isObserving = false
     var stopObservingCalled = false
+    var deactivateBotCalled = false
     val stopObservingCount = AtomicInteger(0)
 
     override val analysisState: StateFlow<com.cryptopulse.app.domain.models.AnalysisSnapshot?> = MutableStateFlow(null)
@@ -117,7 +119,10 @@ private class FakeBotRepoForSession : BotRepository {
     override val isConnected: StateFlow<Boolean> = MutableStateFlow(false)
 
     override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?) = NetworkResult.Success(Unit)
-    override suspend fun deactivateBot() = NetworkResult.Success(Unit)
+    override suspend fun deactivateBot(): NetworkResult<Unit> {
+        deactivateBotCalled = true
+        return NetworkResult.Success(Unit)
+    }
     override suspend fun getStatus() = NetworkResult.Success(com.cryptopulse.app.domain.models.BotStatus(state = com.cryptopulse.app.domain.models.BotState.STOPPED, isActive = false))
     override suspend fun executeTrade(alertId: String) = NetworkResult.Success(com.cryptopulse.app.domain.models.TradeExecutionResult(
         positionId = "pos_1", alertId = alertId, orderId = "ord_1", symbol = "BTC/USDT", side = "BUY", strategy = "Scalper", exchange = "bybit", environment = "demo", orderType = "MARKET", status = "FILLED", entryStatus = "FILLED", requestedEntryPrice = 100.0, actualFillPrice = 100.0, requestedQuantity = 1.0, actualFilledQuantity = 1.0, remainingQuantity = 0.0, stopLoss = 95.0, takeProfit = 110.0, slippagePercent = 0.0, submittedAt = "now", executedAt = "now", isFilled = true

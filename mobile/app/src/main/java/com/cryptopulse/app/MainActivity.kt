@@ -135,6 +135,7 @@ class MainActivity : FragmentActivity() {
                                 exchangeRepository = exchangeRepository,
                                 botRepository = botRepository,
                                 tradeSessionRepository = tradeSessionRepository,
+                                authRepository = authRepository,
                             )
                         }
                         composable("onboarding") {
@@ -351,7 +352,8 @@ class MainActivity : FragmentActivity() {
                                     onRetry = {
                                         val stratToRetry = activeStrategyId ?: initialStrategy
                                         technicalAnalysisViewModel.selectStrategy(stratToRetry, candidate.pairName)
-                                    }
+                                    },
+                                    onLogout = performLogout
                                 )
                             }
 

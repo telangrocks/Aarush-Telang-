@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import com.cryptopulse.app.domain.repository.AuthRepository
 import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.repository.ExchangeRepository
 import com.cryptopulse.app.domain.repository.TradeSessionRepository
@@ -52,6 +53,7 @@ fun SplashScreen(
     exchangeRepository: ExchangeRepository,
     botRepository: BotRepository,
     tradeSessionRepository: TradeSessionRepository,
+    authRepository: AuthRepository? = null,
 ) {
 
     // ── Animation state ───────────────────────────────────────────────────
@@ -88,8 +90,19 @@ fun SplashScreen(
             withContext(Dispatchers.IO) {
                 var token = tokenManager.getToken()
                 if (tokenManager.isTokenExpired(token)) {
-                    tokenManager.clearTokens()
-                    token = null
+                    val refreshToken = tokenManager.getRefreshToken()
+                    if (!refreshToken.isNullOrEmpty() && !tokenManager.isTokenExpired(refreshToken) && authRepository != null) {
+                        val refreshResult = authRepository.refreshToken()
+                        token = if (refreshResult is com.cryptopulse.app.core.network.NetworkResult.Success) {
+                            tokenManager.getToken()
+                        } else {
+                            tokenManager.clearTokens()
+                            null
+                        }
+                    } else {
+                        tokenManager.clearTokens()
+                        token = null
+                    }
                 }
                 if (!token.isNullOrEmpty()) {
                     val biometricAuthManager = BiometricAuthManager(context)

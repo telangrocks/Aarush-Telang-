@@ -33,6 +33,7 @@ import com.cryptopulse.app.domain.models.StrategyCategory
 import com.cryptopulse.app.domain.models.RiskLevel
 import com.cryptopulse.app.domain.models.TradeSetupConfig
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
+import com.cryptopulse.app.ui.components.LocalOnLogout
 import com.cryptopulse.app.ui.components.GlowCard
 import com.cryptopulse.app.ui.components.GradientButton
 import com.cryptopulse.app.ui.theme.*
@@ -73,9 +74,11 @@ fun TechnicalAnalysisScreen(
     onCommitStrategy: (String) -> Unit = {},
     onBack: () -> Unit,
     onExecuteTrade: () -> Unit,
-    onRetry: () -> Unit = {}
+    onRetry: () -> Unit = {},
+    onLogout: (() -> Unit)? = null
 ) {
     val bgGradient = remember { Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020))) }
+    var showLogoutDialog by remember { mutableStateOf(false) }
 
     val resolvedStrategyId = remember(activeStrategyId, analysisState?.strategyMetadata?.strategyId, analysisState?.engineStatus?.activeStrategy, tradeSetupConfig?.strategyId) {
         activeStrategyId
@@ -102,13 +105,76 @@ fun TechnicalAnalysisScreen(
             }
     }
 
+    var currentIstTime by remember {
+        val sdf = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata")
+        }
+        mutableStateOf(sdf.format(java.util.Date()))
+    }
+
+    LaunchedEffect(Unit) {
+        val sdf = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata")
+        }
+        while (true) {
+            currentIstTime = sdf.format(java.util.Date())
+            kotlinx.coroutines.delay(1000L)
+        }
+    }
+
+    if (showLogoutDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutDialog = false },
+            title = {
+                Text(
+                    text = "Log Out of CryptoPulse?",
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "This will deactivate the trading bot and end your active trading session.",
+                    color = TextSecondary,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showLogoutDialog = false
+                        onLogout?.invoke()
+                    }
+                ) {
+                    Text("Log Out", color = LossRed, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showLogoutDialog = false }
+                ) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            },
+            containerColor = NavyDark,
+            titleContentColor = TextPrimary,
+            textContentColor = TextSecondary
+        )
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(bgGradient)
     ) {
         Scaffold(
-            topBar = { CryptoPulseTopBar(onBack = onBack) },
+            topBar = {
+                CryptoPulseTopBar(
+                    onBack = onBack,
+                    onLogout = if (onLogout != null) { { showLogoutDialog = true } } else LocalOnLogout.current
+                )
+            },
             containerColor = Color.Transparent,
             bottomBar = {
                 Surface(
@@ -706,6 +772,13 @@ fun TechnicalAnalysisScreen(
                                     Text("Engine State", color = TextSecondary, fontSize = 11.sp)
                                     val engineStateDisplay = if (state.engineStatus?.state == "WAITING") "ACTIVE" else (state.engineStatus?.state ?: "UNKNOWN")
                                     Text(engineStateDisplay, color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Current Time (IST)", color = TextSecondary, fontSize = 11.sp)
+                                    Text(currentIstTime, color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                                 }
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
