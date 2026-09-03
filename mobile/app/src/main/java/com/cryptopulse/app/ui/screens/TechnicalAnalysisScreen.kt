@@ -40,6 +40,23 @@ import com.cryptopulse.app.ui.theme.*
 
 private val STRATEGY_CLEAN_REGEX = Regex("[-_]")
 
+private fun resolveShortStrategyName(strategyId: String?, displayName: String?): String {
+    if (displayName != null && displayName.isNotBlank()) {
+        val clean = displayName
+            .replace(Regex("(?i)\\b(Trading\\s+Strategy|Strategy)\\b"), "")
+            .trim()
+        if (clean.isNotBlank()) return clean.uppercase()
+    }
+    return when ((strategyId ?: "").lowercase().replace(STRATEGY_CLEAN_REGEX, "")) {
+        "scalperv2", "scalping", "scalper" -> "SCALPER V2"
+        "momentum" -> "MOMENTUM"
+        "breakout" -> "BREAKOUT"
+        "meanreversion", "reversion" -> "MEAN REVERSION"
+        "vwap" -> "VWAP"
+        else -> (strategyId ?: "SCALPER V2").uppercase()
+    }
+}
+
 private val DEFAULT_STRATEGIES = listOf(
     Strategy(id = "ScalperV2", name = "Scalper V2", description = "", category = StrategyCategory.SCALPING, riskLevel = RiskLevel.HIGH, schemaVersion = 1, requiredParameters = emptyList()),
     Strategy(id = "Momentum", name = "Momentum Strategy", description = "", category = StrategyCategory.TREND_FOLLOWING, riskLevel = RiskLevel.MEDIUM, schemaVersion = 1, requiredParameters = emptyList()),
@@ -103,6 +120,15 @@ fun TechnicalAnalysisScreen(
                 "vwap" -> "VWAP"
                 else -> resolvedStrategyId.uppercase()
             }
+    }
+
+    val shortStrategyDisplayName = remember(activeStrategyDisplayName, resolvedStrategyId) {
+        resolveShortStrategyName(resolvedStrategyId, activeStrategyDisplayName)
+    }
+
+    val committedShortName = remember(committedStrategyId, availableStrategies) {
+        val strat = availableStrategies.find { it.id.equals(committedStrategyId, ignoreCase = true) }
+        resolveShortStrategyName(committedStrategyId, strat?.name)
     }
 
     var currentIstTime by remember {
@@ -194,14 +220,50 @@ fun TechnicalAnalysisScreen(
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            GradientButton(
-                                text = if (isActivating) "STARTING BOT..." else "USE ${activeStrategyDisplayName.uppercase()} & START BOT",
-                                onClick = {
-                                    onCommitStrategy(resolvedStrategyId)
-                                },
-                                enabled = !isActivating && !isLoading,
-                                testTag = "commit_and_start_bot_button"
-                            )
+                            if (isBotActive) {
+                                Surface(
+                                    color = NavyDark,
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, ProfitGreen.copy(alpha = 0.6f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 56.dp)
+                                        .testTag("commit_and_start_bot_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(10.dp)
+                                                .background(ProfitGreen, RoundedCornerShape(5.dp))
+                                        )
+                                        Spacer(Modifier.width(10.dp))
+                                        Text(
+                                            text = "● BOT ACTIVE • ${committedShortName.uppercase()}",
+                                            color = ProfitGreen,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp,
+                                            letterSpacing = 0.5.sp,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                }
+                            } else {
+                                GradientButton(
+                                    text = if (isActivating) "STARTING BOT..." else "START BOT • ${shortStrategyDisplayName.uppercase()}",
+                                    onClick = {
+                                        onCommitStrategy(resolvedStrategyId)
+                                    },
+                                    enabled = !isActivating && !isLoading,
+                                    isLoading = isActivating,
+                                    testTag = "commit_and_start_bot_button"
+                                )
+                            }
                             GradientButton(
                                 text = "EXECUTE TRADE",
                                 onClick = {
@@ -309,6 +371,7 @@ fun TechnicalAnalysisScreen(
 
                         strategiesToDisplay.forEach { strat ->
                             val isSelected = strat.id.equals(resolvedStrategyId, ignoreCase = true)
+                            val isCommittedAndActive = isBotActive && strat.id.equals(committedStrategyId, ignoreCase = true)
                             DropdownMenuItem(
                                 text = {
                                     Row(
@@ -335,12 +398,28 @@ fun TechnicalAnalysisScreen(
                                                 fontSize = 13.sp
                                             )
                                         }
-                                        Text(
-                                            text = "(${strat.riskLevel.name} Risk)",
-                                            color = TextMuted,
-                                            fontSize = 11.sp,
-                                            modifier = Modifier.padding(start = 12.dp)
-                                        )
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (isCommittedAndActive) {
+                                                Surface(
+                                                    color = ProfitGreen.copy(alpha = 0.2f),
+                                                    shape = RoundedCornerShape(4.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "ACTIVE",
+                                                        color = ProfitGreen,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                                Spacer(Modifier.width(6.dp))
+                                            }
+                                            Text(
+                                                text = "(${strat.riskLevel.name} Risk)",
+                                                color = TextMuted,
+                                                fontSize = 11.sp
+                                            )
+                                        }
                                     }
                                 },
                                 onClick = {
@@ -363,6 +442,82 @@ fun TechnicalAnalysisScreen(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                if (isBotActive) {
+                    Spacer(Modifier.height(10.dp))
+                    val isPreviewingDifferentStrategy = !resolvedStrategyId.equals(committedStrategyId, ignoreCase = true)
+                    if (isPreviewingDifferentStrategy) {
+                        Surface(
+                            color = WarningOrange.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, WarningOrange.copy(alpha = 0.4f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("preview_active_distinction_indicator")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    text = "PREVIEWING: ${shortStrategyDisplayName.uppercase()} • ACTIVE BOT: ${committedShortName.uppercase()}",
+                                    color = WarningOrange,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.5.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    } else {
+                        Surface(
+                            color = ProfitGreen.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, ProfitGreen.copy(alpha = 0.4f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("active_bot_indicator")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .background(ProfitGreen, RoundedCornerShape(4.dp))
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "● BOT ACTIVE",
+                                    color = ProfitGreen,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.5.sp
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "•",
+                                    color = TextMuted,
+                                    fontSize = 12.sp
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "Active Strategy: ${committedShortName.uppercase()}",
+                                    color = TextPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
 
                 Spacer(Modifier.height(14.dp))
 

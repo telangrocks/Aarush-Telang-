@@ -23,6 +23,9 @@ import androidx.compose.ui.unit.sp
 import com.cryptopulse.app.ui.theme.GradientEnd
 import com.cryptopulse.app.ui.theme.GradientStart
 
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.text.style.TextAlign
+
 /**
  * Full-width blue-to-purple gradient CTA button matching the reference designs.
  *
@@ -32,6 +35,7 @@ import com.cryptopulse.app.ui.theme.GradientStart
  * @param leadingIcon Optional icon shown to the left of the label
  * @param trailingIcon Optional icon shown to the right of the label (e.g. arrow)
  * @param enabled     Whether the button is interactive
+ * @param isLoading   Whether a loading spinner should be displayed
  */
 @Composable
 fun GradientButton(
@@ -41,6 +45,7 @@ fun GradientButton(
     leadingIcon: ImageVector? = null,
     trailingIcon: ImageVector? = null,
     enabled: Boolean = true,
+    isLoading: Boolean = false,
     testTag: String? = null,
 ) {
     val gradient = remember(enabled) {
@@ -54,7 +59,7 @@ fun GradientButton(
 
     Button(
         onClick = onClick,
-        enabled = enabled,
+        enabled = enabled && !isLoading,
         shape = RoundedCornerShape(14.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor     = Color.Transparent,
@@ -63,20 +68,28 @@ fun GradientButton(
         contentPadding = PaddingValues(0.dp),
         modifier = modifier
             .fillMaxWidth()
-            .height(56.dp)
+            .heightIn(min = 56.dp)
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
     ) {
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .background(gradient, RoundedCornerShape(14.dp)),
+                .fillMaxWidth()
+                .background(gradient, RoundedCornerShape(14.dp))
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             contentAlignment = Alignment.Center,
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
             ) {
-                if (leadingIcon != null) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                    Spacer(Modifier.width(10.dp))
+                } else if (leadingIcon != null) {
                     Icon(
                         imageVector = leadingIcon,
                         contentDescription = null,
@@ -90,9 +103,12 @@ fun GradientButton(
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp,
-                    letterSpacing = 1.sp,
+                    letterSpacing = 0.5.sp,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 19.sp,
+                    maxLines = 2,
                 )
-                if (trailingIcon != null) {
+                if (trailingIcon != null && !isLoading) {
                     Spacer(Modifier.width(10.dp))
                     Icon(
                         imageVector = trailingIcon,
