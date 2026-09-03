@@ -220,7 +220,11 @@ fun TechnicalAnalysisScreen(
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            if (isBotActive) {
+                            val isViewingActiveCommittedBot = isBotActive && 
+                                !isActivating && 
+                                resolvedStrategyId.equals(committedStrategyId, ignoreCase = true)
+
+                            if (isViewingActiveCommittedBot) {
                                 Surface(
                                     color = NavyDark,
                                     shape = RoundedCornerShape(14.dp),
@@ -244,7 +248,7 @@ fun TechnicalAnalysisScreen(
                                         )
                                         Spacer(Modifier.width(10.dp))
                                         Text(
-                                            text = "● BOT ACTIVE • ${committedShortName.uppercase()}",
+                                            text = "BOT ACTIVATED",
                                             color = ProfitGreen,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 14.sp,
@@ -254,10 +258,11 @@ fun TechnicalAnalysisScreen(
                                     }
                                 }
                             } else {
+                                val currentStrategyAtTap = resolvedStrategyId
                                 GradientButton(
-                                    text = if (isActivating) "STARTING BOT..." else "START BOT • ${shortStrategyDisplayName.uppercase()}",
+                                    text = if (isActivating) "ACTIVATING BOT..." else "USE THIS STRATEGY",
                                     onClick = {
-                                        onCommitStrategy(resolvedStrategyId)
+                                        onCommitStrategy(currentStrategyAtTap)
                                     },
                                     enabled = !isActivating && !isLoading,
                                     isLoading = isActivating,
@@ -312,7 +317,7 @@ fun TechnicalAnalysisScreen(
                         border = androidx.compose.foundation.BorderStroke(1.dp, CyanPrimary.copy(alpha = 0.5f)),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { isStrategyMenuExpanded = true }
+                            .clickable(enabled = !isActivating) { isStrategyMenuExpanded = true }
                             .testTag("strategy_dropdown_trigger")
                     ) {
                         Row(
