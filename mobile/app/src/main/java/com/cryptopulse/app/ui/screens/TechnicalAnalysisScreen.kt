@@ -81,6 +81,8 @@ fun TechnicalAnalysisScreen(
     analysisState: AnalysisSnapshot?,
     tradeSetupConfig: TradeSetupConfig? = null,
     availableStrategies: List<Strategy> = emptyList(),
+    viewedStrategyId: String? = null,
+    selectedStrategyId: String? = null,
     activeStrategyId: String? = null,
     isBotActive: Boolean = false,
     committedStrategyId: String? = null,
@@ -88,7 +90,9 @@ fun TechnicalAnalysisScreen(
     isActivating: Boolean = false,
     previewError: String? = null,
     onSelectStrategy: (String) -> Unit = {},
+    onUseStrategy: (String) -> Unit = {},
     onCommitStrategy: (String) -> Unit = {},
+    onDeactivateBot: () -> Unit = {},
     onBack: () -> Unit,
     onExecuteTrade: () -> Unit,
     onRetry: () -> Unit = {},
@@ -97,33 +101,41 @@ fun TechnicalAnalysisScreen(
     val bgGradient = remember { Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020))) }
     var showLogoutDialog by remember { mutableStateOf(false) }
 
-    val resolvedStrategyId = remember(activeStrategyId, analysisState?.strategyMetadata?.strategyId, analysisState?.engineStatus?.activeStrategy, tradeSetupConfig?.strategyId) {
-        activeStrategyId
+    val resolvedViewedStrategyId = remember(viewedStrategyId, activeStrategyId, analysisState?.strategyMetadata?.strategyId, tradeSetupConfig?.strategyId) {
+        viewedStrategyId
+            ?: activeStrategyId
             ?: analysisState?.strategyMetadata?.strategyId
-            ?: analysisState?.engineStatus?.activeStrategy
             ?: tradeSetupConfig?.strategyId
             ?: "ScalperV2"
     }
 
-    val matchingStrategy = remember(availableStrategies, resolvedStrategyId) {
-        availableStrategies.find { it.id.equals(resolvedStrategyId, ignoreCase = true) }
+    val resolvedSelectedStrategyId = remember(selectedStrategyId, tradeSetupConfig?.strategyId) {
+        selectedStrategyId
+            ?: tradeSetupConfig?.strategyId
+            ?: "ScalperV2"
     }
 
-    val activeStrategyDisplayName = remember(matchingStrategy, analysisState?.strategyMetadata?.displayName, resolvedStrategyId) {
+    val resolvedStrategyId = resolvedViewedStrategyId
+
+    val matchingStrategy = remember(availableStrategies, resolvedViewedStrategyId) {
+        availableStrategies.find { it.id.equals(resolvedViewedStrategyId, ignoreCase = true) }
+    }
+
+    val activeStrategyDisplayName = remember(matchingStrategy, analysisState?.strategyMetadata?.displayName, resolvedViewedStrategyId) {
         matchingStrategy?.name
             ?: analysisState?.strategyMetadata?.displayName
-            ?: when (resolvedStrategyId.lowercase().replace(STRATEGY_CLEAN_REGEX, "")) {
-                "scalperv2", "scalping", "scalper" -> "SCALPERV2"
+            ?: when (resolvedViewedStrategyId.lowercase().replace(STRATEGY_CLEAN_REGEX, "")) {
+                "scalperv2", "scalping", "scalper" -> "SCALPER V2"
                 "momentum" -> "MOMENTUM"
                 "breakout" -> "BREAKOUT"
                 "meanreversion", "reversion" -> "MEAN REVERSION"
                 "vwap" -> "VWAP"
-                else -> resolvedStrategyId.uppercase()
+                else -> resolvedViewedStrategyId.uppercase()
             }
     }
 
-    val shortStrategyDisplayName = remember(activeStrategyDisplayName, resolvedStrategyId) {
-        resolveShortStrategyName(resolvedStrategyId, activeStrategyDisplayName)
+    val shortStrategyDisplayName = remember(activeStrategyDisplayName, resolvedViewedStrategyId) {
+        resolveShortStrategyName(resolvedViewedStrategyId, activeStrategyDisplayName)
     }
 
     val committedShortName = remember(committedStrategyId, availableStrategies) {
@@ -222,52 +234,78 @@ fun TechnicalAnalysisScreen(
                         ) {
                             val isViewingActiveCommittedBot = isBotActive && 
                                 !isActivating && 
-                                resolvedStrategyId.equals(committedStrategyId, ignoreCase = true)
+                                resolvedViewedStrategyId.equals(committedStrategyId, ignoreCase = true)
 
-                            if (isViewingActiveCommittedBot) {
-                                Surface(
-                                    color = NavyDark,
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, ProfitGreen.copy(alpha = 0.6f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 56.dp)
-                                        .testTag("commit_and_start_bot_button")
-                                ) {
-                                    Row(
+                            val isViewingSelectedStrategy = resolvedViewedStrategyId.equals(resolvedSelectedStrategyId, ignoreCase = true)
+
+                            if (isBotActive) {
+                                if (isViewingActiveCommittedBot) {
+                                    Surface(
+                                        color = NavyDark,
+                                        shape = RoundedCornerShape(14.dp),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, ProfitGreen.copy(alpha = 0.6f)),
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.Center
+                                            .heightIn(min = 56.dp)
+                                            .clickable { onDeactivateBot() }
+                                            .testTag("commit_and_start_bot_button")
                                     ) {
-                                        Box(
+                                        Row(
                                             modifier = Modifier
-                                                .size(10.dp)
-                                                .background(ProfitGreen, RoundedCornerShape(5.dp))
-                                        )
-                                        Spacer(Modifier.width(10.dp))
-                                        Text(
-                                            text = "BOT ACTIVATED",
-                                            color = ProfitGreen,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp,
-                                            letterSpacing = 0.5.sp,
-                                            textAlign = TextAlign.Center
-                                        )
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.Center
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(10.dp)
+                                                    .background(ProfitGreen, RoundedCornerShape(5.dp))
+                                            )
+                                            Spacer(Modifier.width(10.dp))
+                                            Text(
+                                                text = "BOT ACTIVE (TAP TO DEACTIVATE)",
+                                                color = ProfitGreen,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp,
+                                                letterSpacing = 0.5.sp,
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
                                     }
+                                } else {
+                                    GradientButton(
+                                        text = if (isActivating) "SWITCHING BOT..." else "SWITCH BOT TO THIS STRATEGY",
+                                        onClick = {
+                                            onCommitStrategy(resolvedViewedStrategyId)
+                                        },
+                                        enabled = !isActivating && !isLoading,
+                                        isLoading = isActivating,
+                                        testTag = "commit_and_start_bot_button"
+                                    )
                                 }
                             } else {
-                                val currentStrategyAtTap = resolvedStrategyId
-                                GradientButton(
-                                    text = if (isActivating) "ACTIVATING BOT..." else "USE THIS STRATEGY",
-                                    onClick = {
-                                        onCommitStrategy(currentStrategyAtTap)
-                                    },
-                                    enabled = !isActivating && !isLoading,
-                                    isLoading = isActivating,
-                                    testTag = "commit_and_start_bot_button"
-                                )
+                                if (isViewingSelectedStrategy) {
+                                    GradientButton(
+                                        text = if (isActivating) "ACTIVATING BOT..." else "ACTIVATE BOT",
+                                        onClick = {
+                                            onCommitStrategy(resolvedSelectedStrategyId)
+                                        },
+                                        enabled = !isActivating && !isLoading,
+                                        isLoading = isActivating,
+                                        testTag = "commit_and_start_bot_button"
+                                    )
+                                } else {
+                                    GradientButton(
+                                        text = "USE THIS STRATEGY",
+                                        onClick = {
+                                            onUseStrategy(resolvedViewedStrategyId)
+                                        },
+                                        enabled = !isActivating && !isLoading,
+                                        isLoading = false,
+                                        testTag = "commit_and_start_bot_button"
+                                    )
+                                }
                             }
                             GradientButton(
                                 text = "EXECUTE TRADE",
@@ -375,7 +413,7 @@ fun TechnicalAnalysisScreen(
                         }
 
                         strategiesToDisplay.forEach { strat ->
-                            val isSelected = strat.id.equals(resolvedStrategyId, ignoreCase = true)
+                            val isSelected = strat.id.equals(resolvedViewedStrategyId, ignoreCase = true)
                             val isCommittedAndActive = isBotActive && strat.id.equals(committedStrategyId, ignoreCase = true)
                             DropdownMenuItem(
                                 text = {
@@ -384,7 +422,10 @@ fun TechnicalAnalysisScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Row(
+                                            modifier = Modifier.weight(1f, fill = false),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
                                             if (isSelected) {
                                                 Icon(
                                                     imageVector = Icons.Default.Check,
@@ -400,9 +441,11 @@ fun TechnicalAnalysisScreen(
                                                 text = strat.name,
                                                 color = if (isSelected) CyanPrimary else TextPrimary,
                                                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                fontSize = 13.sp
+                                                fontSize = 13.sp,
+                                                maxLines = 1
                                             )
                                         }
+                                        Spacer(Modifier.width(8.dp))
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             if (isCommittedAndActive) {
                                                 Surface(
@@ -450,7 +493,7 @@ fun TechnicalAnalysisScreen(
 
                 if (isBotActive) {
                     Spacer(Modifier.height(10.dp))
-                    val isPreviewingDifferentStrategy = !resolvedStrategyId.equals(committedStrategyId, ignoreCase = true)
+                    val isPreviewingDifferentStrategy = !resolvedViewedStrategyId.equals(committedStrategyId, ignoreCase = true)
                     if (isPreviewingDifferentStrategy) {
                         Surface(
                             color = WarningOrange.copy(alpha = 0.12f),
@@ -520,6 +563,31 @@ fun TechnicalAnalysisScreen(
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
+                        }
+                    }
+                } else if (!resolvedViewedStrategyId.equals(resolvedSelectedStrategyId, ignoreCase = true)) {
+                    Spacer(Modifier.height(10.dp))
+                    Surface(
+                        color = CyanPrimary.copy(alpha = 0.08f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, CyanPrimary.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "PREVIEWING: ${shortStrategyDisplayName.uppercase()} (SELECTED: ${resolveShortStrategyName(resolvedSelectedStrategyId, null)})",
+                                color = CyanPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 0.5.sp,
+                                textAlign = TextAlign.Center
+                            )
                         }
                     }
                 }

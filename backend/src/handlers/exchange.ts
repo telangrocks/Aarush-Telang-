@@ -1266,7 +1266,7 @@ export async function handleGetTechnicalAnalysis(
       };
     }
 
-    const snapshotDto = AnalysisSnapshotMapper.map(evalResult, manifest, snapshot, 'ACTIVE', false);
+    const snapshotDto = AnalysisSnapshotMapper.map(evalResult, manifest, snapshot, 'PREVIEW', false);
     return c.json(snapshotDto);
   } catch (e: unknown) {
     const error = e as Error;

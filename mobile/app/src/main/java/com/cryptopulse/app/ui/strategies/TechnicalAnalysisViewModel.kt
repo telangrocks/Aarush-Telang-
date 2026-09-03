@@ -33,14 +33,16 @@ class TechnicalAnalysisViewModel @Inject constructor(
 ) : ViewModel() {
 
     val tradeSetupConfig: StateFlow<TradeSetupConfig?> = sessionRepository.tradeSetupConfig
+    val selectedStrategyId: StateFlow<String?> = sessionRepository.selectedStrategyId
     val activeBotState: StateFlow<AnalysisSnapshot?> = botRepository.activeBotAnalysisState
     val isBotActive: StateFlow<Boolean> = botRepository.isBotActive
     val committedStrategyId: StateFlow<String?> = botRepository.committedStrategyId
     val isConnected: StateFlow<Boolean> = botRepository.isConnected
 
-    private val _exploringStrategyId = MutableStateFlow<String>("ScalperV2")
-    val exploringStrategyId: StateFlow<String> = _exploringStrategyId.asStateFlow()
-    val activeStrategyId: StateFlow<String?> = _exploringStrategyId.asStateFlow()
+    private val _viewedStrategyId = MutableStateFlow<String>("ScalperV2")
+    val viewedStrategyId: StateFlow<String> = _viewedStrategyId.asStateFlow()
+    val exploringStrategyId: StateFlow<String> = _viewedStrategyId.asStateFlow()
+    val activeStrategyId: StateFlow<String?> = _viewedStrategyId.asStateFlow()
 
     private val _explorationState = MutableStateFlow<AnalysisSnapshot?>(null)
     val explorationState: StateFlow<AnalysisSnapshot?> = _explorationState.asStateFlow()
@@ -66,14 +68,19 @@ class TechnicalAnalysisViewModel @Inject constructor(
     private var explorationRequestId: Long = 0L
 
     init {
+        val initialStrategy = sessionRepository.selectedStrategyId.value 
+            ?: sessionRepository.tradeSetupConfig.value?.strategyId 
+            ?: "ScalperV2"
+        _viewedStrategyId.value = initialStrategy
+
         loadAvailableStrategies()
         viewModelScope.launch {
             botRepository.activeBotAnalysisState.collect { botSnapshot ->
                 if (botSnapshot != null) {
                     val committedId = botRepository.committedStrategyId.value
-                    val exploringId = _exploringStrategyId.value
+                    val viewedId = _viewedStrategyId.value
                     val snapshotStrategyId = botSnapshot.strategyMetadata?.strategyId ?: botSnapshot.engineStatus?.activeStrategy
-                    if (isBotActive.value && (committedId == null || committedId.equals(exploringId, ignoreCase = true) || (snapshotStrategyId != null && snapshotStrategyId.equals(exploringId, ignoreCase = true)))) {
+                    if (isBotActive.value && (committedId != null && committedId.equals(viewedId, ignoreCase = true) || (snapshotStrategyId != null && snapshotStrategyId.equals(viewedId, ignoreCase = true)))) {
                         _explorationState.value = botSnapshot
                         _isLoadingPreview.value = false
                         _previewError.value = null
@@ -103,7 +110,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 if (!isBotActive.value) {
                     val config = sessionRepository.tradeSetupConfig.value
                     val symbolToUse = currentSymbol ?: config?.symbol ?: "BTC/USDT"
-                    val strategyToUse = _exploringStrategyId.value
+                    val strategyToUse = _viewedStrategyId.value
                     loadPreviewAnalysisSilently(symbolToUse, strategyToUse, config)
                 }
             }
@@ -145,8 +152,8 @@ class TechnicalAnalysisViewModel @Inject constructor(
         }
     }
 
-    fun selectStrategy(strategy: String, symbol: String) {
-        _exploringStrategyId.value = strategy
+    fun selectStrategyForViewing(strategy: String, symbol: String) {
+        _viewedStrategyId.value = strategy
         val originalConfig = sessionRepository.tradeSetupConfig.value
         val cleanConfig = originalConfig?.copy(
             strategyId = strategy,
@@ -160,13 +167,29 @@ class TechnicalAnalysisViewModel @Inject constructor(
         loadPreviewAnalysis(symbol, strategy, cleanConfig)
     }
 
+    fun selectStrategy(strategy: String, symbol: String) {
+        selectStrategyForViewing(strategy, symbol)
+    }
+
+    fun useStrategy(strategy: String) {
+        val currentConfig = sessionRepository.tradeSetupConfig.value
+        val updatedConfig = currentConfig?.copy(
+            strategyId = strategy,
+            parameters = if (currentConfig.strategyId == strategy) currentConfig.parameters else emptyMap()
+        )
+        if (updatedConfig != null) {
+            sessionRepository.setTradeSetupConfig(updatedConfig)
+        }
+        sessionRepository.setStrategyId(strategy)
+    }
+
     fun loadPreviewAnalysis(symbol: String, strategy: String, config: TradeSetupConfig? = null) {
         val requestId = ++explorationRequestId
         if (_explorationState.value == null) {
             _isLoadingPreview.value = true
         }
         _previewError.value = null
-        _exploringStrategyId.value = strategy
+        _viewedStrategyId.value = strategy
 
         analysisJob?.cancel()
         val targetStrategy = strategy
@@ -207,7 +230,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 android.widget.Toast.makeText(context, "No active Trade Setup found.", android.widget.Toast.LENGTH_LONG).show()
                 return@launch
             }
-            val targetStrategyId = _exploringStrategyId.value
+            val targetStrategyId = _viewedStrategyId.value
                 ?: sessionRepository.selectedStrategyId.value
                 ?: originalConfig.strategyId
                 ?: "ScalperV2"

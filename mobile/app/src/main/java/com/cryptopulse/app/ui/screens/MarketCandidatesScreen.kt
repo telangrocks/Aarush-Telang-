@@ -120,7 +120,17 @@ fun MarketCandidatesScreen(
             .background(bgGradient)
     ) {
         Scaffold(
-            topBar = { CryptoPulseTopBar(onBack = onBack) },
+            topBar = {
+                CryptoPulseTopBar(
+                    onBack = onBack,
+                    onRefresh = {
+                        if (!candidatesLoading) {
+                            viewModel.fetchMarketCandidates()
+                        }
+                    },
+                    isRefreshing = candidatesLoading
+                )
+            },
             containerColor = Color.Transparent,
         ) { padding ->
 

@@ -110,18 +110,9 @@ fun RiskManagementScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Strategy and Pair Info Card
+                // Pair Info Card
                 GlowCard(modifier = Modifier.fillMaxWidth()) {
                     Column {
-                        if (state.selectedStrategy != null) {
-                            Text(
-                                text = "Selected Strategy: ${state.selectedStrategy?.name ?: ""}",
-                                color = TextPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
-                            )
-                            Spacer(Modifier.height(4.dp))
-                        }
                         Text(
                             text = "Selected Pair: ${state.tradeSetupConfig?.symbol ?: ""}",
                             color = TextSecondary,

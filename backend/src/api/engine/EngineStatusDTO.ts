@@ -1,6 +1,6 @@
 export interface EngineStatusDTO {
   state: string; // FSM state
-  activeStrategy: string;
+  activeStrategy: string | null;
   lastEvaluationTimestamp: number;
   nextEvaluationTime: number | null;
   health: 'OK' | 'DEGRADED' | 'ERROR';

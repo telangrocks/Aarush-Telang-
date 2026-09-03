@@ -45,7 +45,9 @@ fun TradeSetupScreen(
     environmentName: String,
     onBack: () -> Unit,
     onProceedToAnalysis: () -> Unit,
-    viewModel: TradeSetupViewModel
+    viewModel: TradeSetupViewModel,
+    onRefresh: (() -> Unit)? = null,
+    isRefreshing: Boolean = false,
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val uiState by viewModel.uiState.collectAsState()
@@ -62,7 +64,13 @@ fun TradeSetupScreen(
             .testTag("trade_setup_root")
     ) {
         Scaffold(
-            topBar = { CryptoPulseTopBar(onBack = onBack) },
+            topBar = {
+                CryptoPulseTopBar(
+                    onBack = onBack,
+                    onRefresh = onRefresh,
+                    isRefreshing = isRefreshing
+                )
+            },
             containerColor = Color.Transparent,
             bottomBar = {
                 Surface(

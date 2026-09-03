@@ -21,6 +21,8 @@ import com.cryptopulse.app.ui.theme.NavyDeep
 import com.cryptopulse.app.ui.theme.TextPrimary
 import com.cryptopulse.app.ui.theme.TextSecondary
 
+import androidx.compose.material.icons.filled.Refresh
+
 /**
  * Logout handler provided by the host activity so the branded top bar can expose
  * a sign-out action without every screen threading the callback explicitly.
@@ -36,11 +38,15 @@ val LocalOnLogout = compositionLocalOf<(() -> Unit)?> { null }
  *
  * @param onBack  If non-null, a back-arrow icon button is shown and calls this
  *                lambda when tapped. Pass null for screens without a back action.
+ * @param onRefresh If non-null, a refresh icon button is shown in the actions.
+ * @param isRefreshing If true, shows a spinner instead of the refresh icon and disables clicks.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CryptoPulseTopBar(
     onBack: (() -> Unit)? = null,
+    onRefresh: (() -> Unit)? = null,
+    isRefreshing: Boolean = false,
     onLogout: (() -> Unit)? = LocalOnLogout.current,
 ) {
     TopAppBar(
@@ -108,6 +114,27 @@ fun CryptoPulseTopBar(
             }
         },
         actions = {
+            if (onRefresh != null) {
+                IconButton(
+                    onClick = { if (!isRefreshing) onRefresh() },
+                    enabled = !isRefreshing,
+                ) {
+                    if (isRefreshing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = CyanPrimary,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh",
+                            tint = CyanPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
             if (onLogout != null) {
                 IconButton(onClick = onLogout) {
                     Icon(
@@ -116,7 +143,7 @@ fun CryptoPulseTopBar(
                         tint = TextPrimary
                     )
                 }
-            } else {
+            } else if (onRefresh == null) {
                 // Reserve the same space as navigation icon so title stays centred
                 Spacer(Modifier.width(48.dp))
             }

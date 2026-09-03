@@ -33,6 +33,7 @@ import com.cryptopulse.app.ui.theme.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel) {
+    var emailVisible by remember { mutableStateOf(true) }
     var passwordVisible by remember { mutableStateOf(false) }
     var confirmPasswordVisible by remember { mutableStateOf(false) }
 
@@ -117,10 +118,18 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
                             onValueChange = { viewModel.email = it },
                             placeholder = "Enter your email address",
                             keyboardType = KeyboardType.Email,
+                            visualTransformation = if (emailVisible) VisualTransformation.None else PasswordVisualTransformation(),
                             isError = viewModel.emailError != null,
                             testTag = "onboarding_email_input",
                             trailingIcon = {
-                                Icon(Icons.Default.Email, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                IconButton(onClick = { emailVisible = !emailVisible }) {
+                                    Icon(
+                                        imageVector = if (emailVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (emailVisible) "Hide email" else "Show email",
+                                        tint = TextSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         )
                         if (viewModel.emailError != null) {

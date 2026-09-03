@@ -246,6 +246,7 @@ class MainActivity : FragmentActivity() {
                                     list.find { it.asset.equals(quoteAsset, ignoreCase = true) }?.free ?: 0.0
                                 }
 
+                                val isRefreshingBalance = balances == null && balancesError == null
                                 TradeSetupScreen(
                                     candidate = candidate,
                                     balance = primaryBalance,
@@ -258,6 +259,13 @@ class MainActivity : FragmentActivity() {
                                         navController.navigate("risk_management")
                                     },
                                     viewModel = tradeSetupViewModel,
+                                    onRefresh = {
+                                        if (!isRefreshingBalance) {
+                                            exchangeViewModel.fetchBalances()
+                                            exchangeViewModel.fetchTicker()
+                                        }
+                                    },
+                                    isRefreshing = isRefreshingBalance,
                                 )
                             }
 
@@ -279,10 +287,11 @@ class MainActivity : FragmentActivity() {
                                 }
 
                                 val tradeSetupConfig by technicalAnalysisViewModel.tradeSetupConfig.collectAsState()
+                                val selectedStrategyId by technicalAnalysisViewModel.selectedStrategyId.collectAsState()
+                                val viewedStrategyId by technicalAnalysisViewModel.viewedStrategyId.collectAsState()
                                 val candidatesError by viewModel.candidatesError.collectAsState()
                                 val analysisState by technicalAnalysisViewModel.analysisState.collectAsState()
                                 val availableStrategies by technicalAnalysisViewModel.availableStrategies.collectAsState()
-                                val activeStrategyId by technicalAnalysisViewModel.activeStrategyId.collectAsState()
                                 val isLoadingPreview by technicalAnalysisViewModel.isLoadingPreview.collectAsState()
 
                                 LaunchedEffect(Unit) {
@@ -304,10 +313,10 @@ class MainActivity : FragmentActivity() {
                                     return@composable
                                 }
 
-                                val initialStrategy = tradeSetupConfig?.strategyId ?: "ScalperV2"
+                                val initialStrategy = selectedStrategyId ?: tradeSetupConfig?.strategyId ?: "ScalperV2"
 
                                 LaunchedEffect(candidate.pairName, initialStrategy) {
-                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, initialStrategy, tradeSetupConfig)
+                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, viewedStrategyId, tradeSetupConfig)
                                 }
 
                                 LaunchedEffect(Unit) {
@@ -327,31 +336,40 @@ class MainActivity : FragmentActivity() {
                                     analysisState = analysisState,
                                     tradeSetupConfig = tradeSetupConfig,
                                     availableStrategies = availableStrategies,
-                                    activeStrategyId = activeStrategyId ?: initialStrategy,
+                                    viewedStrategyId = viewedStrategyId,
+                                    selectedStrategyId = selectedStrategyId ?: initialStrategy,
                                     isBotActive = isBotActive,
                                     committedStrategyId = committedStrategyId,
                                     isLoading = isLoadingPreview,
                                     isActivating = isActivating,
                                     previewError = previewError,
                                     onSelectStrategy = { newId ->
-                                        technicalAnalysisViewModel.selectStrategy(newId, candidate.pairName)
+                                        technicalAnalysisViewModel.selectStrategyForViewing(newId, candidate.pairName)
+                                    },
+                                    onUseStrategy = { stratToUse ->
+                                        technicalAnalysisViewModel.useStrategy(stratToUse)
                                     },
                                     onCommitStrategy = { strategyToCommit ->
-                                        technicalAnalysisViewModel.commitStrategyAndActivateBot(
+                                        technicalAnalysisViewModel.activateBot(
                                             symbol = candidate.symbol,
                                             strategy = strategyToCommit,
+                                            config = tradeSetupConfig,
                                             onSuccess = {
                                                 com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
                                             }
                                         )
+                                    },
+                                    onDeactivateBot = {
+                                        technicalAnalysisViewModel.stopBot {
+                                            com.cryptopulse.app.service.BackgroundMonitoringService.stopService(applicationContext)
+                                        }
                                     },
                                     onBack = { navController.popBackStack() },
                                     onExecuteTrade = {
                                         technicalAnalysisViewModel.triggerTradeAlert(candidate.pairName, applicationContext)
                                     },
                                     onRetry = {
-                                        val stratToRetry = activeStrategyId ?: initialStrategy
-                                        technicalAnalysisViewModel.selectStrategy(stratToRetry, candidate.pairName)
+                                        technicalAnalysisViewModel.selectStrategyForViewing(viewedStrategyId, candidate.pairName)
                                     },
                                     onLogout = performLogout
                                 )

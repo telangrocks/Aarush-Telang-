@@ -59,6 +59,7 @@ fun ConnectExchangeScreen(
     val uiState by viewModel.uiState.collectAsState()
     val candidates by viewModel.candidates.collectAsState()
     val readyForCandidates by viewModel.readyForCandidates.collectAsState()
+    var apiKeyVisible by remember { mutableStateOf(false) }
     var apiSecretVisible by remember { mutableStateOf(false) }
 
     Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Observed: uiState=$uiState ready=$readyForCandidates candidates=${candidates.size}")
@@ -218,10 +219,18 @@ fun ConnectExchangeScreen(
                                 value = formState.apiKey,
                                 onValueChange = viewModel::onApiKeyChanged,
                                 placeholder = "Enter your API Key",
+                                visualTransformation = if (apiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                                 isError = formState.apiKeyError != null,
                                 testTag = "api_key_input",
                                 trailingIcon = {
-                                    Icon(Icons.Default.Key, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                    IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                                        Icon(
+                                            imageVector = if (apiKeyVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                            contentDescription = if (apiKeyVisible) "Hide API Key" else "Show API Key",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 },
                             )
                             if (formState.apiKeyError != null) {

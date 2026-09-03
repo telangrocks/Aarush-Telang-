@@ -108,7 +108,7 @@ class BotRepositoryImpl @Inject constructor(
             is NetworkResult.Success -> {
                 val state = if (result.data.isActive) BotState.ANALYSING else BotState.STOPPED
                 _isBotActive.value = result.data.isActive
-                _committedStrategyId.value = result.data.strategy
+                _committedStrategyId.value = if (result.data.isActive) result.data.strategy else null
                 val botStatus = BotStatus(
                     state = state,
                     isActive = result.data.isActive,
@@ -223,8 +223,22 @@ class BotRepositoryImpl @Inject constructor(
                                 val domainSnapshot = dto.toDomain()
                                 _analysisState.value = domainSnapshot
                                 _activeBotAnalysisState.value = domainSnapshot
-                                _committedStrategyId.value = dto.strategyMetadata?.strategyId ?: dto.engineStatus?.activeStrategy
-                                _isBotActive.value = dto.engineStatus?.state != null && dto.engineStatus.state != "STOPPED"
+
+                                val rawState = dto.engineStatus?.state?.uppercase()
+                                val activeStrat = dto.engineStatus?.activeStrategy
+
+                                val isRunning = !activeStrat.isNullOrBlank() &&
+                                    (rawState == "WAITING" || rawState == "ANALYSING" || rawState == "EVALUATING" || rawState == "COLLECTING_DATA" || rawState == "RUNNING" || rawState == "ACTIVE") &&
+                                    rawState != "PREVIEW" &&
+                                    rawState != "STOPPED" &&
+                                    rawState != "INACTIVE"
+
+                                _isBotActive.value = isRunning
+                                if (isRunning) {
+                                    _committedStrategyId.value = activeStrat
+                                } else if (rawState == "STOPPED" || rawState == "INACTIVE" || rawState == "PREVIEW") {
+                                    _committedStrategyId.value = null
+                                }
                             }
                             is NetworkResult.Error -> {
                                 _isConnected.value = false

@@ -61,9 +61,10 @@ export class AnalysisSnapshotMapper {
     const lowPrice24h = snapshot.metadata?.lowPrice24h ?? snapshot.currentPrice;
     const volume = snapshot.volume24h || snapshot.quoteVolume24h || 0;
 
+    const isPreviewOrInactive = engineState === 'PREVIEW' || engineState === 'INACTIVE' || engineState === 'STOPPED';
     const engineStatus: EngineStatusDTO = {
       state: engineState,
-      activeStrategy: manifest.id,
+      activeStrategy: isPreviewOrInactive ? null : manifest.id,
       lastEvaluationTimestamp: result.timestamp,
       nextEvaluationTime: null,
       health: engineState === 'ERROR' ? 'ERROR' : 'OK',
