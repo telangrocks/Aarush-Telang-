@@ -63,9 +63,9 @@ export class TradeValidator {
     }
 
     // 3. Price & Tick Size Filter
-    const minPriceBN = new BigNumber(rules.minPrice);
-    const maxPriceBN = new BigNumber(rules.maxPrice);
-    const tickSizeBN = new BigNumber(rules.tickSize);
+    const minPriceBN = new BigNumber(rules.minPrice ?? 0);
+    const maxPriceBN = new BigNumber(rules.maxPrice ?? 0);
+    const tickSizeBN = new BigNumber(rules.tickSize ?? 0);
 
     if (minPriceBN.isGreaterThan(0) && entryPriceBN.isLessThan(minPriceBN)) {
       return {
@@ -152,7 +152,7 @@ export class TradeValidator {
     }
 
     // 5. Step Size Quantization (Floor rounding to stepSize)
-    const stepSizeBN = new BigNumber(rules.stepSize);
+    const stepSizeBN = new BigNumber(rules.stepSize ?? 0);
     let roundedQtyBN: BigNumber = rawQtyBN;
     if (stepSizeBN.isGreaterThan(0)) {
       const steps = rawQtyBN.dividedBy(stepSizeBN).integerValue(BigNumber.ROUND_FLOOR);
@@ -160,10 +160,10 @@ export class TradeValidator {
     }
 
     // 6. Quantity Filter (Min/Max Qty)
-    const minQtyBN = new BigNumber(rules.minQty);
-    const maxQtyBN = new BigNumber(rules.maxQty);
+    const minQtyBN = new BigNumber(rules.minQty ?? 0);
+    const maxQtyBN = new BigNumber(rules.maxQty ?? 0);
 
-    if (roundedQtyBN.isLessThan(minQtyBN)) {
+    if (minQtyBN.isGreaterThan(0) && roundedQtyBN.isLessThan(minQtyBN)) {
       return {
         isValid: false,
         errorCode: ValidationErrorReason.MIN_QTY_FAILED,
@@ -185,7 +185,7 @@ export class TradeValidator {
 
     // 7. Post-Rounding Notional Calculation
     const postRoundingNotionalBN = roundedQtyBN.multipliedBy(entryPriceBN);
-    const minNotionalBN = new BigNumber(rules.minNotional);
+    const minNotionalBN = new BigNumber(rules.minNotional ?? 0);
 
     if (minNotionalBN.isGreaterThan(0) && postRoundingNotionalBN.isLessThan(minNotionalBN)) {
       return {
