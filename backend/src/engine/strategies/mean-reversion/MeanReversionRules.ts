@@ -5,6 +5,7 @@ export const MEAN_REVERSION_STRATEGY_MANIFEST = {
   version: '1.0.0',
   classification: 'Mean Reversion',
   riskProfile: 'Medium',
-  supportedTimeframes: ['15m', '1h'],
+  supportedTimeframes: ['5m', '15m', '1h', '4h'],
+  minimumCandles: 51,
   author: 'System'
 };

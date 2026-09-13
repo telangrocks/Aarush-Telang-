@@ -22,7 +22,7 @@ export interface MeanReversionConfig {
 }
 
 export const DEFAULT_MEAN_REVERSION_CONFIG: MeanReversionConfig = {
-  preferredTimeframes: ['15m', '1h'],
+  preferredTimeframes: ['5m', '15m', '1h', '4h'],
   indicatorConfig: {
     rsiPeriods: [14],
     smaPeriods: [50, 200],
@@ -48,10 +48,10 @@ export const DEFAULT_MEAN_REVERSION_CONFIG: MeanReversionConfig = {
     volume: 20
   },
   riskParameters: {
-    accountRiskPercent: 0.5, // Lower risk on counter-trend trades
     maxExposureLimit: 10.0,
     atrStopLossMultiplier: 1.2, // Tighter stop loss, reversions can fail fast
-    riskRewardRatio: 2.5 // Target reversion to the mean
+    atrTakeProfitMultiplier: 2.5,
+    riskRewardRatio: 2.5 // @deprecated legacy fallback
   },
   signalRules: {
     minConfidenceScore: 75,
