@@ -14,7 +14,7 @@ export interface ScalperV2Config {
 }
 
 export const DEFAULT_SCALPER_CONFIG: ScalperV2Config = {
-  preferredTimeframes: ['5m', '15m', '30m'],
+  preferredTimeframes: ['5m', '15m', '1h', '4h'],
   indicatorConfig: {
     rsiPeriods: [14],
     smaPeriods: [50, 200],
@@ -40,10 +40,10 @@ export const DEFAULT_SCALPER_CONFIG: ScalperV2Config = {
     volume: 15
   },
   riskParameters: {
-    accountRiskPercent: 1.0,
     maxExposureLimit: 20.0,
     atrStopLossMultiplier: 1.5,
-    riskRewardRatio: 2.0
+    atrTakeProfitMultiplier: 2.0,
+    riskRewardRatio: 2.0 // @deprecated legacy fallback
   },
   signalRules: {
     minConfidenceScore: 75,

@@ -20,11 +20,11 @@ export class ScalperV2Strategy implements IStrategy {
     category: 'Scalping',
     riskProfile: 'High',
     supportedMarkets: ['CRYPTO'],
-    supportedTimeframes: ['5m', '15m', '30m'],
+    supportedTimeframes: ['5m', '15m', '1h', '4h'],
     minimumCandles: 200,
     defaultConfiguration: DEFAULT_SCALPER_CONFIG,
     supportsLong: true,
-    supportsShort: false,
+    supportsShort: true,
     supportsPaperTrading: true,
     supportsLiveTrading: true,
     status: 'ACTIVE',
@@ -122,28 +122,14 @@ export class ScalperV2Strategy implements IStrategy {
     const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
 
     if (!currentAtr || currentAtr <= 0) {
-      const holdSignal = {
-        symbol: context.marketSnapshot.symbol,
-        timeframe: timeframeToUse,
-        type: SignalType.HOLD,
-        confidenceScore: 0,
-        riskAssessment: null,
-        signalPrice: currentPrice,
-        targetEntryPrice: null,
-        entryPrice: null,
-        stopLoss: null,
-        takeProfit: null,
-        reasoning: ['ATR is zero or unavailable — cannot calculate risk parameters'],
-        timestamp: context.timestamp
-      };
       return {
         strategyId: this.manifest.id,
         timestamp: context.timestamp,
         confidenceScore: 0,
         hasSignal: false,
         metadata: {
-          reasoning: holdSignal.reasoning,
-          signal: holdSignal,
+          reasoning: ['ATR is zero or unavailable — cannot calculate risk parameters'],
+          signal: null,
           indicatorSnapshot,
           conditionResult
         }
@@ -173,19 +159,31 @@ export class ScalperV2Strategy implements IStrategy {
       riskAssessment
     );
 
-    if (!this.manifest.supportsShort && tradingSignal.type === SignalType.SELL) {
-      tradingSignal.type = SignalType.HOLD;
-      tradingSignal.reasoning.push('Short signal suppressed: strategy is long-only');
+    let activeSignal = tradingSignal;
+    const reasoning = tradingSignal ? [...tradingSignal.reasoning] : ['No qualified signal generated'];
+
+    if (activeSignal && !this.manifest.supportsShort && activeSignal.type === SignalType.SELL) {
+      activeSignal = null;
+      reasoning.push('Short signal suppressed: strategy is long-only');
     }
+
+    const hasSignal = activeSignal !== null && (activeSignal.type === SignalType.BUY || activeSignal.type === SignalType.SELL);
+
+    const primaryTfConfidence = confidenceScore.timeframes[timeframeToUse];
+    const directionalConfidence = activeSignal?.type === SignalType.SELL
+      ? (primaryTfConfidence?.shortScore ?? confidenceScore.overallShortScore!)
+      : activeSignal?.type === SignalType.BUY
+      ? (primaryTfConfidence?.longScore ?? confidenceScore.overallLongScore!)
+      : (primaryTfConfidence?.score ?? confidenceScore.overallScore);
 
     return {
       strategyId: this.manifest.id,
       timestamp: context.timestamp,
-      confidenceScore: tradingSignal.confidenceScore,
-      hasSignal: tradingSignal.type !== SignalType.HOLD,
+      confidenceScore: directionalConfidence,
+      hasSignal,
       metadata: {
-        reasoning: tradingSignal.reasoning,
-        signal: tradingSignal,
+        reasoning,
+        signal: activeSignal,
         indicatorSnapshot,
         conditionResult,
         confidenceScore,
