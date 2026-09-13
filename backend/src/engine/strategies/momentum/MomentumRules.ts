@@ -5,7 +5,8 @@ export const MOMENTUM_STRATEGY_MANIFEST = {
   description: 'A trend-following strategy designed to capture momentum in established directional trends using MACD, RSI, and EMAs.',
   author: 'System',
   requiredIndicators: ['EMA', 'RSI', 'MACD', 'ATR', 'Volume'],
-  supportedTimeframes: ['15m', '1h', '4h'],
+  supportedTimeframes: ['5m', '15m', '1h', '4h'],
+  minimumCandles: 201,
   classification: 'Trend Following',
   riskProfile: 'Medium-High'
 };

@@ -14,7 +14,7 @@ export interface MomentumConfig {
 }
 
 export const DEFAULT_MOMENTUM_CONFIG: MomentumConfig = {
-  preferredTimeframes: ['15m', '1h', '4h'],
+  preferredTimeframes: ['5m', '15m', '1h', '4h'],
   indicatorConfig: {
     rsiPeriods: [14],
     smaPeriods: [50, 200],
@@ -40,10 +40,10 @@ export const DEFAULT_MOMENTUM_CONFIG: MomentumConfig = {
     volume: 10
   },
   riskParameters: {
-    accountRiskPercent: 1.5,
     maxExposureLimit: 30.0,
     atrStopLossMultiplier: 2.0,
-    riskRewardRatio: 2.5
+    atrTakeProfitMultiplier: 2.5,
+    riskRewardRatio: 2.5 // @deprecated legacy fallback
   },
   signalRules: {
     minConfidenceScore: 70,
