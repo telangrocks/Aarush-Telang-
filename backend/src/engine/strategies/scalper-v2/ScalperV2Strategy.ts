@@ -50,6 +50,46 @@ export class ScalperV2Strategy implements IStrategy {
   }
 
   public evaluate(context: Readonly<StrategyContext>): EvaluationResult {
+    // Timeframe Architecture:
+    // 4h  → Structural Bias
+    // 1h  → Macro Trend
+    // 15m → Intermediate Momentum
+    // 5m  → Actual Scalping Entry Trigger
+    const ENTRY_TIMEFRAME = '5m' as const;
+    const HIGHER_TIMEFRAMES = ['15m', '1h', '4h'] as const;
+    const ALL_REQUIRED_TIMEFRAMES = ['5m', '15m', '1h', '4h'] as const;
+
+    // Fail-Closed Validation: Verify all four required timeframes are present and have sufficient candle depth
+    for (const tf of ALL_REQUIRED_TIMEFRAMES) {
+      const tfCandles = context.marketSnapshot?.candles?.[tf];
+      if (!tfCandles || tfCandles.length === 0) {
+        return {
+          strategyId: this.manifest.id,
+          timestamp: context.timestamp,
+          confidenceScore: 0,
+          hasSignal: false,
+          metadata: {
+            reasoning: [`[MTF DATA] Missing required candle data for timeframe ${tf}`],
+            signal: null,
+            strategyConfig: this.config,
+          }
+        };
+      }
+      if (tfCandles.length < 35) {
+        return {
+          strategyId: this.manifest.id,
+          timestamp: context.timestamp,
+          confidenceScore: 0,
+          hasSignal: false,
+          metadata: {
+            reasoning: [`[MTF DATA] Insufficient candle data for timeframe ${tf} (got ${tfCandles.length}, required >= 35)`],
+            signal: null,
+            strategyConfig: this.config,
+          }
+        };
+      }
+    }
+
     // 1. Indicators
     const indicatorSnapshot = this.indicatorEngine.evaluate(context.marketSnapshot);
 
@@ -59,38 +99,9 @@ export class ScalperV2Strategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    // Fix SE-S4: Derive primary timeframe from configuration or default
-    const primaryTimeframe = (this.config.preferredTimeframes?.[0] || '5m') as import('../../market-data/Timeframe').Timeframe;
-    
-    // Fix SE-S8: Fallback if primary isn't available
-    const availableTimeframes = Object.keys(context.marketSnapshot.candles || {});
-    const timeframeToUse = (context.marketSnapshot.candles?.[primaryTimeframe] 
-      ? primaryTimeframe 
-      : availableTimeframes[0]) as import('../../market-data/Timeframe').Timeframe;
-      
-    if (!timeframeToUse || !context.marketSnapshot.candles?.[timeframeToUse]) {
-      return {
-        strategyId: this.manifest.id,
-        timestamp: context.timestamp,
-        confidenceScore: 0,
-        hasSignal: false,
-        metadata: { reasoning: ['No market data timeframes available'] }
-      };
-    }
+    const candles = context.marketSnapshot.candles[ENTRY_TIMEFRAME] || [];
 
-    // Fix SE-S11: Check empty candles array
-    const candles = context.marketSnapshot.candles[timeframeToUse] || [];
-    if (candles.length === 0) {
-      return {
-        strategyId: this.manifest.id,
-        timestamp: context.timestamp,
-        confidenceScore: 0,
-        hasSignal: false,
-        metadata: { reasoning: [`No candle data for timeframe ${timeframeToUse}`] }
-      };
-    }
-
-    // Fix SE-S6: Guard against currentPrice <= 0
+    // Guard against currentPrice <= 0
     const latestCandleClose = candles[candles.length - 1]?.close || 0;
     const currentPrice = (latestCandleClose > 0) 
       ? latestCandleClose 
@@ -106,7 +117,7 @@ export class ScalperV2Strategy implements IStrategy {
       };
     }
 
-    // Fix SE-S7: Guard against accountBalance <= 0
+    // Guard against accountBalance <= 0
     if (!context.accountBalance || context.accountBalance <= 0) {
       return {
         strategyId: this.manifest.id,
@@ -117,7 +128,8 @@ export class ScalperV2Strategy implements IStrategy {
       };
     }
     
-    const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
+    // Risk calculations strictly preserved on 5m ATR
+    const tfIndicators = indicatorSnapshot.timeframes[ENTRY_TIMEFRAME];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
     const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
 
@@ -136,7 +148,7 @@ export class ScalperV2Strategy implements IStrategy {
       };
     }
 
-    // 4. Risk
+    // 4. Risk (strictly 5m ATR)
     const riskContext: RiskContext = {
       timestamp: context.timestamp,
       currentPrice,
@@ -145,10 +157,10 @@ export class ScalperV2Strategy implements IStrategy {
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 
-    // 5. Signal
+    // 5. Signal: 5m provides the actual entry trigger
     const signalContext: SignalContext = {
       symbol: context.marketSnapshot.symbol,
-      timeframe: timeframeToUse,
+      timeframe: ENTRY_TIMEFRAME,
       currentPrice
     };
 
@@ -160,7 +172,62 @@ export class ScalperV2Strategy implements IStrategy {
     );
 
     let activeSignal = tradingSignal;
-    const reasoning = tradingSignal ? [...tradingSignal.reasoning] : ['No qualified signal generated'];
+    const reasoning = tradingSignal ? [...tradingSignal.reasoning] : ['No qualified signal generated on 5m trigger'];
+
+    // 6. Multi-Timeframe Alignment Gate
+    const minThreshold = this.config.signalRules.minConfidenceScore;
+
+    if (activeSignal && (activeSignal.type === SignalType.BUY || activeSignal.type === SignalType.SELL)) {
+      const proposedSide = activeSignal.type;
+      const tfRoles: Record<string, string> = {
+        '4h': '4h Structural Bias',
+        '1h': '1h Macro Trend',
+        '15m': '15m Intermediate Momentum',
+        '5m': '5m Entry Trigger'
+      };
+
+      let mtfAligned = true;
+
+      for (const tf of HIGHER_TIMEFRAMES) {
+        const tfConf = confidenceScore.timeframes[tf];
+        const role = tfRoles[tf];
+
+        if (!tfConf || typeof tfConf.longScore !== 'number' || typeof tfConf.shortScore !== 'number') {
+          mtfAligned = false;
+          reasoning.push(`[MTF FAIL-CLOSED] ${role} (${tf}) missing explicit directional confidence score.`);
+          break;
+        }
+
+        if (proposedSide === SignalType.BUY) {
+          if (tfConf.shortScore >= minThreshold) {
+            mtfAligned = false;
+            reasoning.push(`[MTF DISAGREEMENT] ${role} (${tf}) contradicts BUY: ShortScore (${tfConf.shortScore}) >= ${minThreshold}.`);
+          } else if (tfConf.longScore < minThreshold) {
+            mtfAligned = false;
+            reasoning.push(`[MTF NEUTRAL/INSUFFICIENT] ${role} (${tf}) does not support BUY: LongScore (${tfConf.longScore}) < ${minThreshold}.`);
+          } else {
+            reasoning.push(`[MTF ALIGNED] ${role} (${tf}) supports BUY: LongScore (${tfConf.longScore}) >= ${minThreshold}.`);
+          }
+        } else if (proposedSide === SignalType.SELL) {
+          if (tfConf.longScore >= minThreshold) {
+            mtfAligned = false;
+            reasoning.push(`[MTF DISAGREEMENT] ${role} (${tf}) contradicts SELL: LongScore (${tfConf.longScore}) >= ${minThreshold}.`);
+          } else if (tfConf.shortScore < minThreshold) {
+            mtfAligned = false;
+            reasoning.push(`[MTF NEUTRAL/INSUFFICIENT] ${role} (${tf}) does not support SELL: ShortScore (${tfConf.shortScore}) < ${minThreshold}.`);
+          } else {
+            reasoning.push(`[MTF ALIGNED] ${role} (${tf}) supports SELL: ShortScore (${tfConf.shortScore}) >= ${minThreshold}.`);
+          }
+        }
+      }
+
+      if (!mtfAligned) {
+        activeSignal = null;
+        reasoning.push('[MTF REJECTED] Trade cancelled: Multi-timeframe confluence failed across 4h, 1h, 15m, and 5m.');
+      } else {
+        reasoning.push(`[MTF CONFIRMED] All four timeframes (4h, 1h, 15m, 5m) actively agree on ${proposedSide}.`);
+      }
+    }
 
     if (activeSignal && !this.manifest.supportsShort && activeSignal.type === SignalType.SELL) {
       activeSignal = null;
@@ -169,7 +236,7 @@ export class ScalperV2Strategy implements IStrategy {
 
     const hasSignal = activeSignal !== null && (activeSignal.type === SignalType.BUY || activeSignal.type === SignalType.SELL);
 
-    const primaryTfConfidence = confidenceScore.timeframes[timeframeToUse];
+    const primaryTfConfidence = confidenceScore.timeframes[ENTRY_TIMEFRAME];
     const directionalConfidence = activeSignal?.type === SignalType.SELL
       ? (primaryTfConfidence?.shortScore ?? confidenceScore.overallShortScore!)
       : activeSignal?.type === SignalType.BUY
