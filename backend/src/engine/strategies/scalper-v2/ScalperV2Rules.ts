@@ -7,5 +7,5 @@ export const SCALPER_V2_MANIFEST = {
   supportedExchanges: ['bybit'],
   supportedMarkets: ['CRYPTO'],
   baseTimeframe: '5m',
-  macroTimeframes: ['15m', '30m']
+  macroTimeframes: ['15m']
 };
