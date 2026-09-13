@@ -64,11 +64,14 @@ export function verifyStrategyDataContract(
       return { isValid: true };
 
     case 'Breakout':
-      if (candles15m.length < 35) {
-        return {
-          isValid: false,
-          reason: `INSUFFICIENT_15M_BARS (got ${candles15m.length}, required >= 35)`,
-        };
+      for (const tf of ['5m', '15m', '1h', '4h'] as const) {
+        const tfCandles = snapshot.candles?.[tf] || [];
+        if (tfCandles.length < 35) {
+          return {
+            isValid: false,
+            reason: `INSUFFICIENT_${tf.toUpperCase()}_BARS (got ${tfCandles.length}, required >= 35)`,
+          };
+        }
       }
       return { isValid: true };
 

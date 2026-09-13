@@ -14,7 +14,7 @@ export interface BreakoutConfig {
 }
 
 export const DEFAULT_BREAKOUT_CONFIG: BreakoutConfig = {
-  preferredTimeframes: ['15m', '1h', '4h'],
+  preferredTimeframes: ['5m', '15m', '1h', '4h'],
   indicatorConfig: {
     rsiPeriods: [14],
     smaPeriods: [50, 200],
@@ -40,10 +40,10 @@ export const DEFAULT_BREAKOUT_CONFIG: BreakoutConfig = {
     volume: 20
   },
   riskParameters: {
-    accountRiskPercent: 1.0,
     maxExposureLimit: 20.0,
     atrStopLossMultiplier: 2.0, // Wider stop loss
-    riskRewardRatio: 3.0 // Aim for larger moves
+    atrTakeProfitMultiplier: 3.0,
+    riskRewardRatio: 3.0 // @deprecated legacy fallback
   },
   signalRules: {
     minConfidenceScore: 70,

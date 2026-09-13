@@ -5,6 +5,7 @@ export const BREAKOUT_STRATEGY_MANIFEST = {
   version: '1.0.0',
   classification: 'Breakout',
   riskProfile: 'Medium-High',
-  supportedTimeframes: ['15m', '1h', '4h'],
+  supportedTimeframes: ['5m', '15m', '1h', '4h'],
+  minimumCandles: 35,
   author: 'System'
 };
