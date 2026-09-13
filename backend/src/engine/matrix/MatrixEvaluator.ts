@@ -43,11 +43,14 @@ export function verifyStrategyDataContract(
 
   switch (strategyId) {
     case 'ScalperV2':
-      if (candles5m.length < 21) {
-        return {
-          isValid: false,
-          reason: `INSUFFICIENT_5M_BARS (got ${candles5m.length}, required >= 21)`,
-        };
+      for (const tf of ['5m', '15m', '1h', '4h'] as const) {
+        const tfCandles = snapshot.candles?.[tf] || [];
+        if (tfCandles.length < 35) {
+          return {
+            isValid: false,
+            reason: `INSUFFICIENT_${tf.toUpperCase()}_BARS (got ${tfCandles.length}, required >= 35)`,
+          };
+        }
       }
       return { isValid: true };
 

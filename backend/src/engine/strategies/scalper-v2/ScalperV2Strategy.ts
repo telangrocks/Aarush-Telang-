@@ -10,6 +10,28 @@ import { RiskEngine, RiskContext } from '../../risk';
 import { SignalEngine, SignalContext, SignalType } from '../../signal';
 
 import { StrategyManifest } from '../StrategyManifest';
+import { CandleValidator } from '../../../infrastructure/exchange/CandleValidator';
+import { MarketSnapshot, NormalizedCandle } from '../../market-data/MarketSnapshot';
+import { Timeframe } from '../../market-data/Timeframe';
+
+/**
+ * Derives the candle close timestamp in milliseconds.
+ * In Bybit REST / standard exchange models, kline timestamp is open time.
+ * If closeTime is not explicitly populated, closeTime = openTime + timeframeMs.
+ */
+function getCandleCloseTime(candle: NormalizedCandle, tf: string): number {
+  if (typeof (candle as any).closeTime === 'number' && (candle as any).closeTime > 0) {
+    return (candle as any).closeTime;
+  }
+  const tfMs = CandleValidator.timeframeToMs(tf);
+  if (typeof candle.openTime === 'number' && candle.openTime > 0) {
+    return candle.openTime + tfMs;
+  }
+  if (typeof candle.timestamp === 'number' && candle.timestamp > 0) {
+    return candle.timestamp + tfMs;
+  }
+  return 0;
+}
 
 export class ScalperV2Strategy implements IStrategy {
   public readonly manifest: StrategyManifest = {
@@ -58,11 +80,49 @@ export class ScalperV2Strategy implements IStrategy {
     const ENTRY_TIMEFRAME = '5m' as const;
     const HIGHER_TIMEFRAMES = ['15m', '1h', '4h'] as const;
     const ALL_REQUIRED_TIMEFRAMES = ['5m', '15m', '1h', '4h'] as const;
+    const MIN_CLOSED_CANDLES = 35;
 
-    // Fail-Closed Validation: Verify all four required timeframes are present and have sufficient candle depth
+    // Fail-Closed Validation & Reference Time Establishment
+    const raw5mCandles = context.marketSnapshot?.candles?.[ENTRY_TIMEFRAME];
+    if (!raw5mCandles || raw5mCandles.length === 0) {
+      return {
+        strategyId: this.manifest.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: {
+          reasoning: [`[MTF DATA] Missing required candle data for timeframe ${ENTRY_TIMEFRAME}`],
+          signal: null,
+          strategyConfig: this.config,
+        }
+      };
+    }
+
+    // Filter forming 5m candles: only closed candles at or before context.timestamp
+    const closed5mAtRef = raw5mCandles.filter(c => getCandleCloseTime(c, ENTRY_TIMEFRAME) <= context.timestamp);
+    if (closed5mAtRef.length < MIN_CLOSED_CANDLES) {
+      return {
+        strategyId: this.manifest.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: {
+          reasoning: [`[MTF DATA] Insufficient closed candle data for timeframe ${ENTRY_TIMEFRAME} (got ${closed5mAtRef.length}, required >= ${MIN_CLOSED_CANDLES})`],
+          signal: null,
+          strategyConfig: this.config,
+        }
+      };
+    }
+
+    const latestClosed5m = closed5mAtRef[closed5mAtRef.length - 1];
+    const T = getCandleCloseTime(latestClosed5m, ENTRY_TIMEFRAME);
+
+    // Build Closed-Candle Projections for T across all 4 required timeframes
+    const currentCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {};
+
     for (const tf of ALL_REQUIRED_TIMEFRAMES) {
-      const tfCandles = context.marketSnapshot?.candles?.[tf];
-      if (!tfCandles || tfCandles.length === 0) {
+      const rawTfCandles = context.marketSnapshot?.candles?.[tf];
+      if (!rawTfCandles || rawTfCandles.length === 0) {
         return {
           strategyId: this.manifest.id,
           timestamp: context.timestamp,
@@ -75,23 +135,34 @@ export class ScalperV2Strategy implements IStrategy {
           }
         };
       }
-      if (tfCandles.length < 35) {
+
+      // Filter closed candles at or before T (forming candles strictly excluded)
+      const closedAtT = rawTfCandles.filter(c => getCandleCloseTime(c, tf) <= T);
+      if (closedAtT.length < MIN_CLOSED_CANDLES) {
         return {
           strategyId: this.manifest.id,
           timestamp: context.timestamp,
           confidenceScore: 0,
           hasSignal: false,
           metadata: {
-            reasoning: [`[MTF DATA] Insufficient candle data for timeframe ${tf} (got ${tfCandles.length}, required >= 35)`],
+            reasoning: [`[MTF DATA] Insufficient closed candle data for timeframe ${tf} (got ${closedAtT.length}, required >= ${MIN_CLOSED_CANDLES})`],
             signal: null,
             strategyConfig: this.config,
           }
         };
       }
+      currentCandlesRecord[tf] = closedAtT;
     }
 
+    // Technical Indicator & Condition Evaluations on Independent In-Memory Projection
+    const snapshotCurrent: MarketSnapshot = {
+      ...context.marketSnapshot,
+      timestamp: T,
+      candles: currentCandlesRecord as any,
+    };
+
     // 1. Indicators
-    const indicatorSnapshot = this.indicatorEngine.evaluate(context.marketSnapshot);
+    const indicatorSnapshot = this.indicatorEngine.evaluate(snapshotCurrent);
 
     // 2. Conditions
     const conditionResult = this.conditionEngine.evaluate(indicatorSnapshot);
@@ -99,7 +170,7 @@ export class ScalperV2Strategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    const candles = context.marketSnapshot.candles[ENTRY_TIMEFRAME] || [];
+    const candles = currentCandlesRecord[ENTRY_TIMEFRAME] || [];
 
     // Guard against currentPrice <= 0
     const latestCandleClose = candles[candles.length - 1]?.close || 0;
@@ -150,7 +221,7 @@ export class ScalperV2Strategy implements IStrategy {
 
     // 4. Risk (strictly 5m ATR)
     const riskContext: RiskContext = {
-      timestamp: context.timestamp,
+      timestamp: T,
       currentPrice,
       currentAtr,
       accountBalance: context.accountBalance
