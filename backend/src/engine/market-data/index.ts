@@ -3,3 +3,4 @@ export * from './MarketSnapshot';
 export * from './CandleProvider';
 export * from './MarketDataEngine';
 export * from './AdapterCandleProvider';
+export * from './SnapshotDigest';

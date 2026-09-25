@@ -1,5 +1,6 @@
 import { Env } from './index';
 import { ExchangeManager, ExchangeName, ExchangeEnvironment } from './exchanges';
+import { PriceNormalizer } from './utils/PriceNormalizer';
 import { Ticker } from './exchanges/models/NormalizedDomain';
 import BigNumber from 'bignumber.js';
 
@@ -15,6 +16,8 @@ import { StructuredLogger } from './infrastructure/telemetry/Telemetry';
 import { UnifiedError } from './exchanges/models/UnifiedError';
 import { resolveCanonicalRoutingRegion } from './utils/region';
 import { ReconciliationEngine } from './engine/reconciliation/ReconciliationEngine';
+import { FinalDispatchSafetyGate } from './engine/safety/FinalDispatchSafetyGate';
+import type { EconomicIntent } from './engine/wal/WalTypes';
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
@@ -443,12 +446,94 @@ export function evaluateStrategy(
  */
 
 
+
+export interface TradingBotRuntimeState {
+  isInitialized: boolean;
+  isActive: boolean;
+  userId: string | undefined;
+  strategy: string | undefined;
+  strategyConfig: Record<string, any> | undefined;
+  setupSnapshot: any | undefined;
+  positionSize: number | undefined;
+  coinId: string | undefined;
+  monitoredSymbols: string[];
+  activePositions: any[];
+  alerts: any[];
+  symbolCooldowns: Record<string, number>;
+  activeIntents: Map<string, any>;
+  pendingPositionSync: any | null;
+}
+
 export class TradingBot {
+  private runtimeState: TradingBotRuntimeState = {
+    isInitialized: false, isActive: false, userId: undefined, strategy: undefined,
+    strategyConfig: undefined, setupSnapshot: undefined, positionSize: undefined, coinId: undefined,
+    monitoredSymbols: [],
+    activePositions: [], alerts: [], symbolCooldowns: {}, activeIntents: new Map(),
+    pendingPositionSync: null
+  };
+  private isAlarmRunning: boolean = false;
+  private scannerState: any = {};
+
   state: DurableObjectState;
   env: Env;
   private isExecutingTrade = false;
   private orchestrator: StrategyOrchestrator;
   private engineApi: EngineAPIService;
+
+
+  private async ensureInitialized() {
+    if (this.runtimeState.isInitialized) return;
+    await this.state.blockConcurrencyWhile(async () => {
+      const keys = ['isActive', 'userId', 'strategy', 'strategyConfig', 'setupSnapshot', 'positionSize', 'coinId', 'monitoredSymbols', 'activePositions', 'alerts', 'symbolCooldowns', 'pendingPositionSync'];
+      const vals = await this.state.storage.get<any>(keys);
+      const getVal = (k: string) => (vals && typeof (vals as any).get === 'function' ? (vals as any).get(k) : (vals as any)?.[k]);
+      this.runtimeState.isActive = getVal('isActive') || false;
+      this.runtimeState.userId = getVal('userId');
+      this.runtimeState.strategy = getVal('strategy');
+      this.runtimeState.strategyConfig = getVal('strategyConfig');
+      this.runtimeState.setupSnapshot = getVal('setupSnapshot');
+      this.runtimeState.positionSize = getVal('positionSize');
+      this.runtimeState.coinId = getVal('coinId');
+
+      const storedSymbols = getVal('monitoredSymbols');
+      if (Array.isArray(storedSymbols) && storedSymbols.length > 0) {
+        this.runtimeState.monitoredSymbols = storedSymbols;
+      } else if (this.runtimeState.coinId) {
+        this.runtimeState.monitoredSymbols = [this.runtimeState.coinId];
+      } else {
+        this.runtimeState.monitoredSymbols = [];
+      }
+
+      this.runtimeState.activePositions = getVal('activePositions') || [];
+      this.runtimeState.alerts = getVal('alerts') || [];
+      this.runtimeState.symbolCooldowns = getVal('symbolCooldowns') || {};
+      this.runtimeState.pendingPositionSync = getVal('pendingPositionSync') || null;
+
+      const intentMap = await this.state.storage.list({ prefix: 'intent:order:' });
+      for (const [k, v] of intentMap.entries()) {
+        this.runtimeState.activeIntents.set(k, v);
+      }
+      this.runtimeState.isInitialized = true;
+    });
+  }
+
+  private async persistState(key: string, value: any) {
+    (this.runtimeState as any)[key] = value;
+    await this.state.storage.put(key, value);
+  }
+
+  private async persistIntent(intentId: string, intent: any) {
+    const key = "intent:order:" + intentId;
+    this.runtimeState.activeIntents.set(key, intent);
+    await this.state.storage.put(key, intent);
+  }
+
+  private async deleteIntent(intentId: string) {
+    const key = "intent:order:" + intentId;
+    this.runtimeState.activeIntents.delete(key);
+    await this.state.storage.delete(key);
+  }
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -464,19 +549,50 @@ export class TradingBot {
   }
 
   async fetch(request: Request): Promise<Response> {
+    await this.ensureInitialized();
     const url = new URL(request.url);
 
     switch (url.pathname) {
       case '/activate': {
-        const { userId, coinId, strategy, positionSize, targetEntryPrice, config } = await request.json<{ userId: string; coinId: string; strategy: string; positionSize?: number; targetEntryPrice?: number; config?: any }>();
-        
-        await this.logAuditEvent(userId, 'BOT_ACTIVATED', { strategy, coinId, positionSize, targetEntryPrice });
-        await this.state.storage.put('isActive', true);
-        await this.state.storage.put('coinId', coinId);
-        await this.state.storage.put('strategy', strategy);
-        await this.state.storage.put('userId', userId);
+        const { userId, coinId, symbols, strategy, positionSize, targetEntryPrice, config } = await request.json<{
+          userId: string;
+          coinId?: string;
+          symbols?: string[];
+          strategy: string;
+          positionSize?: number;
+          targetEntryPrice?: number;
+          config?: any;
+        }>();
+
+        // Safe symbol resolution - NO BTCUSDT FALLBACK
+        let resolvedSymbols: string[] = [];
+        if (Array.isArray(symbols) && symbols.length > 0) {
+          resolvedSymbols = symbols.map(s => String(s).trim()).filter(s => s.length > 0);
+        } else if (coinId && typeof coinId === 'string' && coinId.trim().length > 0) {
+          resolvedSymbols = [coinId.trim()];
+        }
+
+        if (resolvedSymbols.length === 0) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: 'Cannot activate bot: No valid trading symbols provided.',
+              code: 'INVALID_SYMBOLS',
+            }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const primaryCoinId = resolvedSymbols[0];
+
+        await this.logAuditEvent(userId, 'BOT_ACTIVATED', { strategy, coinId: primaryCoinId, symbols: resolvedSymbols, positionSize, targetEntryPrice });
+        await this.persistState('isActive', true);
+        await this.persistState('coinId', primaryCoinId);
+        await this.persistState('monitoredSymbols', resolvedSymbols);
+        await this.persistState('strategy', strategy);
+        await this.persistState('userId', userId);
         if (config) {
-          await this.state.storage.put('strategyConfig', config);
+          await this.persistState('strategyConfig', config);
         } else {
           await this.state.storage.delete('strategyConfig');
         }
@@ -486,18 +602,18 @@ export class TradingBot {
           await this.state.storage.delete('targetEntryPrice');
         }
         if (positionSize != null) {
-          await this.state.storage.put('positionSize', positionSize);
+          await this.persistState('positionSize', positionSize);
         } else {
           await this.state.storage.delete('positionSize');
         }
 
-        await this.state.storage.put('alerts', [] as TradeAlert[]);
+        await this.persistState('alerts', [] as TradeAlert[]);
         await this.state.storage.put('tradeActive', false);
         await this.state.storage.put(
           'logs',
           [
             { timestamp: new Date().toISOString(), level: 'info' as const, message: `Bot activated for strategy: ${strategy || 'default'}` },
-            { timestamp: new Date().toISOString(), level: 'info' as const, message: `Monitoring pair: ${coinId || 'N/A'}` },
+            { timestamp: new Date().toISOString(), level: 'info' as const, message: `Monitoring pairs (${resolvedSymbols.length}): ${resolvedSymbols.join(', ')}` },
           ] as AnalysisLog[],
         );
         await this.state.storage.put('activatedAt', Date.now());
@@ -523,7 +639,7 @@ export class TradingBot {
 
         const setupSnapshot: TradeSetupSnapshot = Object.freeze({
           userId,
-          coinId,
+          coinId: primaryCoinId,
           strategy,
           targetEntryPrice: targetEntryPrice ?? undefined,
           positionSize: positionSize ?? undefined,
@@ -531,7 +647,7 @@ export class TradingBot {
           exchangeName: user?.exchange_name ?? undefined,
           environment: user?.exchange_environment ?? undefined,
         });
-        await this.state.storage.put('setupSnapshot', setupSnapshot);
+        await this.persistState('setupSnapshot', setupSnapshot);
 
         if (user?.exchange_name) {
           let apiKey: string | undefined = undefined;
@@ -582,12 +698,14 @@ export class TradingBot {
         return new Response(JSON.stringify({ success: true, message: 'Bot activated.' }), { status: 200 });
       }
       case '/deactivate': {
-        const userId = (await this.state.storage.get('userId')) as string | undefined;
+        const userId = this.runtimeState.userId as string | undefined;
         if (userId) {
           await this.logAuditEvent(userId, 'BOT_DEACTIVATED', { reason: 'user_requested' });
         }
-        await this.state.storage.put('isActive', false);
-        await this.state.storage.put('coinId', null);
+        await this.persistState('isActive', false);
+        await this.persistState('coinId', null);
+        await this.persistState('monitoredSymbols', []);
+        await this.persistState('strategy', null);
         const existingLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
         await this.state.storage.put('logs', (existingLogs ?? []).concat([
           { timestamp: new Date().toISOString(), level: 'info' as const, message: 'Bot deactivated by user.' },
@@ -597,13 +715,14 @@ export class TradingBot {
       }
 
       case '/status': {
-        const isActive = (await this.state.storage.get('isActive')) || false;
-        const coinId = (await this.state.storage.get('coinId')) || null;
-        const strategy = (await this.state.storage.get('strategy')) || null;
-        return new Response(JSON.stringify({ isActive, coinId, strategy }), { status: 200 });
+        const isActive = this.runtimeState.isActive || false;
+        const coinId = this.runtimeState.coinId || null;
+        const strategy = this.runtimeState.strategy || null;
+        const symbols = this.runtimeState.monitoredSymbols || (coinId ? [coinId] : []);
+        return new Response(JSON.stringify({ isActive, coinId, strategy, symbols }), { status: 200 });
       }
       case '/analysis-status': {
-        const isActive = (await this.state.storage.get('isActive')) || false;
+        const isActive = this.runtimeState.isActive || false;
         const safeMode = false;
         const newAnalysis = (await this.state.storage.get('newAnalysis')) as any;
 
@@ -611,8 +730,8 @@ export class TradingBot {
           return new Response(JSON.stringify({ ...newAnalysis, safeMode }), { status: 200 });
         }
 
-        const coinId = (await this.state.storage.get('coinId')) as string || 'BTCUSDT';
-        const strategy = (await this.state.storage.get('strategy')) as string || 'ScalperV2';
+        const coinId = this.runtimeState.coinId as string || 'BTCUSDT';
+        const strategy = this.runtimeState.strategy as string || 'ScalperV2';
 
         const registry = StrategyRegistry.getInstance();
         const normalizedId = registry.normalizeStrategyId(strategy);
@@ -669,14 +788,14 @@ export class TradingBot {
         }
 
         console.log(`[ALERT_REGISTER] id=${alert.id} symbol=${alert.symbol} strategy=${alert.strategy}`);
-        const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+        const alerts = this.runtimeState.alerts as TradeAlert[] || [];
         const existingIndex = alerts.findIndex((a) => a.id === alert.id);
         if (existingIndex >= 0) {
           alerts[existingIndex] = { ...alerts[existingIndex], ...alert, status: 'pending' };
         } else {
           alerts.push({ ...alert, status: 'pending' });
         }
-        await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+        await this.persistState('alerts', this.pruneAlerts(alerts));
         console.log(`[ALERT_REGISTERED] id=${alert.id} storage=alerts status=pending`);
 
         return new Response(JSON.stringify({ success: true, alertId: alert.id }), {
@@ -685,7 +804,7 @@ export class TradingBot {
         });
       }
       case '/alerts': {
-        const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+        const alerts = this.runtimeState.alerts as TradeAlert[] || [];
         const pending = alerts.filter((a) => a.status === 'pending');
         return new Response(JSON.stringify(pending), { status: 200 });
       }
@@ -696,7 +815,7 @@ export class TradingBot {
           return new Response(JSON.stringify({ success: false, message: 'positionId is required.' }), { status: 400 });
         }
 
-        const userId: string | undefined = await this.state.storage.get('userId');
+        const userId: string | undefined = this.runtimeState.userId;
         if (!userId) {
           return new Response(JSON.stringify({ success: false, message: 'Bot not initialized with a user.' }), { status: 500 });
         }
@@ -898,11 +1017,11 @@ export class TradingBot {
       }
       case '/acknowledge': {
         const { alertId } = await request.json<{ alertId: string }>();
-        const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+        const alerts = this.runtimeState.alerts as TradeAlert[] || [];
         const alert = alerts.find((a) => a.id === alertId);
         if (alert) {
           alert.status = 'acknowledged';
-          await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+          await this.persistState('alerts', this.pruneAlerts(alerts));
         }
         return new Response(JSON.stringify({ success: true }), { status: 200 });
       }
@@ -925,12 +1044,12 @@ export class TradingBot {
           await this.state.storage.put('isExecutingTrade', true);
 
           try {
-            const userId: string | undefined = await this.state.storage.get('userId');
+            const userId: string | undefined = this.runtimeState.userId;
             if (!userId) {
               return new Response(JSON.stringify({ error: 'Bot not properly initialized with a user.' }), { status: 500 });
             }
 
-            const coinId = (await this.state.storage.get('coinId')) as string;
+            const coinId = this.runtimeState.coinId as string;
 
             let alertId: string | undefined;
             let requestBody: any = {};
@@ -945,7 +1064,7 @@ export class TradingBot {
 
             // Idempotency Check: If an intent already exists for this alertId, return success (execution already handled)
             const existingIntentForAlert = await this.state.storage.get(`intent:order:${alertId}`) as any;
-            if (existingIntentForAlert) {
+            if (existingIntentForAlert && existingIntentForAlert.status !== 'FAILED') {
               console.log(`[DIAGNOSTIC] Idempotent retry detected for alertId ${alertId}. Returning success.`);
               return new Response(JSON.stringify({
                 success: true,
@@ -955,8 +1074,8 @@ export class TradingBot {
               }), { status: 200 });
             }
 
-            const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-            const target: TradeAlert | undefined = alerts.find((a) => a.id === alertId && (a.status === 'pending' || a.status === 'acknowledged'));
+            const alerts = this.runtimeState.alerts as TradeAlert[] || [];
+            const target: TradeAlert | undefined = alerts.find((a) => a.id === alertId && (a.status === 'pending' || a.status === 'acknowledged' || a.status === 'failed'));
             
             if (!target) {
               return new Response(JSON.stringify({ error: 'Trade alert not found, expired, or already executed.' }), { status: 409 });
@@ -968,12 +1087,12 @@ export class TradingBot {
             if (signalAgeMs > MAX_SIGNAL_AGE_MS) {
               console.warn(`[SAFETY GATE] Rejected stale signal execution. Age: ${signalAgeMs}ms. AlertId: ${target.id}`);
               target.status = 'expired';
-              await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+              await this.persistState('alerts', this.pruneAlerts(alerts));
               return new Response(JSON.stringify({ error: `Signal has expired. Maximum allowed execution latency is 5 minutes.` }), { status: 400 });
             }
 
             const side: 'BUY' | 'SELL' = target.side || 'BUY';
-            const committedStrategy: string | undefined = await this.state.storage.get('strategy');
+            const committedStrategy: string | undefined = this.runtimeState.strategy;
             const alertStrategy = (target.strategy || '').replace(/_NEW$/, '');
             const normalizedStrategyId = StrategyRegistry.getInstance().normalizeStrategyId(alertStrategy);
             if (committedStrategy) {
@@ -1043,7 +1162,7 @@ export class TradingBot {
               region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
               ...this.resolveEgressConfig(userKeys.exchange_name),
             });
-            const rawSymbol = coinId || target.symbol || 'BTC/USDT';
+            const rawSymbol = target.symbol || coinId || 'BTC/USDT';
             const orderSymbol = rawSymbol.includes('/') ? rawSymbol : `${rawSymbol}/USDT`;
             const clientOrderId = target.id;
 
@@ -1051,7 +1170,7 @@ export class TradingBot {
 
             // Phase 3: Strict Concurrency Check
             // Mathematically prevents executing a new intent for a symbol if an unresolved intent already exists for it.
-            const existingIntents = await this.state.storage.list({ prefix: 'intent:order:' });
+            const existingIntents = this.runtimeState.activeIntents;
             for (const val of existingIntents.values()) {
               const intent = val as any;
               if (intent.symbol === orderSymbol && ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)) {
@@ -1061,7 +1180,7 @@ export class TradingBot {
             }
 
             target.status = 'submitted';
-            await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+            await this.persistState('alerts', this.pruneAlerts(alerts));
           await this.logAuditEvent(userId, 'TRADE_SUBMITTED', { symbol: orderSymbol, side, clientOrderId, strategy: target.strategy, entryPrice: target.entryPrice });
 
             let orderResult: any = { success: true, message: 'Trade executed (simulated).', orderId: clientOrderId };
@@ -1095,17 +1214,21 @@ export class TradingBot {
                 }
 
                 const positionSizeUsdt = target.positionSize || 100;
-                let stepSize = 0.00001;
-                let tickSize = 0.01;
+                let stepSize = 0;
+                let tickSize = 0;
                 let minNotional = 5;
-                let minQty = 0.00001;
+                let minQty = 0;
                 let priceLimitRatioX: number = 0.10;
                 let priceLimitRatioY: number = 0.10;
+                let matchedCategory: string | undefined = undefined;
+                let hasAuthoritativeMetadata = false;
 
                 try {
                   const markets = await adapter.fetchMarkets();
                   const matched = markets.find(m => m.symbol === orderSymbol || m.id === orderSymbol.replace('/', ''));
                   if (matched) {
+                    matchedCategory = (matched as any).category;
+                    hasAuthoritativeMetadata = true;
                     if (matched.precision?.amount) stepSize = matched.precision.amount;
                     if (matched.precision?.price) tickSize = matched.precision.price;
                     if ((matched as any).priceLimitRatioX) priceLimitRatioX = (matched as any).priceLimitRatioX;
@@ -1120,7 +1243,33 @@ export class TradingBot {
                     }
                   }
                 } catch (mErr: any) {
-                  console.warn('[trading-bot] Failed to fetch markets for precision rules, using defaults:', mErr?.message);
+                  console.warn('[trading-bot] Failed to fetch authoritative markets for precision rules:', mErr?.message);
+                }
+
+                if (!hasAuthoritativeMetadata || tickSize <= 0) {
+                  throw new Error(`Authoritative exchange metadata for ${orderSymbol} is unavailable. Cannot safely determine execution tick size.`);
+                }
+
+                // Strictly normalize ONLY the local limitPrice and triggerPrice before validation
+                const targetSideEnum = (target.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+                if (limitPrice !== undefined) {
+                  limitPrice = PriceNormalizer.normalizeLimitPrice(limitPrice, tickSize, targetSideEnum);
+                }
+                if (triggerPrice !== undefined) {
+                  triggerPrice = PriceNormalizer.normalizeLimitPrice(triggerPrice, tickSize, targetSideEnum);
+                }
+
+                if (target.takeProfit !== undefined || target.stopLoss !== undefined) {
+                  const normResult = PriceNormalizer.normalizeTradePrices({
+                    entryPrice: limitPrice || triggerPrice || currentPrice,
+                    theoreticalSL: target.stopLoss !== undefined ? target.stopLoss : (targetSideEnum === 'BUY' ? currentPrice * 0.9 : currentPrice * 1.1),
+                    theoreticalTP: target.takeProfit !== undefined ? target.takeProfit : (targetSideEnum === 'BUY' ? currentPrice * 1.1 : currentPrice * 0.9),
+                    tickSize: tickSize,
+                    minAllowedPrice: tickSize,
+                    side: targetSideEnum
+                  });
+                  if (target.takeProfit !== undefined) target.takeProfit = normResult.takeProfit;
+                  if (target.stopLoss !== undefined) target.stopLoss = normResult.stopLoss;
                 }
 
                 const rulesRes = TradeValidator.validate({
@@ -1201,6 +1350,7 @@ export class TradingBot {
                    amount: new BigNumber(executionSnapshot.quantizedQuantity),
                    clientOrderId: executionSnapshot.clientOrderId,
                    timeInForce: timeInForce,
+                   category: matchedCategory || 'linear',
                    params: {}
                 };
                 if (executionSnapshot.limitPrice) req.price = new BigNumber(executionSnapshot.limitPrice);
@@ -1212,7 +1362,6 @@ export class TradingBot {
                 if (executionSnapshot.stopLoss) req.stopLoss = executionSnapshot.stopLoss;
 
                 // Phase 3: Final Dispatch Safety Gate
-                const { FinalDispatchSafetyGate } = require('./engine/safety/FinalDispatchSafetyGate');
                 try {
                   FinalDispatchSafetyGate.validate(req, {
                     stepSize,
@@ -1225,7 +1374,6 @@ export class TradingBot {
                 }
 
                 // Phase 3: Core WAL State Machine (INTENT_PERSISTED)
-                const { EconomicIntent } = require('./engine/wal/WalTypes');
                 const intentObj: any = {
                   intentId: executionSnapshot.clientOrderId,
                   version: Date.now(),
@@ -1243,7 +1391,7 @@ export class TradingBot {
                 };
                 
                 await this.state.storage.transaction(async (txn) => {
-                  await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                  await this.persistIntent(intentObj.intentId, intentObj);
                 });
 
                 console.log(`[DIAGNOSTIC] [STAGE: INTENT_PERSISTED] WAL written for ${intentObj.intentId}`);
@@ -1253,14 +1401,14 @@ export class TradingBot {
                   intentObj.status = 'DISPATCHED';
                   intentObj.dispatchedAt = Date.now();
                   await this.state.storage.transaction(async (txn) => {
-                    await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                    await this.persistIntent(intentObj.intentId, intentObj);
                   });
 
                   rawOrder = await ExchangeManager.executeIdempotentOrder(writeProvider, req);
                   
                   intentObj.status = rawOrder.status === 'open' ? 'DISPATCHED' : 'FILLED';
                   await this.state.storage.transaction(async (txn) => {
-                    await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                    await this.persistIntent(intentObj.intentId, intentObj);
                   });
                   console.log(`[DIAGNOSTIC] [STAGE: ORDER_SUCCESS] orderId=${rawOrder.id} status=${intentObj.status}`);
 
@@ -1271,14 +1419,14 @@ export class TradingBot {
                   if (isNetworkError) {
                     intentObj.status = 'UNKNOWN';
                     await this.state.storage.transaction(async (txn) => {
-                      await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                      await this.persistIntent(intentObj.intentId, intentObj);
                     });
                     console.warn(`[DIAGNOSTIC] [STAGE: UNKNOWN_STATE] Network failure during dispatch for ${intentObj.intentId}. Transitioning to UNKNOWN. Initiating reconciliation.`);
                     
                     // Trigger immediate first pass reconciliation
                     await ReconciliationEngine.reconcile(writeProvider, intentObj, Date.now());
                     await this.state.storage.transaction(async (txn) => {
-                      await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                      await this.persistIntent(intentObj.intentId, intentObj);
                     });
                     
                     // If it remains UNKNOWN, we must halt the current execution cycle safely
@@ -1286,7 +1434,7 @@ export class TradingBot {
                   } else {
                     intentObj.status = 'FAILED';
                     await this.state.storage.transaction(async (txn) => {
-                      await txn.put(`intent:order:${intentObj.intentId}`, intentObj);
+                      await this.persistIntent(intentObj.intentId, intentObj);
                     });
                     throw e; // Explicit rejection
                   }
@@ -1299,9 +1447,9 @@ export class TradingBot {
                    success: true,
                    message: 'Order accepted by exchange.',
                    orderId: rawOrder.id,
-                   price: null, // Force null to prevent UI from rendering $0 fake price
+                   price: rawOrder.price?.toNumber() || null,
                    quantity: rawOrder.amount.toNumber(),
-                   status: 'open',
+                   status: rawOrder.status === 'closed' ? 'filled' : rawOrder.status,
                    ocoGroupId: null,
                    tpOrderId: null,
                    slOrderId: null,
@@ -1320,7 +1468,7 @@ export class TradingBot {
             }
 
             target.status = orderResult.success ? 'executed' : 'failed';
-            await this.state.storage.put('alerts', this.pruneAlerts(alerts));
+            await this.persistState('alerts', this.pruneAlerts(alerts));
             
             if (orderResult.success) {
               const snapshot = executionSnapshot || {
@@ -1407,7 +1555,7 @@ export class TradingBot {
               };
 
               // Phase 3.3.1: Write-Ahead Logging (WAL) to DO Storage before writing to D1
-              await this.state.storage.put('pendingPositionSync', positionData);
+              await this.persistState('pendingPositionSync', positionData);
 
               try {
                 await this.env.DB.prepare(
@@ -1477,6 +1625,7 @@ export class TradingBot {
 
                 // If DB write succeeds, remove from WAL
                 await this.state.storage.delete('pendingPositionSync');
+                if (target?.id) await this.deleteIntent(target.id);
               } catch (dbError: any) {
                 console.error("D1 write failed, position is safely in DO WAL:", dbError?.stack || dbError?.message || dbError);
               }
@@ -1491,7 +1640,10 @@ export class TradingBot {
               order: orderResult,
               positionId: target.id,
               alertId: target.id,
-              orderId: orderResult.orderId
+              orderId: orderResult.orderId,
+              executionPrice: orderResult.price,
+              quantity: orderResult.quantity,
+              status: orderResult.status
             }), { status: 200 });
           } finally {
             this.isExecutingTrade = false;
@@ -1501,10 +1653,10 @@ export class TradingBot {
       }
       case '/mock-trade': {
         const body = await request.json<any>().catch(() => ({}));
-        const userId: string | undefined = body.userId || (await this.state.storage.get('userId'));
+        const userId: string | undefined = body.userId || this.runtimeState.userId;
         const alertId: string = body.alertId || crypto.randomUUID();
 
-        const alerts = ((await this.state.storage.get('alerts')) as any[]) || [];
+        const alerts = (this.runtimeState.alerts as any[]) || [];
         let target = alerts.find((a: any) => a.id === alertId);
         if (!target) {
           const newAlert = (await this.state.storage.get('newAlert')) as any;
@@ -1513,12 +1665,12 @@ export class TradingBot {
           }
         }
 
-        const symbol: string | undefined = body.symbol || target?.symbol || ((await this.state.storage.get('coinId')) as string);
-        const strategy: string | undefined = body.strategy || target?.strategy || ((await this.state.storage.get('strategy')) as string);
+        const symbol: string | undefined = body.symbol || target?.symbol || (this.runtimeState.coinId as string);
+        const strategy: string | undefined = body.strategy || target?.strategy || (this.runtimeState.strategy as string);
         const side: 'BUY' | 'SELL' = (body.side || target?.side)?.toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
         const positionSizeUsdt: number = typeof body.positionSizeUsdt === 'number' && body.positionSizeUsdt > 0
           ? body.positionSizeUsdt
-          : (typeof target?.positionSize === 'number' && target.positionSize > 0 ? target.positionSize : (((await this.state.storage.get('positionSize')) as number) || 100));
+          : (typeof target?.positionSize === 'number' && target.positionSize > 0 ? target.positionSize : ((this.runtimeState.positionSize as number) || 100));
 
         if (!userId) {
           return new Response(JSON.stringify({ success: false, message: 'Unauthorized: Missing user context.' }), { status: 401 });
@@ -1720,7 +1872,7 @@ export class TradingBot {
           .run();
 
         // 6. Persist to DO Storage
-        const currentActive = (await this.state.storage.get<any[]>('activePositions')) || [];
+        const currentActive = this.runtimeState.activePositions || [];
         currentActive.push({
           id: mockOrderId,
           alertId,
@@ -1738,7 +1890,7 @@ export class TradingBot {
           orderId: mockOrderId,
           enteredAt: now,
         });
-        await this.state.storage.put('activePositions', currentActive);
+        await this.persistState('activePositions', currentActive);
 
         // Record Idempotency Intent
         await this.state.storage.put(`intent:order:${alertId}`, {
@@ -1778,7 +1930,7 @@ export class TradingBot {
         return new Response(JSON.stringify({ success: true, message: 'Trade stopped.' }), { status: 200 });
       }
       case '/health': {
-        const isActive = (await this.state.storage.get('isActive')) || false;
+        const isActive = this.runtimeState.isActive || false;
         const activatedAt = (await this.state.storage.get('activatedAt')) as number || 0;
         const uptimeSeconds = isActive && activatedAt > 0 ? Math.floor((Date.now() - activatedAt) / 1000) : 0;
         
@@ -1790,7 +1942,7 @@ export class TradingBot {
         let circuitBreakerStatus = 'UNKNOWN';
         let activePositionsCount = 0;
         try {
-          const userId = await this.state.storage.get('userId') as string;
+          const userId = this.runtimeState.userId as string;
           if (userId) {
             const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
             if (user?.exchange_name) {
@@ -1812,7 +1964,7 @@ export class TradingBot {
            // Ignore errors fetching metrics
         }
         
-        const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
+        const alerts = this.runtimeState.alerts as TradeAlert[] || [];
         const activeAlertsCount = alerts.filter(a => a.status === 'pending').length;
 
         const safeMode = false;
@@ -1860,8 +2012,9 @@ export class TradingBot {
   async alarm() {
     // Feature 11: Background Monitoring Fail-Safe (Immortal Alarm)
     try {
+      await this.ensureInitialized();
       await this.state.blockConcurrencyWhile(async () => {
-        const isActive = await this.state.storage.get('isActive');
+        const isActive = this.runtimeState.isActive;
         if (!isActive) return;
 
         if (this.env.GLOBAL_TRADING_HALT === 'true') {
@@ -1870,7 +2023,7 @@ export class TradingBot {
         }
 
       // Phase 3.3.1: Write-Ahead Logging (WAL) Recovery
-      const pendingPositionSync = await this.state.storage.get<any>('pendingPositionSync');
+      const pendingPositionSync = this.runtimeState.pendingPositionSync;
       if (pendingPositionSync) {
         try {
           await this.env.DB.prepare(
@@ -1898,6 +2051,7 @@ export class TradingBot {
             pendingPositionSync.now
           ).run();
           await this.state.storage.delete('pendingPositionSync');
+          if (pendingPositionSync?.id) await this.deleteIntent(pendingPositionSync.id);
         } catch (e) {
           console.error('Failed to sync pending WAL position to D1 in alarm:', e);
         }
@@ -1905,7 +2059,7 @@ export class TradingBot {
 
       // Phase 3: Exhaustive WAL Reconciliation Sweep
       try {
-        const userId = await this.state.storage.get('userId') as string;
+        const userId = this.runtimeState.userId as string;
         if (userId) {
           const userKeys = await this.env.DB.prepare('SELECT exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<any>();
           if (userKeys?.exchange_name && userKeys.exchange_api_secret_encrypted) {
@@ -1935,14 +2089,13 @@ export class TradingBot {
             });
             
             // 1. Process UNKNOWN / PENDING Economic Intents
-            const { ReconciliationEngine } = require('./engine/reconciliation/ReconciliationEngine');
-            const intentMap = await this.state.storage.list({ prefix: 'intent:order:' });
+            const intentMap = this.runtimeState.activeIntents;
             for (const [key, value] of intentMap.entries()) {
               const intent = value as any;
               const pendingStates = ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'];
               if (pendingStates.includes(intent.status)) {
                 console.log(`[RECONCILIATION] Sweeping intent ${intent.intentId} in state ${intent.status}`);
-                const reconciled = await ReconciliationEngine.reconcile(adapter, intent, Date.now());
+                const reconciled: any = await ReconciliationEngine.reconcile(adapter, intent, Date.now());
                 await this.state.storage.transaction(async (txn) => {
                   await txn.put(key, reconciled);
                 });
@@ -2007,7 +2160,7 @@ export class TradingBot {
             // 2. Native Protection Engine Verification
             const positions = await adapter.fetchPositions().catch(() => null);
             if (positions) {
-               const activePositions = await this.state.storage.get<any[]>('activePositions') || [];
+               const activePositions = this.runtimeState.activePositions || [];
                for (const dbPos of activePositions) {
                  const exchangePos = positions.find((p: any) => p.symbol === dbPos.symbol && p.side === (dbPos.side === 'BUY' ? 'long' : 'short'));
                  if (exchangePos && exchangePos.size.toNumber() > 0) {
@@ -2036,11 +2189,13 @@ export class TradingBot {
 
     // Sprint 10 Phase 1 Integration
     try {
-      const coinId = await this.state.storage.get('coinId') as string;
-      const userId = await this.state.storage.get('userId') as string;
-      const strategy = await this.state.storage.get('strategy') as string;
+      const userId = this.runtimeState.userId as string;
+      const strategy = this.runtimeState.strategy as string;
+      const symbolsToMonitor = (Array.isArray(this.runtimeState.monitoredSymbols) && this.runtimeState.monitoredSymbols.length > 0)
+        ? this.runtimeState.monitoredSymbols
+        : (this.runtimeState.coinId ? [this.runtimeState.coinId] : []);
       
-      if (coinId && userId) {
+      if (symbolsToMonitor.length > 0 && userId && strategy) {
         const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?').bind(userId).first<any>();
         if (user?.exchange_name) {
           let apiKey: string | undefined = undefined;
@@ -2076,143 +2231,199 @@ export class TradingBot {
             ...this.resolveEgressConfig(user.exchange_name),
           });
 
-            const provider = new AdapterCandleProvider(adapter);
-            const dataEngine = new MarketDataEngine(provider);
-            this.orchestrator.setMarketDataEngine(dataEngine);
+          const provider = new AdapterCandleProvider(adapter);
+          const dataEngine = new MarketDataEngine(provider);
+          this.orchestrator.setMarketDataEngine(dataEngine);
 
-            const strategyConfig = (await this.state.storage.get('strategyConfig')) as Record<string, any> | undefined;
-            const balanceResult = await adapter.fetchBalance().catch(() => null);
-            const accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
-            const results = await this.orchestrator.executeCycle(coinId, strategy, strategyConfig, accountBalance);
-            const currentState = this.orchestrator.getCurrentState();
-            await this.state.storage.put('engineState', currentState);
-        
-            // Phase 1: Android Contract Integration (Harmonized AnalysisSnapshotMapper)
-            const registry = StrategyRegistry.getInstance();
-            const normalizedId = registry.normalizeStrategyId(strategy);
-            const manifests = registry.getAllManifests();
-            const manifest = registry.getManifest(normalizedId) || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
-            if (!manifest) {
-              new StructuredLogger().warn(`[StrategyOrchestrator] Strategy '${strategy}' not found. Available: ${manifests.map(m => m.id).join(', ')}`);
-              throw new UnifiedError(`Strategy '${strategy}' is not registered.`, 'UNSUPPORTED_OPERATION');
-            }
-            const snapshot = await dataEngine.getSnapshot(coinId, manifest.supportedTimeframes || ['5m']);
-            const primaryResult = results.length > 0 ? results[0] : {
-              strategyId: manifest.id,
-              timestamp: Date.now(),
-              confidenceScore: 50,
-              hasSignal: false,
-              metadata: { reasoning: ['Evaluation pending'] }
-            };
-            const newAnalysis = AnalysisSnapshotMapper.map(primaryResult, manifest, snapshot, currentState.toString(), true);
-            await this.state.storage.put('newAnalysis', newAnalysis);
+          const strategyConfig = this.runtimeState.strategyConfig as Record<string, any> | undefined;
+          const balanceResult = await adapter.fetchBalance().catch(() => null);
+          const accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
 
-            // Phase 1: Trading Signal Integration
-            if (primaryResult?.hasSignal) {
-              const sig = primaryResult.metadata.signal;
-              const isAllowedSignal = sig && (sig.type === 'BUY' || (sig.type === 'SELL' && manifest.supportsShort));
-              if (isAllowedSignal) {
-                const alerts = (await this.state.storage.get('alerts')) as TradeAlert[] || [];
-                // Check if we recently added this alert to avoid spamming the queue
-                const recentAlert = alerts.find(a => a.symbol === coinId && a.status === 'pending' && a.strategy === `${strategy}_NEW`);
-                if (!recentAlert) {
-                  // Fetch live market price at the exact moment of signal generation
-                  const ticker = await adapter.fetchTicker(coinId).catch(() => null);
-                  const price = typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0);
-                  
-                  const setupSnapshot = await this.state.storage.get<TradeSetupSnapshot>('setupSnapshot');
-                  const storedPositionSize = setupSnapshot?.positionSize ?? ((await this.state.storage.get('positionSize')) as number | undefined);
-                  const calculatedSize = sig.riskAssessment?.positionSizeRecommendation;
-                  const size = (storedPositionSize && storedPositionSize > 0) ? storedPositionSize : (calculatedSize && calculatedSize > 0 ? calculatedSize : 0);
-                  
-                  if (size <= 0) {
-                    console.warn(`[trading-bot] Skipping TradeAlert generation for ${coinId}: No valid position size available from RiskEngine or manual override.`);
-                    await this.logAuditEvent(userId, 'ALERT_SKIPPED_MISSING_POSITION_SIZE', {
-                      symbol: coinId,
-                      strategy: setupSnapshot?.strategy || strategy,
-                      reason: 'Trade opportunity detected, but execution was skipped because no valid position size was available.'
-                    });
+          const registry = StrategyRegistry.getInstance();
+          const normalizedId = registry.normalizeStrategyId(strategy);
+          const manifests = registry.getAllManifests();
+          const manifest = registry.getManifest(normalizedId) || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
+          if (!manifest) {
+            new StructuredLogger().warn(`[StrategyOrchestrator] Strategy '${strategy}' not found. Available: ${manifests.map(m => m.id).join(', ')}`);
+            throw new UnifiedError(`Strategy '${strategy}' is not registered.`, 'UNSUPPORTED_OPERATION');
+          }
 
-                    const existingLogs = (await this.state.storage.get('logs')) as string[] || [];
-                    existingLogs.push(`[${new Date().toISOString()}] WARN: Trade opportunity detected for ${coinId}, but alert generation was skipped because no valid position size was available.`);
-                    await this.state.storage.put('logs', existingLogs.slice(-50));
-                  } else {
-                    // Phase A1 Integration: MarketRegime Check
-                  const klines = (typeof adapter.fetchKlines === 'function')
-                    ? await adapter.fetchKlines(coinId, '1h', 50).catch(() => [])
-                    : [];
-                  if (klines && klines.length >= 20) {
-                    const highs = klines.map((k: any) => k.high?.toNumber ? k.high.toNumber() : Number(k.high));
-                    const lows = klines.map((k: any) => k.low?.toNumber ? k.low.toNumber() : Number(k.low));
-                    const closes = klines.map((k: any) => k.close?.toNumber ? k.close.toNumber() : Number(k.close));
-                    const regime = MarketRegimeEngine.evaluate(highs, lows, closes, 0);
-                    const regimeAllowed = MarketRegimeEngine.isStrategyAllowed(setupSnapshot?.strategy || strategy, regime);
-                    if (!regimeAllowed.allowed) {
-                      console.warn(`[trading-bot] Skipping TradeAlert generation for ${coinId}: MarketRegime check failed: ${regimeAllowed.reason}`);
-                      await this.logAuditEvent(userId, 'ALERT_SKIPPED_MARKET_REGIME', {
-                        symbol: coinId,
+          const primarySymbol = symbolsToMonitor[0];
+          let primarySnapshotMapped = false;
+
+          for (const currentSymbol of symbolsToMonitor) {
+            try {
+              const results = await this.orchestrator.executeCycle(currentSymbol, strategy, strategyConfig, accountBalance);
+              const currentState = this.orchestrator.getCurrentState();
+              await this.state.storage.put('engineState', currentState);
+
+              const snapshot = await dataEngine.getSnapshot(currentSymbol, manifest.supportedTimeframes || ['5m']);
+              const primaryResult = results.length > 0 ? results[0] : {
+                strategyId: manifest.id,
+                timestamp: Date.now(),
+                confidenceScore: 50,
+                hasSignal: false,
+                metadata: { reasoning: ['Evaluation pending'] }
+              };
+
+              // Map and persist newAnalysis for UI preview:
+              // Prioritize if current candidate has an active signal, or if this is the primary symbol and not yet mapped
+              if (primaryResult?.hasSignal || (!primarySnapshotMapped && currentSymbol === primarySymbol)) {
+                const newAnalysis = AnalysisSnapshotMapper.map(primaryResult, manifest, snapshot, currentState.toString(), true);
+                await this.state.storage.put('newAnalysis', newAnalysis);
+                if (currentSymbol === primarySymbol) {
+                  primarySnapshotMapped = true;
+                }
+              }
+
+              // Phase 1: Trading Signal Integration
+              if (primaryResult?.hasSignal) {
+                const sig = primaryResult.metadata.signal;
+                const isAllowedSignal = sig && (sig.type === 'BUY' || (sig.type === 'SELL' && manifest.supportsShort));
+                if (isAllowedSignal) {
+                  const alerts = this.runtimeState.alerts as TradeAlert[] || [];
+                  // Check if we recently added this alert to avoid spamming the queue
+                  const recentAlert = alerts.find(a => a.symbol === currentSymbol && a.status === 'pending' && a.strategy === `${strategy}_NEW`);
+                  if (!recentAlert) {
+                    // Fetch live market price at the exact moment of signal generation
+                    const ticker = await adapter.fetchTicker(currentSymbol).catch(() => null);
+                    const price = typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0);
+
+                    const setupSnapshot = this.runtimeState.setupSnapshot;
+                    const storedPositionSize = setupSnapshot?.positionSize ?? (this.runtimeState.positionSize as number | undefined);
+                    const calculatedSize = sig.riskAssessment?.positionSizeRecommendation;
+                    const size = (storedPositionSize && storedPositionSize > 0) ? storedPositionSize : (calculatedSize && calculatedSize > 0 ? calculatedSize : 0);
+
+                    if (size <= 0) {
+                      console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol}: No valid position size available from RiskEngine or manual override.`);
+                      await this.logAuditEvent(userId, 'ALERT_SKIPPED_MISSING_POSITION_SIZE', {
+                        symbol: currentSymbol,
                         strategy: setupSnapshot?.strategy || strategy,
-                        reason: regimeAllowed.reason,
-                        regime: regime.regime,
-                        score: regime.score
+                        reason: 'Trade opportunity detected, but execution was skipped because no valid position size was available.'
                       });
-                      return;
-                    }
-                  }
 
-                  const targetEntryPrice = setupSnapshot?.targetEntryPrice ?? ((await this.state.storage.get('targetEntryPrice')) as number | undefined);
-                    const alertSignalPrice = sig.signalPrice || price;
-                    const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
-                    const alertStopLoss = sig.stopLoss || alertSignalPrice * 0.99;
-                    const alertTakeProfit = sig.takeProfit || alertSignalPrice * 1.01;
-                    const estimatedPnl = Math.abs(alertTakeProfit - alertSignalPrice) * (alertSignalPrice > 0 ? size / alertSignalPrice : 0);
+                      const existingLogs = (await this.state.storage.get('logs')) as string[] || [];
+                      existingLogs.push(`[${new Date().toISOString()}] WARN: Trade opportunity detected for ${currentSymbol}, but alert generation was skipped because no valid position size was available.`);
+                      await this.state.storage.put('logs', existingLogs.slice(-50));
+                    } else {
+                      // Phase A1 Integration: MarketRegime Check
+                      const klines = (typeof adapter.fetchKlines === 'function')
+                        ? await adapter.fetchKlines(currentSymbol, '1h', 50).catch(() => [])
+                        : [];
+                      if (klines && klines.length >= 20) {
+                        const highs = klines.map((k: any) => k.high?.toNumber ? k.high.toNumber() : Number(k.high));
+                        const lows = klines.map((k: any) => k.low?.toNumber ? k.low.toNumber() : Number(k.low));
+                        const closes = klines.map((k: any) => k.close?.toNumber ? k.close.toNumber() : Number(k.close));
+                        const regime = MarketRegimeEngine.evaluate(highs, lows, closes, 0);
+                        const regimeAllowed = MarketRegimeEngine.isStrategyAllowed(setupSnapshot?.strategy || strategy, regime);
+                        if (!regimeAllowed.allowed) {
+                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol}: MarketRegime check failed: ${regimeAllowed.reason}`);
+                          await this.logAuditEvent(userId, 'ALERT_SKIPPED_MARKET_REGIME', {
+                            symbol: currentSymbol,
+                            strategy: setupSnapshot?.strategy || strategy,
+                            reason: regimeAllowed.reason,
+                            regime: regime.regime,
+                            score: regime.score
+                          });
+                          continue;
+                        }
+                      }
 
-                    const alert: TradeAlert = {
-                      id: crypto.randomUUID(),
-                      symbol: coinId,
-                      signalPrice: alertSignalPrice,
-                      targetEntryPrice: alertTargetPrice,
-                      entryPrice: alertSignalPrice,
-                      stopLoss: alertStopLoss,
-                      takeProfit: alertTakeProfit,
-                      estimatedPnl: estimatedPnl,
-                      positionSize: size,
-                      strategy: `${setupSnapshot?.strategy || strategy}_NEW`,
-                      side: sig.type as 'BUY' | 'SELL',
-                      timestamp: new Date().toISOString(),
-                      status: 'pending'
-                    };
-                    alerts.push(alert);
-                    await this.state.storage.put('alerts', alerts);
+                      const targetEntryPrice = setupSnapshot?.targetEntryPrice ?? ((await this.state.storage.get('targetEntryPrice')) as number | undefined);
+                      const alertSignalPrice = sig.signalPrice || price;
+                      const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
+                      const alertStopLoss = sig.stopLoss || alertSignalPrice * 0.99;
+                      const alertTakeProfit = sig.takeProfit || alertSignalPrice * 1.01;
+                      const estimatedPnl = Math.abs(alertTakeProfit - alertSignalPrice) * (alertSignalPrice > 0 ? size / alertSignalPrice : 0);
 
-                    // Trigger real-time FCM Push Notification to user's Android device
-                    try {
-                      await sendTradeNotification(this.env, userId, alert.id, {
-                        symbol: alert.symbol,
-                        side: alert.side,
-                        entryPrice: alert.entryPrice,
-                        targetEntryPrice: alert.targetEntryPrice,
-                        signalPrice: alert.signalPrice,
-                        stopLoss: alert.stopLoss,
-                        takeProfit: alert.takeProfit,
-                        estimatedPnl: alert.estimatedPnl,
-                        positionSize: alert.positionSize,
-                        strategy: alert.strategy,
-                        confidenceScore: primaryResult?.confidenceScore || 0,
-                        reasoning: primaryResult?.metadata?.reasoning || [],
-                      });
-                    } catch (notifErr) {
-                      console.error('Failed to send FCM trade notification:', notifErr);
+                      // --- AUTONOMOUS TICKSIZE NORMALIZATION FIX ---
+                      const markets = await adapter.fetchMarkets();
+                      const matchedMarket = markets.find(m => m.symbol === currentSymbol);
+
+                      let tickSize: number | undefined;
+                      let minPrice: number | undefined;
+
+                      if (matchedMarket) {
+                        if (typeof matchedMarket.precision?.price === 'number' && matchedMarket.precision.price > 0) {
+                          tickSize = matchedMarket.precision.price;
+                        } else if (typeof matchedMarket.precision?.price === 'string') {
+                          const parsed = parseFloat(matchedMarket.precision.price);
+                          if (parsed > 0) tickSize = parsed;
+                        }
+
+                        if (matchedMarket.limits?.price?.min) {
+                          const minP = matchedMarket.limits.price.min as any;
+                          minPrice = typeof minP?.toNumber === 'function' ? minP.toNumber() : (typeof minP === 'number' ? minP : 0);
+                        }
+                      }
+
+                      if (!tickSize || tickSize <= 0) {
+                        console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol}: Authoritative Bybit tickSize unavailable.`);
+                      } else {
+                        const minAllowedPrice = (minPrice && minPrice > 0) ? minPrice : tickSize;
+
+                        const normalized = PriceNormalizer.normalizeTradePrices({
+                          entryPrice: alertSignalPrice,
+                          theoreticalSL: alertStopLoss,
+                          theoreticalTP: alertTakeProfit,
+                          tickSize,
+                          minAllowedPrice,
+                          side: sig.type as 'BUY' | 'SELL'
+                        });
+                        // ---------------------------------------------
+
+                        const alert: TradeAlert = {
+                          id: crypto.randomUUID(),
+                          symbol: currentSymbol,
+                          signalPrice: alertSignalPrice,
+                          targetEntryPrice: alertTargetPrice,
+                          entryPrice: alertSignalPrice,
+                          stopLoss: normalized.stopLoss,
+                          takeProfit: normalized.takeProfit,
+                          estimatedPnl: estimatedPnl,
+                          positionSize: size,
+                          strategy: `${setupSnapshot?.strategy || strategy}_NEW`,
+                          side: sig.type as 'BUY' | 'SELL',
+                          timestamp: new Date().toISOString(),
+                          status: 'pending'
+                        };
+                        alerts.push(alert);
+                        await this.persistState('alerts', alerts);
+
+                        // Trigger real-time FCM Push Notification to user's Android device
+                        try {
+                          await sendTradeNotification(this.env, userId, alert.id, {
+                            symbol: alert.symbol,
+                            side: alert.side,
+                            entryPrice: alert.entryPrice,
+                            targetEntryPrice: alert.targetEntryPrice,
+                            signalPrice: alert.signalPrice,
+                            stopLoss: alert.stopLoss,
+                            takeProfit: alert.takeProfit,
+                            estimatedPnl: alert.estimatedPnl,
+                            positionSize: alert.positionSize,
+                            strategy: alert.strategy,
+                            confidenceScore: primaryResult?.confidenceScore || 0,
+                            reasoning: primaryResult?.metadata?.reasoning || [],
+                          });
+                        } catch (notifErr) {
+                          console.error('Failed to send FCM trade notification:', notifErr);
+                        }
+                      }
                     }
                   }
                 }
               }
+            } catch (candidateErr: any) {
+              console.error(`[trading-bot] Strategy cycle failed for candidate ${currentSymbol}:`, candidateErr?.message || candidateErr);
+              // Candidate failure isolated - continue to next candidate
             }
           }
         }
-      } catch (err: any) {
-        console.error('Orchestrator cycle failed:', err?.message || err, err?.stack);
       }
+    } catch (err: any) {
+      console.error('Orchestrator cycle failed:', err?.message || err, err?.stack);
+    }
 
       const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;
       if (!lastPositionCheckAt || Date.now() - lastPositionCheckAt > POSITION_CHECK_INTERVAL_MS) {
@@ -2223,7 +2434,8 @@ export class TradingBot {
     } catch (e) {
       console.error('Fatal DO alarm error:', e);
     } finally {
-      const isActive = await this.state.storage.get('isActive');
+      this.isAlarmRunning = false;
+      const isActive = this.runtimeState.isActive;
       if (isActive) {
         await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS);
       }
@@ -2240,10 +2452,10 @@ export class TradingBot {
    */
   private async monitorOpenPositions() {
     try {
-      const userId = (await this.state.storage.get('userId')) as string;
+      const userId = this.runtimeState.userId as string;
       if (!userId) return;
 
-      const activePositions = await this.state.storage.get<any[]>('activePositions') || [];
+      const activePositions = this.runtimeState.activePositions || [];
 
       if (activePositions.length === 0) return;
       const results = activePositions;
@@ -2306,8 +2518,8 @@ export class TradingBot {
               .run().catch(e => console.error('D1 position close sync failed:', e));
 
             // Update Authoritative DO WAL
-            const updatedPositions = activePositions.filter((p: any) => p.id !== position.id);
-            await this.state.storage.put('activePositions', updatedPositions);
+            const updatedPositions = this.runtimeState.activePositions.filter((p: any) => p.id !== position.id);
+            await this.persistState('activePositions', updatedPositions);
 
             // Reset DO trade state so the UI gracefully exits LivePnLMonitoringScreen
             const currentTradeActive = await this.state.storage.get('tradeActive');

@@ -18,7 +18,6 @@ export interface StrategyMetricsSummary {
   failedExecutions: number;
   buySignals: number;
   sellSignals: number;
-  holdSignals: number;
   avgDurationMs: number;
   maxDurationMs: number;
   minDurationMs: number;
@@ -107,7 +106,6 @@ export class MetricsEngine {
         failedExecutions: 0,
         buySignals: 0,
         sellSignals: 0,
-        holdSignals: 0,
         avgDurationMs: 0,
         maxDurationMs: 0,
         minDurationMs: Infinity,
@@ -125,7 +123,6 @@ export class MetricsEngine {
 
     if (event.signal === 'BUY') s.buySignals++;
     else if (event.signal === 'SELL') s.sellSignals++;
-    else s.holdSignals++;
 
     // Running average using Welford's online algorithm
     const n = s.totalExecutions;

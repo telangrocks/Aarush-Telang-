@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { VWAPStrategy } from './VWAPStrategy';
+import { DEFAULT_VWAP_CONFIG } from './VWAPConfig';
+import { VWAPCalculator } from './VWAPCalculator';
 import { StrategyContext } from '../../context/StrategyContext';
 
 describe('VWAPStrategy', () => {
@@ -66,5 +68,185 @@ describe('VWAPStrategy', () => {
     const result = strategy.evaluate(context);
     expect(result.hasSignal).toBe(false);
     expect(result.metadata?.reasoning).toContain('No meaningful VWAP displacement (sideways market)');
+  });
+
+  it('C. Bearish VWAP breakdown while EMA is still bullish', () => {
+    const config = {
+      ...DEFAULT_VWAP_CONFIG,
+      vwapRules: {
+        ...DEFAULT_VWAP_CONFIG.vwapRules,
+        minVolumeMultiplier: 1.2
+      },
+      signalRules: {
+        minConfidenceScore: 70,
+        allowedRiskClassifications: ['LOW', 'MEDIUM']
+      }
+    };
+    const strategy = new VWAPStrategy(config);
+
+    // 20 candles: candles 0-18 at 101, candle 19 (current) at 99
+    const candles = Array.from({ length: 20 }).map((_, i) => ({
+      timestamp: i * 60000,
+      open: 101,
+      high: 102,
+      low: 100,
+      close: i === 19 ? 99 : 101,
+      volume: i === 19 ? 2000 : 1000
+    }));
+
+    const context = new StrategyContext({
+      symbol: 'BTC/USDT',
+      timestamp: Date.now(),
+      currentPrice: 99,
+      volume24h: 10000,
+      quoteVolume24h: 1000000,
+      metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 102, lowPrice24h: 99 },
+      candles: {
+        '15m': candles
+      } as any
+    }).freeze();
+
+    vi.spyOn(VWAPCalculator, 'calculate').mockReturnValue(
+      Array.from({ length: 20 }).map(() => 100)
+    );
+
+    vi.spyOn((strategy as any).indicatorEngine, 'evaluate').mockReturnValue({
+      timestamp: Date.now(),
+      timeframes: {
+        '15m': {
+          close: [101, 99],
+          sma: {},
+          ema: {
+            20: [105], // Fast EMA
+            50: [100]  // Slow EMA -> EMA9 > EMA21 (bullish EMA)
+          },
+          rsi: {
+            14: [50, 45]
+          },
+          macd: {
+            '12,26,9': []
+          },
+          atr: {
+            14: [2.0]
+          },
+          volume: [
+            { averageVolume: 1000, volumeChangePercent: 100 }
+          ]
+        }
+      }
+    } as any);
+
+    vi.spyOn((strategy as any).confidenceEngine, 'evaluate').mockReturnValue({
+      timestamp: Date.now(),
+      overallScore: 20,
+      overallLongScore: 20,
+      overallShortScore: 75,
+      timeframes: {}
+    } as any);
+
+    vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValue({
+      riskClassification: 'LOW',
+      stopLossDistance: 4.0,
+      takeProfitDistance: 8.0,
+      positionSizeRecommendation: 100,
+      leverageRecommendation: 1
+    } as any);
+
+    const result = strategy.evaluate(context);
+
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal).not.toBeNull();
+    expect(result.metadata.signal?.type).toBe('SELL');
+    expect(result.metadata.signal?.stopLoss).toBeGreaterThan(context.marketSnapshot.currentPrice);
+    expect(result.metadata.signal?.takeProfit).toBeLessThan(context.marketSnapshot.currentPrice);
+    expect(result.confidenceScore).toBe(75);
+  });
+
+  it('D. VWAP Fail-closed confidence: ShortScore below threshold rejects signal', () => {
+    const config = {
+      ...DEFAULT_VWAP_CONFIG,
+      vwapRules: {
+        ...DEFAULT_VWAP_CONFIG.vwapRules,
+        minVolumeMultiplier: 1.2
+      },
+      signalRules: {
+        minConfidenceScore: 70,
+        allowedRiskClassifications: ['LOW', 'MEDIUM']
+      }
+    };
+    const strategy = new VWAPStrategy(config);
+
+    const candles = Array.from({ length: 20 }).map((_, i) => ({
+      timestamp: i * 60000,
+      open: 101,
+      high: 102,
+      low: 100,
+      close: i === 19 ? 99 : 101,
+      volume: i === 19 ? 2000 : 1000
+    }));
+
+    const context = new StrategyContext({
+      symbol: 'BTC/USDT',
+      timestamp: Date.now(),
+      currentPrice: 99,
+      volume24h: 10000,
+      quoteVolume24h: 1000000,
+      metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 102, lowPrice24h: 99 },
+      candles: {
+        '15m': candles
+      } as any
+    }).freeze();
+
+    vi.spyOn(VWAPCalculator, 'calculate').mockReturnValue(
+      Array.from({ length: 20 }).map(() => 100)
+    );
+
+    vi.spyOn((strategy as any).indicatorEngine, 'evaluate').mockReturnValue({
+      timestamp: Date.now(),
+      timeframes: {
+        '15m': {
+          close: [101, 99],
+          sma: {},
+          ema: {
+            20: [105],
+            50: [100]
+          },
+          rsi: {
+            14: [50, 45]
+          },
+          macd: {
+            '12,26,9': []
+          },
+          atr: {
+            14: [2.0]
+          },
+          volume: [
+            { averageVolume: 1000, volumeChangePercent: 100 }
+          ]
+        }
+      }
+    } as any);
+
+    vi.spyOn((strategy as any).confidenceEngine, 'evaluate').mockReturnValue({
+      timestamp: Date.now(),
+      overallScore: 65,
+      overallLongScore: 20,
+      overallShortScore: 65, // Below minConfidence (70)
+      timeframes: {}
+    } as any);
+
+    vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValue({
+      riskClassification: 'LOW',
+      stopLossDistance: 4.0,
+      takeProfitDistance: 8.0,
+      positionSizeRecommendation: 100,
+      leverageRecommendation: 1
+    } as any);
+
+    const result = strategy.evaluate(context);
+
+    expect(result.hasSignal).toBe(false);
+    expect(result.metadata.signal).toBeNull();
+    expect(result.metadata.reasoning).toContain('VWAP: Model C confidence rejected SELL setup');
   });
 });

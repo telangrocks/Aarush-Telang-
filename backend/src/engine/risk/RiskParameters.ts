@@ -1,7 +1,8 @@
 export interface RiskParameters {
-  accountRiskPercent: number; // e.g. 1%
+  accountRiskPercent?: number; // Optional legacy parameter (inert in Model A)
   maxExposureLimit: number; // Maximum order size in base currency/percentage of portfolio
   atrStopLossMultiplier: number; // e.g. 1.5
-  riskRewardRatio: number; // e.g. 2.0 for 1:2 R:R
-  atrTakeProfitMultiplier?: number; // Optional, typically derived from R:R or ATR directly
+  atrTakeProfitMultiplier: number; // e.g. 2.0 (Authoritative Model A: TP Distance = ATR * atrTakeProfitMultiplier)
+  riskRewardRatio?: number; // @deprecated Legacy migration fallback only; does not participate in Model A calculations
 }
+

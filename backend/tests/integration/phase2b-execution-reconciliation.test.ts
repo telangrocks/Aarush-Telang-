@@ -64,7 +64,7 @@ describe("Phase 2B — Authoritative Execution & Fill Reconciliation Tests", () 
           bind: vi.fn().mockImplementation((...args: any[]) => ({
             run: vi.fn().mockImplementation(async () => {
               if (query.includes('UPDATE trade_positions')) {
-                const id = args[4] || args[1];
+                const id = args.find((a: any) => typeof a === 'string' && d1Positions.has(a)) || args[args.length - 2] || args[4] || args[1];
                 const pos = d1Positions.get(id);
                 if (pos) {
                   if (query.includes('SET entry_status = ?')) {

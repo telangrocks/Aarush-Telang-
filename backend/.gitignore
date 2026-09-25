@@ -17,3 +17,9 @@ qa-report.json
 qa-report.md
 trading-flow-validation-report.md
 reports/
+
+# Test token cache (local only, never commit)
+.test-token.json
+*.test-token.json
+scratch_token.txt
+

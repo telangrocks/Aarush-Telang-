@@ -25,8 +25,11 @@ function applyConfigOverrides<T extends Record<string, any>>(defaultConfig: T, o
 
   const merged = JSON.parse(JSON.stringify(defaultConfig));
 
-  if (overrides.risk_level || overrides.riskLevel) {
-    const risk = String(overrides.risk_level || overrides.riskLevel).toUpperCase();
+  const params = overrides.parameters && typeof overrides.parameters === 'object' ? overrides.parameters : {};
+
+  const riskVal = overrides.risk_level || overrides.riskLevel || params.risk_level || params.riskLevel;
+  if (riskVal) {
+    const risk = String(riskVal).toUpperCase();
     if (['LOW', 'MEDIUM', 'HIGH'].includes(risk)) {
       merged.signalRules = merged.signalRules || {};
       if (risk === 'LOW') {
@@ -38,8 +41,10 @@ function applyConfigOverrides<T extends Record<string, any>>(defaultConfig: T, o
       }
     }
   }
-  if (overrides.mode) {
-    const mode = String(overrides.mode).toUpperCase();
+
+  const modeVal = overrides.mode || params.mode;
+  if (modeVal) {
+    const mode = String(modeVal).toUpperCase();
     if (mode === 'CONSERVATIVE') {
       merged.signalRules = merged.signalRules || {};
       merged.signalRules.minConfidenceScore = Math.max(merged.signalRules.minConfidenceScore || 70, 80);
@@ -49,25 +54,34 @@ function applyConfigOverrides<T extends Record<string, any>>(defaultConfig: T, o
     }
   }
 
-  if (overrides.parameters?.forceMockSignal) {
-    merged.signalRules = merged.signalRules || {};
-    merged.signalRules.forceMockSignal = overrides.parameters.forceMockSignal;
+  const explicitMinConf = overrides.min_confidence || overrides.minConfidence || overrides.minConfidenceScore || overrides.requiredScore || overrides.required_score ||
+    params.min_confidence || params.minConfidence || params.minConfidenceScore || params.requiredScore || params.required_score;
+  if (explicitMinConf !== undefined && explicitMinConf !== null) {
+    const parsed = parseInt(String(explicitMinConf).replace('%', '').trim(), 10);
+    if (!isNaN(parsed) && parsed > 0 && parsed <= 100) {
+      merged.signalRules = merged.signalRules || {};
+      merged.signalRules.minConfidenceScore = parsed;
+    }
   }
 
   if (overrides.riskParameters) {
     const rp = { ...overrides.riskParameters };
-    if (rp.accountRiskPercent !== undefined && rp.accountRiskPercent !== null) {
-      const num = Number(rp.accountRiskPercent);
-      if (isNaN(num) || num < 0.1 || num > 5.0) {
-        throw new Error(`Invalid accountRiskPercent: ${rp.accountRiskPercent}. Must be between 0.1 and 5.0.`);
-      }
-      rp.accountRiskPercent = num;
+    if (rp.accountRiskPercent !== undefined) {
+      delete rp.accountRiskPercent; // Safely strip legacy Model-B parameter
     }
-    if (rp.riskRewardRatio !== undefined && rp.riskRewardRatio !== null) {
-      const num = Number(rp.riskRewardRatio);
+    const rawTpMultiplier = rp.atrTakeProfitMultiplier !== undefined && rp.atrTakeProfitMultiplier !== null
+      ? rp.atrTakeProfitMultiplier
+      : rp.riskRewardRatio;
+    if (rawTpMultiplier !== undefined && rawTpMultiplier !== null) {
+      const num = Number(rawTpMultiplier);
       if (isNaN(num) || num < 1.0 || num > 5.0) {
-        throw new Error(`Invalid riskRewardRatio: ${rp.riskRewardRatio}. Must be between 1.0 and 5.0.`);
+        if (rp.atrTakeProfitMultiplier !== undefined && rp.atrTakeProfitMultiplier !== null) {
+          throw new Error(`Invalid atrTakeProfitMultiplier: ${rp.atrTakeProfitMultiplier}. Must be between 1.0 and 5.0.`);
+        } else {
+          throw new Error(`Invalid riskRewardRatio: ${rp.riskRewardRatio}. Must be between 1.0 and 5.0.`);
+        }
       }
+      rp.atrTakeProfitMultiplier = num;
       rp.riskRewardRatio = num;
     }
     if (rp.atrStopLossMultiplier !== undefined && rp.atrStopLossMultiplier !== null) {
@@ -79,7 +93,7 @@ function applyConfigOverrides<T extends Record<string, any>>(defaultConfig: T, o
     }
 
     // Safely apply overrides, explicitly preserving system-controlled parameters
-    const { maxExposureLimit, atrTakeProfitMultiplier, ...safeOverrides } = rp;
+    const { maxExposureLimit, ...safeOverrides } = rp;
     merged.riskParameters = { ...merged.riskParameters, ...safeOverrides };
   }
 

@@ -57,16 +57,16 @@ export class EngineAPIService {
 
     const sig = result && result.metadata && result.metadata.signal ? result.metadata.signal : null;
 
-    const tradingSignal: SignalDTO = {
-      type: sig ? sig.type : 'HOLD',
-      entryContext: sig ? JSON.stringify(sig.entryContext || '') : '',
-      signalPrice: sig ? (sig.signalPrice ?? sig.entryPrice ?? null) : null,
-      targetEntryPrice: sig ? (sig.targetEntryPrice ?? null) : null,
-      stopLoss: sig ? sig.stopLoss : null,
-      takeProfit: sig ? sig.takeProfit : null,
+    const tradingSignal: SignalDTO | null = (sig && (sig.type === 'BUY' || sig.type === 'SELL')) ? {
+      type: sig.type,
+      entryContext: JSON.stringify(sig.entryContext || ''),
+      signalPrice: (sig.signalPrice ?? sig.entryPrice ?? null),
+      targetEntryPrice: (sig.targetEntryPrice ?? null),
+      stopLoss: sig.stopLoss,
+      takeProfit: sig.takeProfit,
       riskClassification: result && result.metadata && result.metadata.riskAssessment ? result.metadata.riskAssessment.classification : 'UNKNOWN',
       reasoning: result && result.metadata ? result.metadata.reasoning : []
-    };
+    } : null;
 
     return {
       engineStatus,

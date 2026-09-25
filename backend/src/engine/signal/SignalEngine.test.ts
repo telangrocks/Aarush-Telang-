@@ -41,6 +41,8 @@ describe('SignalEngine', () => {
       timeframes: {
         '15m': {
           score: 85,
+          longScore: 85,
+          shortScore: 0,
           level: 'HIGH',
           factors: { trendScore: 100, momentumScore: 100, volatilityScore: 100, volumeScore: 100 },
           explanation: []
@@ -61,15 +63,16 @@ describe('SignalEngine', () => {
 
     const signal = engine.evaluate(context, conditionResultBase, confidenceScore, riskAssessment);
 
-    expect(signal.type).toBe(SignalType.BUY);
-    expect(signal.signalPrice).toBe(50000);
-    expect(signal.entryPrice).toBe(50000);
-    expect(signal.stopLoss).toBe(49500); // 50000 - 500
-    expect(signal.takeProfit).toBe(51000); // 50000 + 1000
-    expect(signal.confidenceScore).toBe(85);
+    expect(signal).not.toBeNull();
+    expect(signal!.type).toBe(SignalType.BUY);
+    expect(signal!.signalPrice).toBe(50000);
+    expect(signal!.entryPrice).toBe(50000);
+    expect(signal!.stopLoss).toBe(49500); // 50000 - 500
+    expect(signal!.takeProfit).toBe(51000); // 50000 + 1000
+    expect(signal!.confidenceScore).toBe(85);
   });
 
-  it('should generate a HOLD signal when confidence is too low', () => {
+  it('should return null (no signal) when confidence is too low', () => {
     const engine = new SignalEngine(rules);
 
     const confidenceScore: ConfidenceScore = {
@@ -79,6 +82,8 @@ describe('SignalEngine', () => {
       timeframes: {
         '15m': {
           score: 60, // Below min 70
+          longScore: 60,
+          shortScore: 0,
           level: 'MEDIUM',
           factors: { trendScore: 50, momentumScore: 50, volatilityScore: 50, volumeScore: 50 },
           explanation: []
@@ -99,11 +104,10 @@ describe('SignalEngine', () => {
 
     const signal = engine.evaluate(context, conditionResultBase, confidenceScore, riskAssessment);
 
-    expect(signal.type).toBe(SignalType.HOLD);
-    expect(signal.reasoning.some(r => r.includes('Confidence score (60) is below required minimum'))).toBe(true);
+    expect(signal).toBeNull();
   });
 
-  it('should generate a HOLD signal when risk is unacceptable', () => {
+  it('should return null (no signal) when risk is unacceptable', () => {
     const engine = new SignalEngine(rules);
 
     const confidenceScore: ConfidenceScore = {
@@ -113,6 +117,8 @@ describe('SignalEngine', () => {
       timeframes: {
         '15m': {
           score: 90,
+          longScore: 90,
+          shortScore: 0,
           level: 'HIGH',
           factors: { trendScore: 100, momentumScore: 100, volatilityScore: 100, volumeScore: 100 },
           explanation: []
@@ -133,7 +139,6 @@ describe('SignalEngine', () => {
 
     const signal = engine.evaluate(context, conditionResultBase, confidenceScore, riskAssessment);
 
-    expect(signal.type).toBe(SignalType.HOLD);
-    expect(signal.reasoning.some(r => r.includes('Risk classification EXTREME is not allowed'))).toBe(true);
+    expect(signal).toBeNull();
   });
 });

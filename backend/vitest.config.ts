@@ -9,7 +9,7 @@ export default defineConfig({
       "tests/api/**/*.test.ts", 
       "tests/integration/**/*.test.ts",
       "tests/durable-object/trading-bot.test.ts",
-      "tests/durable-object/index.test.ts",
+      "tests/durable-object/phase3-multi-symbol.test.ts",
       "tests/stress/**/*.test.ts",
       "tests/reliability/**/*.test.ts"
     ],

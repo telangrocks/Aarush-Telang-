@@ -28,6 +28,7 @@ data class TechnicalAnalysisResponseDto(
     val engineStatus: EngineStatusDto? = null,
     val marketAnalysis: MarketAnalysisDto? = null,
     val tradingSignal: SignalDto? = null,
-    val strategyMetadata: StrategyMetadataDto? = null
+    val strategyMetadata: StrategyMetadataDto? = null,
+    val requiredScore: Int? = null
 )
 

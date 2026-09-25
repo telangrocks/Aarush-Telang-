@@ -49,13 +49,30 @@ export class FinalDispatchSafetyGate {
       throw new UnifiedError(`Quantity ${amountStr} violates stepSize precision ${constraints.stepSize}`, 'RISK_GATE_REJECTED');
     }
 
+    const tickDecimals = constraints.tickSize.toString().includes('.') ? constraints.tickSize.toString().split('.')[1].length : 0;
+
     if (payload.price) {
       const priceStr = payload.price.toString();
       const priceDecimals = priceStr.includes('.') ? priceStr.split('.')[1].length : 0;
-      const tickDecimals = constraints.tickSize.toString().includes('.') ? constraints.tickSize.toString().split('.')[1].length : 0;
 
       if (priceDecimals > tickDecimals) {
         throw new UnifiedError(`Price ${priceStr} violates tickSize precision ${constraints.tickSize}`, 'RISK_GATE_REJECTED');
+      }
+    }
+
+    if ((payload as any).takeProfit) {
+      const tpStr = (payload as any).takeProfit.toString();
+      const tpDecimals = tpStr.includes('.') ? tpStr.split('.')[1].length : 0;
+      if (tpDecimals > tickDecimals) {
+        throw new UnifiedError(`TakeProfit ${tpStr} violates tickSize precision ${constraints.tickSize}`, 'RISK_GATE_REJECTED');
+      }
+    }
+
+    if ((payload as any).stopLoss) {
+      const slStr = (payload as any).stopLoss.toString();
+      const slDecimals = slStr.includes('.') ? slStr.split('.')[1].length : 0;
+      if (slDecimals > tickDecimals) {
+        throw new UnifiedError(`StopLoss ${slStr} violates tickSize precision ${constraints.tickSize}`, 'RISK_GATE_REJECTED');
       }
     }
 

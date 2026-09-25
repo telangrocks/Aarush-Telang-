@@ -91,3 +91,9 @@ pnpm-lock.yaml
 *.mp4
 IMP DATA/
 
+# Test token cache (local only, never commit)
+.test-token.json
+*.test-token.json
+scratch_token.txt
+
+

@@ -128,6 +128,16 @@ export class ExchangeErrorClassifier {
       return this.mk('EXCHANGE_NOT_REACHABLE', technicalDetail, correlationId);
     }
 
+    if (
+      lower.includes('502') ||
+      lower.includes('503') ||
+      lower.includes('504') ||
+      lower.includes('bad gateway') ||
+      lower.includes('service unavailable')
+    ) {
+      return this.mk('SERVICE_TEMPORARILY_UNAVAILABLE', technicalDetail, correlationId);
+    }
+
     // Fix EC-H4: Specific auth terms matching instead of broad "auth" substring
     if (
       lower.includes('401') ||

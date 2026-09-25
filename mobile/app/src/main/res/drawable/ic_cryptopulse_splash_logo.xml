@@ -1,0 +1,42 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group android:translateX="0" android:translateY="0">
+        <!-- 1. "C" Arc with Cyan -> Royal Blue Gradient -->
+        <path
+            android:name="c_arc"
+            android:pathData="M 87.58,30.49 A 41,41 0 1,0 87.58,77.51"
+            android:strokeWidth="8.5"
+            android:strokeLineCap="round"
+            android:strokeColor="@drawable/logo_arc_gradient"/>
+
+        <!-- 2. Distinctive Northeast Arrow at Arc Tip -->
+        <!-- Arrow stem -->
+        <path
+            android:name="arrow_stem"
+            android:pathData="M 87.5,30.5 L 96.5,21.5"
+            android:strokeWidth="4.0"
+            android:strokeLineCap="round"
+            android:strokeColor="#00B4FF"/>
+
+        <!-- Arrow head -->
+        <path
+            android:name="arrow_head"
+            android:pathData="M 89.0,20.5 L 98.0,20.0 L 97.5,29.0"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:strokeColor="#00B4FF"/>
+
+        <!-- 3. High-Precision Mathematical Pulse Waveform -->
+        <path
+            android:name="heartbeat"
+            android:pathData="M 24.0,54.0 L 43.0,54.0 L 51.0,32.0 L 61.0,74.0 L 69.0,54.0 L 88.0,54.0"
+            android:strokeWidth="4.8"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:strokeColor="#FFFFFF"/>
+    </group>
+</vector>

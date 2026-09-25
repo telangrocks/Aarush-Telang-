@@ -21,7 +21,8 @@ export class OrderSizing {
     }
 
     // Amount we are willing to lose on this trade
-    const riskAmount = accountBalance * (config.accountRiskPercent / 100);
+    const accountRisk = config.accountRiskPercent ?? 1.0;
+    const riskAmount = accountBalance * (accountRisk / 100);
 
     // Stop loss percentage
     const stopLossPercent = stopLossDistance / currentPrice;

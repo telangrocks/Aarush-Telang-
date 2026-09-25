@@ -1,7 +1,8 @@
 package com.cryptopulse.app.data.api.dto.bot.request
 
 data class ActivateBotRequestDto(
-    val coinId: String,
+    val symbols: List<String>? = null,
+    val coinId: String? = null,
     val strategy: String,
     val positionSize: Double? = null,
     val targetEntryPrice: Double? = null,

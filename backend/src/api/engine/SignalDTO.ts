@@ -1,5 +1,5 @@
 export interface SignalDTO {
-  type: 'BUY' | 'SELL' | 'HOLD';
+  type: 'BUY' | 'SELL';
   entryContext: string;
   signalPrice?: number | null;
   targetEntryPrice?: number | null;

@@ -148,7 +148,7 @@ async function runForensicAudit() {
       strategyResults: results.map(r => ({
         strategyId: r.strategyId,
         hasSignal: r.hasSignal,
-        signalType: r.metadata?.signal?.type || 'HOLD',
+        signalType: r.hasSignal ? (r.metadata?.signal?.type || 'NONE') : 'NONE',
         confidenceScore: r.confidenceScore,
         reasoning: r.metadata?.reasoning || []
       }))
@@ -157,7 +157,7 @@ async function runForensicAudit() {
 
     console.log(`Cycle #${cycle} completed in ${cycleDuration}ms:`);
     for (const r of results) {
-      console.log(`  Strategy: ${r.strategyId.padEnd(15)} | Signal: ${(r.metadata?.signal?.type || 'HOLD').padEnd(6)} | Confidence: ${String(r.confidenceScore).padEnd(3)}% | Reasoning: ${r.metadata?.reasoning?.[0] || 'N/A'}`);
+      console.log(`  Strategy: ${r.strategyId.padEnd(15)} | Signal: ${(r.hasSignal ? r.metadata?.signal?.type : 'NONE').padEnd(6)} | Confidence: ${String(r.confidenceScore).padEnd(3)}% | Reasoning: ${r.metadata?.reasoning?.[0] || 'N/A'}`);
     }
 
     if (cycle < cyclesCount) {

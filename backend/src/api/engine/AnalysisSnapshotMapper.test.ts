@@ -107,9 +107,10 @@ describe('AnalysisSnapshotMapper Unit Tests', () => {
     expect(dto.marketAnalysis.indicatorSummary[0].value).toBe('58.4');
 
     // Trading Signal
-    expect(dto.tradingSignal.type).toBe('BUY');
-    expect(dto.tradingSignal.entryContext).toBe('LONG');
-    expect(dto.tradingSignal.signalPrice).toBe(65000.0);
+    expect(dto.tradingSignal).not.toBeNull();
+    expect(dto.tradingSignal!.type).toBe('BUY');
+    expect(dto.tradingSignal!.entryContext).toBe('LONG');
+    expect(dto.tradingSignal!.signalPrice).toBe(65000.0);
 
     // Diagnostics
     expect(dto.diagnostics.isLive).toBe(false);
@@ -137,7 +138,7 @@ describe('AnalysisSnapshotMapper Unit Tests', () => {
 
     expect(dto.engineStatus.state).toBe('WAITING');
     expect(dto.diagnostics.isLive).toBe(true);
-    expect(dto.tradingSignal.type).toBe('HOLD');
+    expect(dto.tradingSignal).toBeNull();
     expect(dto.opportunity).toBeNull();
   });
 
@@ -184,7 +185,7 @@ describe('AnalysisSnapshotMapper Unit Tests', () => {
       { name: 'Data Status', value: 'Insufficient', signal: 'NEUTRAL' }
     ]);
     expect(dto.marketAnalysis.conditionSummary).toEqual([]);
-    expect(dto.tradingSignal.type).toBe('HOLD');
+    expect(dto.tradingSignal).toBeNull();
     expect(dto.opportunity).toBeNull();
   });
 
@@ -507,7 +508,7 @@ describe('AnalysisSnapshotMapper Unit Tests', () => {
     ]);
   });
 
-  it('should preserve authentic mathematical Strategy Score on HOLD, serialize MACD/Volume, and omit unused SMAs', () => {
+  it('should preserve authentic mathematical Strategy Score when hasSignal is false, serialize MACD/Volume, and omit unused SMAs', () => {
     const scalperManifest: StrategyManifest = {
       id: 'ScalperV2',
       displayName: 'Scalper V2',
@@ -553,17 +554,12 @@ describe('AnalysisSnapshotMapper Unit Tests', () => {
     const evalResult: EvaluationResult = {
       strategyId: 'ScalperV2',
       timestamp: 1722814800000,
-      confidenceScore: 0, // Clamped to 0 by SignalEngine on HOLD
+      confidenceScore: 0,
       hasSignal: false,
       metadata: {
         reasoning: ['Waiting for momentum confirmation'],
         strategyConfig: scalperManifest.defaultConfiguration,
-        signal: {
-          type: 'HOLD',
-          confidenceScore: 0,
-          timestamp: 1722814800000,
-          reasoning: ['Waiting for momentum confirmation']
-        },
+        signal: null,
         confidenceScore: {
           timestamp: 1722814800000,
           overallScore: 61, // Authentic mathematical score
@@ -626,7 +622,7 @@ describe('AnalysisSnapshotMapper Unit Tests', () => {
 
     // 1. Authentic Strategy Score must be preserved (not clamped to 0)
     expect(dto.marketAnalysis.confidenceScore).toBe(61);
-    expect(dto.tradingSignal.type).toBe('HOLD');
+    expect(dto.tradingSignal).toBeNull();
 
     // 2. Indicators must include MACD, Volume MA, RSI, Fast EMA, Slow EMA, ATR
     const indicatorNames = dto.marketAnalysis.indicatorSummary.map(i => i.name);

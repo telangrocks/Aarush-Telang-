@@ -22,9 +22,10 @@ export interface AnalysisSnapshotDto {
   low24h: number;
   engineStatus: EngineStatusDTO;
   marketAnalysis: MarketAnalysisDTO;
-  tradingSignal: SignalDTO;
+  tradingSignal: SignalDTO | null;
   diagnostics: AnalysisDiagnosticsDTO;
   strategyMetadata?: StrategyMetadataDTO;
+  requiredScore?: number;
   // Legacy root fields for backward compatibility
   indicators: Record<string, any>;
   signals: Record<string, any>;
@@ -70,6 +71,9 @@ export class AnalysisSnapshotMapper {
       health: engineState === 'ERROR' ? 'ERROR' : 'OK',
     };
 
+    const strategyConfig = result.metadata?.strategyConfig || manifest.defaultConfiguration || {};
+    const minConfidenceScore = strategyConfig.signalRules?.minConfidenceScore ?? 70;
+
     const marketAnalysis: MarketAnalysisDTO = {
       symbol: snapshot.symbol,
       timeframeStatus: 'ALIGNED',
@@ -77,6 +81,7 @@ export class AnalysisSnapshotMapper {
       conditionSummary: checkpoints,
       confidenceScore: result.metadata?.confidenceScore?.overallScore ?? result.confidenceScore,
       confidenceExplanation: result.metadata?.reasoning || [],
+      requiredScore: minConfidenceScore,
     };
 
     const legacyIndicators: Record<string, any> = {
@@ -92,7 +97,7 @@ export class AnalysisSnapshotMapper {
     const legacySignals: Record<string, any> = {
       trend: priceChangePercent24h > 0 ? 'BULLISH' : priceChangePercent24h < 0 ? 'BEARISH' : 'NEUTRAL',
       strength: Math.abs(priceChangePercent24h) > 2 ? 'STRONG' : Math.abs(priceChangePercent24h) > 0.5 ? 'MODERATE' : 'WEAK',
-      recommendation: signal.type,
+      recommendation: signal ? signal.type : 'NONE',
       confidence: result.confidenceScore,
     };
 
@@ -105,7 +110,7 @@ export class AnalysisSnapshotMapper {
 
     const rawSignal = result.metadata?.signal;
     let opportunity: Record<string, any> | null = null;
-    if (result.hasSignal && signal.type !== 'HOLD') {
+    if (result.hasSignal && signal) {
       const positionSize = rawSignal?.riskAssessment?.positionSizeRecommendation || 0;
       const entryPrice = signal.signalPrice ?? snapshot.currentPrice;
       const takeProfit = signal.takeProfit ?? 0;
@@ -144,6 +149,7 @@ export class AnalysisSnapshotMapper {
         timestamp: result.timestamp,
       },
       strategyMetadata,
+      requiredScore: minConfidenceScore,
       indicators: legacyIndicators,
       signals: legacySignals,
       checkpoints: legacyCheckpoints,
@@ -166,6 +172,7 @@ export class AnalysisSnapshotMapper {
 
     if (config.signalRules?.minConfidenceScore !== undefined) {
       parameters.push({ key: 'min_confidence', label: 'Min Confidence', value: `${config.signalRules.minConfidenceScore}%` });
+      parameters.push({ key: 'required_score', label: 'Required Score', value: `${config.signalRules.minConfidenceScore}` });
     }
 
     if (config.trendFilter?.maxEmaSeparationPercent !== undefined) {
@@ -437,9 +444,15 @@ export class AnalysisSnapshotMapper {
     return summaries;
   }
 
-  private static mapSignal(result: EvaluationResult, manifest: StrategyManifest): SignalDTO {
+  private static mapSignal(result: EvaluationResult, manifest: StrategyManifest): SignalDTO | null {
+    if (!result.hasSignal) {
+      return null;
+    }
+
     const sig = result.metadata?.signal;
-    const type = result.hasSignal ? (sig?.type || 'BUY') : 'HOLD';
+    if (!sig || (sig.type !== 'BUY' && sig.type !== 'SELL')) {
+      return null;
+    }
 
     const riskClassification = (
       sig?.riskAssessment?.riskClassification ||
@@ -449,7 +462,7 @@ export class AnalysisSnapshotMapper {
     );
 
     return {
-      type: type as 'BUY' | 'SELL' | 'HOLD',
+      type: sig.type,
       entryContext: sig?.side || sig?.timeframe || 'LONG',
       signalPrice: sig?.currentPrice ?? sig?.signalPrice ?? sig?.targetEntryPrice ?? null,
       targetEntryPrice: sig?.targetEntryPrice ?? sig?.currentPrice ?? null,

@@ -35,7 +35,6 @@ export class StrategyOrchestrator {
     let failedEvaluations = 0;
     let buySignals = 0;
     let sellSignals = 0;
-    let holdSignals = 0;
 
     try {
       // Fix SE-3: Recovery path for ERROR state
@@ -104,13 +103,10 @@ export class StrategyOrchestrator {
       const tallySignal = (result: EvaluationResult | null, success: boolean) => {
         if (success) {
           successfulEvaluations++;
-          if (result?.hasSignal) {
-            const sigType = result.metadata?.signal?.type;
+          if (result?.hasSignal && result.metadata?.signal) {
+            const sigType = result.metadata.signal.type;
             if (sigType === 'BUY') buySignals++;
             else if (sigType === 'SELL') sellSignals++;
-            else holdSignals++;
-          } else {
-            holdSignals++;
           }
         } else {
           failedEvaluations++;
@@ -142,7 +138,6 @@ export class StrategyOrchestrator {
         skippedEvaluations: 0,
         buySignals,
         sellSignals,
-        holdSignals,
         totalDurationMs: cycleDuration,
         timestamp: Date.now()
       };
@@ -153,10 +148,8 @@ export class StrategyOrchestrator {
       return results;
 
     } catch (e) {
-      this.logger.error('[Orchestrator] Fatal error during cycle execution', { symbol, error: e instanceof Error ? e.message : String(e) });
-      try {
-        this.stateMachine.transition(EngineState.ERROR);
-      } catch (_) {}
+      this.stateMachine.transition(EngineState.ERROR);
+      this.logger.error(`[Orchestrator] Cycle failed for ${symbol}:`, { error: (e as any)?.message ?? String(e) });
       throw e;
     }
   }
@@ -174,7 +167,7 @@ export class StrategyOrchestrator {
       const result = strategy.evaluate(frozenContext);
       const durationMs = performance.now() - evalStart;
 
-      const sigType = result.hasSignal ? (result.metadata?.signal?.type ?? null) : 'HOLD';
+      const sigType = result.hasSignal ? (result.metadata?.signal?.type ?? null) : null;
       const event: StrategyExecutionEvent = {
         type: 'STRATEGY_EXECUTION',
         strategyId: id,

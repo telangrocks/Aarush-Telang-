@@ -133,4 +133,66 @@ describe('BybitAdapter V5 Unit Tests', () => {
       expect(calledAccountTypes).toEqual(['UNIFIED']);
     });
   });
+
+  describe('TickSize and StepSize Precision Quantization', () => {
+    it('quantizes SOLUSDT (tickSize=0.01, stepSize=0.1) BUY order with exact 2-decimal TP/SL and 1-decimal qty', async () => {
+      await adapter.connect({ environment: 'demo', apiKey: 'testKey', secret: 'testSecret' });
+
+      let capturedParams: any = null;
+      (adapter as any).makeRequest = async (_method: string, _path: string, params: any) => {
+        capturedParams = params;
+        return { orderId: 'ord_sol_1', orderLinkId: params.orderLinkId };
+      };
+
+      const BigNumber = require('bignumber.js');
+      const res = await adapter.createOrder({
+        symbol: 'SOL/USDT',
+        side: 'buy',
+        type: 'market',
+        amount: new BigNumber(1.2847),
+        clientOrderId: 'sol_alert_1',
+        takeProfit: 145.6789,
+        stopLoss: 132.4531,
+        params: {
+          tickSize: 0.01,
+          stepSize: 0.1
+        }
+      } as any);
+
+      expect(res.id).toBe('ord_sol_1');
+      expect(capturedParams.qty).toBe('1.2'); // floored to stepSize 0.1
+      expect(capturedParams.takeProfit).toBe('145.68'); // ceiled to tickSize 0.01 for BUY
+      expect(capturedParams.stopLoss).toBe('132.45'); // floored to tickSize 0.01 for BUY
+    });
+
+    it('quantizes BTCUSDT (tickSize=0.1, stepSize=0.001) SELL order with exact 1-decimal TP/SL and 3-decimal qty', async () => {
+      await adapter.connect({ environment: 'demo', apiKey: 'testKey', secret: 'testSecret' });
+
+      let capturedParams: any = null;
+      (adapter as any).makeRequest = async (_method: string, _path: string, params: any) => {
+        capturedParams = params;
+        return { orderId: 'ord_btc_1', orderLinkId: params.orderLinkId };
+      };
+
+      const BigNumber = require('bignumber.js');
+      const res = await adapter.createOrder({
+        symbol: 'BTC/USDT',
+        side: 'sell',
+        type: 'market',
+        amount: new BigNumber(0.0058),
+        clientOrderId: 'btc_alert_sell',
+        takeProfit: 63123.456,
+        stopLoss: 67890.123,
+        params: {
+          tickSize: 0.1,
+          stepSize: 0.001
+        }
+      } as any);
+
+      expect(res.id).toBe('ord_btc_1');
+      expect(capturedParams.qty).toBe('0.005'); // floored to stepSize 0.001
+      expect(capturedParams.takeProfit).toBe('63123.4'); // floored to tickSize 0.1 for SELL
+      expect(capturedParams.stopLoss).toBe('67890.2'); // ceiled to tickSize 0.1 for SELL
+    });
+  });
 });

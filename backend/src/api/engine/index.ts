@@ -12,5 +12,6 @@ export * from './AnalysisSnapshotMapper';
 export interface AndroidIntegrationContract {
   engineStatus: EngineStatusDTO;
   marketAnalysis: MarketAnalysisDTO;
-  tradingSignal: SignalDTO;
+  tradingSignal: SignalDTO | null;
 }
+

@@ -179,7 +179,7 @@ describe('MetricsEngine Reliability', () => {
       symbol: 'BTC/USDT',
       durationMs: 5.2,
       hasSignal: false,
-      signal: 'HOLD',
+      signal: null,
       confidenceScore: 40,
       riskClassification: 'LOW',
       timestamp: Date.now()
@@ -217,7 +217,7 @@ describe('MetricsEngine Reliability', () => {
         symbol: 'BTC/USDT',
         durationMs: 1,
         hasSignal: false,
-        signal: 'HOLD',
+        signal: null,
         confidenceScore: 0,
         riskClassification: 'UNKNOWN',
         timestamp: Date.now()

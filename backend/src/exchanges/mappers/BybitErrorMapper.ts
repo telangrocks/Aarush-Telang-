@@ -31,8 +31,8 @@ export class BybitErrorMapper implements IExchangeErrorMapper {
 
     const codeMap: Record<number, ExchangeErrorCode> = {
       10001: 'INVALID_REQUEST', // Parameter error
-      10002: 'INVALID_API_KEY', // Invalid API key
-      10003: 'TIMESTAMP_OUT_OF_SYNC', // Timestamp exceeds recvWindow
+      10002: 'TIMESTAMP_OUT_OF_SYNC', // The request is expired / Timestamp out of sync
+      10003: 'INVALID_API_KEY', // Invalid API key
       10004: 'INVALID_SIGNATURE', // Invalid sign
       10005: 'INSUFFICIENT_PERMISSIONS', // Permission denied
       10006: 'API_RATE_LIMIT_REACHED', // Too many requests
@@ -54,9 +54,19 @@ export class BybitErrorMapper implements IExchangeErrorMapper {
       };
     }
 
+    if (retMsg && (retMsg.toLowerCase().includes('read-only') || retMsg.toLowerCase().includes('readonly') || retMsg.toLowerCase().includes('read only'))) {
+      const detailed = `${technicalDetail} | Bybit retCode=${retCode}, retMsg=${retMsg}`;
+      return this.mk('READ_ONLY_API_KEY', detailed);
+    }
+
     const targetCode = codeMap[retCode];
     if (targetCode) {
-      return this.mk(targetCode, technicalDetail);
+      const detailed = retMsg ? `${technicalDetail} | Bybit retCode=${retCode}, retMsg=${retMsg}` : technicalDetail;
+      const baseClassified = this.mk(targetCode, detailed);
+      if (retMsg) {
+        baseClassified.friendlyMessage = `${baseClassified.friendlyMessage} (Details: ${retMsg})`;
+      }
+      return baseClassified;
     }
 
     if (retMsg) {
@@ -64,7 +74,7 @@ export class BybitErrorMapper implements IExchangeErrorMapper {
         code: 'INVALID_REQUEST',
         friendlyMessage: `Bybit Error [${retCode}]: ${retMsg}`,
         hint: `Bybit API returned code ${retCode}: ${retMsg}`,
-        technicalDetail,
+        technicalDetail: `${technicalDetail} | Bybit retCode=${retCode}, retMsg=${retMsg}`,
         version: '1.0'
       };
     }

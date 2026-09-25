@@ -3,6 +3,8 @@ package com.cryptopulse.app.data.api.dto.market.response
 import com.google.gson.annotations.SerializedName
 
 data class MarketCandidateDto(
+    val id: String? = null,
+    val opportunityId: String? = null,
     val rank: Int? = null,
     val symbol: String? = null,
     val pairName: String? = null,
@@ -23,5 +25,6 @@ data class MarketCandidateDto(
     val maxQty: Double? = null,
     val tradeSide: String? = null,
     val category: String? = null,
-    val exchangeTimestamp: Long? = null
+    val exchangeTimestamp: Long? = null,
+    val recommendedStrategy: String? = null
 )

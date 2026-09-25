@@ -46,10 +46,10 @@ export const DEFAULT_VWAP_CONFIG: VWAPConfig = {
     volume: 40 // Heavy emphasis on volume confirmation for VWAP breakouts
   },
   riskParameters: {
-    accountRiskPercent: 1.0, // Standard risk
     maxExposureLimit: 20.0,
     atrStopLossMultiplier: 1.5,
-    riskRewardRatio: 2.0
+    atrTakeProfitMultiplier: 2.0,
+    riskRewardRatio: 2.0 // @deprecated legacy fallback
   },
   signalRules: {
     minConfidenceScore: 70,

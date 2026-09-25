@@ -2,7 +2,6 @@ import { RiskParameters } from './RiskParameters';
 import { RiskAssessment, RiskClassification } from './RiskAssessment';
 import { StopLossCalculator } from './StopLossCalculator';
 import { TakeProfitCalculator } from './TakeProfitCalculator';
-import { OrderSizing } from './OrderSizing';
 
 export interface RiskContext {
   timestamp: number;
@@ -27,42 +26,21 @@ export class RiskEngine {
     const stopLossDistance = StopLossCalculator.calculateDistance(context.currentAtr, this.config);
     explanation.push(`Stop Loss distance calculated at ${stopLossDistance.toFixed(2)} (ATR multiplier: ${this.config.atrStopLossMultiplier}).`);
 
-    // Calculate Take Profit
-    const takeProfitDistance = TakeProfitCalculator.calculateDistance(stopLossDistance, this.config);
-    explanation.push(`Take Profit distance calculated at ${takeProfitDistance.toFixed(2)} (R:R ratio: ${this.config.riskRewardRatio}).`);
+    // Calculate Take Profit (Model A: Independent ATR distance)
+    const takeProfitDistance = TakeProfitCalculator.calculateDistance(context.currentAtr, this.config);
+    const tpMultiplier = this.config.atrTakeProfitMultiplier ?? this.config.riskRewardRatio ?? 2.0;
+    explanation.push(`Take Profit distance calculated at ${takeProfitDistance.toFixed(2)} (ATR multiplier: ${tpMultiplier}).`);
 
-    // Calculate Order Size
-    const positionSize = OrderSizing.calculateSize(
-      context.accountBalance,
-      stopLossDistance,
-      context.currentPrice,
-      this.config
-    );
-    explanation.push(`Order size recommended at ${positionSize.toFixed(2)} (Risk: ${this.config.accountRiskPercent}% of balance).`);
-
-    // Assess risk classification based on exposure and volatility
+    // Assess risk classification based on exposure limits
     const maxAllowedExposure = context.accountBalance * (this.config.maxExposureLimit / 100);
-    
-    let riskClassification: RiskClassification = 'LOW';
-    if (positionSize >= maxAllowedExposure * 0.9) {
-      riskClassification = 'EXTREME';
-      explanation.push('Risk classification is EXTREME due to hitting maximum exposure limits.');
-    } else if (this.config.accountRiskPercent >= 5) {
-      riskClassification = 'HIGH';
-      explanation.push('Risk classification is HIGH due to aggressive account risk percentage.');
-    } else if (this.config.accountRiskPercent >= 2) {
-      riskClassification = 'MEDIUM';
-      explanation.push('Risk classification is MEDIUM.');
-    } else {
-      explanation.push('Risk classification is LOW.');
-    }
+    const riskClassification: RiskClassification = 'LOW';
+    explanation.push('Risk classification is LOW.');
 
     return {
       timestamp: context.timestamp,
       stopLossDistance,
       takeProfitDistance,
-      riskRewardRatio: this.config.riskRewardRatio,
-      positionSizeRecommendation: positionSize,
+      riskRewardRatio: tpMultiplier, // Legacy interface telemetry property
       maximumExposure: maxAllowedExposure,
       riskClassification,
       explanation

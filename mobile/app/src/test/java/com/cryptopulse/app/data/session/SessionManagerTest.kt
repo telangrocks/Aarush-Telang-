@@ -11,7 +11,8 @@ import com.cryptopulse.app.domain.repository.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -22,7 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionManagerTest {
 
-    private val testDispatcher = UnconfinedTestDispatcher()
+    private val testDispatcher = StandardTestDispatcher()
     private lateinit var dispatcherProvider: DispatcherProvider
     private lateinit var fakeAuthRepo: FakeAuthRepoForSession
     private lateinit var fakeBotRepo: FakeBotRepoForSession
@@ -59,7 +60,7 @@ class SessionManagerTest {
     }
 
     @Test
-    fun `performLogout halts polling, clears caches, clears trade session, notifies backend, and wipes tokens`() = runTest {
+    fun `performLogout halts polling, clears caches, clears trade session, notifies backend, and wipes tokens`() = runTest(testDispatcher) {
         fakeBotRepo.isObserving = true
         fakeTokenManager.hasTokens = true
         fakeTradeSessionRepo.hasSession = true
@@ -78,14 +79,14 @@ class SessionManagerTest {
     }
 
     @Test
-    fun `concurrent performLogout calls execute safely and idempotently`() = runTest {
-        coroutineScope {
-            repeat(5) {
-                launch(Dispatchers.IO) {
-                    sessionManager.performLogout(FakeContextForSession())
-                }
+    fun `concurrent performLogout calls execute safely and idempotently`() = runTest(testDispatcher) {
+        fakeBotRepo.deactivateDelayMs = 50L
+        repeat(5) {
+            launch {
+                sessionManager.performLogout(FakeContextForSession())
             }
         }
+        advanceUntilIdle()
 
         assertEquals(1, fakeAuthRepo.logoutCount.get())
         assertEquals(1, fakeBotRepo.stopObservingCount.get())
@@ -110,6 +111,7 @@ private class FakeBotRepoForSession : BotRepository {
     var isObserving = false
     var stopObservingCalled = false
     var deactivateBotCalled = false
+    var deactivateDelayMs: Long = 0L
     val stopObservingCount = AtomicInteger(0)
 
     override val analysisState: StateFlow<com.cryptopulse.app.domain.models.AnalysisSnapshot?> = MutableStateFlow(null)
@@ -118,8 +120,9 @@ private class FakeBotRepoForSession : BotRepository {
     override val isBotActive: StateFlow<Boolean> = MutableStateFlow(false)
     override val isConnected: StateFlow<Boolean> = MutableStateFlow(false)
 
-    override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?) = NetworkResult.Success(Unit)
+    override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?) = NetworkResult.Success(Unit)
     override suspend fun deactivateBot(): NetworkResult<Unit> {
+        if (deactivateDelayMs > 0) delay(deactivateDelayMs)
         deactivateBotCalled = true
         return NetworkResult.Success(Unit)
     }

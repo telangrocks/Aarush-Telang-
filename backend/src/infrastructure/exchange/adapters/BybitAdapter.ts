@@ -241,7 +241,11 @@ export class BybitAdapter extends BaseExchangeAdapter {
         if (res.headers && typeof (res.headers as any).forEach === 'function') {
           (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
         }
-        const err = new UnifiedError(classified.friendlyMessage, classified.code, parsed.retCode ?? status, parsed.retMsg ?? errText, status);
+        
+        console.error(`[BybitAdapter] API Error (${status}) Endpoint: ${path}. Raw response: ${errText.substring(0, 500)}`);
+        
+        const actualMsg = parsed.retMsg ? `Bybit [${parsed.retCode ?? status}]: ${parsed.retMsg}` : classified.friendlyMessage;
+        const err = new UnifiedError(actualMsg, classified.code, parsed.retCode ?? status, parsed.retMsg ?? errText, status);
         (err as any).rawResponseBody = errText;
         (err as any).rawStatus = status;
         (err as any).rawCode = parsed.retCode ?? status;
@@ -261,6 +265,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
         if (res.headers && typeof (res.headers as any).forEach === 'function') {
           (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
         }
+
+        console.error(`[BybitAdapter] API Error (${status}) Endpoint: ${path}. Raw response: ${errText.substring(0, 500)}`);
+
         const err = new UnifiedError(classified.friendlyMessage, classified.code, status, errText, status);
         (err as any).rawResponseBody = errText;
         (err as any).rawStatus = status;
@@ -287,7 +294,11 @@ export class BybitAdapter extends BaseExchangeAdapter {
         if (res.headers && typeof (res.headers as any).forEach === 'function') {
           (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
         }
-        const err = new UnifiedError(classified.friendlyMessage || msgVal || 'Exchange returned error', classified.code, codeVal, msgVal, status);
+
+        console.error(`[BybitAdapter] API Error (${status}) Endpoint: ${path}. Raw response: ${errText.substring(0, 500)}`);
+
+        const actualMsg = msgVal ? `Bybit [${codeVal}]: ${msgVal}` : (classified.friendlyMessage || 'Exchange returned error');
+        const err = new UnifiedError(actualMsg, classified.code, codeVal, msgVal, status);
         (err as any).rawResponseBody = errText;
         (err as any).rawStatus = status;
         (err as any).rawCode = codeVal;
@@ -672,6 +683,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
       timeInForce: order.timeInForce || 'GTC',
     };
 
+    if (category === 'spot' && !isLimit) {
+      params.marketUnit = 'baseCoin';
+    }
+
     if ((order as any).triggerPrice) {
       const triggerBN = new BigNumber((order as any).triggerPrice);
       params.triggerPrice = triggerBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
@@ -704,18 +719,22 @@ export class BybitAdapter extends BaseExchangeAdapter {
     if ((order as any).takeProfit) {
       const tpBN = new BigNumber((order as any).takeProfit);
       params.takeProfit = tpBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
-      params.tpTriggerBy = (order as any).tpTriggerBy || 'LastPrice';
-      params.tpOrderType = (order as any).tpOrderType || 'Market';
+      if (category !== 'spot') {
+        params.tpTriggerBy = (order as any).tpTriggerBy || 'LastPrice';
+        params.tpOrderType = (order as any).tpOrderType || 'Market';
+      }
     }
 
     if ((order as any).stopLoss) {
       const slBN = new BigNumber((order as any).stopLoss);
       params.stopLoss = slBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
-      params.slTriggerBy = (order as any).slTriggerBy || 'LastPrice';
-      params.slOrderType = (order as any).slOrderType || 'Market';
+      if (category !== 'spot') {
+        params.slTriggerBy = (order as any).slTriggerBy || 'LastPrice';
+        params.slOrderType = (order as any).slOrderType || 'Market';
+      }
     }
 
-    if ((order as any).takeProfit || (order as any).stopLoss) {
+    if (((order as any).takeProfit || (order as any).stopLoss) && category !== 'spot') {
       params.tpslMode = (order as any).tpslMode || 'Full';
     }
 
@@ -725,17 +744,55 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
     const result = await this.makeRequest('POST', '/v5/order/create', params, true);
 
+    let actualStatus = 'open';
+    let actualFilled = new BigNumber(0);
+    let actualPrice: BigNumber | null = null;
+
+    try {
+      if (result?.orderId) {
+        // Wait briefly for the matching engine to process a market order
+        if (params.orderType === 'Market') {
+          await new Promise(resolve => setTimeout(resolve, 800));
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+
+        const statusResult = await this.makeRequest('GET', '/v5/order/realtime', {
+          category: params.category,
+          symbol: params.symbol,
+          orderId: result.orderId
+        }, true);
+
+        if (statusResult?.list && statusResult.list.length > 0) {
+          const orderInfo = statusResult.list[0];
+          if (orderInfo.orderStatus === 'Filled') actualStatus = 'closed';
+          else if (orderInfo.orderStatus === 'PartiallyFilled') actualStatus = 'open';
+          else if (orderInfo.orderStatus === 'Cancelled') actualStatus = 'canceled';
+          else if (orderInfo.orderStatus === 'Rejected') actualStatus = 'rejected';
+
+          if (orderInfo.cumExecQty && parseFloat(orderInfo.cumExecQty) > 0) {
+            actualFilled = new BigNumber(orderInfo.cumExecQty);
+          }
+          if (orderInfo.avgPrice && parseFloat(orderInfo.avgPrice) > 0) {
+            actualPrice = new BigNumber(orderInfo.avgPrice);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to fetch immediate order status', e);
+    }
+
     return {
       id: result?.orderId || '',
       clientOrderId: result?.orderLinkId || params.orderLinkId || '',
       symbol: canonicalSymbol,
       side: isBuy ? 'buy' : 'sell',
       type: isLimit ? 'limit' : 'market',
-      status: 'open',
-      price: order.price || new BigNumber(0),
+      status: actualStatus as any,
+      price: actualPrice || (order.price ? order.price : new BigNumber(0)),
       amount: order.amount,
-      filled: new BigNumber(0),
-      remaining: order.amount,
+      filled: actualFilled,
+      remaining: order.amount.minus(actualFilled),
       timestamp: Date.now(),
     };
   }

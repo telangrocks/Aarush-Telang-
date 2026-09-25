@@ -173,11 +173,11 @@ export async function analyzeMarket(
           const ema50_15m = calculateEMA(closes15m, 50);
           const rsi15m = calculateRSI(closes15m, 14);
 
-          let side1h: "BUY" | "SELL" | "HOLD" = "HOLD";
+          let side1h: "BUY" | "SELL" | null = null;
           if (ema20_1h > ema50_1h && rsi1h > 50) side1h = "BUY";
           else if (ema20_1h < ema50_1h && rsi1h < 50) side1h = "SELL";
 
-          let side15m: "BUY" | "SELL" | "HOLD" = "HOLD";
+          let side15m: "BUY" | "SELL" | null = null;
           if (ema20_15m > ema50_15m && rsi15m > 50) side15m = "BUY";
           else if (ema20_15m < ema50_15m && rsi15m < 50) side15m = "SELL";
 
@@ -189,9 +189,9 @@ export async function analyzeMarket(
           } else if ((side1h === "BUY" && side15m === "SELL") || (side1h === "SELL" && side15m === "BUY")) {
             // Explicit conflict resolution: Downgrade opposing multi-timeframe signals to NEUTRAL
             finalSide = "NEUTRAL";
-          } else if (side1h !== "HOLD") {
+          } else if (side1h !== null) {
             finalSide = side1h;
-          } else if (side15m !== "HOLD") {
+          } else if (side15m !== null) {
             finalSide = side15m;
           }
           

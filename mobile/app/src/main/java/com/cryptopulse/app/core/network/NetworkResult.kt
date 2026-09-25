@@ -26,6 +26,7 @@ inline fun <T> NetworkResult<T>.onFailure(action: (exception: Throwable) -> Unit
                 exchangeCode = error.exchangeCode?.toIntOrNull()
             )
             is NetworkError.Unauthorized -> DomainException(message = "Session expired", code = "Unauthorized")
+            is NetworkError.Timeout -> DomainException(message = "Connection timeout. Please check your network and try again.", code = "TIMEOUT")
             is NetworkError.Unknown -> error.error
             else -> Exception("Network error: $error")
         }
@@ -49,6 +50,7 @@ inline fun <T> NetworkResult<T>.exceptionOrNull(): Throwable? {
                 exchangeCode = error.exchangeCode?.toIntOrNull()
             )
             is NetworkError.Unauthorized -> DomainException(message = "Session expired", code = "Unauthorized")
+            is NetworkError.Timeout -> DomainException(message = "Connection timeout. Please check your network and try again.", code = "TIMEOUT")
             is NetworkError.Unknown -> error.error
             else -> Exception("Network error: $error")
         }

@@ -1,4 +1,5 @@
 import { Context } from "hono";
+import BigNumber from "bignumber.js";
 import { Env } from "../index";
 import { encrypt, decrypt, cleanCredential } from "../crypto";
 import { ExchangeManager, ExchangeName, ExchangeEnvironment, type ExchangeRegion } from "../exchanges";
@@ -9,9 +10,13 @@ import { analyzeMarket } from "../market-analysis";
 import { normalizeEnvironment as normEnvUtil, isEnvironmentSupported, getSupportedEnvironmentsList, CanonicalEnvironment } from "../utils/environment";
 import { normalizeRegion, resolveCanonicalRoutingRegion } from "../utils/region";
 import { WebCryptoSigner } from "../infrastructure/crypto/WebCryptoSigner";
+import { MarketOpportunityScanner, ExecutionEligibilityGate, type ScannerScanResult, type MarketOpportunity } from "../engine/scanner";
+import { PriceNormalizer } from "../utils/PriceNormalizer";
 
 const DISCOVERY_CACHE = new Map<string, { timestamp: number, data: any }>();
 const CACHE_TTL_MS = 60000;
+const OPPORTUNITY_CACHE = new Map<string, { timestamp: number; data: ScannerScanResult }>();
+const OPPORTUNITY_CACHE_TTL_MS = 30000;
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
  * Returns null for unrecognized values.
@@ -430,49 +435,74 @@ export async function handleConnectExchange(
       encryptedPassphraseSalt = encryptedPhraseObj.salt;
     }
 
-    // Set plaintext exchange_api_key to NULL to eliminate plaintext storage
-    await c.env.DB.prepare(
-      `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = NULL, exchange_api_key_iv = ?, exchange_api_key_encrypted = ?, exchange_api_key_salt = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_secret_salt = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ?, exchange_api_passphrase_salt = ? WHERE id = ?`,
-    )
-      .bind(
-        exchangeName,
-        normEnv,
-        resolvedRegion,
-        encryptedKey.iv,
-        encryptedKey.encrypted,
-        encryptedKey.salt,
-        encryptedSecret.iv,
-        encryptedSecret.encrypted,
-        encryptedSecret.salt,
-        encryptedPassphraseIv,
-        encryptedPassphrase,
-        encryptedPassphraseSalt,
-        userId
-      )
-      .run();
+    // Safe Sequencing: Check bot state and deactivate running session BEFORE committing new credentials to D1
+    if (!c.env.TRADING_BOTS || typeof c.env.TRADING_BOTS.idFromName !== "function") {
+      throw new UnifiedError("Trading bot service binding unavailable. Credential update aborted.", "SERVICE_UNAVAILABLE", undefined, undefined, 503);
+    }
 
-    // Reset connection status to CONNECTED upon valid connection
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    let isBotActive = false;
     try {
+      const statusRes = await bot.fetch(new Request("http://bot/status"));
+      if (statusRes.ok) {
+        const statusData = await statusRes.json<{ isActive: boolean }>();
+        isBotActive = Boolean(statusData?.isActive);
+      } else {
+        throw new Error(`Bot status returned HTTP ${statusRes.status}`);
+      }
+    } catch (statusErr: any) {
+      console.error("[exchange-auth] Failed to query bot status before credential update:", statusErr?.message || statusErr);
+      throw new UnifiedError("Unable to verify trading bot state. Credential update aborted.", "SERVICE_UNAVAILABLE", undefined, undefined, 503);
+    }
+
+    if (isBotActive) {
+      try {
+        const deactRes = await bot.fetch(new Request("http://bot/deactivate", { method: "POST" }));
+        if (!deactRes.ok) {
+          throw new Error(`Bot deactivate returned HTTP ${deactRes.status}`);
+        }
+      } catch (deactErr: any) {
+        console.error("[exchange-auth] Failed to deactivate active bot before credential update:", deactErr?.message || deactErr);
+        throw new UnifiedError("Failed to safely deactivate active trading bot. Credential update aborted.", "BOT_DEACTIVATION_FAILED", undefined, undefined, 500);
+      }
+    }
+
+    // Now commit to D1 with deterministic failure recovery
+    try {
+      await c.env.DB.prepare(
+        `UPDATE users SET exchange_name = ?, exchange_environment = ?, exchange_region = ?, exchange_api_key = NULL, exchange_api_key_iv = ?, exchange_api_key_encrypted = ?, exchange_api_key_salt = ?, exchange_api_secret_iv = ?, exchange_api_secret_encrypted = ?, exchange_api_secret_salt = ?, exchange_api_passphrase_iv = ?, exchange_api_passphrase_encrypted = ?, exchange_api_passphrase_salt = ? WHERE id = ?`,
+      )
+        .bind(
+          exchangeName,
+          normEnv,
+          resolvedRegion,
+          encryptedKey.iv,
+          encryptedKey.encrypted,
+          encryptedKey.salt,
+          encryptedSecret.iv,
+          encryptedSecret.encrypted,
+          encryptedSecret.salt,
+          encryptedPassphraseIv,
+          encryptedPassphrase,
+          encryptedPassphraseSalt,
+          userId
+        )
+        .run();
+
       await c.env.DB.prepare(
         `UPDATE users SET exchange_connection_status = 'CONNECTED', exchange_invalidated_at = NULL, exchange_failure_code = NULL WHERE id = ?`
       ).bind(userId).run();
-    } catch (_) {}
+    } catch (d1Err: any) {
+      console.error("[exchange-auth] Failed to persist credentials to D1:", d1Err?.message || d1Err);
+      throw new UnifiedError("Failed to update credentials in database. Previous credentials remain stored. Autonomous bot is paused.", "CREDENTIAL_PERSISTENCE_FAILED", undefined, undefined, 500);
+    }
 
     // Invalidate any previously cached provider instance for this user/slot
     try {
       await ExchangeManager.disconnectProvider(exchangeName, providerConfig);
     } catch (_) {}
-
-    // Reset bot state and clear instrument locking upon exchange connection/reconnection
-    try {
-      if (c.env.TRADING_BOTS && typeof c.env.TRADING_BOTS.idFromName === "function") {
-        const botId = c.env.TRADING_BOTS.idFromName(userId);
-        const bot = c.env.TRADING_BOTS.get(botId);
-        await bot.fetch(new Request("http://bot/deactivate", { method: "POST" }));
-      }
-    } catch (err) {
-      console.warn(`[exchange-auth] Failed to reset bot state on reconnection:`, err);
-    }
 
     return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: normEnv, region: resolvedRegion });
   } catch (e: unknown) {
@@ -574,7 +604,7 @@ export async function handleGetExchangeBalances(
     }
 
     if (user?.exchange_connection_status === "INVALID") {
-      c.status(401);
+      c.status(422);
       return c.json({
         success: false,
         code: "AUTHENTICATION_FAILED",
@@ -658,7 +688,7 @@ export async function handleGetExchangeBalances(
           }
         } : undefined
       );
-      c.status(401);
+      c.status(422);
     } else {
       c.status(400);
     }
@@ -669,6 +699,60 @@ export async function handleGetExchangeBalances(
       hint: classified.hint,
     });
   }
+}
+
+export function mapScanResultToCandidates(scanResult: any): any[] {
+  const seenPairs = new Set<string>();
+  const distinctOpportunities: MarketOpportunity[] = [];
+  const sourcePool = scanResult.allQualifiedOpportunities && scanResult.allQualifiedOpportunities.length > 0 
+    ? scanResult.allQualifiedOpportunities 
+    : (scanResult.topOpportunities || []);
+  for (const opp of sourcePool) {
+    if (!seenPairs.has(opp.symbol)) {
+      seenPairs.add(opp.symbol);
+      distinctOpportunities.push(opp);
+      if (distinctOpportunities.length >= 25) break;
+    }
+  }
+
+  return distinctOpportunities.map((opp: any, idx: number) => {
+    const baseAsset = opp.symbol.includes('/') ? opp.symbol.split('/')[0] : opp.symbol.replace(/USDT$/, '');
+    const px = opp.timeframes?.['1m']?.closePrice || opp.timeframes?.['5m']?.closePrice || opp.timeframes?.['15m']?.closePrice || 0;
+    const strat = opp.strategyCompatibility?.[0]?.strategyId || 'ScalperV2';
+    const oppId = opp.opportunityId || `${opp.symbol}:${strat}:${opp.dominantDirection}`;
+    const rawPct = opp.marketQuality?.priceChangePercent24h ?? opp.priceChangePercent24h ?? 0;
+    const cleanPct = typeof rawPct === 'number' && Number.isFinite(rawPct) ? rawPct : 0;
+    return {
+      id: oppId,
+      opportunityId: oppId,
+      symbol: baseAsset,
+      pairName: opp.symbol,
+      category: 'linear',
+      timestamp: opp.timestamp,
+      price: px,
+      volume24h: opp.marketQuality?.turnover24hUsdt ?? 0,
+      quoteVolume24h: opp.marketQuality?.turnover24hUsdt ?? 0,
+      highPrice24h: px,
+      lowPrice24h: px,
+      priceChangePercent24h: cleanPct,
+      minNotional: opp.marketQuality?.minNotionalUsdt ?? 5,
+      minOrderQty: opp.marketQuality?.minOrderQty ?? 0.001,
+      qtyStep: opp.marketQuality?.minOrderQty ?? 0.001,
+      tickSize: opp.marketQuality?.tickSize ?? 0.01,
+      minPrice: null,
+      maxPrice: null,
+      maxQty: null,
+      score: opp.opportunityScore,
+      rank: idx + 1,
+      tradeSide: opp.dominantDirection === 'LONG' ? 'BUY' : (opp.dominantDirection === 'SHORT' ? 'SELL' : 'NEUTRAL'),
+      recommendedStrategy: strat,
+      recommendedTimeframe: opp.timeframes?.['15m']?.trend ? '15m' : '1h',
+      exchangeTimestamp: opp.timestamp,
+      opportunityState: opp.state,
+      netEdgeRatio: opp.rawFactors?.netEdgeRatio ?? 0,
+      executionFeasible: (opp.rawFactors?.netEdgeRatio ?? 0) >= 3.0,
+    };
+  });
 }
 
 export async function handleGetPersonalizedMarketCandidates(
@@ -750,6 +834,38 @@ export async function handleGetPersonalizedMarketCandidates(
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
       console.log(`[DIAGNOSTIC] Cache hit for ${cacheKey}`);
       return c.json(cached.data);
+    }
+
+    // Stage 3.5: Authoritative DO Scanner State Query (CP-CONF-001)
+    // Directly query user's TradingBot DO for its authoritative scanner state before doing any expensive local work.
+    // Handles warm cached scan (<5ms), active in-flight scan, or cold discovery scan in the DO without redundant Worker CCXT overhead.
+    if (c.env.TRADING_BOTS) {
+      try {
+        const botId = c.env.TRADING_BOTS.idFromName(userId);
+        const bot = c.env.TRADING_BOTS.get(botId);
+        const scanResp = await bot.fetch(new Request("http://bot/scanner-state", {
+          headers: { "X-User-Id": userId }
+        }));
+        if (scanResp.ok) {
+          const scanResult = await scanResp.json() as any;
+          if (scanResult && scanResult.topOpportunities) {
+            console.log(`[DIAGNOSTIC] Stage 3.5: Retrieved authoritative DO scanner state: universeSize=${scanResult.universeSize}, eligible=${scanResult.eligibleCount}, top=${scanResult.topOpportunities?.length || 0}`);
+            const candidates = mapScanResultToCandidates(scanResult);
+            
+            const queryBudget = c.req.query("budget");
+            const parsedBudget = queryBudget ? parseFloat(queryBudget) : null;
+            const userAllocation = (parsedBudget !== null && !isNaN(parsedBudget) && parsedBudget > 0) ? parsedBudget : null;
+
+            if (candidates.length > 0 || userAllocation !== null) {
+              console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully from DO (${candidates.length} items)`);
+              DISCOVERY_CACHE.set(cacheKey, { timestamp: Date.now(), data: candidates });
+              return c.json(candidates);
+            }
+          }
+        }
+      } catch (doErr: any) {
+        console.warn("[DIAGNOSTIC] Stage 3.5: Failed to query DO scanner-state, proceeding to fallback:", doErr?.message);
+      }
     }
 
     // Stage 4: Secret decrypted
@@ -933,21 +1049,58 @@ export async function handleGetPersonalizedMarketCandidates(
     currentStage = "8. analyzeMarket entered";
     console.log(`[DIAGNOSTIC] Stage 8: analyzeMarket entered with ${tickers.length} tickers`);
     
-    // Stage 9: analyzeMarket exited
+    // Stage 9: Opportunity discovery and candidate evaluation (Fallback Path)
     let candidates: any[] = [];
+    const queryBudget = c.req.query("budget");
+    const parsedBudget = queryBudget ? parseFloat(queryBudget) : null;
+    const userAllocation = (parsedBudget !== null && !isNaN(parsedBudget) && parsedBudget > 0) ? parsedBudget : null;
+
     try {
-      candidates = await analyzeMarket(tickers as any, adapter as any);
-      console.log(`[DIAGNOSTIC] Stage 9: analyzeMarket exited with ${candidates.length} candidates`);
-    } catch (aErr: any) {
-      console.error("[DIAGNOSTIC] Stage 9 EXCEPTION: analyzeMarket failed:", aErr?.message, aErr?.stack);
-      c.status(500);
-      return c.json({
-        success: false,
-        stage: "9. analyzeMarket exited",
-        error: aErr?.message || String(aErr),
-        constructor: aErr?.constructor?.name || "AnalysisError",
-        stack: aErr?.stack || String(aErr)
+      const scanner = new MarketOpportunityScanner(adapter as any);
+      const scanResult = await scanner.scan({
+        markets: activeMarkets,
+        tickers,
+        ...(userAllocation !== null ? { tradeAmountUsdt: userAllocation } : {})
       });
+
+      if (scanResult && scanResult.topOpportunities && scanResult.topOpportunities.length > 0) {
+        console.log(`[DIAGNOSTIC] Stage 9: MarketOpportunityScanner produced ${scanResult.topOpportunities.length} opportunities (${scanResult.allQualifiedOpportunities.length} total qualified)`);
+        candidates = mapScanResultToCandidates(scanResult);
+      } else if (userAllocation !== null) {
+        console.log(`[DIAGNOSTIC] Stage 9: Scanner returned 0 candidates for strict budget ${userAllocation}. Skipping legacy fallback.`);
+        candidates = [];
+      } else {
+        console.log(`[DIAGNOSTIC] Stage 9: Scanner returned 0 candidates, falling back to legacy analyzeMarket`);
+        candidates = await analyzeMarket(tickers as any, adapter as any);
+      }
+      console.log(`[DIAGNOSTIC] Stage 9: evaluation completed with ${candidates.length} candidates`);
+    } catch (aErr: any) {
+      if (userAllocation !== null) {
+        console.error("[DIAGNOSTIC] Stage 9 EXCEPTION: Modern scanner threw exception with strict budget. Aborting without fallback:", aErr?.message);
+        c.status(500);
+        return c.json({
+          success: false,
+          stage: "9. scanner evaluation",
+          error: aErr?.message || String(aErr),
+          constructor: aErr?.constructor?.name || "ScannerError",
+          stack: aErr?.stack || String(aErr)
+        });
+      }
+
+      console.warn("[DIAGNOSTIC] Stage 9: Modern scanner threw exception, attempting fallback to analyzeMarket:", aErr?.message);
+      try {
+        candidates = await analyzeMarket(tickers as any, adapter as any);
+      } catch (fallbackErr: any) {
+        console.error("[DIAGNOSTIC] Stage 9 EXCEPTION: analyzeMarket fallback also failed:", fallbackErr?.message, fallbackErr?.stack);
+        c.status(500);
+        return c.json({
+          success: false,
+          stage: "9. analyzeMarket exited",
+          error: fallbackErr?.message || String(fallbackErr),
+          constructor: fallbackErr?.constructor?.name || "AnalysisError",
+          stack: fallbackErr?.stack || String(fallbackErr)
+        });
+      }
     }
 
     // Stage 10: response serialized
@@ -970,13 +1123,145 @@ export async function handleGetPersonalizedMarketCandidates(
   }
 }
 
+function formatOpportunitiesResponse(c: Context<{ Bindings: Env }>, scanResult: ScannerScanResult): Response {
+  const queryLimit = c.req.query("limit");
+  const queryDirection = c.req.query("direction")?.toUpperCase();
+  const queryStrategy = c.req.query("strategy");
+  const queryMinScore = c.req.query("minScore");
+
+  let opportunities = scanResult.allQualifiedOpportunities;
+
+  if (queryDirection === "LONG" || queryDirection === "SHORT") {
+    opportunities = opportunities.filter(o => o.dominantDirection === queryDirection);
+  }
+
+  if (queryStrategy) {
+    opportunities = opportunities.filter(o => o.strategyCompatibility.some(s => s.strategyId.toLowerCase() === queryStrategy.toLowerCase()));
+  }
+
+  if (queryMinScore) {
+    const minScore = parseFloat(queryMinScore);
+    if (!isNaN(minScore)) {
+      opportunities = opportunities.filter(o => o.opportunityScore >= minScore);
+    }
+  }
+
+  const limit = queryLimit ? parseInt(queryLimit, 10) : undefined;
+  const returnedOpportunities = limit && !isNaN(limit) && limit > 0
+    ? opportunities.slice(0, limit)
+    : (opportunities.length > 0 ? opportunities : scanResult.topOpportunities);
+
+  return c.json({
+    success: true,
+    timestamp: scanResult.timestamp,
+    executionDurationMs: scanResult.executionDurationMs,
+    universeSize: scanResult.universeSize,
+    eligibleCount: scanResult.eligibleCount,
+    qualityCount: scanResult.qualityCount,
+    screenedCount: scanResult.screenedCount,
+    totalOpportunities: opportunities.length,
+    opportunities: returnedOpportunities,
+    telemetry: scanResult.telemetry,
+  });
+}
+
+export async function handleGetMarketOpportunities(
+  c: Context<{ Bindings: Env }>
+): Promise<Response> {
+  const correlationId = crypto.randomUUID();
+  console.log(`[DIAGNOSTIC] Endpoint /api/market/opportunities invoked (correlationId=${correlationId})`);
+
+  try {
+    const payload = c.get("jwtPayload") as { sub?: string } | undefined;
+    if (!payload || !payload.sub) {
+      c.status(401);
+      return c.json({
+        success: false,
+        error: "Unauthorized: Invalid or missing token",
+      });
+    }
+    const userId = payload.sub;
+
+    let user: any = null;
+    try {
+      user = await c.env.DB.prepare(
+        "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?"
+      )
+        .bind(userId)
+        .first();
+    } catch (dbErr: any) {
+      console.warn("[DIAGNOSTIC] /market/opportunities DB query error, proceeding with default provider:", dbErr?.message);
+    }
+
+    const exchangeName: ExchangeName = (user?.exchange_name as ExchangeName) || "bybit";
+    const environment = normalizeEnvironment(user?.exchange_environment) ?? "mainnet";
+    const region = resolveCanonicalRoutingRegion(user?.exchange_region);
+
+    const cacheKey = `${exchangeName}_${environment}_${region}`;
+    const cached = OPPORTUNITY_CACHE.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < OPPORTUNITY_CACHE_TTL_MS) {
+      console.log(`[DIAGNOSTIC] /market/opportunities cache hit for ${cacheKey}`);
+      return formatOpportunitiesResponse(c, cached.data);
+    }
+
+    let cleanKey: string | undefined = undefined;
+    if (user?.exchange_api_key_encrypted && user?.exchange_api_key_iv && c.env.ENCRYPTION_KEY) {
+      try {
+        const decryptedKey = await decrypt(
+          { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
+          c.env.ENCRYPTION_KEY
+        );
+        cleanKey = cleanCredential(decryptedKey);
+      } catch (e: any) {
+        console.warn("[DIAGNOSTIC] API key decryption failed:", e?.message);
+      }
+    }
+
+    let cleanSecret: string | undefined = undefined;
+    if (user?.exchange_api_secret_encrypted && user?.exchange_api_secret_iv && c.env.ENCRYPTION_KEY) {
+      try {
+        const decrypted = await decrypt(
+          { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt },
+          c.env.ENCRYPTION_KEY
+        );
+        cleanSecret = cleanCredential(decrypted);
+      } catch (e: any) {
+        console.warn("[DIAGNOSTIC] API secret decryption failed:", e?.message);
+      }
+    }
+
+    const adapter = await ExchangeManager.getProvider(exchangeName, {
+      environment,
+      apiKey: cleanKey,
+      secret: cleanSecret,
+      region,
+      ...resolveEgressConfig(exchangeName, c.env),
+    });
+
+    const scanner = new MarketOpportunityScanner(adapter as any);
+    const scanResult = await scanner.scan();
+
+    OPPORTUNITY_CACHE.set(cacheKey, { timestamp: Date.now(), data: scanResult });
+
+    return formatOpportunitiesResponse(c, scanResult);
+  } catch (fatalErr: any) {
+    console.error(`[DIAGNOSTIC] /market/opportunities FATAL EXCEPTION:`, fatalErr?.message, fatalErr?.stack);
+    c.status(500);
+    return c.json({
+      success: false,
+      error: fatalErr?.message || String(fatalErr),
+      correlationId,
+    });
+  }
+}
+
+
 import { StrategyRegistry } from "../engine/strategies/StrategyRegistry";
 import { StrategyOrchestrator } from "../engine/orchestrator/StrategyOrchestrator";
 import { MarketDataEngine, AdapterCandleProvider } from "../engine/market-data";
 import { AnalysisSnapshotMapper } from "../api/engine/AnalysisSnapshotMapper";
 import { StopLossCalculator } from "../engine/risk/StopLossCalculator";
 import { TakeProfitCalculator } from "../engine/risk/TakeProfitCalculator";
-import { OrderSizing } from "../engine/risk/OrderSizing";
 import { RiskParameters } from "../engine/risk/RiskParameters";
 import { calculateATR } from "../engine/indicator/indicators/ATR";
 import { TradeAlert } from "../trading-bot";
@@ -1041,13 +1326,22 @@ export async function handleGetTicker(
       return c.json({ error: `Symbol '${symbol}' is not available on your connected exchange.` });
     }
 
+    const price = ticker.last.toNumber();
+    const rawPct = typeof ticker.percentage === 'number' && Number.isFinite(ticker.percentage) 
+      ? ticker.percentage 
+      : 0;
+
+    const rawChange = (price * rawPct) / 100;
+    const priceChange24h = Number.isFinite(rawChange) ? rawChange : 0;
+    const priceChangePercent24h = Number.isFinite(rawPct) ? rawPct : 0;
+
     return c.json({
       symbol: ticker.symbol,
-      price: ticker.last.toNumber(),
+      price: price,
       volume24h: ticker.volume.toNumber(),
       quoteVolume24h: ticker.quoteVolume.toNumber(),
-      priceChange24h: 0,
-      priceChangePercent24h: 0,
+      priceChange24h: priceChange24h,
+      priceChangePercent24h: priceChangePercent24h,
       highPrice24h: ticker.high.toNumber(),
       lowPrice24h: ticker.low.toNumber(),
       minNotional: null,
@@ -1123,6 +1417,34 @@ export async function handleGetTechnicalAnalysis(
     if (!symbol || !strategy) {
       c.status(400);
       return c.json({ error: "symbol and strategy are required" });
+    }
+
+    // Authoritative Single-Brain Projection: Proxy analysis snapshot from user's TradingBot DO
+    if (c.env.TRADING_BOTS) {
+      try {
+        const botId = c.env.TRADING_BOTS.idFromName(userId);
+        const bot = c.env.TRADING_BOTS.get(botId);
+        const analysisResp = await bot.fetch(new Request("http://bot/analysis-status"));
+        if (analysisResp.ok) {
+          const analysisData: any = await analysisResp.json();
+          const requestedNormalized = strategy ? StrategyRegistry.getInstance().normalizeStrategyId(strategy)?.toLowerCase() : null;
+          const activeNormalized = analysisData?.activeStrategy ? StrategyRegistry.getInstance().normalizeStrategyId(analysisData.activeStrategy)?.toLowerCase() : null;
+
+          const isAuthoritativeActive = 
+            analysisData?.isActive === true &&
+            requestedNormalized != null &&
+            activeNormalized != null &&
+            requestedNormalized === activeNormalized &&
+            Boolean(analysisData.marketAnalysis || analysisData.indicators) &&
+            (analysisData.symbol === symbol || analysisData.symbol === symbol.replace('/', '') || !symbol);
+
+          if (isAuthoritativeActive) {
+            return c.json(analysisData);
+          }
+        }
+      } catch (doErr: any) {
+        console.warn("[TechnicalAnalysis] Failed to query DO analysis-status, falling back to on-demand preview:", doErr?.message);
+      }
     }
 
     const user = await c.env.DB.prepare(
@@ -1328,7 +1650,23 @@ export async function handleActivateTradingBot(
   try {
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
-    const { coinId, strategy, positionSize, targetEntryPrice, config } = await c.req.json<{ coinId: string; strategy: string; positionSize?: number; targetEntryPrice?: number; config?: any }>();
+    const { symbols, coinId, strategy, positionSize, targetEntryPrice, config } = await c.req.json<{
+      symbols?: string[];
+      coinId?: string;
+      strategy: string;
+      positionSize?: number;
+      targetEntryPrice?: number;
+      config?: any;
+    }>();
+
+    const targetSymbols = (symbols && Array.isArray(symbols) && symbols.length > 0)
+      ? symbols
+      : (coinId ? [coinId] : []);
+
+    if (targetSymbols.length === 0) {
+      c.status(400);
+      return c.json({ success: false, error: 'At least one symbol or coinId must be provided for activation.' });
+    }
 
     const botId = c.env.TRADING_BOTS.idFromName(userId);
     const bot = c.env.TRADING_BOTS.get(botId);
@@ -1337,13 +1675,39 @@ export async function handleActivateTradingBot(
       new Request("http://bot/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, coinId, strategy, positionSize, targetEntryPrice, config }),
+        body: JSON.stringify({ userId, symbols: targetSymbols, coinId: targetSymbols[0], strategy, positionSize, targetEntryPrice, config }),
       }),
     );
 
-    const data = await response.json<{ success: boolean; message: string; code?: string; hint?: string }>();
+    const data = await response.json<{ success: boolean; message?: string; error?: string; code?: string; hint?: string }>();
+    c.status(response.status as any);
     return c.json(data);
   } catch (e: unknown) {
+    const error = e as Error;
+    const errMsg = error?.message || String(e);
+    const isInternalInfrastructureError =
+      errMsg.includes("Durable Object") ||
+      errMsg.includes("free tier") ||
+      errMsg.includes("quota") ||
+      errMsg.includes("storage") ||
+      errMsg.includes("isolate") ||
+      errMsg.includes("reset") ||
+      errMsg.includes("network");
+
+    if (isInternalInfrastructureError) {
+      console.error(`[trading-bot] activate infrastructure exception:`, e);
+      c.status(503);
+      return c.json({
+        success: false,
+        code: "SYSTEM_UNAVAILABLE",
+        message: "Trading service is temporarily unavailable. Please try again shortly.",
+        hint: "The bot engine is initializing or undergoing maintenance. Please retry in a few moments.",
+        error: errMsg,
+        endpoint: "/api/trading-bot/activate",
+        deploymentVersion: "2.1.0",
+      });
+    }
+
     const classified = classifyException(e, "trading-bot-activate");
     console.error(`[trading-bot] activate exception (${classified.technicalDetail}):`, e);
     c.status(500);
@@ -1371,11 +1735,12 @@ export async function handleGetTradingBotStatus(
     );
 
     const data = await response.json<{ isActive: boolean; coinId: string | null; strategy: string | null }>();
+    c.status(response.status as any);
     return c.json(data);
   } catch (e: unknown) {
     const error = e as Error;
-    c.status(500);
-    return c.json({ isActive: false, coinId: null, strategy: null, message: error.message || "Failed to get bot status" });
+    c.status(200);
+    return c.json({ isActive: false, coinId: null, strategy: null, message: error.message || "Bot is currently stopped" });
   }
 }
 
@@ -1394,12 +1759,17 @@ export async function handleGetAnalysisStatus(
     );
 
     const data = await response.json<any>();
+    c.status(response.status as any);
     return c.json(data);
   } catch (e: unknown) {
     const error = e as Error;
-    c.status(500);
+    const errMsg = error?.message || String(e);
+    console.warn(`[trading-bot] analysis-status fallback due to:`, errMsg);
+    c.status(200);
     return c.json({
       isActive: false,
+      engineStatus: { state: "STOPPED", isRunning: false, activeStrategy: null },
+      safeMode: false,
       strategy: null,
       coinId: null,
       scanningProgress: 0,
@@ -1408,7 +1778,7 @@ export async function handleGetAnalysisStatus(
       nearMatches: [],
       checkpoints: [],
       logs: [],
-      message: error.message || "Failed to get analysis status",
+      message: errMsg || "Bot is currently stopped",
     });
   }
 }
@@ -1630,6 +2000,14 @@ export async function handleTriggerManualTradeAlert(
     }>();
 
     if (!symbol) {
+      if (c.env.TRADING_BOTS) {
+        const botId = c.env.TRADING_BOTS.idFromName(userId);
+        const bot = c.env.TRADING_BOTS.get(botId);
+        const execResp = await bot.fetch(new Request("http://bot/execute-current-opportunity", { method: "POST" }));
+        const execData = await execResp.json();
+        c.status(execResp.status as any);
+        return c.json(execData);
+      }
       c.status(400);
       return c.json({ error: "Trading symbol is required." });
     }
@@ -1700,7 +2078,10 @@ export async function handleTriggerManualTradeAlert(
     const targetEntryPrice = typeof config?.entryPrice === 'number' && config.entryPrice > 0 ? config.entryPrice : currentPrice;
     const rp = config?.riskParameters || {};
     const riskPercent = typeof rp.accountRiskPercent === 'number' && rp.accountRiskPercent >= 0.1 && rp.accountRiskPercent <= 5.0 ? rp.accountRiskPercent : 1.0;
-    const rrRatio = typeof rp.riskRewardRatio === 'number' && rp.riskRewardRatio >= 1.0 && rp.riskRewardRatio <= 5.0 ? rp.riskRewardRatio : 2.0;
+    const rawTp = rp.atrTakeProfitMultiplier !== undefined && rp.atrTakeProfitMultiplier !== null
+      ? rp.atrTakeProfitMultiplier
+      : rp.riskRewardRatio;
+    const tpMultiplier = typeof rawTp === 'number' && rawTp >= 1.0 && rawTp <= 5.0 ? rawTp : 2.0;
     const atrMultiplier = typeof rp.atrStopLossMultiplier === 'number' && rp.atrStopLossMultiplier >= 0.5 && rp.atrStopLossMultiplier <= 5.0 ? rp.atrStopLossMultiplier : 1.5;
 
     let currentAtr = 0;
@@ -1726,38 +2107,167 @@ export async function handleTriggerManualTradeAlert(
 
     const riskParams: RiskParameters = {
       accountRiskPercent: riskPercent,
-      riskRewardRatio: rrRatio,
+      atrTakeProfitMultiplier: tpMultiplier,
       atrStopLossMultiplier: atrMultiplier,
+      riskRewardRatio: tpMultiplier, // Legacy mirror for interface compatibility
       maxExposureLimit: 25.0
     };
 
     const stopLossDistance = StopLossCalculator.calculateDistance(currentAtr, riskParams);
-    const takeProfitDistance = TakeProfitCalculator.calculateDistance(stopLossDistance, riskParams);
-    const positionSize = OrderSizing.calculateSize(accountBalance, stopLossDistance, targetEntryPrice, riskParams);
+    const takeProfitDistance = TakeProfitCalculator.calculateDistance(currentAtr, riskParams);
 
-    const stopLoss = side === 'BUY' ? Math.max(0.01, targetEntryPrice - stopLossDistance) : targetEntryPrice + stopLossDistance;
-    const takeProfit = side === 'BUY' ? targetEntryPrice + takeProfitDistance : Math.max(0.01, targetEntryPrice - takeProfitDistance);
-    const estimatedPnl = Math.abs(takeProfit - targetEntryPrice) * (targetEntryPrice > 0 ? positionSize / targetEntryPrice : 0);
-    const entryIntent = (config?.entryIntent as any) || 'WAIT_FOR_PRICE';
+    // Allocation Priority Hierarchy (Model A Only):
+    // 1. Authoritative: User-configured tradeValueUsdt from Trade Setup
+    // 2. Secondary fallback: Explicit positionSize passed in config
+    // 3. Fallback: Standard system minimum allocation (5.00 USDT)
+    const explicitTradeAmount = typeof config?.tradeValueUsdt === 'number' && config.tradeValueUsdt > 0
+      ? config.tradeValueUsdt
+      : undefined;
+    const secondaryTradeAmount = explicitTradeAmount ?? (
+      typeof config?.positionSize === 'number' && config.positionSize > 0
+        ? config.positionSize
+        : undefined
+    );
+    const positionSize = secondaryTradeAmount ?? 5.0;
 
-    let tickSize = 0.01;
+    let tickSize = 0;
+    let minPrice = 0;
+    let matchedMarket: any = null;
     try {
       const markets = await adapter.fetchMarkets();
-      const market = markets.find(m => m.symbol === orderSymbol || m.id === orderSymbol.replace('/', ''));
-      if (market?.precision?.price) {
-        tickSize = typeof market.precision.price === 'number' ? market.precision.price : parseFloat(market.precision.price);
+      const cleanSymbol = orderSymbol.toUpperCase();
+      const rawBase = cleanSymbol.split('/')[0];
+      const rawId = cleanSymbol.replace('/', '');
+
+      matchedMarket = markets.find(m =>
+        m.symbol?.toUpperCase() === cleanSymbol ||
+        m.id?.toUpperCase() === rawId ||
+        m.symbol?.toUpperCase() === rawId ||
+        (m.base?.toUpperCase() === rawBase && m.quote?.toUpperCase() === 'USDT')
+      );
+
+      if (matchedMarket) {
+        if (typeof matchedMarket.precision?.price === 'number' && matchedMarket.precision.price > 0) {
+          tickSize = matchedMarket.precision.price;
+        } else if (typeof matchedMarket.precision?.price === 'string') {
+          const parsed = parseFloat(matchedMarket.precision.price);
+          if (parsed > 0) tickSize = parsed;
+        }
+
+        if (matchedMarket.limits?.price?.min) {
+          const minP = matchedMarket.limits.price.min as any;
+          minPrice = typeof minP?.toNumber === 'function' ? minP.toNumber() : (typeof minP === 'number' ? minP : 0);
+        }
       }
     } catch (_) {}
 
-    const getPrecisionFromTickSize = (tick: number): number => {
-      if (!tick || tick >= 1) return 2;
-      const str = tick.toString();
-      const dec = str.split('.')[1];
-      return dec ? dec.length : 2;
-    };
-    const decimals = getPrecisionFromTickSize(tickSize);
-    const quantizedStopLoss = tickSize > 0 ? Math.round(stopLoss / tickSize) * tickSize : stopLoss;
-    const quantizedTakeProfit = tickSize > 0 ? Math.round(takeProfit / tickSize) * tickSize : takeProfit;
+    // Authoritative Exchange Metadata Verification (Fail Closed)
+    if (!matchedMarket) {
+      c.status(400);
+      return c.json({
+        success: false,
+        error: `Exchange trading rules for '${orderSymbol}' could not be loaded from exchange. Please try again.`,
+        message: `Exchange trading rules for '${orderSymbol}' could not be loaded from exchange. Please try again.`,
+        code: 'EXCHANGE_METADATA_UNAVAILABLE',
+      });
+    }
+
+    const rawMinQty = matchedMarket.limits?.amount?.min as any;
+    const minOrderQty = typeof rawMinQty?.toNumber === 'function'
+      ? rawMinQty.toNumber()
+      : (typeof rawMinQty === 'number' ? rawMinQty : (parseFloat(rawMinQty) || 0));
+
+    const rawQtyStep = matchedMarket.precision?.amount as any;
+    const qtyStep = typeof rawQtyStep === 'number' && !isNaN(rawQtyStep) && rawQtyStep > 0
+      ? rawQtyStep
+      : (parseFloat(rawQtyStep) || 0);
+
+    const rawMinNotional = matchedMarket.limits?.cost?.min as any;
+    const minNotional = typeof rawMinNotional?.toNumber === 'function'
+      ? rawMinNotional.toNumber()
+      : (typeof rawMinNotional === 'number' ? rawMinNotional : (parseFloat(rawMinNotional) || 0));
+
+    // Fail closed if required execution constraints cannot be verified
+    if (minOrderQty <= 0 || qtyStep <= 0 || minNotional <= 0) {
+      c.status(400);
+      return c.json({
+        success: false,
+        error: `Authoritative order execution constraints for '${orderSymbol}' could not be verified from exchange rules.`,
+        message: `Authoritative order execution constraints for '${orderSymbol}' could not be verified from exchange rules.`,
+        code: 'INVALID_EXCHANGE_RULES',
+        details: {
+          symbol: orderSymbol,
+          qtyStep,
+          minOrderQty,
+          minNotional,
+        }
+      });
+    }
+
+    // Pre-Alert Execution Eligibility Gate for Manual Trade
+    const eligibility = ExecutionEligibilityGate.evaluate({
+      tradeAmountUsdt: positionSize,
+      currentPrice: targetEntryPrice,
+      qtyStep,
+      minOrderQty,
+      minNotional,
+    });
+
+    if (!eligibility.isExecutable) {
+      c.status(400);
+      return c.json({
+        success: false,
+        error: eligibility.rejectionReason || `Trade amount ($${positionSize} USDT) cannot meet exchange order constraints for ${orderSymbol}`,
+        message: eligibility.rejectionReason || `Trade amount ($${positionSize} USDT) cannot meet exchange order constraints for ${orderSymbol}`,
+        code: 'EXECUTION_INELIGIBLE',
+        details: {
+          symbol: orderSymbol,
+          tradeAmountUsdt: positionSize,
+          currentPrice: targetEntryPrice,
+          minOrderQty,
+          qtyStep,
+          minNotional,
+          quantizedQty: eligibility.quantizedQty,
+          postRoundingNotional: eligibility.postRoundingNotional,
+          rejectionReason: eligibility.rejectionReason,
+        }
+      });
+    }
+
+    // Dynamic magnitude fallback if authoritative tickSize could not be fetched
+    if (!tickSize || tickSize <= 0) {
+      if (targetEntryPrice <= 0) tickSize = 0.01;
+      else if (targetEntryPrice < 0.0001) tickSize = 0.00000001; // 8 decimals (e.g. PEPE, SHIB)
+      else if (targetEntryPrice < 0.001) tickSize = 0.000001;     // 6 decimals (e.g. SOPH)
+      else if (targetEntryPrice < 0.01) tickSize = 0.00001;       // 5 decimals (e.g. GALA)
+      else if (targetEntryPrice < 0.1) tickSize = 0.0001;         // 4 decimals (e.g. DOGE)
+      else if (targetEntryPrice < 1.0) tickSize = 0.001;          // 3 decimals
+      else tickSize = 0.01;                                       // Standard 2 decimals
+    }
+
+    const minAllowedPrice = minPrice > 0 ? minPrice : tickSize;
+
+    const entryBN = new BigNumber(targetEntryPrice);
+    const slDistBN = new BigNumber(stopLossDistance);
+    const tpDistBN = new BigNumber(takeProfitDistance);
+
+    const theoreticalSL = side === 'BUY' ? entryBN.minus(slDistBN).toNumber() : entryBN.plus(slDistBN).toNumber();
+    const theoreticalTP = side === 'BUY' ? entryBN.plus(tpDistBN).toNumber() : entryBN.minus(tpDistBN).toNumber();
+
+    const normalized = PriceNormalizer.normalizeTradePrices({
+      entryPrice: targetEntryPrice,
+      theoreticalSL,
+      theoreticalTP,
+      tickSize,
+      minAllowedPrice,
+      side: side as 'BUY' | 'SELL'
+    });
+
+    const finalStopLoss = normalized.stopLoss;
+    const finalTakeProfit = normalized.takeProfit;
+
+    const estimatedPnl = Math.abs(finalTakeProfit - targetEntryPrice) * (targetEntryPrice > 0 ? positionSize / targetEntryPrice : 0);
+    const entryIntent = (config?.entryIntent as any) || 'WAIT_FOR_PRICE';
 
     const alert: TradeAlert = {
       id: crypto.randomUUID(),
@@ -1768,12 +2278,13 @@ export async function handleTriggerManualTradeAlert(
       entryIntent: entryIntent,
       entryPrice: targetEntryPrice,
       signalPrice: currentPrice,
-      stopLoss: parseFloat(quantizedStopLoss.toFixed(decimals)),
-      takeProfit: parseFloat(quantizedTakeProfit.toFixed(decimals)),
+      stopLoss: finalStopLoss,
+      takeProfit: finalTakeProfit,
       positionSize: parseFloat(positionSize.toFixed(2)),
       estimatedPnl: parseFloat(estimatedPnl.toFixed(2)),
       timestamp: new Date().toISOString(),
-      status: 'pending'
+      status: 'pending',
+
     };
 
     const botId = c.env.TRADING_BOTS.idFromName(userId);

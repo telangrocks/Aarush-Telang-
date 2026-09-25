@@ -95,6 +95,52 @@ export class ReconciliationEngine {
 
         if (order.id) intent.actualOrderId = order.id;
 
+        // Lifecycle-Aware Exchange SL/TP Readback:
+        // 1. Order-level protection readback (Working / Pre-Fill / Immediate Fill)
+        let confirmedSL: number | null = typeof order.stopLoss?.toNumber === 'function'
+          ? order.stopLoss.toNumber()
+          : (order.stopLoss ? Number(order.stopLoss) : null);
+        let confirmedTP: number | null = typeof order.takeProfit?.toNumber === 'function'
+          ? order.takeProfit.toNumber()
+          : (order.takeProfit ? Number(order.takeProfit) : null);
+
+        // 2. Position-level protection readback (When Order status is Filled and position is active)
+        if ((!confirmedSL || !confirmedTP) && (intent.status === 'FILLED' || intent.status === 'PARTIALLY_FILLED')) {
+          try {
+            if (typeof (adapter as any).fetchPositions === 'function') {
+              const positions = await (adapter as any).fetchPositions();
+              const { canonicalSymbol } = typeof (adapter as any).normalizeSymbol === 'function'
+                ? (adapter as any).normalizeSymbol(intent.symbol)
+                : { canonicalSymbol: intent.symbol };
+              const normalizedIntentSide = (intent.side || '').toLowerCase();
+              const targetSide = normalizedIntentSide === 'buy' ? 'long' : normalizedIntentSide === 'sell' ? 'short' : null;
+              const matchedPos = positions?.find((p: any) => {
+                const symMatch = p.symbol === canonicalSymbol || p.symbol === intent.symbol;
+                if (!symMatch) return false;
+                if (targetSide) {
+                  return p.side?.toLowerCase() === targetSide || p.side?.toLowerCase() === normalizedIntentSide;
+                }
+                return true;
+              });
+              if (matchedPos) {
+                const posSL = typeof matchedPos.stopLoss?.toNumber === 'function' ? matchedPos.stopLoss.toNumber() : (matchedPos.stopLoss ? Number(matchedPos.stopLoss) : null);
+                const posTP = typeof matchedPos.takeProfit?.toNumber === 'function' ? matchedPos.takeProfit.toNumber() : (matchedPos.takeProfit ? Number(matchedPos.takeProfit) : null);
+                if (posSL && posSL > 0) confirmedSL = posSL;
+                if (posTP && posTP > 0) confirmedTP = posTP;
+              }
+            }
+          } catch (posErr: any) {
+            console.warn(`[RECONCILIATION] Fallback fetchPositions for SL/TP failed:`, posErr?.message || posErr);
+          }
+        }
+
+        if (confirmedSL && confirmedSL > 0) {
+          intent.exchangeConfirmedStopLoss = confirmedSL.toString();
+        }
+        if (confirmedTP && confirmedTP > 0) {
+          intent.exchangeConfirmedTakeProfit = confirmedTP.toString();
+        }
+
         return intent;
       }
 

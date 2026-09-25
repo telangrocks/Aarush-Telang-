@@ -84,6 +84,7 @@ class FakeExchangeRepository : ExchangeRepository {
 }
 
 class FakeMarketRepositoryMinimal : com.cryptopulse.app.domain.repository.MarketRepository {
+    override suspend fun getCandidates(budget: Double): NetworkResult<List<com.cryptopulse.app.domain.models.MarketCandidate>> = NetworkResult.Success(emptyList())
     override suspend fun getCandidates(): NetworkResult<List<com.cryptopulse.app.domain.models.MarketCandidate>> = NetworkResult.Success(emptyList())
     override suspend fun getTicker(symbol: String): NetworkResult<com.cryptopulse.app.domain.models.Ticker> = NetworkResult.Error(NetworkError.Unknown(Exception()))
     override suspend fun getKlines(symbol: String, interval: String, limit: Int): NetworkResult<List<com.cryptopulse.app.domain.models.Kline>> = NetworkResult.Success(emptyList())
@@ -104,7 +105,7 @@ class FakeBotRepositoryMinimal : com.cryptopulse.app.domain.repository.BotReposi
     override fun stopObserving() {}
     override fun updateAnalysisState(snapshot: com.cryptopulse.app.domain.models.AnalysisSnapshot?) {}
     override fun updateConnectionState(connected: Boolean) {}
-    override suspend fun activateBot(symbol: String, strategy: String, config: com.cryptopulse.app.domain.models.TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
+    override suspend fun activateBot(symbols: List<String>, strategy: String, config: com.cryptopulse.app.domain.models.TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun getStatus(): NetworkResult<com.cryptopulse.app.domain.models.BotStatus> = NetworkResult.Success(com.cryptopulse.app.domain.models.BotStatus(state = com.cryptopulse.app.domain.models.BotState.NOT_STARTED, isActive = false))

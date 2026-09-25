@@ -13,13 +13,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.*
 import org.junit.After
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import com.cryptopulse.app.data.api.dto.technicalanalysis.response.TechnicalAnalysisResponseDto
 import com.cryptopulse.app.data.mapper.technicalanalysis.toAnalysisSnapshot
 
@@ -63,7 +64,7 @@ class TechnicalAnalysisViewModelTest {
             private val _isConnected = MutableStateFlow(true)
             override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-            override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
                 return if (shouldSucceed) {
                     NetworkResult.Success(Unit)
                 } else {
@@ -634,8 +635,8 @@ class TechnicalAnalysisViewModelTest {
         viewModel.selectStrategy("Momentum", "BTCUSDT")
         testDispatcher.scheduler.advanceUntilIdle()
 
-        // 1. TA activeStrategyId must be updated
-        assertEquals("Momentum", viewModel.activeStrategyId.value)
+        // 1. TA viewedStrategyId must be updated
+        assertEquals("Momentum", viewModel.viewedStrategyId.value)
         assertEquals("Momentum", requestedStrategy)
 
         // 2. Strategy-independent user setup (entryPrice, riskParameters, entryIntent) preserved
@@ -690,7 +691,7 @@ class TechnicalAnalysisViewModelTest {
         testDispatcher.scheduler.advanceUntilIdle()
 
         // Momentum returned and should be active in explorationState
-        assertEquals("Momentum", viewModel.activeStrategyId.value)
+        assertEquals("Momentum", viewModel.viewedStrategyId.value)
         assertEquals("Momentum Strategy", viewModel.explorationState.value?.strategyMetadata?.displayName)
         assertEquals(85, viewModel.explorationState.value?.marketAnalysis?.confidenceScore)
 
@@ -699,7 +700,7 @@ class TechnicalAnalysisViewModelTest {
         testDispatcher.scheduler.advanceUntilIdle()
 
         // Active state must STILL be Momentum, NOT overwritten by late ScalperV2 response
-        assertEquals("Momentum", viewModel.activeStrategyId.value)
+        assertEquals("Momentum", viewModel.viewedStrategyId.value)
         assertEquals("Momentum Strategy", viewModel.explorationState.value?.strategyMetadata?.displayName)
         assertEquals(85, viewModel.explorationState.value?.marketAnalysis?.confidenceScore)
     }
@@ -728,7 +729,7 @@ class TechnicalAnalysisViewModelTest {
             override val isBotActive: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
             override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
 
-            override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "Momentum"))
             override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
@@ -798,7 +799,7 @@ class TechnicalAnalysisViewModelTest {
             override val isBotActive: StateFlow<Boolean> = isBotActiveFlow.asStateFlow()
             override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
 
-            override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "ScalperV2"))
             override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
@@ -871,7 +872,7 @@ class TechnicalAnalysisViewModelTest {
         // Start screen & polling
         viewModel.onScreenStarted("BTC/USDT")
         testDispatcher.scheduler.advanceTimeBy(5500L)
-        testDispatcher.scheduler.advanceUntilIdle()
+        testDispatcher.scheduler.runCurrent()
 
         // Polling loop executed and refreshed analysisState with updated score
         assertTrue("callCount must be >= 2 after polling tick", callCount >= 2)
@@ -879,12 +880,541 @@ class TechnicalAnalysisViewModelTest {
 
         // Advance another 5s
         testDispatcher.scheduler.advanceTimeBy(5500L)
-        testDispatcher.scheduler.advanceUntilIdle()
+        testDispatcher.scheduler.runCurrent()
 
         assertTrue("callCount must be >= 3 after second polling tick", callCount >= 3)
         assertEquals(80, viewModel.analysisState.value?.marketAnalysis?.confidenceScore)
 
         viewModel.onScreenStopped()
+    }
+
+    @Test
+    fun `TEST 1 and 2 and 3 - browsing strategies when bot is active on VWAP does not alter active bot state or activate bot`() = runTest {
+        val sessionRepo = createMockSessionRepository("VWAP")
+        val isBotActiveFlow = MutableStateFlow(true)
+        val committedStrategyFlow = MutableStateFlow<String?>("VWAP")
+        var activateBotCallCount = 0
+
+        val customBotRepo = object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = committedStrategyFlow.asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = isBotActiveFlow.asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+                activateBotCallCount++
+                committedStrategyFlow.value = strategy
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun deactivateBot(): NetworkResult<Unit> {
+                committedStrategyFlow.value = null
+                isBotActiveFlow.value = false
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "VWAP"))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strategy, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        var taCallCount = 0
+        var lastRequestedStrategy: String? = null
+        val mockTaRepo = object : TechnicalAnalysisRepository {
+            override suspend fun getAnalysis(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<TechnicalAnalysisResult> = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(400, "Mock", "MOCK"))
+            override suspend fun getAnalysisSnapshot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<AnalysisSnapshot> {
+                taCallCount++
+                lastRequestedStrategy = strategy
+                return NetworkResult.Success(createDummySnapshot(strategy, strategy, 75))
+            }
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = sessionRepo,
+            botRepository = customBotRepo,
+            technicalAnalysisRepository = mockTaRepo,
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        // Initial active state is VWAP
+        assertEquals("VWAP", viewModel.activeStrategyId.value)
+        assertTrue(viewModel.isBotActive.value)
+
+        // TEST 1: Tap Scalper V2
+        viewModel.selectStrategyForViewing("ScalperV2", "BTCUSDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("ScalperV2", viewModel.viewedStrategyId.value)
+        assertEquals("VWAP", viewModel.activeStrategyId.value)
+        assertEquals("ScalperV2", lastRequestedStrategy)
+        assertEquals(0, activateBotCallCount) // ZERO activation calls
+
+        // TEST 2: Tap Breakout
+        viewModel.selectStrategyForViewing("Breakout", "BTCUSDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("Breakout", viewModel.viewedStrategyId.value)
+        assertEquals("VWAP", viewModel.activeStrategyId.value)
+        assertEquals("Breakout", lastRequestedStrategy)
+        assertEquals(0, activateBotCallCount)
+
+        // TEST 3: Tap Momentum, MeanReversion, VWAP
+        viewModel.selectStrategyForViewing("Momentum", "BTCUSDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals("Momentum", viewModel.viewedStrategyId.value)
+        assertEquals("VWAP", viewModel.activeStrategyId.value)
+
+        viewModel.selectStrategyForViewing("MeanReversion", "BTCUSDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals("MeanReversion", viewModel.viewedStrategyId.value)
+        assertEquals("VWAP", viewModel.activeStrategyId.value)
+
+        viewModel.selectStrategyForViewing("VWAP", "BTCUSDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals("VWAP", viewModel.viewedStrategyId.value)
+        assertEquals("VWAP", viewModel.activeStrategyId.value)
+        assertEquals(0, activateBotCallCount) // Never activated during browsing
+    }
+
+    @Test
+    fun `TEST 4 - preview polling continues refreshing Scalper V2 while active bot is running VWAP`() = runTest {
+        val sessionRepo = createMockSessionRepository("VWAP")
+        val isBotActiveFlow = MutableStateFlow(true)
+        val committedStrategyFlow = MutableStateFlow<String?>("VWAP")
+        var activateBotCallCount = 0
+
+        val customBotRepo = object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = committedStrategyFlow.asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = isBotActiveFlow.asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+                activateBotCallCount++
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "VWAP"))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strategy, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        var previewCallCount = 0
+        val mockTaRepo = object : TechnicalAnalysisRepository {
+            override suspend fun getAnalysis(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<TechnicalAnalysisResult> = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(400, "Mock", "MOCK"))
+            override suspend fun getAnalysisSnapshot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<AnalysisSnapshot> {
+                if (strategy == "ScalperV2") {
+                    previewCallCount++
+                }
+                return NetworkResult.Success(createDummySnapshot(strategy, strategy, 50 + previewCallCount * 5))
+            }
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = sessionRepo,
+            botRepository = customBotRepo,
+            technicalAnalysisRepository = mockTaRepo,
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        // User previews Scalper V2 while bot is active on VWAP
+        viewModel.selectStrategyForViewing("ScalperV2", "BTCUSDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(1, previewCallCount)
+
+        viewModel.onScreenStarted("BTCUSDT")
+
+        // Wait 1 polling interval (5500ms)
+        testDispatcher.scheduler.advanceTimeBy(5500L)
+        testDispatcher.scheduler.runCurrent()
+
+        assertTrue("Preview polling MUST continue when viewed strategy is different from active bot", previewCallCount >= 2)
+        assertEquals("ScalperV2", viewModel.viewedStrategyId.value)
+        assertEquals("VWAP", viewModel.activeStrategyId.value)
+        assertEquals(0, activateBotCallCount) // NO activation occurs
+
+        // Wait another polling interval
+        testDispatcher.scheduler.advanceTimeBy(5500L)
+        testDispatcher.scheduler.runCurrent()
+
+        assertTrue("Preview polling MUST continue refreshing on second interval", previewCallCount >= 3)
+        assertEquals("ScalperV2", viewModel.viewedStrategyId.value)
+        assertEquals("VWAP", viewModel.activeStrategyId.value)
+        assertEquals(0, activateBotCallCount)
+
+        viewModel.onScreenStopped()
+    }
+
+    @Test
+    fun `TEST 5 - SWITCH BOT explicitly activates Scalper V2 and updates activeStrategyId`() = runTest {
+        val sessionRepo = createMockSessionRepository("VWAP")
+        val isBotActiveFlow = MutableStateFlow(true)
+        val committedStrategyFlow = MutableStateFlow<String?>("VWAP")
+        var activateCalledWithStrategy: String? = null
+
+        val customBotRepo = object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = committedStrategyFlow.asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = isBotActiveFlow.asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+                activateCalledWithStrategy = strategy
+                committedStrategyFlow.value = strategy
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun deactivateBot(): NetworkResult<Unit> {
+                committedStrategyFlow.value = null
+                isBotActiveFlow.value = false
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = committedStrategyFlow.value))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strategy, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = sessionRepo,
+            botRepository = customBotRepo,
+            technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        // Preview Scalper V2 while active bot is VWAP
+        viewModel.selectStrategyForViewing("ScalperV2", "BTCUSDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("ScalperV2", viewModel.viewedStrategyId.value)
+        assertEquals("VWAP", viewModel.activeStrategyId.value)
+        assertNull(activateCalledWithStrategy)
+
+        // User explicitly taps "SWITCH BOT TO THIS STRATEGY"
+        var callbackInvoked = false
+        viewModel.activateBot("BTCUSDT", "ScalperV2", null) {
+            callbackInvoked = true
+        }
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // Explicit activation must succeed
+        assertTrue(callbackInvoked)
+        assertEquals("ScalperV2", activateCalledWithStrategy)
+        assertEquals("ScalperV2", viewModel.activeStrategyId.value)
+        assertEquals("ScalperV2", viewModel.committedStrategyId.value)
+    }
+
+    @Test
+    fun `sanitizeConfigForStrategy preserves legitimate target parameters, sets symbol, and strips cross-strategy overrides`() = runTest {
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = createMockSessionRepository("ScalperV2"),
+            botRepository = createMockBotRepository(),
+            technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        val baseConfig = TradeSetupConfig(
+            strategyId = "ScalperV2",
+            symbol = "ETHUSDT",
+            entryPrice = 3000.0,
+            parameters = mapOf("fast_ema" to "9", "slow_ema" to "21"),
+            riskParameters = mapOf("accountRiskPercent" to 1.5, "riskRewardRatio" to 2.0)
+        )
+
+        // Case 1: Target strategy is ScalperV2 (same strategy) on new symbol BTCUSDT
+        val sameStrategyClean = viewModel.sanitizeConfigForStrategy(baseConfig, "ScalperV2", "BTCUSDT")
+        assertEquals("ScalperV2", sameStrategyClean.strategyId)
+        assertEquals("BTCUSDT", sameStrategyClean.symbol) // Guaranteed symbol update
+        assertEquals("9", sameStrategyClean.parameters["fast_ema"]) // Preserves legitimate Scalper custom parameters
+        assertEquals(1.5, sameStrategyClean.riskParameters["accountRiskPercent"]) // Preserves user risk parameters
+
+        // Case 2: Target strategy is Momentum (different strategy) on BTCUSDT
+        val crossStrategyClean = viewModel.sanitizeConfigForStrategy(baseConfig, "Momentum", "BTCUSDT")
+        assertEquals("Momentum", crossStrategyClean.strategyId)
+        assertEquals("BTCUSDT", crossStrategyClean.symbol)
+        assertTrue("Incompatible cross-strategy parameters must be stripped", crossStrategyClean.parameters.isEmpty())
+        assertEquals(1.5, crossStrategyClean.riskParameters["accountRiskPercent"]) // Preserves user risk parameters
+        assertEquals(3000.0, crossStrategyClean.entryPrice, 0.0)
+    }
+
+    @Test
+    fun `strict active bot snapshot filter requires ALL 3 conditions (isBotActive, committedId == viewedId, snapshotId == committedId)`() = runTest {
+        val botAnalysisFlow = MutableStateFlow<AnalysisSnapshot?>(null)
+        val isBotActiveFlow = MutableStateFlow(true)
+        val committedStrategyFlow = MutableStateFlow<String?>("VWAP")
+
+        val customBotRepo = object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = botAnalysisFlow.asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = committedStrategyFlow.asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = isBotActiveFlow.asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "VWAP"))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strategy, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { botAnalysisFlow.value = snapshot }
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = createMockSessionRepository("VWAP"),
+            botRepository = customBotRepo,
+            technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        // User is viewing ScalperV2 while bot is active on VWAP
+        viewModel.selectStrategyForViewing("ScalperV2", "BTCUSDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // Bot emits active VWAP snapshot (snapshotStrategyId = "VWAP")
+        val vwapSnapshot = createDummySnapshot("VWAP", "VWAP", 90)
+        botAnalysisFlow.value = vwapSnapshot
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // explorationState must NOT be overwritten by active VWAP snapshot because viewedStrategyId is ScalperV2
+        assertNotEquals("VWAP snapshot must NOT leak into ScalperV2 preview", "VWAP", viewModel.explorationState.value?.strategyMetadata?.strategyId)
+
+        // User switches view to VWAP (viewedStrategyId = "VWAP")
+        viewModel.selectStrategyForViewing("VWAP", "BTCUSDT")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // Emitting VWAP snapshot now matches ALL 3 conditions
+        val updatedVwapSnapshot = createDummySnapshot("VWAP", "VWAP", 95)
+        botAnalysisFlow.value = updatedVwapSnapshot
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("VWAP", viewModel.explorationState.value?.strategyMetadata?.strategyId)
+        assertEquals(95, viewModel.explorationState.value?.marketAnalysis?.confidenceScore)
+    }
+
+    @Test
+    fun `double-tap concurrency guard prevents duplicate activateBot and stopBot requests`() = runTest {
+        var activateCallCount = 0
+        var deactivateCallCount = 0
+
+        val customBotRepo = object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = MutableStateFlow<String?>(null).asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+                activateCallCount++
+                kotlinx.coroutines.delay(100) // simulate network latency
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun deactivateBot(): NetworkResult<Unit> {
+                deactivateCallCount++
+                kotlinx.coroutines.delay(100)
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "ScalperV2"))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strategy, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = createMockSessionRepository("ScalperV2"),
+            botRepository = customBotRepo,
+            technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        // Rapid double tap activateBot
+        viewModel.activateBot("BTCUSDT", "ScalperV2", null) {}
+        viewModel.activateBot("BTCUSDT", "ScalperV2", null) {}
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("Exactly ONE activateBot call should be dispatched", 1, activateCallCount)
+
+        // Rapid double tap stopBot
+        viewModel.stopBot {}
+        viewModel.stopBot {}
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("Exactly ONE deactivateBot call should be dispatched", 1, deactivateCallCount)
+    }
+
+    @Test
+    fun `TEST H - all 10 deterministic strategy and activation combinations (H1_1 through H5_2)`() = runTest {
+        val strategies = listOf("ScalperV2", "Momentum", "Breakout", "MeanReversion", "VWAP")
+
+        for (strategy in strategies) {
+            // Sub-test X.1: Active Bot == Viewed Strategy (isViewingActiveBot == true)
+            val committedFlowSame = MutableStateFlow<String?>(strategy)
+            val isBotActiveFlowSame = MutableStateFlow(true)
+            var deactivated = false
+
+            val botRepoSame = object : BotRepository {
+                private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+                override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+                override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+                override val committedStrategyId: StateFlow<String?> = committedFlowSame.asStateFlow()
+                override val isBotActive: StateFlow<Boolean> = isBotActiveFlowSame.asStateFlow()
+                override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+                override suspend fun activateBot(symbols: List<String>, strat: String, config: TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
+                override suspend fun deactivateBot(): NetworkResult<Unit> {
+                    deactivated = true
+                    return NetworkResult.Success(Unit)
+                }
+                override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = strategy))
+                override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+                override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+                override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+                override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+                override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+                override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+                override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+                override suspend fun triggerAlert(symbol: String, strat: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strat, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+                override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
+                override fun updateConnectionState(connected: Boolean) {}
+                override fun startObserving() {}
+                override fun stopObserving() {}
+            }
+
+            val viewModelSame = TechnicalAnalysisViewModel(
+                sessionRepository = createMockSessionRepository(strategy),
+                botRepository = botRepoSame,
+                technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+                strategyRepository = createMockStrategyRepository(),
+                tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+            )
+
+            viewModelSame.selectStrategyForViewing(strategy, "BTCUSDT")
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            // State check for Case X.1: Active Bot == Viewed Strategy
+            val isViewingActiveBot = viewModelSame.isBotActive.value &&
+                !viewModelSame.committedStrategyId.value.isNullOrBlank() &&
+                viewModelSame.viewedStrategyId.value.equals(viewModelSame.committedStrategyId.value, ignoreCase = true)
+
+            assertTrue("When active strategy ($strategy) == viewed strategy ($strategy), isViewingActiveBot MUST be true", isViewingActiveBot)
+            
+            viewModelSame.stopBot {}
+            testDispatcher.scheduler.advanceUntilIdle()
+            assertTrue("Pressing action button when viewing active strategy must call deactivateBot", deactivated)
+
+
+            // Sub-test X.2: Active Bot != Viewed Strategy (isViewingActiveBot == false)
+            val differentActiveStrategy = if (strategy == "VWAP") "ScalperV2" else "VWAP"
+            val committedFlowDiff = MutableStateFlow<String?>(differentActiveStrategy)
+            val isBotActiveFlowDiff = MutableStateFlow(true)
+            var activatedWithStrategy: String? = null
+
+            val botRepoDiff = object : BotRepository {
+                private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+                override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+                override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+                override val committedStrategyId: StateFlow<String?> = committedFlowDiff.asStateFlow()
+                override val isBotActive: StateFlow<Boolean> = isBotActiveFlowDiff.asStateFlow()
+                override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+                override suspend fun activateBot(symbols: List<String>, strat: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+                    activatedWithStrategy = strat
+                    return NetworkResult.Success(Unit)
+                }
+                override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+                override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = differentActiveStrategy))
+                override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+                override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+                override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+                override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+                override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+                override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+                override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+                override suspend fun triggerAlert(symbol: String, strat: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strat, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+                override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
+                override fun updateConnectionState(connected: Boolean) {}
+                override fun startObserving() {}
+                override fun stopObserving() {}
+            }
+
+            val viewModelDiff = TechnicalAnalysisViewModel(
+                sessionRepository = createMockSessionRepository(strategy),
+                botRepository = botRepoDiff,
+                technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+                strategyRepository = createMockStrategyRepository(),
+                tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+            )
+
+            viewModelDiff.selectStrategyForViewing(strategy, "BTCUSDT")
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            // State check for Case X.2: Active Bot != Viewed Strategy
+            val isViewingActiveBotDiff = viewModelDiff.isBotActive.value &&
+                !viewModelDiff.committedStrategyId.value.isNullOrBlank() &&
+                viewModelDiff.viewedStrategyId.value.equals(viewModelDiff.committedStrategyId.value, ignoreCase = true)
+
+            assertFalse("When active strategy ($differentActiveStrategy) != viewed strategy ($strategy), isViewingActiveBot MUST be false", isViewingActiveBotDiff)
+
+            viewModelDiff.activateBot("BTCUSDT", strategy, null) {}
+            testDispatcher.scheduler.advanceUntilIdle()
+            assertEquals("Pressing action button when viewed strategy is not active must call activateBot with viewed strategy", strategy, activatedWithStrategy)
+        }
     }
 }
 

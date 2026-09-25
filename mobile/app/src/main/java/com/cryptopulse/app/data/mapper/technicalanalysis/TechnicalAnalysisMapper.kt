@@ -31,7 +31,8 @@ fun TechnicalAnalysisResponseDto.toAnalysisSnapshot(): AnalysisSnapshot {
         engineStatus = engineStatus,
         marketAnalysis = marketAnalysis,
         tradingSignal = tradingSignal,
-        strategyMetadata = strategyMetadata
+        strategyMetadata = strategyMetadata,
+        requiredScore = requiredScore ?: marketAnalysis?.requiredScore
     )
     val domainSnapshot = snapshotDto.toDomain()
     val domainOpportunity = opportunity?.let { BotAlert.fromMap(it) }

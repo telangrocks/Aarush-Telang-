@@ -5,7 +5,7 @@ export interface RiskAssessment {
   stopLossDistance: number;
   takeProfitDistance: number;
   riskRewardRatio: number;
-  positionSizeRecommendation: number; // Quoted in quote currency (e.g. USDT)
+  positionSizeRecommendation?: number; // Optional (Model B legacy)
   maximumExposure: number; // Max risk amount allowed per trade
   riskClassification: RiskClassification;
   explanation: string[];

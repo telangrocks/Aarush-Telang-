@@ -3,7 +3,7 @@
  *
  * Simulates high-load conditions and malformed data scenarios.
  * Verifies the platform remains stable under duress with:
- * - Graceful HOLD on invalid/empty data
+ * - Graceful no-signal return (null) on invalid/empty data
  * - Zero crashes under thousands of evaluation cycles
  * - Correct handling of malformed candles
  */
@@ -71,7 +71,7 @@ describe('Endurance Stress Tests', () => {
     expect(errors).toBe(0);
   });
 
-  it('should return HOLD for empty candle arrays', () => {
+  it('should return no signal for empty candle arrays', () => {
     const snapshot = baseSnapshot({
       candles: { '15m': [] }
     });
@@ -81,6 +81,7 @@ describe('Endurance Stress Tests', () => {
       const result = strategy.evaluate(ctx);
       expect(result.strategyId).toBeDefined();
       expect(result.hasSignal).toBe(false);
+      expect(result.metadata?.signal ?? null).toBeNull();
       expect(result.metadata?.reasoning?.length).toBeGreaterThan(0);
     }
   });

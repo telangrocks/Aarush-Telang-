@@ -29,23 +29,25 @@ import javax.inject.Singleton
 class BotRepositoryImpl @Inject constructor(
     private val botRemoteDataSource: BotRemoteDataSource,
     private val dispatcherProvider: DispatcherProvider,
-    private val tokenManager: TokenManager
+    private val tokenManager: TokenManager? = null
 ) : BotRepository {
 
     constructor(
         botRemoteDataSource: BotRemoteDataSource,
         dispatcherProvider: DispatcherProvider
-    ) : this(botRemoteDataSource, dispatcherProvider, TokenManager(FakeContextForBot()))
+    ) : this(botRemoteDataSource, dispatcherProvider, null)
 
     private val scope = CoroutineScope(dispatcherProvider.io + Job())
     private var pollingJob: Job? = null
     private val pollingMutex = Mutex()
 
     init {
-        scope.launch {
-            tokenManager.tokenFlow.collect { state ->
-                if (state is TokenState.Unauthenticated || state is TokenState.Uninitialized) {
-                    stopObserving()
+        tokenManager?.let { tm ->
+            scope.launch {
+                tm.tokenFlow.collect { state ->
+                    if (state is TokenState.Unauthenticated || state is TokenState.Uninitialized) {
+                        stopObserving()
+                    }
                 }
             }
         }
@@ -66,16 +68,27 @@ class BotRepositoryImpl @Inject constructor(
     private val _isConnected = MutableStateFlow(false)
     override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-    override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+    override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+        if (symbols.isEmpty()) {
+            return@withContext NetworkResult.Error(
+                com.cryptopulse.app.core.error.NetworkError.HttpError(
+                    code = 400,
+                    message = "Cannot activate bot: no eligible candidate symbols provided.",
+                    detail = "Candidate list is empty"
+                )
+            )
+        }
+        val primarySymbol = symbols.first()
         val mergedConfig = mutableMapOf<String, Any>()
         config?.parameters?.let { mergedConfig.putAll(it) }
         config?.riskParameters?.let { if (it.isNotEmpty()) mergedConfig["riskParameters"] = it }
 
         val request = ActivateBotRequestDto(
-            coinId = symbol,
+            symbols = symbols,
+            coinId = primarySymbol,
             strategy = strategy,
             targetEntryPrice = config?.entryPrice?.takeIf { it > 0.0 },
-            positionSize = config?.tradeValueUsdt?.takeIf { it > 0.0 },
+            positionSize = config?.tradeValueUsdt?.takeIf { it > 0.0 } ?: 5.0,
             config = mergedConfig.takeIf { it.isNotEmpty() }
         )
         when (val result = botRemoteDataSource.activate(request)) {
@@ -83,6 +96,13 @@ class BotRepositoryImpl @Inject constructor(
                 if (result.data.success) {
                     _committedStrategyId.value = strategy
                     _isBotActive.value = true
+                    try {
+                        com.cryptopulse.app.forensics.CidDiagnosticManager.logStrategyActivated(
+                            strategyId = strategy,
+                            symbol = primarySymbol,
+                            entryPrice = config?.entryPrice?.takeIf { it > 0.0 }
+                        )
+                    } catch (_: Throwable) {}
                     NetworkResult.Success(Unit)
                 } else {
                     NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception(result.data.message)))
@@ -91,6 +111,19 @@ class BotRepositoryImpl @Inject constructor(
             is NetworkResult.Error -> result
         }
     }
+
+    override suspend fun activateBot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> =
+        if (symbol.isBlank()) {
+            NetworkResult.Error(
+                com.cryptopulse.app.core.error.NetworkError.HttpError(
+                    code = 400,
+                    message = "Cannot activate bot: symbol is blank.",
+                    detail = "Symbol is blank"
+                )
+            )
+        } else {
+            activateBot(listOf(symbol), strategy, config)
+        }
 
     override suspend fun deactivateBot(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.deactivate()) {
@@ -123,7 +156,38 @@ class BotRepositoryImpl @Inject constructor(
 
     override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.executeTrade(alertId)) {
-            is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain(alertId))
+            is NetworkResult.Success -> {
+                if (!result.data.success) {
+                    NetworkResult.Error(
+                        com.cryptopulse.app.core.error.NetworkError.HttpError(
+                            code = 400,
+                            message = result.data.message.ifBlank { "Trade execution rejected by exchange" },
+                            detail = result.data.message
+                        )
+                    )
+                } else {
+                    NetworkResult.Success(result.data.toDomain(alertId))
+                }
+            }
+            is NetworkResult.Error -> result
+        }
+    }
+
+    override suspend fun executeTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
+        when (val result = botRemoteDataSource.executeTrade(request)) {
+            is NetworkResult.Success -> {
+                if (!result.data.success) {
+                    NetworkResult.Error(
+                        com.cryptopulse.app.core.error.NetworkError.HttpError(
+                            code = 400,
+                            message = result.data.message.ifBlank { "Trade execution rejected by exchange" },
+                            detail = result.data.message
+                        )
+                    )
+                } else {
+                    NetworkResult.Success(result.data.toDomain(request.alertId))
+                }
+            }
             is NetworkResult.Error -> result
         }
     }
@@ -208,8 +272,8 @@ class BotRepositoryImpl @Inject constructor(
             pollingMutex.withLock {
                 if (pollingJob?.isActive == true) return@withLock
                 
-                val token = tokenManager.getToken()
-                if (token.isNullOrEmpty()) {
+                val token = tokenManager?.getToken()
+                if (tokenManager != null && token.isNullOrEmpty()) {
                     _isConnected.value = false
                     return@withLock
                 }
@@ -217,7 +281,10 @@ class BotRepositoryImpl @Inject constructor(
                 _isConnected.value = true
                 pollingJob = scope.launch {
                     while (isActive) {
-                        when (val result = botRemoteDataSource.getAnalysisStatus()) {
+                        val result = botRemoteDataSource.getAnalysisStatus()
+                        com.cryptopulse.app.forensics.ShrikantTelang_ForensicCID.onAnalysisPollResult(result, _committedStrategyId.value)
+                        com.cryptopulse.app.forensics.CidDiagnosticManager.onAnalysisPollResult(result, _committedStrategyId.value)
+                        when (result) {
                             is NetworkResult.Success -> {
                                 val dto = result.data
                                 val domainSnapshot = dto.toDomain()
@@ -227,17 +294,26 @@ class BotRepositoryImpl @Inject constructor(
                                 val rawState = dto.engineStatus?.state?.uppercase()
                                 val activeStrat = dto.engineStatus?.activeStrategy
 
-                                val isRunning = !activeStrat.isNullOrBlank() &&
-                                    (rawState == "WAITING" || rawState == "ANALYSING" || rawState == "EVALUATING" || rawState == "COLLECTING_DATA" || rawState == "RUNNING" || rawState == "ACTIVE") &&
-                                    rawState != "PREVIEW" &&
-                                    rawState != "STOPPED" &&
-                                    rawState != "INACTIVE"
+                                // 1. Explicit Authoritative ACTIVE State:
+                                val isAuthoritativeActive = !activeStrat.isNullOrBlank() &&
+                                    (rawState == "WAITING" || rawState == "ANALYSING" || rawState == "EVALUATING" ||
+                                     rawState == "COLLECTING_DATA" || rawState == "RUNNING" || rawState == "ACTIVE") &&
+                                    rawState != "PREVIEW" && rawState != "STOPPED" && rawState != "INACTIVE"
 
-                                _isBotActive.value = isRunning
-                                if (isRunning) {
+                                // 2. Explicit Authoritative STOPPED / INACTIVE State:
+                                val isAuthoritativeInactive = rawState == "STOPPED" || rawState == "INACTIVE"
+
+                                if (isAuthoritativeActive) {
+                                    _isBotActive.value = true
                                     _committedStrategyId.value = activeStrat
-                                } else if (rawState == "STOPPED" || rawState == "INACTIVE" || rawState == "PREVIEW") {
+                                } else if (isAuthoritativeInactive) {
+                                    _isBotActive.value = false
                                     _committedStrategyId.value = null
+                                } else {
+                                    // PREVIEW, transitional, or ambiguous response (e.g. activeStrat is null during transient poll,
+                                    // rawState is unknown/null, or network payload incomplete):
+                                    // RETAIN existing _committedStrategyId and _isBotActive!
+                                    // activeStrat == null alone NEVER clears committed strategy.
                                 }
                             }
                             is NetworkResult.Error -> {
@@ -256,8 +332,4 @@ class BotRepositoryImpl @Inject constructor(
         pollingJob = null
         _isConnected.value = false
     }
-}
-
-private class FakeContextForBot : android.content.ContextWrapper(null) {
-    override fun getApplicationContext(): android.content.Context = this
 }

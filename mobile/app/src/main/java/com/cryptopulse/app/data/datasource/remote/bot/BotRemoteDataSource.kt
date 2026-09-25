@@ -13,6 +13,8 @@ interface BotRemoteDataSource {
     suspend fun getStatus(): NetworkResult<BotStatusResponseDto>
     suspend fun getAnalysisStatus(): NetworkResult<AnalysisSnapshotDto>
     suspend fun executeTrade(alertId: String): NetworkResult<ExecuteTradeResponseDto>
+    suspend fun executeTrade(request: ExecuteTradeRequestDto): NetworkResult<ExecuteTradeResponseDto> =
+        executeTrade(request.alertId)
     @Deprecated("Do not use in production Android flow. Production executions must use executeTrade.", level = DeprecationLevel.WARNING)
     suspend fun executeMockTrade(request: ExecuteTradeRequestDto): NetworkResult<ExecuteTradeResponseDto>
     suspend fun stopTrade(): NetworkResult<StopTradeResponseDto>
@@ -39,6 +41,9 @@ class RetrofitBotRemoteDataSource @Inject constructor(
 
     override suspend fun executeTrade(alertId: String): NetworkResult<ExecuteTradeResponseDto> =
         safeApiCall { tradingBotService.executeTrade(ExecuteTradeRequestDto(alertId)) }
+
+    override suspend fun executeTrade(request: ExecuteTradeRequestDto): NetworkResult<ExecuteTradeResponseDto> =
+        safeApiCall { tradingBotService.executeTrade(request) }
 
     @Deprecated("Do not use in production Android flow. Production executions must use executeTrade.", level = DeprecationLevel.WARNING)
     override suspend fun executeMockTrade(request: ExecuteTradeRequestDto): NetworkResult<ExecuteTradeResponseDto> =

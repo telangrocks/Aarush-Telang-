@@ -20,8 +20,8 @@ fun BotAlertDto.toDomain(): BotAlert = BotAlert(
 )
 
 fun StrategyMetadataDto.toDomain(): StrategyMetadata = StrategyMetadata(
-    strategyId = strategyId ?: "ScalperV2",
-    displayName = displayName ?: "Scalper V2",
+    strategyId = strategyId ?: "",
+    displayName = displayName ?: (strategyId ?: ""),
     primaryTimeframe = primaryTimeframe ?: "15m",
     timeframesAnalyzed = timeframesAnalyzed?.filterNotNull() ?: listOf("15m"),
     category = category ?: "Trading",
@@ -32,23 +32,38 @@ fun StrategyMetadataDto.toDomain(): StrategyMetadata = StrategyMetadata(
 
 fun AnalysisSnapshotDto.toDomain(): AnalysisSnapshot = AnalysisSnapshot(
     engineStatus = (engineStatus?.let { e -> 
-        EngineStatusDTO(e.state ?: "ANALYSING", e.activeStrategy ?: "ScalperV2", e.lastEvaluationTimestamp ?: System.currentTimeMillis(), e.nextEvaluationTime ?: 0L, e.health ?: "OK") 
-    }) ?: EngineStatusDTO("ACTIVE", "ScalperV2", System.currentTimeMillis(), 0L, "OK"),
+        EngineStatusDTO(e.state ?: "ANALYSING", e.activeStrategy, e.lastEvaluationTimestamp ?: System.currentTimeMillis(), e.nextEvaluationTime ?: 0L, e.health ?: "OK") 
+    }) ?: EngineStatusDTO("ACTIVE", null, System.currentTimeMillis(), 0L, "OK"),
     marketAnalysis = (marketAnalysis?.let { m -> 
         MarketAnalysisDTO(
             symbol = m.symbol ?: "BTCUSDT",
             timeframeStatus = m.timeframeStatus ?: "ALIGNED",
-            indicatorSummary = m.indicatorSummary?.filterNotNull()?.map { IndicatorSummary(it.name ?: "", it.value ?: "", it.signal ?: "HOLD") } ?: emptyList(),
+            indicatorSummary = m.indicatorSummary?.filterNotNull()?.map { IndicatorSummary(it.name ?: "", it.value ?: "", it.signal ?: "NEUTRAL") } ?: emptyList(),
             conditionSummary = m.conditionSummary?.filterNotNull()?.map { ConditionSummary(it.id ?: "", it.name ?: "", it.currentValue ?: "", it.targetValue ?: "", it.status ?: "PENDING") } ?: emptyList(),
             confidenceScore = m.confidenceScore ?: 50,
-            confidenceExplanation = m.confidenceExplanation?.filterNotNull() ?: emptyList()
+            confidenceExplanation = m.confidenceExplanation?.filterNotNull() ?: emptyList(),
+            requiredScore = m.requiredScore ?: requiredScore
         ) 
-    }) ?: MarketAnalysisDTO("BTCUSDT", "ALIGNED", emptyList(), emptyList(), 50, emptyList()),
-    tradingSignal = (tradingSignal?.let { s -> 
-        SignalDTO(s.type ?: "HOLD", s.entryContext ?: "NONE", s.signalPrice ?: 0.0, s.targetEntryPrice ?: 0.0, s.stopLoss ?: 0.0, s.takeProfit ?: 0.0, s.riskClassification ?: "MEDIUM", s.reasoning?.filterNotNull() ?: emptyList()) 
-    }) ?: SignalDTO("HOLD", "NONE", 0.0, 0.0, 0.0, 0.0, "MEDIUM", emptyList()),
+    }) ?: MarketAnalysisDTO("BTCUSDT", "ALIGNED", emptyList(), emptyList(), 50, emptyList(), requiredScore = requiredScore),
+    tradingSignal = tradingSignal?.let { s -> 
+        if (s.type == "BUY" || s.type == "SELL") {
+            SignalDTO(
+                type = s.type,
+                entryContext = s.entryContext ?: "NONE",
+                signalPrice = s.signalPrice ?: 0.0,
+                targetEntryPrice = s.targetEntryPrice ?: 0.0,
+                stopLoss = s.stopLoss ?: 0.0,
+                takeProfit = s.takeProfit ?: 0.0,
+                riskClassification = s.riskClassification ?: "MEDIUM",
+                reasoning = s.reasoning?.filterNotNull() ?: emptyList()
+            )
+        } else {
+            null
+        }
+    },
     opportunity = opportunity?.toDomain(),
-    strategyMetadata = strategyMetadata?.toDomain()
+    strategyMetadata = strategyMetadata?.toDomain(),
+    requiredScore = requiredScore ?: marketAnalysis?.requiredScore
 )
 
 fun TradeExecutionStatusDto.toDomain(): TradeExecutionResult = TradeExecutionResult(
@@ -87,8 +102,8 @@ fun ExecuteTradeResponseDto.toDomain(fallbackAlertId: String): TradeExecutionRes
     exchange = "bybit",
     environment = "demo",
     orderType = "MARKET",
-    status = "PENDING_ENTRY",
-    entryStatus = "PENDING_ENTRY",
+    status = if (success) "PENDING_ENTRY" else "FAILED",
+    entryStatus = if (success) "PENDING_ENTRY" else "FAILED",
     requestedEntryPrice = executionPrice ?: 0.0,
     actualFillPrice = executionPrice ?: 0.0,
     requestedQuantity = quantity ?: 0.0,
@@ -99,7 +114,9 @@ fun ExecuteTradeResponseDto.toDomain(fallbackAlertId: String): TradeExecutionRes
     slippagePercent = 0.0,
     submittedAt = executedAt ?: "",
     executedAt = executedAt ?: "",
-    isFilled = false,
-    isMockTrade = false
+    isFilled = status == "filled" || status == "FILLED" || status == "closed" || status == "CLOSED",
+    isMockTrade = false,
+    success = this.success,
+    message = this.message
 )
 

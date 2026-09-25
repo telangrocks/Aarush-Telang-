@@ -240,4 +240,29 @@ class RetryInterceptorTest {
         assertEquals(429, response.code)
         assertEquals(1, callCount) // MUST NOT RETRY MUTATIONS
     }
+
+    @Test
+    fun testPostLogin_doesNotRetryOn429() {
+        val request = Request.Builder()
+            .url("https://crypto-pulse-backend.telangrocks.workers.dev/api/login")
+            .post(okhttp3.RequestBody.create(null, ByteArray(57)))
+            .build()
+
+        var callCount = 0
+
+        val chain = buildChain(request) { _, count ->
+            callCount = count
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(429)
+                .message("Too Many Requests")
+                .body(okhttp3.ResponseBody.create(null, "{\"error\":\"Too many login attempts. Please try again later.\"}"))
+                .build()
+        }
+
+        val response = interceptor.intercept(chain)
+        assertEquals(429, response.code)
+        assertEquals(1, callCount) // MUST NOT RETRY POST /api/login
+    }
 }

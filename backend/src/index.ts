@@ -31,6 +31,7 @@ import {
   handleGetExchangeStatus,
   handleGetExchangeBalances,
   handleGetPersonalizedMarketCandidates,
+  handleGetMarketOpportunities,
   handleGetStrategies,
   handleGetTechnicalAnalysis,
   handleGetTicker,
@@ -50,6 +51,7 @@ import { handleRegisterFcmToken } from "./handlers/notifications";
 
 import { isTokenRevoked } from "./handlers/auth";
 import { chatWithKimiK3 } from "./services/kimi";
+import { handleStartCidSession, handlePostCidEvents, handleGetCidSession, handleListCidSessions } from "./handlers/cid";
 
 export interface Env {
   DB: D1Database;
@@ -245,6 +247,13 @@ const PUBLIC_AUTH_PATHS = new Set([
   "/api/confirm-pin-reset",
 ]);
 
+api.use("*", async (c, next) => {
+  const incomingCorrId = c.req.header("x-correlation-id") || c.req.header("cf-ray") || crypto.randomUUID();
+  c.set("correlationId" as any, incomingCorrId);
+  c.header("X-Correlation-Id", incomingCorrId);
+  await next();
+});
+
 api.use("*", (c, next) => {
   if (PUBLIC_AUTH_PATHS.has(c.req.path)) {
     return next();
@@ -322,6 +331,7 @@ api.get("/exchange/status", handleGetExchangeStatus);
 api.get("/exchange/balance", handleGetExchangeBalances);
 
 api.get("/market/candidates", handleGetPersonalizedMarketCandidates);
+api.get("/market/opportunities", handleGetMarketOpportunities);
 
 api.get("/strategies", handleGetStrategies);
 
@@ -348,6 +358,14 @@ api.post("/trading-bot/trigger-alert", handleTriggerManualTradeAlert);
 
 api.post("/fcm/register", handleRegisterFcmToken);
 api.delete("/fcm/register", handleDeleteFcmToken);
+
+// ==========================================
+// CID — Continuous Investigation & Diagnostics
+// ==========================================
+api.post("/cid/session/start", handleStartCidSession);
+api.post("/cid/events", handlePostCidEvents);
+api.get("/cid/sessions", handleListCidSessions);
+api.get("/cid/sessions/:id", handleGetCidSession);
 
 // ==========================================
 // AI — Kimi K3 (Cloudflare Workers AI)

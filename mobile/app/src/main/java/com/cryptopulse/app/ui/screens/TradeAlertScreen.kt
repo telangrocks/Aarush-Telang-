@@ -8,10 +8,12 @@ import android.content.Context
 import android.media.RingtoneManager
 import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -19,6 +21,14 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -38,6 +48,188 @@ import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
 import kotlinx.coroutines.launch
 
+/**
+ * Electric cyan horizontal lens flare divider matching the reference branding design.
+ */
+@Composable
+private fun ElectricCyanFlareDivider(
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val cy = h / 2f
+        val center = Offset(w / 2f, cy)
+
+        // Soft ambient diffuse electric-blue / cyan flare
+        drawOval(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color(0x8800E5FF),
+                    Color(0x330077FE),
+                    Color.Transparent
+                ),
+                center = center,
+                radius = w * 0.35f
+            ),
+            topLeft = Offset(center.x - w * 0.35f, 0f),
+            size = Size(w * 0.70f, h)
+        )
+
+        // Bright horizontal flare line tapering at ends
+        drawLine(
+            brush = Brush.horizontalGradient(
+                colors = listOf(
+                    Color.Transparent,
+                    Color(0x4400B4FF),
+                    Color(0xFF00E5FF),
+                    Color.White,
+                    Color(0xFF00E5FF),
+                    Color(0x4400B4FF),
+                    Color.Transparent
+                )
+            ),
+            start = Offset(w * 0.05f, cy),
+            end = Offset(w * 0.95f, cy),
+            strokeWidth = 1.6.dp.toPx()
+        )
+    }
+}
+
+/**
+ * Reusable cyber-styled card container with glowing cyan halo and gradient border.
+ */
+@Composable
+private fun TradeAlertCardContainer(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val cardRadius = 16.dp
+    val borderBrush = Brush.verticalGradient(
+        listOf(
+            Color(0xFF00B4FF),
+            Color(0xFF0077E6),
+            Color(0xFF0044AA),
+        )
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .drawBehind {
+                drawRoundRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            Color(0x3500B4FF),
+                            Color(0x120066FF),
+                            Color.Transparent
+                        ),
+                        center = Offset(size.width / 2f, size.height / 2f),
+                        radius = size.width * 0.60f
+                    ),
+                    cornerRadius = CornerRadius(cardRadius.toPx() + 4.dp.toPx(), cardRadius.toPx() + 4.dp.toPx())
+                )
+            }
+            .clip(RoundedCornerShape(cardRadius))
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xE6081426),
+                        Color(0xF2050D1A)
+                    )
+                )
+            )
+            .border(
+                width = 1.4.dp,
+                brush = borderBrush,
+                shape = RoundedCornerShape(cardRadius)
+            )
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            content = content
+        )
+    }
+}
+
+/**
+ * Custom cyber-styled CTA button with vibrant blue-to-purple gradient.
+ */
+@Composable
+private fun TradeAlertCyberButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    leadingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    enabled: Boolean = true,
+    isLoading: Boolean = false,
+    testTag: String? = null,
+) {
+    val buttonGradient = Brush.horizontalGradient(
+        listOf(
+            Color(0xFF0091FF),
+            Color(0xFFB526FF)
+        )
+    )
+
+    Button(
+        onClick = onClick,
+        enabled = enabled && !isLoading,
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.Transparent,
+            disabledContainerColor = Color.Transparent
+        ),
+        contentPadding = PaddingValues(0.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(54.dp)
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    if (enabled) buttonGradient else Brush.horizontalGradient(listOf(Color(0xFF2A3040), Color(0xFF2A3040))),
+                    RoundedCornerShape(14.dp)
+                )
+                .padding(horizontal = 14.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                    Spacer(Modifier.width(8.dp))
+                } else if (leadingIcon != null) {
+                    Icon(
+                        imageVector = leadingIcon,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(
+                    text = text.uppercase(),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    letterSpacing = 0.5.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TradeAlertScreen(
@@ -54,24 +246,15 @@ fun TradeAlertScreen(
     viewModel: ExchangeViewModel = hiltViewModel(),
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var isProcessing by remember { mutableStateOf(false) }
     val executionState by viewModel.executionState.collectAsState()
     val tradeError by viewModel.tradeError.collectAsState(initial = null)
-    val livePrice by viewModel.liveAlertPrice.collectAsState()
     val isUnknownState by viewModel.isUnknownState.collectAsState()
 
     val isExecuting = executionState is ExecutionUiState.Submitting || executionState is ExecutionUiState.AwaitingFill
 
-    val slippagePercent = remember(livePrice, signalPrice) {
-        if (livePrice != null && signalPrice > 0) {
-            ((livePrice!! - signalPrice) / signalPrice) * 100
-        } else null
-    }
-
-    LaunchedEffect(Unit) {
-        viewModel.startLiveTicker(candidate.symbol)
+    LaunchedEffect(candidate.pairName) {
+        viewModel.startLiveTicker(candidate.pairName)
     }
 
     DisposableEffect(Unit) {
@@ -86,19 +269,35 @@ fun TradeAlertScreen(
             .background(bgGradient)
     ) {
         Scaffold(
-            topBar = { CryptoPulseTopBar(onBack = {
-                if (executionState is ExecutionUiState.Filled) {
-                    viewModel.dismissExecutionConfirmation { onBack() }
-                } else {
-                    viewModel.dismissCurrentAlert()
-                    onBack()
-                }
-            }) },
+            topBar = {
+                TopAppBar(
+                    title = {},
+                    navigationIcon = {
+                        IconButton(onClick = {
+                            if (executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed) {
+                                viewModel.dismissExecutionConfirmation { onBack() }
+                            } else {
+                                viewModel.dismissCurrentAlert()
+                                onBack()
+                            }
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent
+                    )
+                )
+            },
             containerColor = Color.Transparent,
             bottomBar = {
-                if (executionState !is ExecutionUiState.Filled) {
+                if (executionState !is ExecutionUiState.Filled && executionState !is ExecutionUiState.Confirmed) {
                     Surface(
-                        color = NavyDeep,
+                        color = Color.Transparent,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Box(
@@ -107,6 +306,27 @@ fun TradeAlertScreen(
                                 .navigationBarsPadding(),
                             contentAlignment = Alignment.Center
                         ) {
+                            // Ambient cyan horizon flare at bottom
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(90.dp)
+                                    .align(Alignment.BottomCenter)
+                                    .drawBehind {
+                                        drawOval(
+                                            brush = Brush.radialGradient(
+                                                colors = listOf(
+                                                    Color(0x7000B4FF),
+                                                    Color(0x300077FE),
+                                                    Color.Transparent
+                                                ),
+                                                center = Offset(size.width / 2f, size.height * 0.9f),
+                                                radius = size.width * 0.45f
+                                            )
+                                        )
+                                    }
+                            )
+
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -137,7 +357,7 @@ fun TradeAlertScreen(
                                     Spacer(Modifier.height(10.dp))
                                 }
                                 if (isUnknownState) {
-                                    GradientButton(
+                                    TradeAlertCyberButton(
                                         text = "Reconciling Order...",
                                         onClick = { /* Hard locked to prevent double-fire */ },
                                         leadingIcon = Icons.Default.Sync,
@@ -146,30 +366,32 @@ fun TradeAlertScreen(
                                         testTag = "trade_alert_reconciling_button",
                                     )
                                 } else if (executionState is ExecutionUiState.AwaitingFill) {
-                                    GradientButton(
+                                    TradeAlertCyberButton(
                                         text = "Awaiting Exchange Fill...",
                                         onClick = { },
                                         leadingIcon = Icons.Default.Sync,
                                         modifier = Modifier.fillMaxWidth(),
                                         enabled = false,
+                                        isLoading = true,
                                         testTag = "trade_alert_awaiting_fill_button",
                                     )
                                 } else if (executionState is ExecutionUiState.Submitting) {
-                                    GradientButton(
+                                    TradeAlertCyberButton(
                                         text = "Submitting to Exchange...",
                                         onClick = { },
                                         leadingIcon = Icons.Default.Sync,
                                         modifier = Modifier.fillMaxWidth(),
                                         enabled = false,
+                                        isLoading = true,
                                         testTag = "trade_alert_submitting_button",
                                     )
                                 } else {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(14.dp),
                                     ) {
-                                        GradientButton(
-                                            text = if (tradeError != null) "Retry" else "Cancel",
+                                        TradeAlertCyberButton(
+                                            text = if (tradeError != null) "RETRY" else "CANCEL",
                                             onClick = {
                                                 if (tradeError != null) {
                                                     viewModel.clearTradeError()
@@ -177,6 +399,12 @@ fun TradeAlertScreen(
                                                         viewModel.executeCurrentTrade()
                                                     }
                                                 } else {
+                                                    try {
+                                                        com.cryptopulse.app.forensics.CidDiagnosticManager.logPopupAction(
+                                                            alertId = candidate.opportunityId ?: candidate.symbol,
+                                                            action = "DISMISSED"
+                                                        )
+                                                    } catch (_: Throwable) {}
                                                     viewModel.dismissCurrentAlert()
                                                     onBack()
                                                 }
@@ -186,9 +414,15 @@ fun TradeAlertScreen(
                                             enabled = !isExecuting,
                                             testTag = "trade_alert_cancel_button",
                                         )
-                                        GradientButton(
-                                            text = "Trade",
+                                        TradeAlertCyberButton(
+                                            text = "TRADE",
                                             onClick = {
+                                                try {
+                                                    com.cryptopulse.app.forensics.CidDiagnosticManager.logPopupAction(
+                                                        alertId = candidate.opportunityId ?: candidate.symbol,
+                                                        action = "CONFIRMED"
+                                                    )
+                                                } catch (_: Throwable) {}
                                                 viewModel.clearTradeError()
                                                 scope.launch {
                                                     viewModel.executeCurrentTrade()
@@ -221,10 +455,96 @@ fun TradeAlertScreen(
                         .padding(horizontal = 16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
+                    Spacer(Modifier.height(14.dp))
+
+                    val isFilled = executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed
+
+                    // 1. Heading: "TRADE EXECUTED AT BYBIT EXCHANGE" (when filled) or "TRADE DETECTED" (otherwise)
+                    Text(
+                        text = if (isFilled) {
+                            buildAnnotatedString {
+                                withStyle(SpanStyle(color = Color.White, fontWeight = FontWeight.ExtraBold)) {
+                                    append("TRADE EXECUTED\n")
+                                }
+                                withStyle(SpanStyle(color = Color(0xFF00E5FF), fontWeight = FontWeight.ExtraBold)) {
+                                    append("AT BYBIT EXCHANGE")
+                                }
+                            }
+                        } else {
+                            buildAnnotatedString {
+                                withStyle(SpanStyle(color = Color.White, fontWeight = FontWeight.ExtraBold)) {
+                                    append("TRADE ")
+                                }
+                                withStyle(SpanStyle(color = Color(0xFF00E5FF), fontWeight = FontWeight.ExtraBold)) {
+                                    append("DETECTED")
+                                }
+                            }
+                        },
+                        fontSize = if (isFilled) 24.sp else 30.sp,
+                        letterSpacing = if (isFilled) 1.5.sp else 2.sp,
+                        lineHeight = if (isFilled) 30.sp else 36.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag(if (isFilled) "trade_confirmation_header" else "trade_alert_header")
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    // 2. Glowing Neon Heartbeat Pulse Divider
+                    HeartbeatPulseDivider(
+                        modifier = Modifier
+                            .fillMaxWidth(0.65f)
+                            .height(22.dp)
+                    )
+
                     Spacer(Modifier.height(12.dp))
+
+                    // 3. Creator Attribution: "FOUNDED & BUILT BY" + "Shrikant Telang"
+                    Text(
+                        text = "FOUNDED & BUILT BY",
+                        color = Color(0xFF8EA7C0),
+                        fontSize = 10.5.sp,
+                        letterSpacing = 3.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(Modifier.height(4.dp))
+
+                    Text(
+                        text = "Shrikant Telang",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 22.sp,
+                        letterSpacing = 1.2.sp,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
+                    // 4. Electric Cyan Horizontal Lens Flare Divider
+                    ElectricCyanFlareDivider(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(18.dp)
+                    )
+
+                    Spacer(Modifier.height(14.dp))
 
                     when (val state = executionState) {
                         is ExecutionUiState.Filled -> {
+                            TradeExecutionConfirmationCard(
+                                result = state.result,
+                                onViewCandidates = {
+                                    viewModel.dismissExecutionConfirmation { onTradeExecuted() }
+                                },
+                                onDismiss = {
+                                    viewModel.dismissExecutionConfirmation { onBack() }
+                                }
+                            )
+                        }
+                        is ExecutionUiState.Confirmed -> {
                             TradeExecutionConfirmationCard(
                                 result = state.result,
                                 onViewCandidates = {
@@ -304,87 +624,28 @@ fun TradeAlertScreen(
                             }
                         }
                         else -> {
-                            // Standard Trade Alert Details
-                        }
-                    }
+                            // 5. Existing Trade Detection Data (occupying the space of the former coin bunch)
+                            TradeAlertCardContainer {
+                                // 1. Ticker Name
+                                SummaryRow("Ticker Name", candidate.pairName, Color.White, "trade_alert_pair")
+                                HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
-                    if (executionState !is ExecutionUiState.Filled) {
-                        Text(
-                            text = "TRADE DETECTED!",
-                            color = ProfitGreen,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 24.sp,
-                            letterSpacing = 2.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().testTag("trade_alert_header"),
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "A valid trading opportunity has been identified.",
-                            color = TextSecondary,
-                            fontSize = 12.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                                // 2. Entry Price
+                                SummaryRow("Entry Price", "${formatPrice(entryPrice)} USDT", Color.White, "trade_alert_entry")
+                                HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
-                        Spacer(Modifier.height(14.dp))
-                    }
+                                // 3. Stop Loss
+                                SummaryRow("Stop Loss", "${formatPrice(stopLossPrice)} USDT", Color(0xFFFF3D57), "trade_alert_stop_loss")
+                                HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
-                    if (executionState !is ExecutionUiState.Filled) {
-                        if (candidate != null) {
-                            CoinInfoCard(candidate = candidate)
-                        }
+                                // 4. Take Profit
+                                SummaryRow("Take Profit", "${formatPrice(takeProfitPrice)} USDT", Color(0xFF00FFA3), "trade_alert_take_profit")
+                                HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
-                        Spacer(Modifier.height(14.dp))
-
-                        GlowCard(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.NotificationsActive, null, tint = Color(0xFFBB86FC), modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        "TRADE DETAILS",
-                                        color = Color(0xFFBB86FC),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 13.sp,
-                                        letterSpacing = 1.2.sp,
-                                    )
-                                }
-                                Spacer(Modifier.height(12.dp))
-                                HorizontalDivider(color = NavyBorder, thickness = 0.5.dp)
-                                Spacer(Modifier.height(10.dp))
-
-                                SummaryRow("Pair", candidate.pairName, TextPrimary, "trade_alert_pair")
-                                
-                                livePrice?.let { lp ->
-                                    val slippage = slippagePercent ?: 0.0
-                                    val slippageColor = if (Math.abs(slippage) > 0.05) Color(0xFFFFA500) else ProfitGreen
-                                    SummaryRow("Live Price", "${formatPrice(lp)} USDT", slippageColor, "trade_alert_live_price")
-                                    if (Math.abs(slippage) > 0.05) {
-                                        Text(
-                                            "Slippage > 0.05%. Order will execute as IOC Limit.",
-                                            color = slippageColor,
-                                            fontSize = 11.sp,
-                                            modifier = Modifier.padding(bottom = 8.dp)
-                                        )
-                                    }
-                                }
-
-                                if (targetEntryPrice != null && targetEntryPrice > 0.0) {
-                                    SummaryRow("Planned Entry", "${formatPrice(targetEntryPrice)} USDT", TextPrimary, "trade_alert_target_entry")
-                                }
-                                if (tradeAmountUsdt > 0.0) {
-                                    SummaryRow("Trade Amount", "${"%.2f".format(tradeAmountUsdt)} USDT", TextPrimary, "trade_alert_amount")
-                                }
-                                SummaryRow("Signal Price", "${formatPrice(signalPrice)} USDT", TextPrimary, "trade_alert_signal_price")
-                                SummaryRow("Entry Price", "${formatPrice(entryPrice)} USDT", TextPrimary, "trade_alert_entry")
-                                SummaryRow("Stop Loss", "${formatPrice(stopLossPrice)} USDT", LossRed, "trade_alert_stop_loss")
-                                SummaryRow("Take Profit", "${formatPrice(takeProfitPrice)} USDT", ProfitGreen, "trade_alert_take_profit")
+                                // 5. Estimated P&L
                                 val pnlSign = if (estimatedPnl >= 0) "+" else ""
-                                val pnlColor = if (estimatedPnl >= 0) ProfitGreen else LossRed
-                                SummaryRow("Est. P&L", "$pnlSign${"%.2f".format(estimatedPnl)} USDT", pnlColor)
-
-                                Spacer(Modifier.height(8.dp))
+                                val pnlColor = if (estimatedPnl >= 0) Color(0xFF00FFA3) else Color(0xFFFF3D57)
+                                SummaryRow("Estimated P&L", "$pnlSign${"%.2f".format(estimatedPnl)} USDT", pnlColor, "trade_alert_estimated_pnl")
                             }
                         }
                     }
@@ -412,17 +673,22 @@ private fun SummaryRow(label: String, value: String, valueColor: Color, testTag:
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 5.dp)
+            .padding(vertical = 7.dp)
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = TextSecondary, fontSize = 13.sp)
         Text(
-            value,
+            text = label,
+            color = Color(0xFF94B0D0),
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.Normal
+        )
+        Text(
+            text = value,
             color = valueColor,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.Bold,
             style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
         )
     }

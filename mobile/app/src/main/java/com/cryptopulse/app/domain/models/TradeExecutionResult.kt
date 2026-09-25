@@ -23,5 +23,8 @@ data class TradeExecutionResult(
     val submittedAt: String,
     val executedAt: String,
     val isFilled: Boolean,
-    val isMockTrade: Boolean = false
+    val isMockTrade: Boolean = false,
+    val success: Boolean = true,
+    val message: String = "",
+    val estimatedPnl: Double = 0.0
 )

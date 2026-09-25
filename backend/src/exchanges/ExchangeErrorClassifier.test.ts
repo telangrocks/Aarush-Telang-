@@ -8,16 +8,16 @@ describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests
 describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests', () => {
   const classifier = ExchangeErrorClassifier.getInstance();
 
-  it('1. Should classify Bybit 10002 invalid API key error', () => {
-    const body = JSON.stringify({ retCode: 10002, retMsg: 'invalid api_key' });
+  it('1. Should classify Bybit 10003 invalid API key error', () => {
+    const body = JSON.stringify({ retCode: 10003, retMsg: 'invalid api_key' });
     const res = classifier.classifyResponse('bybit', 400, { 'content-type': 'application/json' }, body, 'corr-123');
     expect(res.code).toBe('INVALID_API_KEY');
     expect(res.version).toBe('1.0');
     expect(res.correlationId).toBe('corr-123');
   });
 
-  it('2. Should classify Bybit 10003 timestamp error', () => {
-    const body = JSON.stringify({ retCode: 10003, retMsg: 'req timestamp exceeds recv_window' });
+  it('2. Should classify Bybit 10002 timestamp error', () => {
+    const body = JSON.stringify({ retCode: 10002, retMsg: 'req timestamp exceeds recv_window' });
     const res = classifier.classifyResponse('bybit', 400, { 'content-type': 'application/json' }, body);
     expect(res.code).toBe('TIMESTAMP_OUT_OF_SYNC');
   });
@@ -50,7 +50,7 @@ describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests
   });
 
   it('5b. Should NOT classify HTTP 403 + cf-ray header as WAF_BLOCKED when no WAF challenge HTML is present', () => {
-    const body = JSON.stringify({ retCode: 10002, retMsg: 'invalid api_key' });
+    const body = JSON.stringify({ retCode: 10003, retMsg: 'invalid api_key' });
     const headers = { 'content-type': 'application/json', 'server': 'cloudflare', 'cf-ray': '8abc123-SIN' };
     const res = classifier.classifyResponse('bybit', 403, headers, body);
     expect(res.code).toBe('INVALID_API_KEY');

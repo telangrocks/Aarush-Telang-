@@ -1,13 +1,16 @@
 import { RiskParameters } from './RiskParameters';
 
 export class TakeProfitCalculator {
-  public static calculateDistance(stopLossDistance: number, config: RiskParameters): number {
-    if (config.atrTakeProfitMultiplier) {
-      // If we directly define a take profit multiplier based on ATR, 
-      // but usually take profit is based on Risk/Reward Ratio.
-      // We'll assume the stopLossDistance is already in price units.
-      // E.g., if R:R is 2.0, Take Profit Distance = 2.0 * Stop Loss Distance.
-    }
-    return stopLossDistance * config.riskRewardRatio;
+  /**
+   * Model A: Take Profit Distance is calculated directly and independently from ATR.
+   * TP Distance = currentAtr * atrTakeProfitMultiplier
+   *
+   * Note: config.riskRewardRatio is supported strictly as a legacy migration fallback
+   * for persisted bot states that have not yet migrated to atrTakeProfitMultiplier.
+   */
+  public static calculateDistance(currentAtr: number, config: RiskParameters): number {
+    const multiplier = config.atrTakeProfitMultiplier ?? config.riskRewardRatio ?? 2.0;
+    return currentAtr * multiplier;
   }
 }
+

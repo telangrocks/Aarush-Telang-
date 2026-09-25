@@ -19,23 +19,18 @@ export class SignalEngine {
     conditionResult: ConditionResult,
     confidenceScore: ConfidenceScore,
     riskAssessment: RiskAssessment
-  ): TradingSignal {
+  ): TradingSignal | null {
     const tfConfidence = confidenceScore.timeframes[context.timeframe];
 
     if (!tfConfidence) {
-      return this.createHoldSignal(
-        context, 
-        confidenceScore.timestamp, 
-        ['Timeframe confidence data is missing.']
-      );
+      return null;
     }
 
     // A signal direction is usually determined by the strategy/condition, but in a generic 
     // engine layer, we rely on the condition result or confidence factors. 
-    // For this generic Signal Engine Sprint, we'll infer direction from the trend conditions or 
-    // assume it's passed in. Let's infer from the conditionResult's trend.
+    // Infer direction from the conditionResult's trend.
     const tfCondition = conditionResult.timeframes[context.timeframe];
-    let proposedType: SignalType = SignalType.HOLD;
+    let proposedType: SignalType | null = null;
     if (tfCondition) {
       if (tfCondition.trend.trendDirection === 'UP' || tfCondition.trend.emaCrossoverState === 'BULLISH') {
         proposedType = SignalType.BUY;
@@ -44,22 +39,14 @@ export class SignalEngine {
       }
     }
 
-    if (this.rules.forceMockSignal) {
-      proposedType = this.rules.forceMockSignal === 'BUY' ? SignalType.BUY : SignalType.SELL;
+    if (!proposedType) {
+      return null;
     }
 
-    if (proposedType === SignalType.HOLD) {
-       return this.createHoldSignal(
-        context, 
-        confidenceScore.timestamp, 
-        ['No strong directional bias found in conditions.']
-      );
-    }
+    const { isValid, reasoning } = this.validator.validate(tfConfidence, riskAssessment, proposedType);
 
-    const { isValid, reasoning } = this.validator.validate(tfConfidence, riskAssessment);
-
-    if (!isValid && !this.rules.forceMockSignal) {
-      return this.createHoldSignal(context, confidenceScore.timestamp, reasoning);
+    if (!isValid) {
+      return null;
     }
 
     const stopLoss = proposedType === SignalType.BUY 
@@ -70,11 +57,15 @@ export class SignalEngine {
       ? context.currentPrice + riskAssessment.takeProfitDistance
       : context.currentPrice - riskAssessment.takeProfitDistance;
 
+    const directionalScore = proposedType === SignalType.SELL
+      ? (typeof tfConfidence.shortScore === 'number' ? tfConfidence.shortScore : tfConfidence.score)
+      : (typeof tfConfidence.longScore === 'number' ? tfConfidence.longScore : tfConfidence.score);
+
     return {
       symbol: context.symbol,
       timeframe: context.timeframe,
       type: proposedType,
-      confidenceScore: tfConfidence.score,
+      confidenceScore: directionalScore,
       riskAssessment,
       signalPrice: context.currentPrice,
       targetEntryPrice: context.targetEntryPrice ?? null,
@@ -86,23 +77,6 @@ export class SignalEngine {
         ...reasoning
       ],
       timestamp: confidenceScore.timestamp
-    };
-  }
-
-  private createHoldSignal(context: SignalContext, timestamp: number, reasoning: string[]): TradingSignal {
-    return {
-      symbol: context.symbol,
-      timeframe: context.timeframe,
-      type: SignalType.HOLD,
-      confidenceScore: 0,
-      riskAssessment: null,
-      signalPrice: null,
-      targetEntryPrice: context.targetEntryPrice ?? null,
-      entryPrice: null,
-      stopLoss: null,
-      takeProfit: null,
-      reasoning,
-      timestamp
     };
   }
 }

@@ -61,7 +61,8 @@ data class MarketAnalysisDTO(
     val indicatorSummary: List<IndicatorSummary>?,
     val conditionSummary: List<ConditionSummary>?,
     val confidenceScore: Int?,
-    val confidenceExplanation: List<String>?
+    val confidenceExplanation: List<String>?,
+    val requiredScore: Int? = null
 )
 
 @Immutable
@@ -82,6 +83,10 @@ data class AnalysisSnapshot(
     val marketAnalysis: MarketAnalysisDTO?,
     val tradingSignal: SignalDTO?,
     val opportunity: BotAlert?,
-    val strategyMetadata: StrategyMetadata? = null
-)
+    val strategyMetadata: StrategyMetadata? = null,
+    val requiredScore: Int? = null
+) {
+    val symbol: String?
+        get() = marketAnalysis?.symbol ?: opportunity?.symbol
+}
 

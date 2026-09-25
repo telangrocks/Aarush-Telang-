@@ -8,6 +8,11 @@ import com.cryptopulse.app.domain.models.Ticker
 fun MarketCandidateDto.toDomain(): MarketCandidate {
     val sym = symbol?.takeIf { it.isNotBlank() } ?: "UNKNOWN"
     val pair = pairName?.takeIf { it.isNotBlank() } ?: "$sym/USDT"
+    val side = tradeSide ?: "NEUTRAL"
+    val resolvedOppId = opportunityId?.takeIf { it.isNotBlank() }
+        ?: id?.takeIf { it.isNotBlank() }
+        ?: "$pair:${recommendedStrategy ?: "ScalperV2"}:$side"
+
     return MarketCandidate(
         rank = rank ?: 0,
         symbol = sym,
@@ -27,9 +32,11 @@ fun MarketCandidateDto.toDomain(): MarketCandidate {
         minPrice = minPrice?.takeIf { !it.isNaN() && !it.isInfinite() },
         maxPrice = maxPrice?.takeIf { !it.isNaN() && !it.isInfinite() },
         maxQty = maxQty?.takeIf { !it.isNaN() && !it.isInfinite() },
-        tradeSide = tradeSide ?: "NEUTRAL",
+        tradeSide = side,
         category = category ?: "linear",
-        exchangeTimestamp = exchangeTimestamp ?: 0L
+        exchangeTimestamp = exchangeTimestamp ?: 0L,
+        opportunityId = resolvedOppId,
+        recommendedStrategy = recommendedStrategy
     )
 }
 

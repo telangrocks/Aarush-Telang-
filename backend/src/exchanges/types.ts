@@ -91,7 +91,7 @@ export interface AnalysisSnapshot {
   decisionPipeline: {
     confluenceScore: number;
     alignment: "LONG" | "SHORT" | "NONE";
-    primarySignal: "BUY" | "SELL" | "HOLD";
+    primarySignal: "BUY" | "SELL" | null;
   };
   runtimeMetrics: {
     cycleNumber: number;

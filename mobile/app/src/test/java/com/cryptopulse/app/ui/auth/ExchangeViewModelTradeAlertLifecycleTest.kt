@@ -229,7 +229,7 @@ class FakeTrackingBotRepository : com.cryptopulse.app.domain.repository.BotRepos
     override fun stopObserving() {}
     override fun updateAnalysisState(snapshot: com.cryptopulse.app.domain.models.AnalysisSnapshot?) {}
     override fun updateConnectionState(connected: Boolean) {}
-    override suspend fun activateBot(symbol: String, strategy: String, config: com.cryptopulse.app.domain.models.TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
+    override suspend fun activateBot(symbols: List<String>, strategy: String, config: com.cryptopulse.app.domain.models.TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun getStatus(): NetworkResult<com.cryptopulse.app.domain.models.BotStatus> = NetworkResult.Success(com.cryptopulse.app.domain.models.BotStatus(state = com.cryptopulse.app.domain.models.BotState.ANALYSING, isActive = true))

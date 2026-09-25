@@ -87,6 +87,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIncomingAlertIntent(intent)
         setContent {
             CryptoPulseTheme {
                 Surface(
@@ -120,6 +121,29 @@ class MainActivity : FragmentActivity() {
                     LaunchedEffect(navController) {
                         navController.addOnDestinationChangedListener { _, destination, _ ->
                             android.util.Log.d("Navigation", "[DIAGNOSTIC] Destination = ${destination.route}")
+                            com.cryptopulse.app.forensics.CidDiagnosticManager.logNavigation(
+                                fromRoute = null,
+                                toRoute = destination.route ?: "unknown",
+                                trigger = "NAV_CONTROLLER"
+                            )
+                        }
+                    }
+
+                    LaunchedEffect(token) {
+                        if (token != null) {
+                            AlertBus.alerts.collect { alert ->
+                                try {
+                                    val parentEntry = navController.getBackStackEntry("authenticated_flow")
+                                    val exchangeVm = androidx.lifecycle.ViewModelProvider(parentEntry)[ExchangeViewModel::class.java]
+                                    exchangeVm.setPendingAlert(alert)
+                                    val currentRoute = navController.currentDestination?.route
+                                    if (currentRoute != "trade_alert") {
+                                        navController.navigate("trade_alert")
+                                    }
+                                } catch (e: Exception) {
+                                    android.util.Log.w("MainActivity", "[ALERT_BUS] Error routing alert to trade_alert: ${e.message}")
+                                }
+                            }
                         }
                     }
 
@@ -174,74 +198,75 @@ class MainActivity : FragmentActivity() {
                                     navController.getBackStackEntry("authenticated_flow")
                                 }
                                 val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>(parentEntry)
+                                val uiState by tradeSetupViewModel.uiState.collectAsState()
+                                val budget = uiState.tradeAmountUsdt.toDoubleOrNull() ?: 5.0
+                                
                                 val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
+                                
+                                LaunchedEffect(Unit) {
+                                    viewModel.fetchMarketCandidates(budget)
+                                }
+                                
                                 MarketCandidatesScreen(
                                     viewModel = viewModel,
-                                    onCandidateClick = { candidate ->
-                                        viewModel.selectCandidate(candidate)
-                                        navController.navigate("trade_setup")
+                                    budget = budget,
+                                    onCandidateClick = {
+                                        // Informational overview only: no coin-binding navigation
                                     },
-                                    onBack = { navController.popBackStack() }
+                                    onSetUpTrading = {
+                                        navController.navigate("risk_management")
+                                    },
+                                    onBack = { navController.popBackStack() },
+                                    onIncreaseBudget = {
+                                        if (!navController.popBackStack("trade_setup", inclusive = false)) {
+                                            navController.navigate("trade_setup")
+                                        }
+                                    },
+                                    onChangeApiKeys = {
+                                        navController.navigate("change_api_keys")
+                                    }
                                 )
                             }
-                            composable("risk_management") { backStackEntry ->
+                            composable("change_api_keys") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
                                     navController.getBackStackEntry("authenticated_flow")
                                 }
-                                val riskViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.RiskManagementViewModel>()
-                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
-                                val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
-                                val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
-                                
-                                val candidate = selectedCandidate
-                                if (candidate == null) {
-                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
-                                    }
-                                    return@composable
-                                }
-
-                                com.cryptopulse.app.ui.strategies.RiskManagementScreen(
-                                    strategy = null,
-                                    viewModel = riskViewModel,
-                                    onProceedToAnalysis = { updatedConfig ->
-                                        tradeSessionRepository.setTradeSetupConfig(updatedConfig)
-                                        val initialStrategy = updatedConfig.strategyId ?: "ScalperV2"
-                                        technicalAnalysisViewModel.selectStrategy(initialStrategy, candidate.pairName)
-                                        navController.navigate("technical_analysis") {
-                                            popUpTo("market_candidates") { inclusive = false }
-                                        }
-                                    },
-                                    onBack = { navController.popBackStack() }
+                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                ConnectExchangeScreen(
+                                    navController = navController,
+                                    viewModel = viewModel,
+                                    isChangingApiKeys = true
                                 )
                             }
-
 
                             composable("trade_setup") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
                                     navController.getBackStackEntry("authenticated_flow")
                                 }
                                 val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
-                                val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>()
+                                val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>(parentEntry)
+                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
+                                val candidates by exchangeViewModel.candidates.collectAsState(initial = emptyList())
                                 val balances by exchangeViewModel.balances.collectAsState()
                                 val balancesError by exchangeViewModel.balancesError.collectAsState()
                                 val formState by exchangeViewModel.formState.collectAsState()
 
-                                val candidate = selectedCandidate
-                                if (candidate == null) {
-                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
+                                val candidate = selectedCandidate ?: candidates.firstOrNull()
+
+                                LaunchedEffect(candidate) {
+                                    if (candidate != null && selectedCandidate == null) {
+                                        exchangeViewModel.selectCandidate(candidate)
                                     }
-                                    return@composable
                                 }
-                                
+
                                 LaunchedEffect(Unit) {
                                     exchangeViewModel.fetchBalances()
                                 }
 
-                                val parts = candidate.pairName.split("/")
-                                val quoteAsset = if (parts.size >= 2) parts[1] else "USDT"
+                                val parts = candidate?.pairName?.split("/")
+                                val quoteAsset = if (parts != null && parts.size >= 2) parts[1] else "USDT"
                                 val primaryBalance = balances?.let { list ->
                                     list.find { it.asset.equals(quoteAsset, ignoreCase = true) }?.free ?: 0.0
                                 }
@@ -256,7 +281,7 @@ class MainActivity : FragmentActivity() {
                                     environmentName = formState.environment.replaceFirstChar { it.uppercase() },
                                     onBack = { navController.popBackStack() },
                                     onProceedToAnalysis = {
-                                        navController.navigate("risk_management")
+                                        navController.navigate("market_candidates")
                                     },
                                     viewModel = tradeSetupViewModel,
                                     onRefresh = {
@@ -269,6 +294,37 @@ class MainActivity : FragmentActivity() {
                                 )
                             }
 
+                            composable("risk_management") { backStackEntry ->
+                                val parentEntry = remember(backStackEntry) {
+                                    navController.getBackStackEntry("authenticated_flow")
+                                }
+                                val riskViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.RiskManagementViewModel>()
+                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
+                                val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
+                                val candidate = selectedCandidate ?: exchangeViewModel.candidates.collectAsState(initial = emptyList()).value.firstOrNull()
+
+                                if (candidate == null) {
+                                    androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                                        Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    return@composable
+                                }
+
+                                com.cryptopulse.app.ui.strategies.RiskManagementScreen(
+                                    viewModel = riskViewModel,
+                                    onProceedToAnalysis = { updatedConfig ->
+                                        tradeSessionRepository.setTradeSetupConfig(updatedConfig)
+                                        val initialStrategy = updatedConfig.strategyId ?: "ScalperV2"
+                                        technicalAnalysisViewModel.selectStrategy(initialStrategy, candidate.pairName)
+                                        navController.navigate("technical_analysis") {
+                                            popUpTo("market_candidates") { inclusive = false }
+                                        }
+                                    },
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+
                             composable("technical_analysis") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
                                     navController.getBackStackEntry("authenticated_flow")
@@ -277,7 +333,14 @@ class MainActivity : FragmentActivity() {
                                 val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
 
                                 val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                                val candidate = selectedCandidate
+                                val candidates by viewModel.candidates.collectAsState(initial = emptyList())
+                                val candidate = selectedCandidate ?: candidates.firstOrNull()
+
+                                LaunchedEffect(candidate) {
+                                    if (candidate != null && selectedCandidate == null) {
+                                        viewModel.selectCandidate(candidate)
+                                    }
+                                }
 
                                 DisposableEffect(technicalAnalysisViewModel, candidate?.pairName) {
                                     technicalAnalysisViewModel.onScreenStarted(candidate?.pairName)
@@ -297,7 +360,9 @@ class MainActivity : FragmentActivity() {
                                 LaunchedEffect(Unit) {
                                     if (viewModel.selectedCandidate.value == null) {
                                         tradeSetupConfig?.let { config ->
-                                            viewModel.restoreSession(config.symbol, config.strategyId)
+                                            config.symbol?.let { sym ->
+                                                viewModel.restoreSession(sym, config.strategyId)
+                                            }
                                         }
                                     }
                                 }
@@ -316,20 +381,19 @@ class MainActivity : FragmentActivity() {
                                 val initialStrategy = selectedStrategyId ?: tradeSetupConfig?.strategyId ?: "ScalperV2"
 
                                 LaunchedEffect(candidate.pairName, initialStrategy) {
-                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, viewedStrategyId, tradeSetupConfig)
-                                }
-
-                                LaunchedEffect(Unit) {
-                                    AlertBus.alerts.collect { alert ->
-                                        viewModel.setPendingAlert(alert)
-                                        navController.navigate("trade_alert")
-                                    }
+                                    val cleanConfig = technicalAnalysisViewModel.sanitizeConfigForStrategy(
+                                        baseConfig = tradeSetupConfig,
+                                        targetStrategy = viewedStrategyId,
+                                        symbol = candidate.pairName
+                                    )
+                                    technicalAnalysisViewModel.loadPreviewAnalysis(candidate.pairName, viewedStrategyId, cleanConfig)
                                 }
 
                                 val previewError by technicalAnalysisViewModel.previewError.collectAsState()
                                 val isBotActive by technicalAnalysisViewModel.isBotActive.collectAsState()
                                 val committedStrategyId by technicalAnalysisViewModel.committedStrategyId.collectAsState()
                                 val isActivating by technicalAnalysisViewModel.isActivating.collectAsState()
+                                val activationError by technicalAnalysisViewModel.activationError.collectAsState()
 
                                 TechnicalAnalysisScreen(
                                     candidate = candidate,
@@ -343,6 +407,8 @@ class MainActivity : FragmentActivity() {
                                     isLoading = isLoadingPreview,
                                     isActivating = isActivating,
                                     previewError = previewError,
+                                    activationError = activationError,
+                                    onClearActivationError = { technicalAnalysisViewModel.clearActivationError() },
                                     onSelectStrategy = { newId ->
                                         technicalAnalysisViewModel.selectStrategyForViewing(newId, candidate.pairName)
                                     },
@@ -350,14 +416,19 @@ class MainActivity : FragmentActivity() {
                                         technicalAnalysisViewModel.useStrategy(stratToUse)
                                     },
                                     onCommitStrategy = { strategyToCommit ->
-                                        technicalAnalysisViewModel.activateBot(
-                                            symbol = candidate.symbol,
-                                            strategy = strategyToCommit,
-                                            config = tradeSetupConfig,
-                                            onSuccess = {
-                                                com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
-                                            }
-                                        )
+                                        val targetSymbols = candidates.map { it.pairName }
+                                        if (targetSymbols.isNotEmpty()) {
+                                            technicalAnalysisViewModel.activateBot(
+                                                symbols = targetSymbols,
+                                                strategy = strategyToCommit,
+                                                config = tradeSetupConfig,
+                                                onSuccess = {
+                                                    com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
+                                                }
+                                            )
+                                        } else {
+                                            android.util.Log.w("MainActivity", "Cannot commit strategy: affordable candidate list is empty.")
+                                        }
                                     },
                                     onDeactivateBot = {
                                         technicalAnalysisViewModel.stopBot {
@@ -366,7 +437,7 @@ class MainActivity : FragmentActivity() {
                                     },
                                     onBack = { navController.popBackStack() },
                                     onExecuteTrade = {
-                                        technicalAnalysisViewModel.triggerTradeAlert(candidate.pairName, applicationContext)
+                                        technicalAnalysisViewModel.triggerTradeAlert(analysisState?.symbol, applicationContext)
                                     },
                                     onRetry = {
                                         technicalAnalysisViewModel.selectStrategyForViewing(viewedStrategyId, candidate.pairName)
@@ -394,24 +465,41 @@ class MainActivity : FragmentActivity() {
                                 )
                                 
                                 val math = remember(alert, candidate) {
-                                    val ep = (alert?.get("entryPrice") as? Double) ?: candidate?.currentMarketPrice ?: 0.0
-                                    val sl = (alert?.get("stopLoss") as? Double) ?: (ep * 0.99)
-                                    val tp = (alert?.get("takeProfit") as? Double) ?: (ep * 1.02)
+                                    val ep = (alert?.get("entryPrice") as? Double) ?: (alert?.get("signalPrice") as? Double) ?: candidate?.currentMarketPrice ?: 0.0
+                                    val sl = (alert?.get("stopLoss") as? Double) ?: 0.0
+                                    val tp = (alert?.get("takeProfit") as? Double) ?: 0.0
                                     val sp = (alert?.get("signalPrice") as? Double) ?: ep
                                     val tep = (alert?.get("targetEntryPrice") as? Double)
                                     val ps = (alert?.get("positionSize") as? Double) ?: 0.0
                                     
                                     val refPrice = tep ?: sp
                                     val q = if (refPrice > 0.0) ps / refPrice else 0.0
-                                    val pnl = if (q > 0.0) {
-                                        kotlin.math.abs(tp - sp) * q
-                                    } else {
-                                        (alert?.get("estimatedPnl") as? Double) ?: 0.0
-                                    }
+                                    val pnl = (alert?.get("estimatedPnl") as? Double) ?: (if (q > 0.0) kotlin.math.abs(tp - sp) * q else 0.0)
                                     TradeMath(ep, sl, tp, sp, tep, ps, pnl)
                                 }
 
-                                val marketCandidate = candidate
+                                val alertCandidate = alert?.let { a ->
+                                    val rawSymbol = (a["symbol"] as? String) ?: "UNKNOWN"
+                                    val cleanSymbol = rawSymbol.replace("/USDT", "").replace("USDT", "")
+                                    val pairName = if (rawSymbol.contains("/")) rawSymbol else if (cleanSymbol.isNotBlank()) "$cleanSymbol/USDT" else "UNKNOWN/USDT"
+                                    val ep = (a["entryPrice"] as? Double) ?: (a["signalPrice"] as? Double) ?: 0.0
+                                    com.cryptopulse.app.ui.screens.MarketCandidate(
+                                        rank = 1,
+                                        symbol = cleanSymbol,
+                                        pairName = pairName,
+                                        coinName = cleanSymbol,
+                                        currentMarketPrice = ep,
+                                        tradeSide = (a["side"] as? String) ?: "BUY"
+                                    )
+                                }
+                                val marketCandidate = alertCandidate ?: candidate
+
+                                LaunchedEffect(marketCandidate) {
+                                    if (marketCandidate != null && candidate != marketCandidate) {
+                                        viewModel.selectCandidate(marketCandidate)
+                                    }
+                                }
+
                                 if (marketCandidate == null) {
                                     androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
                                         Text("Market candidate unavailable", color = MaterialTheme.colorScheme.error)
@@ -470,10 +558,8 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        if (intent.getBooleanExtra("extra_alert", false)) {
+    private fun handleIncomingAlertIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("extra_alert", false) == true) {
             val entryPrice = intent.getDoubleExtra("alert_entry_price", 0.0)
             val stopLoss = intent.getDoubleExtra("alert_stop_loss", 0.0)
             val takeProfit = intent.getDoubleExtra("alert_take_profit", 0.0)
@@ -482,10 +568,11 @@ class MainActivity : FragmentActivity() {
             val targetEntryPrice = if (intent.hasExtra("alert_target_entry_price")) intent.getDoubleExtra("alert_target_entry_price", 0.0) else null
             val positionSize = if (intent.hasExtra("alert_position_size")) intent.getDoubleExtra("alert_position_size", 0.0) else null
             val alertId = intent.getStringExtra("alert_id")
+            val symbol = intent.getStringExtra("alert_symbol") ?: "UNKNOWN"
             if (entryPrice > 0 && alertId != null) {
                 val alert = mutableMapOf<String, Any>(
                     "id" to alertId,
-                    "symbol" to (intent.getStringExtra("alert_symbol") ?: "UNKNOWN"),
+                    "symbol" to symbol,
                     "entryPrice" to entryPrice,
                     "stopLoss" to stopLoss,
                     "takeProfit" to takeProfit,
@@ -501,6 +588,12 @@ class MainActivity : FragmentActivity() {
                 tradeAlertManager.onNewAlertReceived(alert)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingAlertIntent(intent)
     }
 }
 

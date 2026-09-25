@@ -6,6 +6,7 @@ export interface Market {
   base: string;
   quote: string;
   category?: string;
+  contractType?: string;
   active: boolean;
   precision: {
     price: number;
@@ -73,6 +74,8 @@ export interface Order {
     currency: string;
     cost: BigNumber;
   };
+  stopLoss?: BigNumber;
+  takeProfit?: BigNumber;
 }
 
 export interface Trade {

@@ -109,21 +109,14 @@ describe('Android API Contracts', () => {
         confidenceScore: 0,
         confidenceExplanation: []
       },
-      tradingSignal: {
-        type: 'HOLD',
-        entryContext: '',
-        stopLoss: null,
-        takeProfit: null,
-        riskClassification: 'LOW',
-        reasoning: []
-      }
+      tradingSignal: null
     };
 
     const json = JSON.stringify(contract);
     const parsed = JSON.parse(json) as AndroidIntegrationContract;
 
     expect(parsed.engineStatus.state).toBe('EVALUATING');
-    expect(parsed.tradingSignal.type).toBe('HOLD');
+    expect(parsed.tradingSignal).toBeNull();
   });
 
   it('should support targetEntryPrice in bot activation payload', () => {

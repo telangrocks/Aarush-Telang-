@@ -43,5 +43,6 @@ export interface MarketAnalysisDTO {
   conditionSummary: ConditionSummary[];
   confidenceScore: number;
   confidenceExplanation: string[];
+  requiredScore?: number;
 }
 

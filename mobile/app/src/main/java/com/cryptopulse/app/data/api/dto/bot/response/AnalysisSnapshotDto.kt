@@ -52,7 +52,8 @@ data class MarketAnalysisDto(
     val indicatorSummary: List<IndicatorSummaryDto>? = null,
     val conditionSummary: List<ConditionSummaryDto>? = null,
     val confidenceScore: Int? = null,
-    val confidenceExplanation: List<String>? = null
+    val confidenceExplanation: List<String>? = null,
+    val requiredScore: Int? = null
 )
 
 data class SignalDto(
@@ -71,6 +72,9 @@ data class AnalysisSnapshotDto(
     val marketAnalysis: MarketAnalysisDto? = null,
     val tradingSignal: SignalDto? = null,
     val opportunity: BotAlertDto? = null,
-    val strategyMetadata: StrategyMetadataDto? = null
+    val strategyMetadata: StrategyMetadataDto? = null,
+    val requiredScore: Int? = null,
+    val diagnostics: Map<String, Any>? = null,
+    val forensicTrace: Map<String, Any>? = null
 )
 

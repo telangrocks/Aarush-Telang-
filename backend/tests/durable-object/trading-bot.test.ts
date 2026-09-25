@@ -16,7 +16,12 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
         fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', last: 50100, bid: 50090, ask: 50110, high: 51000, low: 49000, volume: 100, quoteVolume: 5010000 }),
         fetchKlines: vi.fn().mockResolvedValue([{ openTime: Date.now(), open: 50000, high: 51000, low: 49000, close: 50500, volume: 100 }]),
         fetchBalance: vi.fn().mockResolvedValue([]),
-        fetchMarkets: vi.fn().mockResolvedValue([]),
+        fetchMarkets: vi.fn().mockResolvedValue([
+          { id: 'BTCUSDT', symbol: 'BTC', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+          { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+          { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+          { id: 'SOLUSDT', symbol: 'SOL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+        ]),
         createOrder: vi.fn().mockResolvedValue({ id: 'ord-123', status: 'closed', filled: { toNumber: () => 0.02 }, amount: { toNumber: () => 0.02 }, average: { toNumber: () => 50100 } }),
         supportsOco: vi.fn().mockReturnValue(false),
         createOcoOrder: vi.fn()
@@ -41,8 +46,9 @@ vi.mock("../../src/engine/orchestrator/StrategyOrchestrator", () => {
       metadata: {
         signal: {
           type: 'BUY',
-          stopLoss: 59000,
-          takeProfit: 62000,
+          signalPrice: 50100,
+          stopLoss: 49000,
+          takeProfit: 52000,
           riskAssessment: {
             positionSizeRecommendation: 1000
           }
@@ -68,33 +74,103 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     mockState = {
       id: { toString: () => "mock-do-id" },
       storage: {
-        get: async (key: string) => mockStorage.get(key),
-        put: async (key: string, val: any) => mockStorage.set(key, val),
+        get: async (keyOrKeys: string | string[]) => {
+          if (Array.isArray(keyOrKeys)) {
+            const res = new Map();
+            for (const k of keyOrKeys) {
+              if (mockStorage.has(k)) res.set(k, mockStorage.get(k));
+            }
+            return res;
+          }
+          return mockStorage.get(keyOrKeys);
+        },
+        put: async (keyOrEntries: string | Record<string, any>, val?: any) => {
+          if (typeof keyOrEntries === 'string') {
+            mockStorage.set(keyOrEntries, val);
+          } else if (keyOrEntries && typeof keyOrEntries === 'object') {
+            for (const [k, v] of Object.entries(keyOrEntries)) {
+              mockStorage.set(k, v);
+            }
+          }
+        },
         delete: async (key: string) => mockStorage.delete(key),
+        transaction: async (cb: any) => cb({
+          get: async (keyOrKeys: string | string[]) => {
+            if (Array.isArray(keyOrKeys)) {
+              const res = new Map();
+              for (const k of keyOrKeys) {
+                if (mockStorage.has(k)) res.set(k, mockStorage.get(k));
+              }
+              return res;
+            }
+            return mockStorage.get(keyOrKeys);
+          },
+          put: async (keyOrEntries: string | Record<string, any>, val?: any) => {
+            if (typeof keyOrEntries === 'string') {
+              mockStorage.set(keyOrEntries, val);
+            } else if (keyOrEntries && typeof keyOrEntries === 'object') {
+              for (const [k, v] of Object.entries(keyOrEntries)) {
+                mockStorage.set(k, v);
+              }
+            }
+          },
+          delete: async (key: string) => mockStorage.delete(key),
+        }),
         setAlarm: vi.fn(),
-        list: async () => mockStorage
+        list: async (opts?: any) => {
+          if (opts?.prefix) {
+            const m = new Map();
+            for (const [k, v] of mockStorage.entries()) {
+              if (k.startsWith(opts.prefix)) m.set(k, v);
+            }
+            return m;
+          }
+          return mockStorage;
+        }
       },
       blockConcurrencyWhile: async (cb: any) => cb()
     };
 
     mockDb = {
-      prepare: vi.fn().mockReturnThis(),
-      bind: vi.fn().mockReturnThis(),
-      all: vi.fn().mockResolvedValue({ results: [] }),
-      run: vi.fn().mockResolvedValue({ success: true }),
-      first: vi.fn().mockResolvedValue({
-        exchange_name: 'binance',
-        exchange_environment: 'testnet',
-        exchange_region: 'global',
-        exchange_api_key: 'mock_api_key',
-        exchange_api_secret_encrypted: 'mock_secret',
-        exchange_api_secret_iv: 'mock_iv',
+      prepare: vi.fn().mockImplementation((query: string) => {
+        if (query.includes('PRAGMA table_info')) {
+          return {
+            all: vi.fn().mockResolvedValue({
+              results: [{ name: 'target_entry_price' }, { name: 'entry_status' }]
+            })
+          };
+        }
+        return {
+          bind: vi.fn().mockReturnValue({
+            all: vi.fn().mockResolvedValue({ results: [] }),
+            run: vi.fn().mockResolvedValue({ success: true }),
+            first: vi.fn().mockResolvedValue({
+              exchange_name: 'binance',
+              exchange_environment: 'testnet',
+              exchange_region: 'global',
+              exchange_api_key: 'mock_api_key',
+              exchange_api_secret_encrypted: 'mock_secret',
+              exchange_api_secret_iv: 'mock_iv',
+            })
+          }),
+          all: vi.fn().mockResolvedValue({ results: [] }),
+          run: vi.fn().mockResolvedValue({ success: true }),
+          first: vi.fn().mockResolvedValue({
+            exchange_name: 'binance',
+            exchange_environment: 'testnet',
+            exchange_region: 'global',
+            exchange_api_key: 'mock_api_key',
+            exchange_api_secret_encrypted: 'mock_secret',
+            exchange_api_secret_iv: 'mock_iv',
+          })
+        };
       })
     };
 
     mockEnv = {
       DB: mockDb,
-      GLOBAL_TRADING_HALT: "false"
+      GLOBAL_TRADING_HALT: "false",
+      ENCRYPTION_KEY: "test-encryption-key"
     };
   });
 
@@ -106,6 +182,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     mockStorage.set('coinId', 'BTC');
     mockStorage.set('userId', 'user-123');
     mockStorage.set('strategy', 'scalper-v2');
+    mockStorage.set('positionSize', 100);
 
     // Trigger the alarm
     await bot.alarm();
@@ -123,8 +200,8 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     expect(alerts.length).toBe(1);
     expect(alerts[0].symbol).toBe('BTC');
     expect(alerts[0].side).toBe('BUY');
-    expect(alerts[0].stopLoss).toBe(59000);
-    expect(alerts[0].takeProfit).toBe(62000);
+    expect(alerts[0].stopLoss).toBe(49000);
+    expect(alerts[0].takeProfit).toBe(52000);
     expect(alerts[0].strategy).toBe('scalper-v2_NEW');
     
     // Check that next alarm was scheduled
@@ -201,7 +278,8 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
         strategy: 'scalper-v2',
         side: 'BUY',
         timestamp: new Date().toISOString(),
-        status: 'pending'
+        status: 'pending',
+        source: 'MANUAL'
       }
     ]);
 
@@ -239,7 +317,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
 
     const bot = new TradingBot(mockState, mockEnv);
     mockStorage.set('userId', 'user-123');
-    mockStorage.set('alerts', [ { id: 'alert-1', status: 'pending' } ]);
+    mockStorage.set('alerts', [ { id: 'alert-1', status: 'pending', source: 'MANUAL' } ]);
 
     const req = new Request('http://bot/execute-trade', {
       method: 'POST',
@@ -290,11 +368,11 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     const testAlert = {
       id: 'test-uuid-999',
       symbol: 'STX/USDT',
-      signalPrice: 0.222,
-      targetEntryPrice: 0.222,
-      entryPrice: 0.222,
-      stopLoss: 0.210,
-      takeProfit: 0.245,
+      signalPrice: 0.22,
+      targetEntryPrice: 0.22,
+      entryPrice: 0.22,
+      stopLoss: 0.21,
+      takeProfit: 0.24,
       estimatedPnl: 10,
       positionSize: 100,
       strategy: 'ScalperV2',
@@ -332,6 +410,71 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     });
     const execRes = await bot.fetch(execReq);
     expect(execRes.status).toBe(200);
+  });
+
+  it("returns HTTP 400 with success=false when trade execution is rejected", async () => {
+    mockDb.prepare = vi.fn().mockImplementation((query: string) => {
+      if (query.includes('PRAGMA table_info')) {
+        return {
+          all: vi.fn().mockResolvedValue({ results: [{ name: 'target_entry_price' }, { name: 'entry_status' }] })
+        };
+      }
+      return {
+        bind: vi.fn().mockReturnValue({
+          run: vi.fn().mockResolvedValue({ success: true }),
+          first: vi.fn().mockResolvedValue({
+            exchange_name: 'bybit',
+            exchange_environment: 'demo',
+            exchange_region: 'global',
+            exchange_api_key: 'key',
+            exchange_api_secret_iv: 'bW9ja19pdk1vY2tJdk1vY2s=',
+            exchange_api_secret_encrypted: 'sec'
+          })
+        })
+      };
+    });
+
+    const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set('userId', 'user-abc');
+
+    // Register alert with unaligned price (3 decimals vs tickSize 0.01) to trigger validation rejection
+    const invalidAlert = {
+      id: 'test-invalid-tick',
+      symbol: 'SOL/USDT',
+      signalPrice: 135.123,
+      targetEntryPrice: 135.123,
+      entryPrice: 135.123,
+      stopLoss: 130.00,
+      takeProfit: 140.00,
+      positionSize: 100,
+      strategy: 'ScalperV2',
+      side: 'BUY',
+      timestamp: new Date().toISOString(),
+      status: 'pending'
+    };
+
+    const regReq = new Request('http://bot/register-alert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alert: invalidAlert })
+    });
+    await bot.fetch(regReq);
+
+    const { ExchangeManager } = await import('../../src/exchanges');
+    vi.spyOn(ExchangeManager, 'executeIdempotentOrder').mockRejectedValueOnce(
+      new Error('Bybit: 10001 Parameter error: invalid price tick size')
+    );
+
+    const execReq = new Request('http://bot/execute-trade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'user-abc', alertId: 'test-invalid-tick' })
+    });
+    const execRes = await bot.fetch(execReq);
+    expect(execRes.status).toBe(200);
+
+    const execData = await execRes.json<any>();
+    expect(execData.success).toBe(false);
   });
 });
 

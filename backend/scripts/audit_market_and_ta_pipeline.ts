@@ -112,7 +112,7 @@ async function auditMarketAndTAPipeline() {
         atr: Number(ind.atr?.toFixed(2) ?? 0),
         vwap: Number(ind.vwap?.toFixed(2) ?? 0),
         score: d.confidence ?? d.score ?? 0,
-        signal: d.signal || 'HOLD'
+        signal: d.signal || 'NONE'
       });
     }
   }

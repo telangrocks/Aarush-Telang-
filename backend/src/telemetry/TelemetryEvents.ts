@@ -6,7 +6,7 @@
  * It collects operational metrics only — it never modifies any evaluation result.
  */
 
-export type SignalType = 'BUY' | 'SELL' | 'HOLD';
+export type SignalType = 'BUY' | 'SELL';
 export type RiskClassification = 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTREME' | 'UNKNOWN';
 
 /**
@@ -47,7 +47,6 @@ export interface OrchestratorCycleEvent {
   skippedEvaluations: number;
   buySignals: number;
   sellSignals: number;
-  holdSignals: number;
   totalDurationMs: number;
   timestamp: number;
 }

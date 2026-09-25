@@ -55,6 +55,8 @@ export interface EconomicIntent {
   actualExecutedQuantity?: string;
   actualFillPrice?: string;
   actualOrderId?: string;
+  exchangeConfirmedStopLoss?: string;
+  exchangeConfirmedTakeProfit?: string;
 }
 
 export interface ProtectionIntent {

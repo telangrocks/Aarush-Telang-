@@ -59,5 +59,49 @@ class MarketMapperTest {
         assertEquals(0.0, domain.score, 0.0)
         assertEquals(null, domain.minNotional)
         assertEquals("NEUTRAL", domain.tradeSide)
+        assertEquals("UNKNOWN/USDT:ScalperV2:NEUTRAL", domain.opportunityId)
+    }
+
+    @Test
+    fun `toDomain preserves explicit opportunityId from DTO`() {
+        val dto = MarketCandidateDto(
+            rank = 2,
+            symbol = "ETH",
+            pairName = "ETH/USDT",
+            tradeSide = "BUY",
+            opportunityId = "ETH/USDT:ScalperV2:BUY",
+            recommendedStrategy = "ScalperV2"
+        )
+
+        val domain = dto.toDomain()
+        assertEquals("ETH/USDT:ScalperV2:BUY", domain.opportunityId)
+        assertEquals("ScalperV2", domain.recommendedStrategy)
+    }
+
+    @Test
+    fun `toDomain generates distinct deterministic identities for different strategy directions on same coin`() {
+        val ethLongDto = MarketCandidateDto(
+            rank = 1,
+            symbol = "ETH",
+            pairName = "ETH/USDT",
+            tradeSide = "BUY",
+            opportunityId = "ETH/USDT:ScalperV2:BUY",
+            recommendedStrategy = "ScalperV2"
+        )
+        val ethShortDto = MarketCandidateDto(
+            rank = 2,
+            symbol = "ETH",
+            pairName = "ETH/USDT",
+            tradeSide = "SELL",
+            opportunityId = "ETH/USDT:Momentum:SELL",
+            recommendedStrategy = "Momentum"
+        )
+
+        val longDomain = ethLongDto.toDomain()
+        val shortDomain = ethShortDto.toDomain()
+
+        assertEquals("ETH/USDT:ScalperV2:BUY", longDomain.opportunityId)
+        assertEquals("ETH/USDT:Momentum:SELL", shortDomain.opportunityId)
+        org.junit.Assert.assertNotEquals(longDomain.opportunityId, shortDomain.opportunityId)
     }
 }

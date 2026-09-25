@@ -70,27 +70,40 @@ describe('StrategyRegistry', () => {
     const registry = StrategyRegistry.getInstance();
     const strategy = registry.createStrategy('ScalperV2', {
       riskParameters: {
-        accountRiskPercent: 2.5
+        atrStopLossMultiplier: 2.5
       }
     });
 
     expect(strategy).toBeDefined();
-    expect((strategy as any).config.riskParameters.accountRiskPercent).toBe(2.5);
+    expect((strategy as any).config.riskParameters.atrStopLossMultiplier).toBe(2.5);
     // ensure maxExposureLimit is preserved
     expect((strategy as any).config.riskParameters.maxExposureLimit).toBeDefined();
     expect((strategy as any).config.riskParameters.maxExposureLimit).toBe(20.0);
   });
 
+  it('should safely merge atrTakeProfitMultiplier under Model A', () => {
+    const registry = StrategyRegistry.getInstance();
+    const strategy = registry.createStrategy('ScalperV2', {
+      riskParameters: {
+        atrTakeProfitMultiplier: 3.5,
+        atrStopLossMultiplier: 1.8
+      }
+    });
+
+    expect((strategy as any).config.riskParameters.atrTakeProfitMultiplier).toBe(3.5);
+    expect((strategy as any).config.riskParameters.atrStopLossMultiplier).toBe(1.8);
+  });
+
   it('should reject invalid riskParameters bounds', () => {
     const registry = StrategyRegistry.getInstance();
-    
-    expect(() => {
-      registry.createStrategy('ScalperV2', { riskParameters: { accountRiskPercent: 99.0 } });
-    }).toThrow(/Invalid accountRiskPercent/);
 
     expect(() => {
-      registry.createStrategy('ScalperV2', { riskParameters: { accountRiskPercent: 0.05 } });
-    }).toThrow(/Invalid accountRiskPercent/);
+      registry.createStrategy('ScalperV2', { riskParameters: { atrTakeProfitMultiplier: 0.5 } });
+    }).toThrow(/Invalid atrTakeProfitMultiplier/);
+
+    expect(() => {
+      registry.createStrategy('ScalperV2', { riskParameters: { atrTakeProfitMultiplier: 6.0 } });
+    }).toThrow(/Invalid atrTakeProfitMultiplier/);
 
     expect(() => {
       registry.createStrategy('ScalperV2', { riskParameters: { riskRewardRatio: 0.5 } });

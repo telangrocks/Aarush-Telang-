@@ -25,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.IOException
@@ -306,7 +307,7 @@ class ExchangeViewModel @Inject constructor(
         Log.e(TAG, "[DIAGNOSTIC] Error | Endpoint: $endpointName | Exception Class: ${exception::class.java.name} | Message: ${exception.message}", exception)
 
         if (exception is DomainException) {
-            val userMsg = exception.message.ifBlank { "Authentication failed." }
+            val userMsg = exception.message.ifBlank { "Request failed. Please try again." }
             val hintMsg = exception.hint ?: exception.code
             return userMsg to hintMsg
         }
@@ -326,7 +327,7 @@ class ExchangeViewModel @Inject constructor(
             val (localConnected, localExchange, localEnv) = exchangeConnectionManager.getConnectionInfo()
             if (localConnected && !forceRemote) {
                 _uiState.value = ExchangeUiState.Connected(localExchange ?: "bybit")
-                fetchMarketCandidates()
+                // fetchMarketCandidates() deferred
                 return@launch
             }
 
@@ -339,7 +340,7 @@ class ExchangeViewModel @Inject constructor(
                     val env = status.environment ?: "demo"
                     exchangeConnectionManager.saveConnection(exchange, env)
                     _uiState.value = ExchangeUiState.Connected(exchange)
-                    fetchMarketCandidates()
+                    // fetchMarketCandidates() deferred
                     return@launch
                 }
             }
@@ -402,17 +403,16 @@ class ExchangeViewModel @Inject constructor(
             _uiState.value = ExchangeUiState.Connected(state.selectedExchange)
 
             exchangeConnectionManager.saveConnection(state.selectedExchange, state.environment)
-
-            fetchMarketCandidates()
+            // fetchMarketCandidates() is deferred until budget is provided in Trade Setup
         }
     }
 
-    fun fetchMarketCandidates() {
+    fun fetchMarketCandidates(budget: Double = 5.0) {
         _candidatesError.value = null
         _candidatesLoading.value = true
         _marketDataState.value = MarketDataUiState.Loading
         viewModelScope.launch {
-            val result = marketRepository.getCandidates()
+            val result = marketRepository.getCandidates(budget)
             result.onSuccess { list ->
                 val uiList = list.map { domain ->
                     MarketCandidate(
@@ -438,17 +438,24 @@ class ExchangeViewModel @Inject constructor(
                         lowPrice24h = domain.lowPrice24h,
                         category = domain.category,
                         exchangeTimestamp = domain.exchangeTimestamp,
-                        coinColor = androidx.compose.ui.graphics.Color.Gray
+                        coinColor = androidx.compose.ui.graphics.Color.Gray,
+                        opportunityId = domain.opportunityId,
+                        recommendedStrategy = domain.recommendedStrategy
                     )
                 }
-                _candidates.value = uiList
+                val distinctUiList = uiList.distinctBy {
+                    it.opportunityId?.takeIf { id -> id.isNotBlank() }
+                        ?: "${it.pairName.ifEmpty { it.symbol }}:${it.tradeSide}:${it.rank}"
+                }
+                _candidates.value = distinctUiList
                 _readyForCandidates.value = true
-                if (uiList.isEmpty()) {
-                    val emptyMsg = "No market candidates matching volume criteria found on exchange."
-                    _candidatesError.value = emptyMsg
+                if (distinctUiList.isEmpty()) {
+                    _selectedCandidate.value = null
+                    _candidatesError.value = null
+                    val emptyMsg = "No opportunities within your budget."
                     _marketDataState.value = MarketDataUiState.Empty(emptyMsg)
                 } else {
-                    _marketDataState.value = MarketDataUiState.Success(uiList)
+                    _marketDataState.value = MarketDataUiState.Success(distinctUiList)
                 }
             }.onFailure { e ->
                 val (errMsg, hintMsg) = getUserFriendlyErrorMessage(endpointName = "/api/market/candidates", exception = e)
@@ -461,6 +468,8 @@ class ExchangeViewModel @Inject constructor(
 
     fun resetState() {
         tickerJob?.cancel()
+        tickerJob = null
+        activeTickerSymbol = null
         isProcessingTrade = false
         _liveAlertPrice.value = null
         _isUnknownState.value = false
@@ -504,7 +513,7 @@ class ExchangeViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            val result = marketRepository.getCandidates()
+            val result = marketRepository.getCandidates(5.0) // Fallback for restore
             if (result is NetworkResult.Success) {
                 val uiList = result.data.map { domain ->
                     MarketCandidate(
@@ -619,11 +628,21 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
+    private var activeTickerSymbol: String? = null
+
     fun startLiveTicker(symbol: String) {
+        val normalizedSymbol = if (symbol.contains("/")) symbol else "$symbol/USDT"
+        Log.d(TAG, "[DIAGNOSTIC] startLiveTicker requested for symbol=$symbol, normalized=$normalizedSymbol, active=$activeTickerSymbol, isJobActive=${tickerJob?.isActive}")
+        if (activeTickerSymbol == normalizedSymbol && tickerJob?.isActive == true) {
+            Log.d(TAG, "[DIAGNOSTIC] startLiveTicker skipping restart: already active for $normalizedSymbol")
+            return
+        }
+        activeTickerSymbol = normalizedSymbol
         tickerJob?.cancel()
+        Log.d(TAG, "[DIAGNOSTIC] startLiveTicker starting polling loop for $normalizedSymbol")
         tickerJob = viewModelScope.launch {
             while (isActive && !isProcessingTrade) {
-                when (val result = marketRepository.getTicker(symbol)) {
+                when (val result = marketRepository.getTicker(normalizedSymbol)) {
                     is NetworkResult.Success -> {
                         _liveAlertPrice.value = result.data.price
                     }
@@ -637,7 +656,10 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun stopLiveTicker() {
+        Log.d(TAG, "[DIAGNOSTIC] stopLiveTicker called for active=$activeTickerSymbol")
         tickerJob?.cancel()
+        tickerJob = null
+        activeTickerSymbol = null
     }
 
     fun setPendingAlert(alert: Map<String, Any>) {
@@ -680,7 +702,9 @@ class ExchangeViewModel @Inject constructor(
                 }
             }
         }
-        _pendingAlert.value = null
+        if (!isProcessingTrade) {
+            _pendingAlert.value = null
+        }
     }
 
     fun dismissExecutionConfirmation(onNavigate: () -> Unit) {
@@ -689,7 +713,9 @@ class ExchangeViewModel @Inject constructor(
         executionPollingJob?.cancel()
         executionPollingJob = null
         _executionState.value = ExecutionUiState.Idle
-        _pendingAlert.value = null
+        if (!isProcessingTrade) {
+            _pendingAlert.value = null
+        }
         onNavigate()
     }
 
@@ -729,7 +755,8 @@ class ExchangeViewModel @Inject constructor(
             stopLoss = stopLoss,
             takeProfit = takeProfit,
             positionSizeUsdt = positionSizeUsdt,
-            strategy = strategy
+            strategy = strategy,
+            entryIntent = "IMMEDIATE"
         )
 
         _tradeError.value = null
@@ -739,11 +766,47 @@ class ExchangeViewModel @Inject constructor(
         tradeAlertManager.dismissOrExecuteAlert()
         stopLiveTicker()
 
+        com.cryptopulse.app.forensics.CidDiagnosticManager.logExchange(
+            exchangeId = "bybit",
+            action = "ORDER_SUBMIT",
+            status = "SUBMITTING",
+            orderType = "MARKET"
+        )
+
         viewModelScope.launch {
             val token = tokenManager.getToken()
             if (token != null) {
-                val result = botRepository.executeTrade(alertId)
+                val result = botRepository.executeTrade(requestDto)
                 result.onSuccess { execResult ->
+                    if (!execResult.success) {
+                        _isUnknownState.value = false
+                        isProcessingTrade = false
+                        val rejectionMsg = execResult.message.ifBlank { "Trade execution was rejected by exchange." }
+                        _tradeError.value = rejectionMsg
+                        _executionState.value = ExecutionUiState.Failed(rejectionMsg)
+                        try {
+                            com.cryptopulse.app.forensics.CidDiagnosticManager.logExecutionResultReceived(
+                                alertId = alertId,
+                                symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else symbol,
+                                strategyId = strategy,
+                                signalType = side,
+                                marketPrice = if (execResult.requestedEntryPrice > 0) execResult.requestedEntryPrice else entryPrice,
+                                entryPrice = null,
+                                stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else stopLoss,
+                                takeProfit = if (execResult.takeProfit > 0) execResult.takeProfit else takeProfit,
+                                rejectionReason = rejectionMsg,
+                                severity = com.cryptopulse.app.forensics.CidSeverity.WARN
+                            )
+                        } catch (_: Throwable) {}
+                        com.cryptopulse.app.forensics.CidDiagnosticManager.logExchange(
+                            exchangeId = "bybit",
+                            action = "ORDER_REJECTED",
+                            status = "FAILED",
+                            errorCode = rejectionMsg
+                        )
+                        return@onSuccess
+                    }
+
                     _isUnknownState.value = false
                     isProcessingTrade = false
                     botRepository.acknowledgeAlert(alertId)
@@ -756,6 +819,7 @@ class ExchangeViewModel @Inject constructor(
                             actualFillPrice = if (execResult.actualFillPrice > 0) execResult.actualFillPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
                             stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else ((alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: 0.0),
                             takeProfit = if (execResult.takeProfit > 0) execResult.takeProfit else ((alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: 0.0),
+                            estimatedPnl = (alert["estimatedPnl"] as? Double) ?: execResult.estimatedPnl,
                             isFilled = true
                         )
                         _executionState.value = ExecutionUiState.Filled(finalResult)
@@ -763,6 +827,25 @@ class ExchangeViewModel @Inject constructor(
                             entryPrice = finalResult.actualFillPrice,
                             stopLossPrice = finalResult.stopLoss,
                             takeProfitPrice = finalResult.takeProfit,
+                        )
+                        try {
+                            com.cryptopulse.app.forensics.CidDiagnosticManager.logExecutionResultReceived(
+                                alertId = alertId,
+                                symbol = finalResult.symbol,
+                                strategyId = strategy,
+                                signalType = side,
+                                marketPrice = finalResult.requestedEntryPrice,
+                                entryPrice = finalResult.actualFillPrice,
+                                stopLoss = finalResult.stopLoss,
+                                takeProfit = finalResult.takeProfit,
+                                rejectionReason = null,
+                                severity = com.cryptopulse.app.forensics.CidSeverity.INFO
+                            )
+                        } catch (_: Throwable) {}
+                        com.cryptopulse.app.forensics.CidDiagnosticManager.logExchange(
+                            exchangeId = "bybit",
+                            action = "ORDER_FILLED",
+                            status = "SUCCESS"
                         )
                     } else {
                         val positionId = if (execResult.positionId.isNotBlank()) execResult.positionId else alertId
@@ -772,28 +855,69 @@ class ExchangeViewModel @Inject constructor(
                             symbol = symbol,
                             side = side
                         )
+                        try {
+                            com.cryptopulse.app.forensics.CidDiagnosticManager.logExecutionResultReceived(
+                                alertId = alertId,
+                                symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else symbol,
+                                strategyId = strategy,
+                                signalType = side,
+                                marketPrice = if (execResult.requestedEntryPrice > 0) execResult.requestedEntryPrice else entryPrice,
+                                entryPrice = null,
+                                stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else stopLoss,
+                                takeProfit = if (execResult.takeProfit > 0) execResult.takeProfit else takeProfit,
+                                rejectionReason = null,
+                                severity = com.cryptopulse.app.forensics.CidSeverity.INFO
+                            )
+                        } catch (_: Throwable) {}
                         executionPollingJob?.cancel()
                         executionPollingJob = viewModelScope.launch {
-                            botRepository.pollExecutionStatus(positionId).collect { statusResult ->
-                                if (statusResult.isFilled) {
-                                    val finalFilledResult = statusResult.copy(
+                            var latestResult: com.cryptopulse.app.domain.models.TradeExecutionResult? = null
+                            botRepository.pollExecutionStatus(positionId)
+                                .onCompletion {
+                                    val finalRes = latestResult
+                                    if (finalRes != null && _executionState.value is ExecutionUiState.AwaitingFill) {
+                                        if (finalRes.isFilled) {
+                                            _executionState.value = ExecutionUiState.Filled(finalRes)
+                                        } else if (finalRes.entryStatus == "OPEN" || finalRes.entryStatus == "PENDING_ENTRY" || finalRes.entryStatus == "NEW") {
+                                            _executionState.value = ExecutionUiState.Confirmed(finalRes)
+                                        } else if (finalRes.entryStatus == "FAILED" || finalRes.entryStatus == "CANCELLED" || finalRes.entryStatus == "REJECTED") {
+                                            _executionState.value = ExecutionUiState.Failed("Order execution was cancelled or rejected by exchange.")
+                                        } else {
+                                            _executionState.value = ExecutionUiState.Confirmed(finalRes)
+                                        }
+                                    }
+                                }
+                                .collect { statusResult ->
+                                    latestResult = statusResult.copy(
                                         symbol = if (statusResult.symbol.isNotBlank()) statusResult.symbol else symbol,
                                         side = if (statusResult.side.isNotBlank()) statusResult.side else side,
                                         requestedEntryPrice = if (statusResult.requestedEntryPrice > 0) statusResult.requestedEntryPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
+                                        actualFillPrice = if (statusResult.actualFillPrice > 0) statusResult.actualFillPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
                                         stopLoss = if (statusResult.stopLoss > 0) statusResult.stopLoss else ((alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: 0.0),
-                                        takeProfit = if (statusResult.takeProfit > 0) statusResult.takeProfit else ((alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: 0.0)
+                                        takeProfit = if (statusResult.takeProfit > 0) statusResult.takeProfit else ((alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: 0.0),
+                                        estimatedPnl = (alert["estimatedPnl"] as? Double) ?: statusResult.estimatedPnl
                                     )
-                                    _executionState.value = ExecutionUiState.Filled(finalFilledResult)
-                                    _lastTrade.value = TradeSetupState(
-                                        entryPrice = finalFilledResult.actualFillPrice,
-                                        stopLossPrice = finalFilledResult.stopLoss,
-                                        takeProfitPrice = finalFilledResult.takeProfit,
-                                    )
-                                } else if (statusResult.entryStatus == "FAILED" || statusResult.entryStatus == "CANCELLED" || statusResult.entryStatus == "REJECTED") {
-                                    _executionState.value = ExecutionUiState.Failed("Order execution was cancelled or rejected by exchange.")
-                                    _tradeError.value = "Order execution was cancelled or rejected by exchange."
+                                    val safeRes = latestResult!!
+                                    
+                                    if (safeRes.isFilled) {
+                                        _executionState.value = ExecutionUiState.Filled(safeRes)
+                                        _lastTrade.value = TradeSetupState(
+                                            entryPrice = safeRes.actualFillPrice,
+                                            stopLossPrice = safeRes.stopLoss,
+                                            takeProfitPrice = safeRes.takeProfit,
+                                        )
+                                    } else if (safeRes.entryStatus == "OPEN" || safeRes.entryStatus == "PENDING_ENTRY" || safeRes.entryStatus == "NEW") {
+                                        _executionState.value = ExecutionUiState.Confirmed(safeRes)
+                                        _lastTrade.value = TradeSetupState(
+                                            entryPrice = safeRes.actualFillPrice,
+                                            stopLossPrice = safeRes.stopLoss,
+                                            takeProfitPrice = safeRes.takeProfit,
+                                        )
+                                    } else if (safeRes.entryStatus == "FAILED" || safeRes.entryStatus == "CANCELLED" || safeRes.entryStatus == "REJECTED") {
+                                        _executionState.value = ExecutionUiState.Failed("Order execution was cancelled or rejected by exchange.")
+                                        _tradeError.value = "Order execution was cancelled or rejected by exchange."
+                                    }
                                 }
-                            }
                         }
                     }
                 }.onFailure { e ->
@@ -804,9 +928,16 @@ class ExchangeViewModel @Inject constructor(
                         _tradeError.value = "Order status unknown due to network timeout. The backend is safely reconciling. Please wait."
                         _executionState.value = ExecutionUiState.Failed("Order status unknown due to network timeout. The backend is safely reconciling. Please wait.")
                     } else {
+                        _isUnknownState.value = false
                         _tradeError.value = errorMessage
                         _executionState.value = ExecutionUiState.Failed(errorMessage)
                     }
+                    com.cryptopulse.app.forensics.CidDiagnosticManager.logExchange(
+                        exchangeId = "bybit",
+                        action = if (_isUnknownState.value) "ORDER_UNKNOWN" else "ORDER_FAILED",
+                        status = if (_isUnknownState.value) "UNKNOWN" else "FAILED",
+                        errorCode = errorMessage
+                    )
                 }
             } else {
                 isProcessingTrade = false

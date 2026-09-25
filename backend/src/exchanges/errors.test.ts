@@ -2,18 +2,18 @@ import { describe, it, expect } from "vitest";
 import { classifyException, classifyExchangeResponse } from "./errors";
 
 describe("Exchange Error Classifier", () => {
-  it("classifies Bybit invalid API key error (10002) correctly", () => {
+  it("classifies Bybit invalid API key error (10003) correctly", () => {
     const errorBody = JSON.stringify({
-      retCode: 10002,
+      retCode: 10003,
       retMsg: "invalid api_key",
     });
     const result = classifyException(new Error(errorBody), "bybit");
     expect(result.code).toBe("INVALID_API_KEY");
   });
 
-  it("classifies Bybit timestamp out of sync (10003) correctly", () => {
+  it("classifies Bybit timestamp out of sync (10002) correctly", () => {
     const errorBody = JSON.stringify({
-      retCode: 10003,
+      retCode: 10002,
       retMsg: "req timestamp exceeds recv_window",
     });
     const result = classifyException(new Error(errorBody), "bybit");

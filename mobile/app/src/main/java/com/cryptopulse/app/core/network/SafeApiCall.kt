@@ -42,7 +42,7 @@ suspend fun <T> safeApiCall(apiCall: suspend () -> retrofit2.Response<T>): Netwo
     } catch (e: Exception) {
         when (e) {
             is CancellationException -> throw e
-            is SocketTimeoutException -> NetworkResult.Error(NetworkError.Timeout)
+            is SocketTimeoutException, is java.io.InterruptedIOException -> NetworkResult.Error(NetworkError.Timeout)
             is IOException -> NetworkResult.Error(NetworkError.Unknown(e))
             is HttpException -> {
                 val code = e.code()

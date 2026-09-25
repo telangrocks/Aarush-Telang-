@@ -37,7 +37,7 @@ function isValidEmail(email: string): boolean {
   return EMAIL_REGEX.test(email);
 }
 
-function isValidPassword(password: string): boolean {
+export function isValidPassword(password: string): boolean {
   return (
     password.length >= MIN_PASSWORD_LENGTH &&
     PASSWORD_REGEX.test(password)

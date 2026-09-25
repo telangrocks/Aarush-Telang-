@@ -6,5 +6,5 @@ import retrofit2.http.GET
 
 interface MarketService {
     @GET(ApiConstants.MARKET_CANDIDATES)
-    suspend fun getMarketCandidates(): Response<List<MarketCandidateDto>>
+    suspend fun getMarketCandidates(@retrofit2.http.Query("budget") budget: Double): Response<List<MarketCandidateDto>>
 }
