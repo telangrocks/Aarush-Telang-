@@ -55,6 +55,7 @@ export class StrategyOrchestrator {
 
       const registry = StrategyRegistry.getInstance();
       let targetTimeframes: Timeframe[] = ['15m', '1h', '4h'];
+      const SAFE_CANDLE_BUFFER = 2;
       let candleLimit = 200;
 
       // Fix SE-C1 & SE-C3: Resolve timeframes and candle limit dynamically based on strategies
@@ -70,7 +71,7 @@ export class StrategyOrchestrator {
           targetTimeframes = strategy.manifest.supportedTimeframes as Timeframe[];
         }
         if (strategy.manifest?.minimumCandles) {
-          candleLimit = Math.max(candleLimit, strategy.manifest.minimumCandles);
+          candleLimit = Math.max(candleLimit, strategy.manifest.minimumCandles + SAFE_CANDLE_BUFFER);
         }
       } else {
         // Evaluate all strategies — union required timeframes and maximum minimumCandles
@@ -81,7 +82,7 @@ export class StrategyOrchestrator {
             m.supportedTimeframes.forEach(tf => tfSet.add(tf as Timeframe));
           }
           if (m.minimumCandles) {
-            candleLimit = Math.max(candleLimit, m.minimumCandles);
+            candleLimit = Math.max(candleLimit, m.minimumCandles + SAFE_CANDLE_BUFFER);
           }
         }
         if (tfSet.size > 0) {

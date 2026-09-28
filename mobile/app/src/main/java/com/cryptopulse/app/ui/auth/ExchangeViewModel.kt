@@ -672,17 +672,7 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun setPendingBotAlert(alert: BotAlert) {
-        _pendingAlert.value = mapOf(
-            "id" to alert.id,
-            "symbol" to alert.symbol,
-            "entryPrice" to alert.entryPrice,
-            "stopLoss" to (alert.stopLoss ?: 0.0),
-            "takeProfit" to (alert.takeProfit ?: 0.0),
-            "estimatedPnl" to (alert.estimatedPnl ?: 0.0),
-            "positionSize" to (alert.positionSize ?: 0.0),
-            "strategy" to (alert.strategy ?: ""),
-            "side" to (alert.side ?: "BUY"),
-        )
+        _pendingAlert.value = alert.toMap()
         _isUnknownState.value = false
         startLiveTicker(alert.symbol)
     }
@@ -734,16 +724,16 @@ class ExchangeViewModel @Inject constructor(
             _executionState.value = ExecutionUiState.Failed("Invalid trade alert identifier. Cannot execute trade.")
             return
         }
-        val tradeSetup = _tradeSetup.value
-        val symbol = (alert["symbol"] as? String) ?: "BTC/USDT"
-        val side = (alert["side"] as? String) ?: "BUY"
-        val strategy = (alert["strategy"] as? String) ?: "ScalperV2"
-        val entryPrice = (alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0
-        val targetEntryPrice = (alert["targetEntryPrice"] as? Double) ?: tradeSetup?.entryPrice
-        val signalPrice = (alert["signalPrice"] as? Double) ?: entryPrice
-        val stopLoss = (alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: (entryPrice * 0.985)
-        val takeProfit = (alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: (entryPrice * 1.03)
-        val positionSizeUsdt = (alert["positionSize"] as? Double) ?: 100.0
+        val symbol = alert["symbol"] as? String
+        val side = alert["side"] as? String
+        val strategy = alert["strategy"] as? String
+        val entryPrice = alert["entryPrice"] as? Double
+        val targetEntryPrice = alert["targetEntryPrice"] as? Double
+        val signalPrice = alert["signalPrice"] as? Double
+        val stopLoss = alert["stopLoss"] as? Double
+        val takeProfit = alert["takeProfit"] as? Double
+        val positionSizeUsdt = alert["positionSize"] as? Double
+        val entryIntent = (alert["entryIntent"] as? String) ?: "IMMEDIATE"
 
         val requestDto = com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto(
             alertId = alertId,
@@ -756,7 +746,7 @@ class ExchangeViewModel @Inject constructor(
             takeProfit = takeProfit,
             positionSizeUsdt = positionSizeUsdt,
             strategy = strategy,
-            entryIntent = "IMMEDIATE"
+            entryIntent = entryIntent
         )
 
         _tradeError.value = null
@@ -787,9 +777,9 @@ class ExchangeViewModel @Inject constructor(
                         try {
                             com.cryptopulse.app.forensics.CidDiagnosticManager.logExecutionResultReceived(
                                 alertId = alertId,
-                                symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else symbol,
-                                strategyId = strategy,
-                                signalType = side,
+                                symbol = (if (execResult.symbol.isNotBlank()) execResult.symbol else symbol) ?: "",
+                                strategyId = strategy ?: "",
+                                signalType = side ?: "BUY",
                                 marketPrice = if (execResult.requestedEntryPrice > 0) execResult.requestedEntryPrice else entryPrice,
                                 entryPrice = null,
                                 stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else stopLoss,
@@ -813,12 +803,12 @@ class ExchangeViewModel @Inject constructor(
 
                     if (execResult.isFilled) {
                         val finalResult = execResult.copy(
-                            symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else symbol,
-                            side = if (execResult.side.isNotBlank()) execResult.side else side,
-                            requestedEntryPrice = if (execResult.requestedEntryPrice > 0) execResult.requestedEntryPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
-                            actualFillPrice = if (execResult.actualFillPrice > 0) execResult.actualFillPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
-                            stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else ((alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: 0.0),
-                            takeProfit = if (execResult.takeProfit > 0) execResult.takeProfit else ((alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: 0.0),
+                            symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else (symbol ?: ""),
+                            side = if (execResult.side.isNotBlank()) execResult.side else (side ?: "BUY"),
+                            requestedEntryPrice = if (execResult.requestedEntryPrice > 0) execResult.requestedEntryPrice else (entryPrice ?: 0.0),
+                            actualFillPrice = if (execResult.actualFillPrice > 0) execResult.actualFillPrice else (entryPrice ?: 0.0),
+                            stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else (stopLoss ?: 0.0),
+                            takeProfit = if (execResult.takeProfit > 0) execResult.takeProfit else (takeProfit ?: 0.0),
                             estimatedPnl = (alert["estimatedPnl"] as? Double) ?: execResult.estimatedPnl,
                             isFilled = true
                         )
@@ -832,8 +822,8 @@ class ExchangeViewModel @Inject constructor(
                             com.cryptopulse.app.forensics.CidDiagnosticManager.logExecutionResultReceived(
                                 alertId = alertId,
                                 symbol = finalResult.symbol,
-                                strategyId = strategy,
-                                signalType = side,
+                                strategyId = strategy ?: "",
+                                signalType = side ?: "BUY",
                                 marketPrice = finalResult.requestedEntryPrice,
                                 entryPrice = finalResult.actualFillPrice,
                                 stopLoss = finalResult.stopLoss,
@@ -852,15 +842,15 @@ class ExchangeViewModel @Inject constructor(
                         _executionState.value = ExecutionUiState.AwaitingFill(
                             positionId = positionId,
                             alertId = alertId,
-                            symbol = symbol,
-                            side = side
+                            symbol = symbol ?: "",
+                            side = side ?: "BUY"
                         )
                         try {
                             com.cryptopulse.app.forensics.CidDiagnosticManager.logExecutionResultReceived(
                                 alertId = alertId,
-                                symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else symbol,
-                                strategyId = strategy,
-                                signalType = side,
+                                symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else (symbol ?: ""),
+                                strategyId = strategy ?: "",
+                                signalType = side ?: "BUY",
                                 marketPrice = if (execResult.requestedEntryPrice > 0) execResult.requestedEntryPrice else entryPrice,
                                 entryPrice = null,
                                 stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else stopLoss,
@@ -889,12 +879,12 @@ class ExchangeViewModel @Inject constructor(
                                 }
                                 .collect { statusResult ->
                                     latestResult = statusResult.copy(
-                                        symbol = if (statusResult.symbol.isNotBlank()) statusResult.symbol else symbol,
-                                        side = if (statusResult.side.isNotBlank()) statusResult.side else side,
-                                        requestedEntryPrice = if (statusResult.requestedEntryPrice > 0) statusResult.requestedEntryPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
-                                        actualFillPrice = if (statusResult.actualFillPrice > 0) statusResult.actualFillPrice else ((alert["entryPrice"] as? Double) ?: tradeSetup?.entryPrice ?: 0.0),
-                                        stopLoss = if (statusResult.stopLoss > 0) statusResult.stopLoss else ((alert["stopLoss"] as? Double) ?: tradeSetup?.stopLossPrice ?: 0.0),
-                                        takeProfit = if (statusResult.takeProfit > 0) statusResult.takeProfit else ((alert["takeProfit"] as? Double) ?: tradeSetup?.takeProfitPrice ?: 0.0),
+                                        symbol = if (statusResult.symbol.isNotBlank()) statusResult.symbol else (symbol ?: ""),
+                                        side = if (statusResult.side.isNotBlank()) statusResult.side else (side ?: "BUY"),
+                                        requestedEntryPrice = if (statusResult.requestedEntryPrice > 0) statusResult.requestedEntryPrice else (entryPrice ?: 0.0),
+                                        actualFillPrice = if (statusResult.actualFillPrice > 0) statusResult.actualFillPrice else (entryPrice ?: 0.0),
+                                        stopLoss = if (statusResult.stopLoss > 0) statusResult.stopLoss else (stopLoss ?: 0.0),
+                                        takeProfit = if (statusResult.takeProfit > 0) statusResult.takeProfit else (takeProfit ?: 0.0),
                                         estimatedPnl = (alert["estimatedPnl"] as? Double) ?: statusResult.estimatedPnl
                                     )
                                     val safeRes = latestResult!!

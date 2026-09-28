@@ -332,9 +332,9 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
 
     // Verify executeCycle called for each candidate symbol in order
     expect(mockExecuteCycle).toHaveBeenCalledTimes(3);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(1, "SOL/USDT", "scalper-v2", undefined, 5000);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(2, "ETH/USDT", "scalper-v2", undefined, 5000);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(3, "BTC/USDT", "scalper-v2", undefined, 5000);
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(1, "SOL/USDT", undefined, undefined, 5000);
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(2, "ETH/USDT", undefined, undefined, 5000);
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(3, "BTC/USDT", undefined, undefined, 5000);
 
     // Verify alarm re-scheduled
     expect(mockState.storage.setAlarm).toHaveBeenCalled();
@@ -379,8 +379,8 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
 
     // Verify both symbols were attempted
     expect(mockExecuteCycle).toHaveBeenCalledTimes(2);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(1, "FAIL/USDT", "scalper-v2", undefined, 5000);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(2, "PASS/USDT", "scalper-v2", undefined, 5000);
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(1, "FAIL/USDT", undefined, undefined, 5000);
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(2, "PASS/USDT", undefined, undefined, 5000);
 
     // Verify PASS/USDT successfully generated an alert
     const alerts = mockStorage.get("alerts");

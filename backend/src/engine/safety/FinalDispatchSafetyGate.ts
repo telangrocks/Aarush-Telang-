@@ -17,6 +17,8 @@ export class FinalDispatchSafetyGate {
       maxExposure?: number;
       currentExposure?: number;
       maxLeverage?: number;
+      referencePrice?: number;
+      estimatedNotional?: number;
     }
   ): void {
     // 1. Numeric Sanity
@@ -78,7 +80,14 @@ export class FinalDispatchSafetyGate {
 
     // 4. Exposure Limits
     if (constraints.maxExposure && constraints.currentExposure !== undefined) {
-      const notional = payload.price ? payload.amount.multipliedBy(payload.price).toNumber() : 0; // Rough estimate for market orders would need ticker, but let's assume limit or we pass notional
+      let notional = 0;
+      if (payload.price && !payload.price.isNaN() && payload.price.gt(0)) {
+        notional = payload.amount.multipliedBy(payload.price).toNumber();
+      } else if (constraints.referencePrice && constraints.referencePrice > 0) {
+        notional = payload.amount.multipliedBy(constraints.referencePrice).toNumber();
+      } else if (constraints.estimatedNotional && constraints.estimatedNotional > 0) {
+        notional = constraints.estimatedNotional;
+      }
       if (constraints.currentExposure + notional > constraints.maxExposure) {
         throw new UnifiedError(`Order notional ${notional} exceeds max exposure ${constraints.maxExposure}`, 'RISK_GATE_REJECTED');
       }

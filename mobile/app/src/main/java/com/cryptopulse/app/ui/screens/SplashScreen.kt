@@ -35,10 +35,12 @@ import com.cryptopulse.app.domain.models.TradeSetupConfig
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import com.cryptopulse.app.data.local.BiometricAuthManager
+import com.cryptopulse.app.service.TradeAlertManager
 import com.cryptopulse.app.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.firstOrNull
 import androidx.fragment.app.FragmentActivity
 
 /**
@@ -61,6 +63,7 @@ fun SplashScreen(
     botRepository: BotRepository,
     tradeSessionRepository: TradeSessionRepository,
     authRepository: AuthRepository? = null,
+    tradeAlertManager: TradeAlertManager? = null,
 ) {
 
     // ── Animation state ───────────────────────────────────────────────────
@@ -154,11 +157,65 @@ fun SplashScreen(
                 }
 
                 val (isExchangeConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
-                destination = when {
-                    token.isNullOrEmpty()   -> "onboarding"
-                    !isExchangeConnected    -> "connect_exchange"
-                    activeBotCoinId != null -> "technical_analysis"
-                    else                    -> "market_candidates"
+                if (token.isNullOrEmpty()) {
+                    destination = "onboarding"
+                } else if (!isExchangeConnected) {
+                    destination = "connect_exchange"
+                } else {
+                    val alertsResult = kotlinx.coroutines.withTimeoutOrNull(2000) {
+                        botRepository.getAlerts()
+                    }
+                    val allAlerts = (alertsResult as? com.cryptopulse.app.core.network.NetworkResult.Success)?.data ?: emptyList()
+                    val currentTime = System.currentTimeMillis()
+                    val validPendingAlerts = allAlerts.filter { alert ->
+                        alert.timestamp?.let { ts ->
+                            val ms = try { java.time.Instant.parse(ts).toEpochMilli() } catch (_: Exception) { ts.toLongOrNull() ?: currentTime }
+                            (currentTime - ms) <= 300_000L
+                        } ?: true
+                    }
+
+                    val persistedAlert = tradeAlertManager?.getActiveAlert()
+                        ?: kotlinx.coroutines.withTimeoutOrNull(500) { tradeAlertManager?.dataStore?.getActiveAlertFlow()?.firstOrNull() }
+                    val persistedId = (persistedAlert?.get("id") ?: persistedAlert?.get("alertId")) as? String
+
+                    var recoveredAlert: Map<String, Any>? = null
+                    if (persistedId != null) {
+                        val serverAlert = validPendingAlerts.firstOrNull { it.id == persistedId }
+                        if (serverAlert != null) {
+                            val mappedAlert = serverAlert.toMap()
+                            tradeAlertManager?.onNewAlertReceived(mappedAlert)
+                            recoveredAlert = mappedAlert
+                            destination = "trade_alert"
+                        } else {
+                            tradeAlertManager?.clearStaleStartupAlert()
+                            destination = if (activeBotCoinId != null) "technical_analysis" else "market_candidates"
+                        }
+                    } else {
+                        when {
+                            validPendingAlerts.size == 1 -> {
+                                val singleAlert = validPendingAlerts.first()
+                                val mappedAlert = singleAlert.toMap()
+                                tradeAlertManager?.onNewAlertReceived(mappedAlert)
+                                recoveredAlert = mappedAlert
+                                destination = "trade_alert"
+                            }
+                            validPendingAlerts.size >= 2 -> {
+                                // DO NOT GUESS: Never use ranking or firstOrNull for multiple alerts on cold start
+                                destination = if (activeBotCoinId != null) "technical_analysis" else "market_candidates"
+                            }
+                            else -> {
+                                destination = if (activeBotCoinId != null) "technical_analysis" else "market_candidates"
+                            }
+                        }
+                    }
+
+                    if (recoveredAlert != null) {
+                        val symbol = recoveredAlert["symbol"] as? String
+                        if (symbol != null) {
+                            activeBotCoinId = symbol
+                            activeBotStrategy = (recoveredAlert["strategyId"] ?: recoveredAlert["strategy"] ?: activeBotStrategy ?: "ScalperV2").toString()
+                        }
+                    }
                 }
             }
 

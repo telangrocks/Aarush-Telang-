@@ -38,6 +38,7 @@ import com.cryptopulse.app.domain.models.Strategy
 import com.cryptopulse.app.domain.models.StrategyCategory
 import com.cryptopulse.app.domain.models.RiskLevel
 import com.cryptopulse.app.domain.models.TradeSetupConfig
+import com.cryptopulse.app.domain.models.StrategyEvaluation
 import com.cryptopulse.app.ui.components.CryptoPulseTopBar
 import com.cryptopulse.app.ui.components.LocalOnLogout
 import com.cryptopulse.app.ui.components.GlowCard
@@ -399,6 +400,175 @@ private fun TechnicalAnalysisCyberButton(
     }
 }
 
+@Composable
+private fun StrategyScoreCard(
+    strategyId: String,
+    displayName: String,
+    evaluation: StrategyEvaluation?,
+    modifier: Modifier = Modifier
+) {
+    val score = evaluation?.confidenceScore
+    val requiredScore = evaluation?.requiredScore
+    val requiredText = if (requiredScore != null) "$requiredScore" else "—"
+    val hasSignal = evaluation?.hasSignal == true
+    val signalType = evaluation?.signalType
+    val qualificationStatus = evaluation?.qualificationStatus ?: (if (score == null) "PENDING" else if (hasSignal) "QUALIFIED" else "NOT_MET")
+
+    val isQualified = qualificationStatus.startsWith("QUALIFIED") || hasSignal
+    val isPending = qualificationStatus == "PENDING" || score == null
+    val isFailed = qualificationStatus == "FAILED"
+
+    val displayStatus = when {
+        isFailed -> "FAILED"
+        isPending -> "EVALUATION PENDING"
+        isQualified -> if (!signalType.isNullOrBlank()) "QUALIFIED ($signalType)" else "QUALIFIED"
+        else -> "NOT MET"
+    }
+
+    val scoreText = if (score != null) "$score / 100" else "— / 100"
+
+    val scoreColor = when {
+        isQualified -> Color(0xFF00FFA3)
+        isPending -> Color(0xFF7A94B8)
+        isFailed -> LossRed
+        else -> Color(0xFF00E5FF)
+    }
+
+    val badgeBorderColor = when {
+        isFailed -> LossRed
+        isQualified -> Color(0xFF00E676)
+        isPending -> Color(0xFF00B4FF)
+        else -> Color(0xFFFFAB40)
+    }
+    val badgeBgColor = when {
+        isFailed -> LossRed.copy(alpha = 0.12f)
+        isQualified -> Color(0x1800E676)
+        isPending -> Color(0x1800B4FF)
+        else -> Color(0x18FFAB40)
+    }
+    val badgeTextColor = when {
+        isFailed -> LossRed
+        isQualified -> Color(0xFF00FFA3)
+        isPending -> Color(0xFF00B4FF)
+        else -> Color(0xFFFFAB40)
+    }
+
+    TechnicalAnalysisCardContainer(
+        modifier = modifier
+            .testTag("strategy_score_card_$strategyId")
+            .semantics(mergeDescendants = true) {
+                contentDescription = "$displayName score $scoreText. Required $requiredText. Entry qualification $displayStatus."
+            }
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = displayName.uppercase(),
+                color = Color(0xFF00E5FF),
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                letterSpacing = 1.sp
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Required: ",
+                    color = Color(0xFF6E8CAE),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = requiredText,
+                    color = Color(0xFFE2E8F0),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        Text(
+            text = scoreText,
+            color = scoreColor,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 32.sp
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        val clampedProgress = if (score != null) (score / 100f).coerceIn(0f, 1f) else 0f
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xFF0F2038))
+        ) {
+            if (clampedProgress > 0f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(fraction = clampedProgress)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    Color(0xFF00E5FF),
+                                    Color(0xFF00FFA3)
+                                )
+                            )
+                        )
+                )
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(badgeBgColor)
+                .border(1.2.dp, badgeBorderColor, RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .border(1.5.dp, badgeBorderColor, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = when {
+                            isQualified -> Icons.Default.Check
+                            isFailed -> Icons.Default.Close
+                            else -> Icons.Default.PriorityHigh
+                        },
+                        contentDescription = null,
+                        tint = badgeBorderColor,
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = "ENTRY QUALIFICATION: $displayStatus",
+                    color = badgeTextColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TechnicalAnalysisScreen(
@@ -419,6 +589,7 @@ fun TechnicalAnalysisScreen(
     onSelectStrategy: (String) -> Unit = {},
     onUseStrategy: (String) -> Unit = {},
     onCommitStrategy: (String) -> Unit = {},
+    onActivateBot: (() -> Unit)? = null,
     onDeactivateBot: () -> Unit = {},
     onBack: () -> Unit,
     onExecuteTrade: () -> Unit,
@@ -428,10 +599,10 @@ fun TechnicalAnalysisScreen(
     val bgGradient = remember { Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020))) }
     var showLogoutDialog by remember { mutableStateOf(false) }
 
-    val resolvedViewedStrategyId = remember(viewedStrategyId, activeStrategyId, analysisState?.strategyMetadata?.strategyId, tradeSetupConfig?.strategyId) {
+    val resolvedViewedStrategyId = remember(viewedStrategyId, activeStrategyId, committedStrategyId, isBotActive, tradeSetupConfig?.strategyId) {
         viewedStrategyId
+            ?: (if (isBotActive && !committedStrategyId.isNullOrBlank()) committedStrategyId else null)
             ?: activeStrategyId
-            ?: analysisState?.strategyMetadata?.strategyId
             ?: tradeSetupConfig?.strategyId
             ?: "ScalperV2"
     }
@@ -618,11 +789,7 @@ fun TechnicalAnalysisScreen(
                                 }
                             }
 
-                            val isViewingActiveBot = isBotActive && 
-                                !committedStrategyId.isNullOrBlank() && 
-                                resolvedViewedStrategyId.equals(committedStrategyId, ignoreCase = true)
-
-                            if (isViewingActiveBot) {
+                            if (isBotActive) {
                                 Button(
                                     onClick = { onDeactivateBot() },
                                     enabled = !isActivating && !isLoading,
@@ -655,8 +822,14 @@ fun TechnicalAnalysisScreen(
                                 }
                             } else {
                                 TechnicalAnalysisCyberButton(
-                                    text = if (isActivating) "ACTIVATING BOT..." else "USE THIS STRATEGY",
-                                    onClick = { onCommitStrategy(resolvedViewedStrategyId) },
+                                    text = if (isActivating) "ACTIVATING BOT..." else "ACTIVATE BOT",
+                                    onClick = {
+                                        if (onActivateBot != null) {
+                                            onActivateBot()
+                                        } else {
+                                            onCommitStrategy(committedStrategyId ?: "ScalperV2")
+                                        }
+                                    },
                                     enabled = !isActivating,
                                     isLoading = isActivating,
                                     testTag = "commit_and_start_bot_button"
@@ -664,7 +837,7 @@ fun TechnicalAnalysisScreen(
                             }
 
                             TechnicalAnalysisCyberButton(
-                                text = "EXECUTE TRADE",
+                                text = "TEST TRADE EXECUTION",
                                 onClick = { onExecuteTrade() },
                                 enabled = true,
                                 leadingIcon = Icons.Default.Bolt,
@@ -698,144 +871,8 @@ fun TechnicalAnalysisScreen(
                     }
 
                     // ==========================================
-                    // STRATEGY EXPLORATION DROPDOWN & HEADER
+                    // 2. EXISTING MARKET CONDITION CARD
                     // ==========================================
-                    var isStrategyMenuExpanded by remember { mutableStateOf(false) }
-
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        TechnicalAnalysisCardContainer(
-                            onClick = if (!isActivating) { { isStrategyMenuExpanded = true } } else null,
-                            testTag = "strategy_dropdown_trigger"
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                ) {
-                                    Text(
-                                        text = "STRATEGY: ",
-                                        color = Color(0xFF7A94B8),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = 0.5.sp
-                                    )
-                                    Text(
-                                        text = activeStrategyDisplayName.uppercase(),
-                                        color = Color(0xFF00E5FF),
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        letterSpacing = 0.5.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.testTag("strategy_title")
-                                    )
-                                }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (isLoading) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(14.dp),
-                                            strokeWidth = 1.5.dp,
-                                            color = Color(0xFF00E5FF)
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                    }
-                                    Icon(
-                                        imageVector = if (isStrategyMenuExpanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
-                                        contentDescription = "Select Strategy",
-                                        tint = Color(0xFF00E5FF),
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        DropdownMenu(
-                            expanded = isStrategyMenuExpanded,
-                            onDismissRequest = { isStrategyMenuExpanded = false },
-                            modifier = Modifier
-                                .background(Color(0xFF081426))
-                                .border(1.dp, Color(0xFF0077E6), RoundedCornerShape(10.dp))
-                        ) {
-                            val strategiesToDisplay = remember(availableStrategies) {
-                                if (availableStrategies.isNotEmpty()) availableStrategies else DEFAULT_STRATEGIES
-                            }
-
-                            strategiesToDisplay.forEach { strat ->
-                                val isSelected = strat.id.equals(resolvedViewedStrategyId, ignoreCase = true)
-                                val isCommittedAndActive = isBotActive && strat.id.equals(committedStrategyId, ignoreCase = true)
-                                DropdownMenuItem(
-                                    text = {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.weight(1f, fill = false),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                if (isSelected) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Check,
-                                                        contentDescription = "Selected",
-                                                        tint = ProfitGreen,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                    Spacer(Modifier.width(8.dp))
-                                                } else {
-                                                    Spacer(Modifier.width(24.dp))
-                                                }
-                                                Text(
-                                                    text = strat.name,
-                                                    color = if (isSelected) CyanPrimary else TextPrimary,
-                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                    fontSize = 13.sp,
-                                                    maxLines = 1
-                                                )
-                                            }
-                                            Spacer(Modifier.width(8.dp))
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                if (isCommittedAndActive) {
-                                                    Surface(
-                                                        color = ProfitGreen.copy(alpha = 0.2f),
-                                                        shape = RoundedCornerShape(4.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = "ACTIVE",
-                                                            color = ProfitGreen,
-                                                            fontSize = 10.sp,
-                                                            fontWeight = FontWeight.ExtraBold,
-                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                                        )
-                                                    }
-                                                    Spacer(Modifier.width(6.dp))
-                                                }
-                                                Text(
-                                                    text = "(${strat.riskLevel.name} Risk)",
-                                                    color = TextMuted,
-                                                    fontSize = 11.sp
-                                                )
-                                            }
-                                        }
-                                    },
-                                    onClick = {
-                                        isStrategyMenuExpanded = false
-                                        if (!isSelected) {
-                                            onSelectStrategy(strat.id)
-                                        }
-                                    },
-                                    modifier = Modifier.testTag("strategy_item_${strat.id}")
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-
                     MarketConditionCard(
                         analysisState = analysisState,
                         isLoading = isLoading,
@@ -896,202 +933,63 @@ fun TechnicalAnalysisScreen(
                         }
                     } else {
                         val state = analysisState
-                        val signalType = state.tradingSignal?.type
-                        val strategyScore = state.marketAnalysis?.confidenceScore ?: 0
-                        val checkpoints = state.marketAnalysis?.conditionSummary ?: emptyList()
-                        val indicators = state.marketAnalysis?.indicatorSummary ?: emptyList()
                         val engineHealth = state.engineStatus?.health ?: "UNKNOWN"
-
-                        val snapshotStrategyId = state.strategyMetadata?.strategyId ?: state.engineStatus?.activeStrategy
-                        val isSnapshotForCurrentStrategy = snapshotStrategyId == null || 
-                            snapshotStrategyId.equals(resolvedViewedStrategyId, ignoreCase = true)
-
-                        val extractedScoreFromSnapshot = state.marketAnalysis?.requiredScore
-                            ?: state.requiredScore
-                            ?: state.strategyMetadata?.parameters?.find { 
-                                it.key.equals("min_confidence", ignoreCase = true) ||
-                                it.key.equals("minConfidence", ignoreCase = true) ||
-                                it.key.equals("minConfidenceScore", ignoreCase = true) ||
-                                it.key.equals("required_score", ignoreCase = true) ||
-                                it.key.equals("requiredScore", ignoreCase = true) ||
-                                it.label.contains("Confidence", ignoreCase = true) ||
-                                it.label.contains("Required", ignoreCase = true)
-                            }?.value?.replace("%", "")?.trim()?.toIntOrNull()
-
-                        val extractedScoreFromSchema = matchingStrategy?.requiredParameters?.find {
-                            it.key.equals("min_confidence", ignoreCase = true) ||
-                            it.key.equals("minConfidence", ignoreCase = true) ||
-                            it.key.equals("minConfidenceScore", ignoreCase = true) ||
-                            it.key.equals("required_score", ignoreCase = true) ||
-                            it.key.equals("requiredScore", ignoreCase = true) ||
-                            it.displayName.contains("Confidence", ignoreCase = true) ||
-                            it.displayName.contains("Required", ignoreCase = true)
-                        }?.defaultValue?.replace("%", "")?.trim()?.toIntOrNull()
-
-                        val strategyDefaultScore = when (resolvedViewedStrategyId.lowercase().replace(STRATEGY_CLEAN_REGEX, "")) {
-                            "scalperv2", "scalping", "scalper" -> 75
-                            "meanreversion", "reversion" -> 75
-                            "momentum", "breakout", "vwap" -> 70
-                            else -> 70
+                        val effectiveAnalyses = remember(state) {
+                            state.strategyAnalyses
                         }
 
-                        val requiredScore = if (isSnapshotForCurrentStrategy) {
-                            extractedScoreFromSnapshot ?: extractedScoreFromSchema ?: strategyDefaultScore
-                        } else {
-                            extractedScoreFromSchema ?: strategyDefaultScore
-                        }
+                        // 3. ScalperV2 score card
+                        StrategyScoreCard(
+                            strategyId = "ScalperV2",
+                            displayName = "Scalper V2",
+                            evaluation = effectiveAnalyses.find { it.strategyId.equals("ScalperV2", ignoreCase = true) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                        val isQualified = (signalType == "BUY" || signalType == "SELL") && strategyScore >= requiredScore
-                        val qualificationStatus = if (isQualified) "QUALIFIED ($signalType)" else "NOT MET"
+                        Spacer(Modifier.height(12.dp))
 
-                        // ==========================================
-                        // CARD 2: STRATEGY SCORE & QUALIFICATION
-                        // ==========================================
-                        TechnicalAnalysisCardContainer(
-                            modifier = Modifier.semantics(mergeDescendants = true) {
-                                contentDescription = "Strategy score $strategyScore out of 100. Required $requiredScore. Entry qualification $qualificationStatus."
-                            }
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "STRATEGY SCORE",
-                                    color = Color(0xFF7A94B8),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp,
-                                    letterSpacing = 1.sp
-                                )
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = "Required: ",
-                                        color = Color(0xFF6E8CAE),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                    Text(
-                                        text = "$requiredScore",
-                                        color = Color(0xFFE2E8F0),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
+                        // 4. Momentum score card
+                        StrategyScoreCard(
+                            strategyId = "Momentum",
+                            displayName = "Momentum",
+                            evaluation = effectiveAnalyses.find { it.strategyId.equals("Momentum", ignoreCase = true) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                            Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
 
-                            Text(
-                                text = "$strategyScore / 100",
-                                color = if (isQualified) Color(0xFF00FFA3) else Color(0xFF00E5FF),
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 32.sp
-                            )
+                        // 5. Breakout score card
+                        StrategyScoreCard(
+                            strategyId = "Breakout",
+                            displayName = "Breakout",
+                            evaluation = effectiveAnalyses.find { it.strategyId.equals("Breakout", ignoreCase = true) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                            Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(12.dp))
 
-                            val clampedProgress = (strategyScore / 100f).coerceIn(0f, 1f)
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(8.dp)
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(Color(0xFF0F2038))
-                            ) {
-                                if (clampedProgress > 0f) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxHeight()
-                                            .fillMaxWidth(fraction = clampedProgress)
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(
-                                                Brush.horizontalGradient(
-                                                    listOf(
-                                                        Color(0xFF00E5FF),
-                                                        Color(0xFF00FFA3)
-                                                    )
-                                                )
-                                            )
-                                    )
-                                }
-                            }
+                        // 6. MeanReversion score card
+                        StrategyScoreCard(
+                            strategyId = "MeanReversion",
+                            displayName = "Mean Reversion",
+                            evaluation = effectiveAnalyses.find { it.strategyId.equals("MeanReversion", ignoreCase = true) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-                            Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(12.dp))
 
-                            val badgeBorderColor = if (isQualified) Color(0xFF00E676) else Color(0xFFFFAB40)
-                            val badgeBgColor = if (isQualified) Color(0x1800E676) else Color(0x18FFAB40)
-                            val badgeTextColor = if (isQualified) Color(0xFF00FFA3) else Color(0xFFFFAB40)
-
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(badgeBgColor)
-                                    .border(1.2.dp, badgeBorderColor, RoundedCornerShape(10.dp))
-                                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(20.dp)
-                                            .border(1.5.dp, badgeBorderColor, CircleShape),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = if (isQualified) Icons.Default.Check else Icons.Default.PriorityHigh,
-                                            contentDescription = null,
-                                            tint = badgeBorderColor,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                    }
-                                    Spacer(Modifier.width(10.dp))
-                                    Text(
-                                        text = "ENTRY QUALIFICATION: $qualificationStatus",
-                                        color = badgeTextColor,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        letterSpacing = 0.5.sp
-                                    )
-                                }
-                            }
-                        }
+                        // 7. VWAP score card
+                        StrategyScoreCard(
+                            strategyId = "VWAP",
+                            displayName = "VWAP",
+                            evaluation = effectiveAnalyses.find { it.strategyId.equals("VWAP", ignoreCase = true) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
                         Spacer(Modifier.height(14.dp))
 
-                        // Preserved logic structure (hidden from UI)
-                        if (false) {
-                            GlowCard {
-                                Column(modifier = Modifier.fillMaxWidth()) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(text = "STRATEGY INDICATORS")
-                                        Text(text = "${indicators.size} Active")
-                                    }
-                                    LazyRow {
-                                        itemsIndexed(
-                                            items = indicators,
-                                            key = { index, indicator -> "${indicator.name}_$index" }
-                                        ) { _, _ -> }
-                                    }
-                                    LazyRow {
-                                        itemsIndexed(
-                                            items = checkpoints,
-                                            key = { index, checkpoint -> "${checkpoint.id.ifBlank { checkpoint.name }}_$index" }
-                                        ) { _, _ -> }
-                                    }
-                                }
-                            }
-                        }
-
                         // ==========================================
-                        // CARD 3: ENGINE DIAGNOSTICS (PERMANENTLY VISIBLE)
+                        // CARD 8: ENGINE DIAGNOSTICS (PERMANENTLY VISIBLE)
                         // ==========================================
                         TechnicalAnalysisCardContainer {
                             Row(

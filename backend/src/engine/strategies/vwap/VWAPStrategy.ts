@@ -8,6 +8,8 @@ import { ConfidenceEngine } from '../../confidence';
 import { RiskEngine, RiskContext } from '../../risk';
 import { SignalType, TradingSignal } from '../../signal';
 import { Timeframe } from '../../market-data/Timeframe';
+import { NormalizedCandle } from '../../market-data/MarketSnapshot';
+import { CandleValidator } from '../../../infrastructure/exchange/CandleValidator';
 
 import { VWAP_STRATEGY_MANIFEST } from './VWAPRules';
 import { VWAPConfig, DEFAULT_VWAP_CONFIG } from './VWAPConfig';
@@ -61,18 +63,24 @@ export class VWAPStrategy implements IStrategy {
 
     // Guard C — Option A: Strictly enforce 15m authoritative timeframe without silent fallback
     const timeframeToUse: Timeframe = '15m';
-    const candles = context.marketSnapshot.candles?.[timeframeToUse];
+    const rawCandles = context.marketSnapshot.candles?.[timeframeToUse];
 
-    if (!candles || candles.length === 0) {
+    if (!rawCandles || rawCandles.length === 0) {
       return this.createNoSignalResult(context, ['Authoritative 15m candle data is unavailable (Option A strict gate)'], indicatorSnapshot, conditionResult);
     }
 
-    if (candles.length < 2) {
-      return this.createNoSignalResult(context, ['Insufficient candle data for analysis'], indicatorSnapshot, conditionResult);
+    const getCandleCloseTime = (c: NormalizedCandle, tf: string): number => {
+      return (c as any).closeTime ?? ((c.openTime ?? c.timestamp ?? 0) + CandleValidator.timeframeToMs(tf));
+    };
+
+    const closedCandles = rawCandles.filter(c => getCandleCloseTime(c, timeframeToUse) <= context.timestamp);
+
+    if (closedCandles.length < 2) {
+      return this.createNoSignalResult(context, ['Insufficient closed candle data for analysis (minimum 2 closed candles required)'], indicatorSnapshot, conditionResult);
     }
 
-    const currentCandle = candles[candles.length - 1];
-    const previousCandle = candles[candles.length - 2];
+    const currentCandle = closedCandles[closedCandles.length - 1];
+    const previousCandle = closedCandles[closedCandles.length - 2];
 
     // Guard A — Current price validation
     const currentPrice = currentCandle?.close || context.marketSnapshot.currentPrice || 0;
@@ -96,7 +104,7 @@ export class VWAPStrategy implements IStrategy {
     const currentAtr = atrArray ? atrArray[atrArray.length - 1] : 0;
 
     // -- Strategy Specific Logic: VWAP Calculation & Validation --
-    const vwapValues = VWAPCalculator.calculate(candles);
+    const vwapValues = VWAPCalculator.calculate(closedCandles);
     const currentVwap = vwapValues[vwapValues.length - 1];
     const previousVwap = vwapValues[vwapValues.length - 2];
 
@@ -117,7 +125,7 @@ export class VWAPStrategy implements IStrategy {
     if (tfIndicators.volume && tfIndicators.volume.length > 0 && !isNaN(tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume)) {
       avgVolume = tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume;
     } else {
-      avgVolume = candles.reduce((sum, c) => sum + c.volume, 0) / candles.length;
+      avgVolume = closedCandles.reduce((sum: number, c: NormalizedCandle) => sum + (c.volume || 0), 0) / closedCandles.length;
     }
 
     if (currentCandle.volume < avgVolume * this.config.vwapRules.minVolumeMultiplier) {

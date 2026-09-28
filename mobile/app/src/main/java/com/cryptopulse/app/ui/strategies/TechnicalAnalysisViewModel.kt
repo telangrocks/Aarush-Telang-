@@ -78,14 +78,20 @@ class TechnicalAnalysisViewModel @Inject constructor(
         viewModelScope.launch {
             botRepository.activeBotAnalysisState.collect { botSnapshot ->
                 if (botSnapshot != null) {
-                    val isBotActive = botRepository.isBotActive.value
-                    val committedId = botRepository.committedStrategyId.value
-                    val viewedId = _viewedStrategyId.value
-                    val snapshotStrategyId = botSnapshot.strategyMetadata?.strategyId ?: botSnapshot.engineStatus?.activeStrategy
-                    if (isBotActive && committedId != null && committedId.equals(viewedId, ignoreCase = true) && snapshotStrategyId != null && snapshotStrategyId.equals(committedId, ignoreCase = true)) {
+                    if (botSnapshot.strategyAnalyses.isNotEmpty()) {
                         _explorationState.value = botSnapshot
                         _isLoadingPreview.value = false
                         _previewError.value = null
+                    } else {
+                        val isBotActive = botRepository.isBotActive.value
+                        val committedId = botRepository.committedStrategyId.value
+                        val viewedId = _viewedStrategyId.value
+                        val snapshotStrategyId = botSnapshot.strategyMetadata?.strategyId ?: botSnapshot.engineStatus?.activeStrategy
+                        if (isBotActive && committedId != null && committedId.equals(viewedId, ignoreCase = true) && snapshotStrategyId != null && snapshotStrategyId.equals(committedId, ignoreCase = true)) {
+                            _explorationState.value = botSnapshot
+                            _isLoadingPreview.value = false
+                            _previewError.value = null
+                        }
                     }
                 }
             }
@@ -288,25 +294,8 @@ class TechnicalAnalysisViewModel @Inject constructor(
 
             val result = botRepository.triggerAlert(targetSymbol, targetStrategyId, executionConfig)
             result.onSuccess { botAlert ->
-                val alertMap = mapOf<String, Any>(
-                    "id" to botAlert.id,
-                    "symbol" to botAlert.symbol,
-                    "entryPrice" to botAlert.entryPrice,
-                    "stopLoss" to botAlert.stopLoss,
-                    "takeProfit" to botAlert.takeProfit,
-                    "estimatedPnl" to botAlert.estimatedPnl,
-                    "strategy" to (botAlert.strategy ?: targetStrategyId),
-                    "side" to (botAlert.side ?: "BUY"),
-                    "timestamp" to (botAlert.timestamp ?: ""),
-                    "signalPrice" to (botAlert.signalPrice ?: botAlert.entryPrice),
-                    "positionSize" to (botAlert.positionSize ?: 0.0),
-                    "signalOrigin" to "MANUAL_TRIGGER"
-                ).toMutableMap()
-
-                botAlert.targetEntryPrice?.let { alertMap["targetEntryPrice"] = it }
-                val intentName = botAlert.entryIntent ?: originalConfig?.entryIntent?.name ?: executionConfig.entryIntent.name
-                alertMap["entryIntent"] = intentName
-
+                val alertMap = botAlert.toMap().toMutableMap()
+                alertMap["signalOrigin"] = "MANUAL_TRIGGER"
                 tradeAlertManager.onNewAlertReceived(alertMap)
             }.onFailure { e ->
                 android.widget.Toast.makeText(context, e.message ?: "Failed to generate trade alert. Please retry.", android.widget.Toast.LENGTH_LONG).show()
@@ -346,6 +335,7 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 _isActivating.value = false
                 sessionRepository.setTradeSetupConfig(committedConfig)
                 sessionRepository.setStrategyId(strategy)
+                _viewedStrategyId.value = strategy
                 botRepository.startObserving()
                 onSuccess()
             }.onFailure { e ->
@@ -353,6 +343,14 @@ class TechnicalAnalysisViewModel @Inject constructor(
                 _activationError.value = e.message ?: "Failed to activate trading bot."
             }
         }
+    }
+
+    fun activateAutonomousBot(
+        symbols: List<String>,
+        config: TradeSetupConfig? = null,
+        onSuccess: () -> Unit = {}
+    ) {
+        activateBot(symbols, "ScalperV2", config, onSuccess)
     }
 
     fun activateBot(

@@ -78,13 +78,26 @@ data class SignalDTO(
 )
 
 @Immutable
+data class StrategyEvaluation(
+    val strategyId: String,
+    val confidenceScore: Int?,
+    val requiredScore: Int? = null,
+    val hasSignal: Boolean,
+    val signalType: String?,
+    val qualificationStatus: String,
+    val timestamp: Long,
+    val reasoning: List<String> = emptyList()
+)
+
+@Immutable
 data class AnalysisSnapshot(
     val engineStatus: EngineStatusDTO?,
     val marketAnalysis: MarketAnalysisDTO?,
     val tradingSignal: SignalDTO?,
     val opportunity: BotAlert?,
     val strategyMetadata: StrategyMetadata? = null,
-    val requiredScore: Int? = null
+    val requiredScore: Int? = null,
+    val strategyAnalyses: List<StrategyEvaluation> = emptyList()
 ) {
     val symbol: String?
         get() = marketAnalysis?.symbol ?: opportunity?.symbol

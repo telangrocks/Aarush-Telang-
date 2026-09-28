@@ -41,6 +41,7 @@ data class StrategyMetadataDto(
 data class EngineStatusDto(
     val state: String? = null,
     val activeStrategy: String? = null,
+    val committedStrategy: String? = null,
     val lastEvaluationTimestamp: Long? = null,
     val nextEvaluationTime: Long? = null,
     val health: String? = null
@@ -67,6 +68,17 @@ data class SignalDto(
     val reasoning: List<String>? = null
 )
 
+data class StrategyEvaluationDto(
+    val strategyId: String? = null,
+    val confidenceScore: Int? = null,
+    val requiredScore: Int? = null,
+    val hasSignal: Boolean? = null,
+    val signalType: String? = null,
+    val qualificationStatus: String? = null,
+    val timestamp: Long? = null,
+    val reasoning: List<String>? = null
+)
+
 data class AnalysisSnapshotDto(
     val engineStatus: EngineStatusDto? = null,
     val marketAnalysis: MarketAnalysisDto? = null,
@@ -75,6 +87,9 @@ data class AnalysisSnapshotDto(
     val strategyMetadata: StrategyMetadataDto? = null,
     val requiredScore: Int? = null,
     val diagnostics: Map<String, Any>? = null,
-    val forensicTrace: Map<String, Any>? = null
+    val forensicTrace: Map<String, Any>? = null,
+    val isActive: Boolean? = null,
+    val committedStrategy: String? = null,
+    val strategyAnalyses: List<StrategyEvaluationDto>? = null
 )
 

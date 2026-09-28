@@ -6,10 +6,23 @@ import { StrategyManifest } from '../../engine/strategies/StrategyManifest';
 import { MarketSnapshot } from '../../engine/market-data/MarketSnapshot';
 import { TimeframeIndicators } from '../../engine/indicator/IndicatorTypes';
 
+import { StrategyRegistry } from '../../engine/strategies/StrategyRegistry';
+
 export interface AnalysisDiagnosticsDTO {
   isLive: boolean;
   timestamp: number;
   evaluationDurationMs?: number;
+}
+
+export interface StrategyEvaluationDTO {
+  strategyId: string;
+  confidenceScore: number | null;
+  requiredScore: number;
+  hasSignal: boolean;
+  signalType: string | null;
+  qualificationStatus: 'QUALIFIED' | 'NOT_MET' | 'PENDING' | 'FAILED';
+  timestamp: number;
+  reasoning?: string[];
 }
 
 export interface AnalysisSnapshotDto {
@@ -26,6 +39,7 @@ export interface AnalysisSnapshotDto {
   diagnostics: AnalysisDiagnosticsDTO;
   strategyMetadata?: StrategyMetadataDTO;
   requiredScore?: number;
+  strategyAnalyses?: StrategyEvaluationDTO[];
   // Legacy root fields for backward compatibility
   indicators: Record<string, any>;
   signals: Record<string, any>;
@@ -34,6 +48,9 @@ export interface AnalysisSnapshotDto {
   conditionsMet: string[];
   opportunity: Record<string, any> | null;
   timestamp: string;
+  isActive?: boolean;
+  committedStrategy?: string | null;
+  safeMode?: boolean;
 }
 
 /**
@@ -159,6 +176,61 @@ export class AnalysisSnapshotMapper {
       timestamp: new Date(result?.timestamp || Date.now()).toISOString(),
     };
   }
+
+  public static mapStrategyEvaluations(
+    results: EvaluationResult[],
+    registry: StrategyRegistry,
+    timestamp: number = Date.now()
+  ): StrategyEvaluationDTO[] {
+    const canonicalIds = ['ScalperV2', 'Momentum', 'Breakout', 'MeanReversion', 'VWAP'];
+    return canonicalIds.map(strategyId => {
+      const result = results.find(r => r.strategyId.toLowerCase() === strategyId.toLowerCase());
+      const manifest = registry.getManifest(strategyId);
+      const defaultRequiredScore = manifest?.defaultConfiguration?.signalRules?.minConfidenceScore ??
+        (strategyId === 'ScalperV2' || strategyId === 'MeanReversion' ? 75 : 70);
+
+      if (!result) {
+        return {
+          strategyId,
+          confidenceScore: null,
+          requiredScore: defaultRequiredScore,
+          hasSignal: false,
+          signalType: null,
+          qualificationStatus: 'PENDING',
+          timestamp,
+        };
+      }
+
+      const trace = result.metadata?.forensicTrace;
+      const requiredScore = trace?.requiredScore ?? defaultRequiredScore;
+      const confidenceScore = trace?.overallScore ?? result.confidenceScore;
+      const hasSignal = Boolean(result.hasSignal);
+      const sig = result.metadata?.signal;
+      const rawSignalType = sig?.type ?? (trace?.finalSignal && trace.finalSignal !== 'NONE' && trace.finalSignal !== 'HOLD' ? trace.finalSignal : null);
+      const signalType = (rawSignalType === 'BUY' || rawSignalType === 'SELL') ? rawSignalType : null;
+
+      let qualificationStatus: 'QUALIFIED' | 'NOT_MET' | 'PENDING' | 'FAILED' = 'NOT_MET';
+      if (hasSignal) {
+        qualificationStatus = 'QUALIFIED';
+      } else if (confidenceScore == null) {
+        qualificationStatus = 'PENDING';
+      } else {
+        qualificationStatus = 'NOT_MET';
+      }
+
+      return {
+        strategyId,
+        confidenceScore: typeof confidenceScore === 'number' && !isNaN(confidenceScore) ? confidenceScore : null,
+        requiredScore,
+        hasSignal,
+        signalType,
+        qualificationStatus,
+        timestamp: result.timestamp || timestamp,
+        reasoning: result.metadata?.reasoning,
+      };
+    });
+  }
+
   private static mapStrategyMetadata(result: EvaluationResult, manifest: StrategyManifest): StrategyMetadataDTO {
     const config = result.metadata?.strategyConfig || manifest.defaultConfiguration || {};
     const primaryTimeframe = (config.preferredTimeframes?.[0] || manifest.supportedTimeframes?.[0] || '15m') as string;

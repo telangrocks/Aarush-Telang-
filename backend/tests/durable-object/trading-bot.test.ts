@@ -476,5 +476,150 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     const execData = await execRes.json<any>();
     expect(execData.success).toBe(false);
   });
+
+  describe("Technical Analysis Strategy Decoupling & Polling Stability", () => {
+    it("Test 1 & Test 5: Activating Momentum keeps committedStrategy = Momentum across polls even when analysis fallback is ScalperV2", async () => {
+      const bot = new TradingBot(mockState, mockEnv);
+      mockStorage.set('userId', 'user-test-1');
+
+      // 1. Activate Momentum
+      const actReq = new Request('http://bot/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: 'user-test-1', coinId: 'BTCUSDT', strategy: 'Momentum' })
+      });
+      const actRes = await bot.fetch(actReq);
+      expect(actRes.status).toBe(200);
+
+      // Verify DO committed state
+      expect(mockStorage.get('isActive')).toBe(true);
+      expect(mockStorage.get('strategy')).toBe('Momentum');
+
+      // 2. Simulate analysis snapshot in storage with ScalperV2 fallback (e.g. no signal produced by evaluation cycle)
+      mockStorage.set('newAnalysis', {
+        strategyMetadata: { strategyId: 'ScalperV2' },
+        engineStatus: { state: 'WAITING', activeStrategy: 'ScalperV2' }
+      });
+
+      // 3. Poll /analysis-status multiple times
+      for (let i = 0; i < 5; i++) {
+        const pollReq = new Request('http://bot/analysis-status', { method: 'GET' });
+        const pollRes = await bot.fetch(pollReq);
+        expect(pollRes.status).toBe(200);
+        const pollData = await pollRes.json<any>();
+
+        // Assert: authoritative committed state is preserved and NEVER contaminated by ScalperV2
+        expect(pollData.isActive).toBe(true);
+        expect(pollData.committedStrategy).toBe('Momentum');
+        expect(pollData.engineStatus.activeStrategy).toBe('Momentum');
+        expect(pollData.engineStatus.committedStrategy).toBe('Momentum');
+        // The analysis snapshot may display ScalperV2 metadata, but bot committed state is Momentum
+        expect(pollData.strategyMetadata.strategyId).toBe('ScalperV2');
+      }
+    });
+
+    it("Test 2: Activating MeanReversion remains stable across multiple /analysis-status polls with no spontaneous takeover", async () => {
+      const bot = new TradingBot(mockState, mockEnv);
+      mockStorage.set('userId', 'user-test-2');
+
+      // 1. Activate MeanReversion
+      const actReq = new Request('http://bot/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: 'user-test-2', coinId: 'BTCUSDT', strategy: 'MeanReversion' })
+      });
+      const actRes = await bot.fetch(actReq);
+      expect(actRes.status).toBe(200);
+
+      expect(mockStorage.get('isActive')).toBe(true);
+      expect(mockStorage.get('strategy')).toBe('MeanReversion');
+
+      // 2. Inject analysis result with results[0] ScalperV2
+      mockStorage.set('newAnalysis', {
+        strategyMetadata: { strategyId: 'ScalperV2' },
+        engineStatus: { state: 'WAITING', activeStrategy: 'ScalperV2' }
+      });
+
+      // 3. Multiple polling cycles
+      for (let cycle = 1; cycle <= 10; cycle++) {
+        const pollReq = new Request('http://bot/analysis-status', { method: 'GET' });
+        const pollRes = await bot.fetch(pollReq);
+        const pollData = await pollRes.json<any>();
+
+        expect(pollData.isActive).toBe(true);
+        expect(pollData.committedStrategy).toBe('MeanReversion');
+        expect(pollData.engineStatus.activeStrategy).toBe('MeanReversion');
+      }
+    });
+
+    it("Test 3: Explicit deactivation clears DO committed state and sets activeStrategy to null", async () => {
+      const bot = new TradingBot(mockState, mockEnv);
+      mockStorage.set('userId', 'user-test-3');
+
+      // Activate first
+      await bot.fetch(new Request('http://bot/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: 'user-test-3', coinId: 'BTCUSDT', strategy: 'Breakout' })
+      }));
+      expect(mockStorage.get('isActive')).toBe(true);
+
+      // Deactivate
+      const deactReq = new Request('http://bot/deactivate', { method: 'POST' });
+      const deactRes = await bot.fetch(deactReq);
+      expect(deactRes.status).toBe(200);
+
+      // Verify DO runtime state
+      expect(mockStorage.get('isActive')).toBe(false);
+      expect(mockStorage.get('strategy')).toBeNull();
+
+      // Verify /analysis-status returns inactive state
+      const pollRes = await bot.fetch(new Request('http://bot/analysis-status', { method: 'GET' }));
+      const pollData = await pollRes.json<any>();
+      expect(pollData.isActive).toBe(false);
+      expect(pollData.committedStrategy).toBeNull();
+      expect(pollData.engineStatus.activeStrategy).toBeNull();
+      expect(pollData.engineStatus.state).toBe('STOPPED');
+    });
+
+    it("Test 4: Explicit strategy switch changes committed strategy ONLY upon explicit activation action", async () => {
+      const bot = new TradingBot(mockState, mockEnv);
+      mockStorage.set('userId', 'user-test-4');
+
+      // 1. Activate MeanReversion
+      await bot.fetch(new Request('http://bot/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: 'user-test-4', coinId: 'BTCUSDT', strategy: 'MeanReversion' })
+      }));
+      expect(mockStorage.get('strategy')).toBe('MeanReversion');
+
+      // Polling does NOT switch strategy
+      mockStorage.set('newAnalysis', {
+        strategyMetadata: { strategyId: 'ScalperV2' },
+        engineStatus: { state: 'WAITING', activeStrategy: 'ScalperV2' }
+      });
+      const pollRes1 = await bot.fetch(new Request('http://bot/analysis-status', { method: 'GET' }));
+      const pollData1 = await pollRes1.json<any>();
+      expect(pollData1.committedStrategy).toBe('MeanReversion');
+
+      // 2. User explicitly switches to Momentum
+      const switchReq = new Request('http://bot/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: 'user-test-4', coinId: 'BTCUSDT', strategy: 'Momentum' })
+      });
+      const switchRes = await bot.fetch(switchReq);
+      expect(switchRes.status).toBe(200);
+
+      // Now committed strategy is Momentum
+      expect(mockStorage.get('strategy')).toBe('Momentum');
+
+      const pollRes2 = await bot.fetch(new Request('http://bot/analysis-status', { method: 'GET' }));
+      const pollData2 = await pollRes2.json<any>();
+      expect(pollData2.committedStrategy).toBe('Momentum');
+      expect(pollData2.engineStatus.activeStrategy).toBe('Momentum');
+    });
+  });
 });
 

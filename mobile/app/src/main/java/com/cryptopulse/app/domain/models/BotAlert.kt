@@ -15,6 +15,28 @@ data class BotAlert(
     val positionSize: Double? = null,
     val entryIntent: String? = null,
 ) {
+    fun toMap(): Map<String, Any> = buildMap {
+        put("id", id)
+        put("alertId", id)
+        put("symbol", symbol)
+        put("entryPrice", entryPrice)
+        put("stopLoss", stopLoss)
+        put("takeProfit", takeProfit)
+        put("estimatedPnl", estimatedPnl)
+        strategy?.let { put("strategy", it) }
+        side?.let { put("side", it) }
+        timestamp?.let {
+            put("timestamp", it)
+            put("serverTimestamp", it)
+        }
+        signalPrice?.let { put("signalPrice", it) }
+        targetEntryPrice?.let { put("targetEntryPrice", it) }
+        positionSize?.let { put("positionSize", it) }
+        entryIntent?.let { put("entryIntent", it) }
+        put("type", "TRADE_ALERT")
+        put("alertType", "TRADE_ALERT")
+    }
+
     companion object {
         fun fromMap(map: Map<String, Any>): BotAlert = BotAlert(
             id = (map["id"] as? String) ?: "",

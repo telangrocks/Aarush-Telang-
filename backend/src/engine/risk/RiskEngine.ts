@@ -2,6 +2,7 @@ import { RiskParameters } from './RiskParameters';
 import { RiskAssessment, RiskClassification } from './RiskAssessment';
 import { StopLossCalculator } from './StopLossCalculator';
 import { TakeProfitCalculator } from './TakeProfitCalculator';
+import { OrderSizing } from './OrderSizing';
 
 export interface RiskContext {
   timestamp: number;
@@ -36,11 +37,19 @@ export class RiskEngine {
     const riskClassification: RiskClassification = 'LOW';
     explanation.push('Risk classification is LOW.');
 
+    const positionSizeRecommendation = OrderSizing.calculateSize(
+      context.accountBalance,
+      stopLossDistance,
+      context.currentPrice,
+      this.config
+    );
+
     return {
       timestamp: context.timestamp,
       stopLossDistance,
       takeProfitDistance,
       riskRewardRatio: tpMultiplier, // Legacy interface telemetry property
+      positionSizeRecommendation,
       maximumExposure: maxAllowedExposure,
       riskClassification,
       explanation

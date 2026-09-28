@@ -109,7 +109,7 @@ fun ConnectExchangeScreen(
                 popUpTo("connect_exchange") { inclusive = true }
             }
         } else {
-            viewModel.checkExistingConnection()
+            viewModel.checkExistingConnection(forceRemote = true)
         }
     }
 

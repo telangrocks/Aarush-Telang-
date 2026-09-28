@@ -23,6 +23,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import com.cryptopulse.app.data.api.dto.technicalanalysis.response.TechnicalAnalysisResponseDto
 import com.cryptopulse.app.data.mapper.technicalanalysis.toAnalysisSnapshot
+import com.cryptopulse.app.data.mapper.bot.toDomain
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TechnicalAnalysisViewModelTest {
@@ -1415,6 +1416,180 @@ class TechnicalAnalysisViewModelTest {
             testDispatcher.scheduler.advanceUntilIdle()
             assertEquals("Pressing action button when viewed strategy is not active must call activateBot with viewed strategy", strategy, activatedWithStrategy)
         }
+    }
+
+    @Test
+    fun `multi-strategy snapshot parses all five canonical strategy evaluations independently`() = runTest {
+        val dto = com.cryptopulse.app.data.api.dto.bot.response.AnalysisSnapshotDto(
+            isActive = true,
+            strategyAnalyses = listOf(
+                com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(
+                    strategyId = "ScalperV2",
+                    confidenceScore = 78,
+                    requiredScore = 75,
+                    hasSignal = true,
+                    signalType = "BUY",
+                    qualificationStatus = "QUALIFIED",
+                    timestamp = 1727500000000L
+                ),
+                com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(
+                    strategyId = "Momentum",
+                    confidenceScore = 65,
+                    requiredScore = 70,
+                    hasSignal = false,
+                    signalType = null,
+                    qualificationStatus = "NOT_MET",
+                    timestamp = 1727500000000L
+                ),
+                com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(
+                    strategyId = "Breakout",
+                    confidenceScore = 72,
+                    requiredScore = 70,
+                    hasSignal = true,
+                    signalType = "SELL",
+                    qualificationStatus = "QUALIFIED",
+                    timestamp = 1727500000000L
+                ),
+                com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(
+                    strategyId = "MeanReversion",
+                    confidenceScore = null,
+                    requiredScore = 75,
+                    hasSignal = false,
+                    signalType = null,
+                    qualificationStatus = "PENDING",
+                    timestamp = 1727500000000L
+                ),
+                com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(
+                    strategyId = "VWAP",
+                    confidenceScore = 80,
+                    requiredScore = 70,
+                    hasSignal = true,
+                    signalType = "BUY",
+                    qualificationStatus = "QUALIFIED",
+                    timestamp = 1727500000000L
+                )
+            )
+        )
+
+        val domain = dto.toDomain()
+        assertEquals("Must parse all 5 strategy evaluations", 5, domain.strategyAnalyses.size)
+
+        val scalper = domain.strategyAnalyses.find { it.strategyId.equals("ScalperV2", ignoreCase = true) }
+        assertNotNull(scalper)
+        assertEquals(78, scalper!!.confidenceScore)
+        assertEquals(75, scalper.requiredScore)
+        assertTrue(scalper.hasSignal)
+        assertEquals("BUY", scalper.signalType)
+        assertEquals("QUALIFIED", scalper.qualificationStatus)
+
+        val meanReversion = domain.strategyAnalyses.find { it.strategyId.equals("MeanReversion", ignoreCase = true) }
+        assertNotNull(meanReversion)
+        assertNull("Score must be null, never false 0", meanReversion!!.confidenceScore)
+        assertEquals(75, meanReversion.requiredScore)
+        assertFalse(meanReversion.hasSignal)
+        assertEquals("PENDING", meanReversion.qualificationStatus)
+    }
+
+    @Test
+    fun `strategy card data mapping locates results by strategyId rather than array index`() = runTest {
+        // Reverse array order to prove mapping is ID-keyed and immune to index order
+        val reversedEvaluations = listOf(
+            com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(strategyId = "VWAP", confidenceScore = 91, requiredScore = 70),
+            com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(strategyId = "MeanReversion", confidenceScore = 55, requiredScore = 75),
+            com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(strategyId = "Breakout", confidenceScore = 73, requiredScore = 70),
+            com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(strategyId = "Momentum", confidenceScore = 68, requiredScore = 70),
+            com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(strategyId = "ScalperV2", confidenceScore = 82, requiredScore = 75)
+        )
+
+        val dto = com.cryptopulse.app.data.api.dto.bot.response.AnalysisSnapshotDto(strategyAnalyses = reversedEvaluations)
+        val domain = dto.toDomain()
+
+        // Find strictly by strategyId
+        val scalper = domain.strategyAnalyses.find { it.strategyId.equals("ScalperV2", ignoreCase = true) }
+        val vwap = domain.strategyAnalyses.find { it.strategyId.equals("VWAP", ignoreCase = true) }
+
+        assertEquals(82, scalper?.confidenceScore)
+        assertEquals(91, vwap?.confidenceScore)
+    }
+
+    @Test
+    fun `strategy evaluation preserves null requiredScore without hardcoding fallback thresholds`() = runTest {
+        val dto = com.cryptopulse.app.data.api.dto.bot.response.AnalysisSnapshotDto(
+            strategyAnalyses = listOf(
+                com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(
+                    strategyId = "ScalperV2",
+                    confidenceScore = 80,
+                    requiredScore = null
+                ),
+                com.cryptopulse.app.data.api.dto.bot.response.StrategyEvaluationDto(
+                    strategyId = "Momentum",
+                    confidenceScore = 65,
+                    requiredScore = 72
+                )
+            )
+        )
+        val domain = dto.toDomain()
+        val scalper = domain.strategyAnalyses.find { it.strategyId.equals("ScalperV2", ignoreCase = true) }
+        val momentum = domain.strategyAnalyses.find { it.strategyId.equals("Momentum", ignoreCase = true) }
+
+        assertNotNull(scalper)
+        assertNull("Missing requiredScore must remain null and not invent fallback 75 or 70", scalper?.requiredScore)
+
+        assertNotNull(momentum)
+        assertEquals(72, momentum?.requiredScore)
+    }
+
+    @Test
+    fun `activateAutonomousBot dispatches activateBot with canonical registered ScalperV2`() = runTest {
+        var dispatchedStrategy: String? = null
+        var dispatchedSymbols: List<String>? = null
+
+        val customBotRepo = object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = MutableStateFlow<String?>(null).asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+                dispatchedSymbols = symbols
+                dispatchedStrategy = strategy
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.STOPPED, isActive = false, coinId = null, strategy = null))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strategy, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = createMockSessionRepository("ScalperV2"),
+            botRepository = customBotRepo,
+            technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        var successCalled = false
+        viewModel.activateAutonomousBot(listOf("BTCUSDT", "ETHUSDT"), null) {
+            successCalled = true
+        }
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(successCalled)
+        assertEquals("Must use canonical registered ScalperV2 for activation", "ScalperV2", dispatchedStrategy)
+        assertEquals(listOf("BTCUSDT", "ETHUSDT"), dispatchedSymbols)
     }
 }
 

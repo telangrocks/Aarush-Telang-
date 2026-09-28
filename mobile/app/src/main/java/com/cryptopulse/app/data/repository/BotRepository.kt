@@ -292,28 +292,31 @@ class BotRepositoryImpl @Inject constructor(
                                 _activeBotAnalysisState.value = domainSnapshot
 
                                 val rawState = dto.engineStatus?.state?.uppercase()
-                                val activeStrat = dto.engineStatus?.activeStrategy
+                                val backendCommitted = dto.committedStrategy
+                                    ?: dto.engineStatus?.committedStrategy
+                                    ?: dto.engineStatus?.activeStrategy
 
-                                // 1. Explicit Authoritative ACTIVE State:
-                                val isAuthoritativeActive = !activeStrat.isNullOrBlank() &&
-                                    (rawState == "WAITING" || rawState == "ANALYSING" || rawState == "EVALUATING" ||
-                                     rawState == "COLLECTING_DATA" || rawState == "RUNNING" || rawState == "ACTIVE") &&
-                                    rawState != "PREVIEW" && rawState != "STOPPED" && rawState != "INACTIVE"
+                                val isAuthoritativeInactive = rawState == "STOPPED" || rawState == "INACTIVE" || dto.isActive == false
 
-                                // 2. Explicit Authoritative STOPPED / INACTIVE State:
-                                val isAuthoritativeInactive = rawState == "STOPPED" || rawState == "INACTIVE"
-
-                                if (isAuthoritativeActive) {
-                                    _isBotActive.value = true
-                                    _committedStrategyId.value = activeStrat
-                                } else if (isAuthoritativeInactive) {
+                                if (isAuthoritativeInactive) {
                                     _isBotActive.value = false
                                     _committedStrategyId.value = null
+                                } else if (_isBotActive.value) {
+                                    // Rule 1 & Rule 4: Bot is active on client (user-initiated activation).
+                                    // An analysis poll result must NEVER overwrite committed strategy
+                                    // with an analysis/fallback strategy!
+                                    if (!backendCommitted.isNullOrBlank() && (dto.committedStrategy != null || dto.engineStatus?.committedStrategy != null)) {
+                                        _committedStrategyId.value = backendCommitted
+                                    }
                                 } else {
-                                    // PREVIEW, transitional, or ambiguous response (e.g. activeStrat is null during transient poll,
-                                    // rawState is unknown/null, or network payload incomplete):
-                                    // RETAIN existing _committedStrategyId and _isBotActive!
-                                    // activeStrat == null alone NEVER clears committed strategy.
+                                    // Bot was not locally active, check if backend is authoritatively active:
+                                    val isAuthoritativeActive = (dto.isActive == true || rawState == "WAITING" || rawState == "ANALYSING" || rawState == "RUNNING" || rawState == "ACTIVE") &&
+                                        !backendCommitted.isNullOrBlank() && rawState != "PREVIEW"
+
+                                    if (isAuthoritativeActive) {
+                                        _isBotActive.value = true
+                                        _committedStrategyId.value = backendCommitted
+                                    }
                                 }
                             }
                             is NetworkResult.Error -> {

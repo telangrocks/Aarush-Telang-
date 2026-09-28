@@ -63,7 +63,19 @@ fun AnalysisSnapshotDto.toDomain(): AnalysisSnapshot = AnalysisSnapshot(
     },
     opportunity = opportunity?.toDomain(),
     strategyMetadata = strategyMetadata?.toDomain(),
-    requiredScore = requiredScore ?: marketAnalysis?.requiredScore
+    requiredScore = requiredScore ?: marketAnalysis?.requiredScore,
+    strategyAnalyses = strategyAnalyses?.filterNotNull()?.map {
+        StrategyEvaluation(
+            strategyId = it.strategyId ?: "",
+            confidenceScore = it.confidenceScore,
+            requiredScore = it.requiredScore,
+            hasSignal = it.hasSignal ?: false,
+            signalType = it.signalType,
+            qualificationStatus = it.qualificationStatus ?: if (it.hasSignal == true) "QUALIFIED" else if (it.confidenceScore != null) "NOT_MET" else "PENDING",
+            timestamp = it.timestamp ?: System.currentTimeMillis(),
+            reasoning = it.reasoning?.filterNotNull() ?: emptyList()
+        )
+    } ?: emptyList()
 )
 
 fun TradeExecutionStatusDto.toDomain(): TradeExecutionResult = TradeExecutionResult(

@@ -53,10 +53,17 @@ import com.cryptopulse.app.ui.auth.TradeSetupState
 import com.cryptopulse.app.service.TradeAlertManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.firstOrNull
 import javax.inject.Inject
+
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavHostController
 
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
+
+    private var currentNavController: NavHostController? = null
+    private var pendingAlertIntentData: Map<String, Any>? = null
 
     @Inject
     lateinit var tokenManager: TokenManager
@@ -119,6 +126,7 @@ class MainActivity : FragmentActivity() {
                     }
 
                     LaunchedEffect(navController) {
+                        currentNavController = navController
                         navController.addOnDestinationChangedListener { _, destination, _ ->
                             android.util.Log.d("Navigation", "[DIAGNOSTIC] Destination = ${destination.route}")
                             com.cryptopulse.app.forensics.CidDiagnosticManager.logNavigation(
@@ -126,6 +134,17 @@ class MainActivity : FragmentActivity() {
                                 toRoute = destination.route ?: "unknown",
                                 trigger = "NAV_CONTROLLER"
                             )
+                            pendingAlertIntentData?.let { alert ->
+                                try {
+                                    val parentEntry = navController.getBackStackEntry("authenticated_flow")
+                                    val vm = androidx.lifecycle.ViewModelProvider(parentEntry)[ExchangeViewModel::class.java]
+                                    vm.setPendingAlert(alert)
+                                    if (destination.route != "trade_alert") {
+                                        navController.navigate("trade_alert")
+                                    }
+                                    pendingAlertIntentData = null
+                                } catch (_: Exception) {}
+                            }
                         }
                     }
 
@@ -160,6 +179,7 @@ class MainActivity : FragmentActivity() {
                                 botRepository = botRepository,
                                 tradeSessionRepository = tradeSessionRepository,
                                 authRepository = authRepository,
+                                tradeAlertManager = tradeAlertManager,
                             )
                         }
                         composable("onboarding") {
@@ -430,6 +450,17 @@ class MainActivity : FragmentActivity() {
                                             android.util.Log.w("MainActivity", "Cannot commit strategy: affordable candidate list is empty.")
                                         }
                                     },
+                                    onActivateBot = {
+                                        val targetSymbols = candidates.map { it.pairName }
+                                        val symbolsToUse = if (targetSymbols.isNotEmpty()) targetSymbols else listOf(candidate.pairName)
+                                        technicalAnalysisViewModel.activateAutonomousBot(
+                                            symbols = symbolsToUse,
+                                            config = tradeSetupConfig,
+                                            onSuccess = {
+                                                com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
+                                            }
+                                        )
+                                    },
                                     onDeactivateBot = {
                                         technicalAnalysisViewModel.stopBot {
                                             com.cryptopulse.app.service.BackgroundMonitoringService.stopService(applicationContext)
@@ -559,33 +590,54 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun handleIncomingAlertIntent(intent: Intent?) {
-        if (intent?.getBooleanExtra("extra_alert", false) == true) {
-            val entryPrice = intent.getDoubleExtra("alert_entry_price", 0.0)
-            val stopLoss = intent.getDoubleExtra("alert_stop_loss", 0.0)
-            val takeProfit = intent.getDoubleExtra("alert_take_profit", 0.0)
-            val estimatedPnl = intent.getDoubleExtra("alert_estimated_pnl", 0.0)
-            val signalPrice = intent.getDoubleExtra("alert_signal_price", entryPrice)
-            val targetEntryPrice = if (intent.hasExtra("alert_target_entry_price")) intent.getDoubleExtra("alert_target_entry_price", 0.0) else null
-            val positionSize = if (intent.hasExtra("alert_position_size")) intent.getDoubleExtra("alert_position_size", 0.0) else null
-            val alertId = intent.getStringExtra("alert_id")
-            val symbol = intent.getStringExtra("alert_symbol") ?: "UNKNOWN"
-            if (entryPrice > 0 && alertId != null) {
-                val alert = mutableMapOf<String, Any>(
-                    "id" to alertId,
-                    "symbol" to symbol,
-                    "entryPrice" to entryPrice,
-                    "stopLoss" to stopLoss,
-                    "takeProfit" to takeProfit,
-                    "estimatedPnl" to estimatedPnl,
-                    "signalPrice" to signalPrice,
-                )
-                if (targetEntryPrice != null && targetEntryPrice > 0.0) {
-                    alert["targetEntryPrice"] = targetEntryPrice
+        if (intent == null) return
+
+        val isAlert = intent.getBooleanExtra("extra_alert", false) ||
+                intent.getStringExtra("extra_alert") == "true" ||
+                intent.getStringExtra("type") == "TRADE_ALERT" ||
+                intent.getStringExtra("alertType") == "TRADE_ALERT"
+
+        if (!isAlert) return
+
+        val extractedAlertId = intent.getStringExtra("alert_id")
+            ?: intent.getStringExtra("id")
+            ?: intent.getStringExtra("alertId")
+            ?: intent.getStringExtra("alert_opportunity_id")
+            ?: intent.getStringExtra("opportunityId")
+            ?: return
+
+        lifecycleScope.launch {
+            val cachedAlert = tradeAlertManager.getActiveAlert()
+                ?: kotlinx.coroutines.withTimeoutOrNull(500) { tradeAlertManager.dataStore.getActiveAlertFlow().firstOrNull() }
+            val exactAlert: Map<String, Any>? = if (cachedAlert != null && (cachedAlert["id"] == extractedAlertId || cachedAlert["alertId"] == extractedAlertId)) {
+                cachedAlert
+            } else {
+                val remoteResult = kotlinx.coroutines.withTimeoutOrNull(2500) { botRepository.getAlerts() }
+                val serverAlert = if (remoteResult is com.cryptopulse.app.core.network.NetworkResult.Success) {
+                    remoteResult.data.firstOrNull { it.id == extractedAlertId }
+                } else null
+                serverAlert?.toMap()
+            }
+
+            if (exactAlert != null) {
+                tradeAlertManager.onNewAlertReceived(exactAlert)
+                val nav = currentNavController
+                try {
+                    if (nav != null) {
+                        val parentEntry = nav.getBackStackEntry("authenticated_flow")
+                        val vm = androidx.lifecycle.ViewModelProvider(parentEntry)[ExchangeViewModel::class.java]
+                        vm.setPendingAlert(exactAlert)
+                        if (nav.currentDestination?.route != "trade_alert") {
+                            nav.navigate("trade_alert")
+                        }
+                    } else {
+                        pendingAlertIntentData = exactAlert
+                    }
+                } catch (_: Exception) {
+                    pendingAlertIntentData = exactAlert
                 }
-                if (positionSize != null && positionSize > 0.0) {
-                    alert["positionSize"] = positionSize
-                }
-                tradeAlertManager.onNewAlertReceived(alert)
+            } else {
+                android.util.Log.w("MainActivity", "[ALERT_RESOLUTION_FAILED] Alert $extractedAlertId no longer pending or available.")
             }
         }
     }

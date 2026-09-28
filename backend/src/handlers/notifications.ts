@@ -158,6 +158,7 @@ export async function sendTradeNotification(
     estimatedPnl: number;
     positionSize?: number;
     strategy: string;
+    timestamp?: string;
     confidenceScore?: number;
     reasoning?: string[];
   },
@@ -181,6 +182,7 @@ export async function sendTradeNotification(
     alertType: "TRADE_ALERT",
     id: alertId,
     alertId: alertId,
+    extra_alert: "true",
     symbol: opportunity.symbol,
     side: opportunity.side,
     strategy: opportunity.strategy,
@@ -188,6 +190,7 @@ export async function sendTradeNotification(
     stopLoss: opportunity.stopLoss.toString(),
     takeProfit: opportunity.takeProfit.toString(),
     estimatedPnl: opportunity.estimatedPnl.toString(),
+    serverTimestamp: (opportunity.timestamp ? new Date(opportunity.timestamp).getTime() : Date.now()).toString(),
   };
   if (opportunity.targetEntryPrice != null) {
     dataPayload.targetEntryPrice = opportunity.targetEntryPrice.toString();

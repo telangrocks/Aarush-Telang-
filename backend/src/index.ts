@@ -41,6 +41,7 @@ import {
   handleGetAnalysisStatus,
   handleExecuteTrade,
   handleMockTrade,
+  handleDeactivateTradingBot,
   handleStopTradingBot,
   handleGetBotAlerts,
   handleAcknowledgeAlert,
@@ -347,7 +348,7 @@ api.post("/trading-bot/execute-trade", handleExecuteTrade);
 api.post("/trading-bot/mock-trade", handleMockTrade);
 // /deactivate and /stop-trade are both used by the Android client:
 // /deactivate = stop the bot session; /stop-trade = close an open position
-api.post("/trading-bot/deactivate", handleStopTradingBot);
+api.post("/trading-bot/deactivate", handleDeactivateTradingBot);
 api.post("/trading-bot/stop-trade", handleStopTradingBot);
 api.get("/trading-bot/alerts", handleGetBotAlerts);
 api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);

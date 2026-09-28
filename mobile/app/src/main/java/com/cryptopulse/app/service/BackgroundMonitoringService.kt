@@ -91,7 +91,7 @@ class BackgroundMonitoringService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        tradeAlertManager.dismissOrExecuteAlert()
+        tradeAlertManager.stopAudioAndVibrationOnServiceTeardown()
         pollingJob?.cancel()
         serviceScope.cancel()
     }

@@ -23,7 +23,7 @@ import javax.inject.Singleton
 @Singleton
 open class TradeAlertManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
-    private val dataStore: TradeAlertDataStore
+    val dataStore: TradeAlertDataStore
 ) {
     constructor() : this(android.content.ContextWrapper(null), TradeAlertDataStore())
 
@@ -67,7 +67,11 @@ open class TradeAlertManager @Inject constructor(
 
     @Synchronized
     open fun onNewAlertReceived(alertData: Map<String, Any>) {
-        val alertId = alertData["id"] as? String ?: return
+        val alertId = (alertData["id"] as? String) ?: (alertData["alertId"] as? String) ?: return
+        if (activeAlertData != null && (activeAlertData?.get("id") == alertId || activeAlertData?.get("alertId") == alertId)) {
+            TradeAlertLogger.log("DUPLICATE_ALERT_IGNORED", "Alert $alertId is already active; ignoring duplicate.")
+            return
+        }
         val symbol = alertData["symbol"] as? String ?: "UNKNOWN"
         val entryPrice = (alertData["entryPrice"] as? Double) ?: 0.0
         val stopLoss = (alertData["stopLoss"] as? Double) ?: (alertData["stop_loss"] as? Double)
@@ -142,6 +146,31 @@ open class TradeAlertManager @Inject constructor(
         releaseWakeLock()
         cancelSystemNotification()
 
+        activeAlertData = null
+        scope.launch { dataStore?.saveActiveAlert(null) }
+        _currentState.value = TradeAlertState.IDLE
+    }
+
+    /**
+     * Invoked ONLY when BackgroundMonitoringService is destroyed by the Android OS.
+     * Stops audio and vibration effects to prevent runaway loops, but strictly
+     * PRESERVES the system notification and persistent DataStore alert.
+     */
+    fun stopAudioAndVibrationOnServiceTeardown() {
+        audioManager?.stopAlert()
+        vibrationManager?.stopVibration()
+        releaseWakeLock()
+    }
+
+    /**
+     * Invoked during cold-start recovery when a persisted alert is verified to be expired or executed.
+     * Purges local active and DataStore alert state without representing a user cancellation.
+     */
+    fun clearStaleStartupAlert() {
+        audioManager?.stopAlert()
+        vibrationManager?.stopVibration()
+        releaseWakeLock()
+        cancelSystemNotification()
         activeAlertData = null
         scope.launch { dataStore?.saveActiveAlert(null) }
         _currentState.value = TradeAlertState.IDLE

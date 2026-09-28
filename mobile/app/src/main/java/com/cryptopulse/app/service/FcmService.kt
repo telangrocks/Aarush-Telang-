@@ -64,18 +64,33 @@ class FcmService : FirebaseMessagingService() {
 
     private fun handleDataPayload(data: Map<String, String>) {
         val alertType = data["type"] ?: data["alertType"]
-        if (alertType.equals("TRADE_ALERT", ignoreCase = true) || alertType.equals("trade_alert", ignoreCase = true)) {
-            val alertId = data["id"] ?: data["alertId"] ?: ""
-            val alertData = mapOf<String, Any>(
-                "id" to alertId,
-                "symbol" to (data["symbol"] ?: ""),
-                "entryPrice" to (data["entryPrice"]?.toDoubleOrNull() ?: 0.0),
-                "stopLoss" to (data["stopLoss"]?.toDoubleOrNull() ?: 0.0),
-                "takeProfit" to (data["takeProfit"]?.toDoubleOrNull() ?: 0.0),
-                "estimatedPnl" to (data["estimatedPnl"]?.toDoubleOrNull() ?: 0.0),
-                "strategy" to (data["strategy"] ?: ""),
-                "side" to (data["side"] ?: "")
-            )
+        if (alertType.equals("TRADE_ALERT", ignoreCase = true) || data["extra_alert"] == "true") {
+            val alertId = data["id"] ?: data["alertId"] ?: data["opportunityId"] ?: ""
+            if (alertId.isBlank()) return
+            val alertData = buildMap<String, Any> {
+                put("id", alertId)
+                put("alertId", alertId)
+                put("symbol", data["symbol"] ?: "")
+                data["entryPrice"]?.toDoubleOrNull()?.let { put("entryPrice", it) }
+                data["targetEntryPrice"]?.toDoubleOrNull()?.let { put("targetEntryPrice", it) }
+                data["signalPrice"]?.toDoubleOrNull()?.let { put("signalPrice", it) }
+                data["stopLoss"]?.toDoubleOrNull()?.let { put("stopLoss", it) }
+                data["takeProfit"]?.toDoubleOrNull()?.let { put("takeProfit", it) }
+                data["estimatedPnl"]?.toDoubleOrNull()?.let { put("estimatedPnl", it) }
+                data["positionSize"]?.toDoubleOrNull()?.let { put("positionSize", it) }
+                data["strategy"]?.let { put("strategy", it) }
+                data["side"]?.let { put("side", it) }
+                data["serverTimestamp"]?.let {
+                    put("serverTimestamp", it)
+                    put("timestamp", it)
+                } ?: data["timestamp"]?.let {
+                    put("serverTimestamp", it)
+                    put("timestamp", it)
+                }
+                data["entryIntent"]?.let { put("entryIntent", it) }
+                put("type", "TRADE_ALERT")
+                put("alertType", "TRADE_ALERT")
+            }
             tradeAlertManager.onNewAlertReceived(alertData)
         }
     }
