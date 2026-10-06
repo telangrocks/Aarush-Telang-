@@ -187,25 +187,41 @@ export class ReconciliationEngine {
   public static async reconcilePositionLifecycle(
     adapter: any,
     dbPosition: any,
-    currentTimeMs: number
+    currentTimeMs: number,
+    knownClosed: boolean = false
   ): Promise<{ status: 'OPEN' | 'CLOSED'; closePrice?: number; realizedPnl?: number; closeReason?: string; closedAt?: string } | null> {
     if (!dbPosition || dbPosition.status === 'CLOSED' || dbPosition.status === 'CANCELLED') {
       return null; // Terminal states cannot regress
     }
 
-    try {
-      // 1. Query active positions from Bybit
-      const activePositions = (await adapter.fetchPositions(dbPosition.category || 'linear')) || [];
-      const matchingActive = activePositions.find((p: any) => p.symbol === dbPosition.symbol);
+    if (!adapter) {
+      return null;
+    }
 
-      if (matchingActive && matchingActive.size && !matchingActive.size.isZero()) {
-        return { status: 'OPEN' };
+    try {
+      if (!knownClosed) {
+        if (typeof adapter.fetchPositions !== 'function') {
+          return null;
+        }
+        // 1. Query active positions from Bybit
+        const activePositions = (await adapter.fetchPositions(dbPosition.category || 'linear')) || [];
+        const normDbSymbol = dbPosition.symbol ? dbPosition.symbol.replace(/[\/_-]/g, '').toUpperCase() : '';
+        const matchingActive = activePositions.find((p: any) => {
+          const normP = p.symbol ? p.symbol.replace(/[\/_-]/g, '').toUpperCase() : '';
+          return normP === normDbSymbol;
+        });
+
+        if (matchingActive && matchingActive.size && !matchingActive.size.isZero()) {
+          return { status: 'OPEN' };
+        }
       }
 
       // 2. Position is no longer open on exchange (size is 0). Query closed P&L records
       let closedPnlList: any[] = [];
       if (typeof adapter.fetchClosedPnl === 'function') {
-        closedPnlList = (await adapter.fetchClosedPnl(dbPosition.symbol, dbPosition.category || 'linear')) || [];
+        try {
+          closedPnlList = (await adapter.fetchClosedPnl(dbPosition.symbol, dbPosition.category || 'linear')) || [];
+        } catch (_) {}
       }
 
       if (closedPnlList && closedPnlList.length > 0) {
@@ -244,7 +260,12 @@ export class ReconciliationEngine {
       }
 
       // 3. Fallback: check closed orders
-      const closedOrders = (await adapter.fetchClosedOrders(dbPosition.symbol)) || [];
+      let closedOrders: any[] = [];
+      if (typeof adapter.fetchClosedOrders === 'function') {
+        try {
+          closedOrders = (await adapter.fetchClosedOrders(dbPosition.symbol)) || [];
+        } catch (_) {}
+      }
       const exitOrder = closedOrders.find((o: any) => o.status === 'closed' && (o.side !== dbPosition.side?.toLowerCase()));
       if (exitOrder) {
         const exitAvg = exitOrder.average?.toNumber ? exitOrder.average.toNumber() : Number(exitOrder.average || 0);
@@ -253,6 +274,14 @@ export class ReconciliationEngine {
           closePrice: exitAvg > 0 ? exitAvg : undefined,
           closeReason: 'exchange_close',
           closedAt: new Date(exitOrder.timestamp || currentTimeMs).toISOString()
+        };
+      }
+
+      if (knownClosed) {
+        return {
+          status: 'CLOSED',
+          closeReason: 'exchange_close',
+          closedAt: new Date(currentTimeMs).toISOString()
         };
       }
 

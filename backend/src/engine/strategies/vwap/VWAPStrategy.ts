@@ -4,11 +4,11 @@ import { EvaluationResult } from '../../dto/EvaluationResult';
 import { StrategyManifest } from '../StrategyManifest';
 import { IndicatorEngine } from '../../indicator';
 import { ConditionEngine } from '../../condition';
-import { ConfidenceEngine } from '../../confidence';
+import { ConfidenceEngine, ConfidenceScore } from '../../confidence';
 import { RiskEngine, RiskContext } from '../../risk';
 import { SignalType, TradingSignal } from '../../signal';
 import { Timeframe } from '../../market-data/Timeframe';
-import { NormalizedCandle } from '../../market-data/MarketSnapshot';
+import { MarketSnapshot, NormalizedCandle } from '../../market-data/MarketSnapshot';
 import { CandleValidator } from '../../../infrastructure/exchange/CandleValidator';
 
 import { VWAP_STRATEGY_MANIFEST } from './VWAPRules';
@@ -51,33 +51,45 @@ export class VWAPStrategy implements IStrategy {
     this.riskEngine = new RiskEngine(config.riskParameters);
   }
 
-  public evaluate(context: Readonly<StrategyContext>): EvaluationResult {
-    // 1. Indicators
-    const indicatorSnapshot = this.indicatorEngine.evaluate(context.marketSnapshot);
+  public evaluate(context: Readonly<StrategyContext>, targetTimeframe: Timeframe): EvaluationResult {
+    // 0. Fail-Closed Validation: Ensure targetTimeframe is supported by manifest (e.g. 15m, 1h, 4h; fail 5m)
+    if (!this.manifest.supportedTimeframes.includes(targetTimeframe)) {
+      return this.createNoSignalResult(context, [`Unsupported timeframe ${targetTimeframe} for ${this.manifest.id}`], targetTimeframe);
+    }
 
-    // 2. Conditions
-    const conditionResult = this.conditionEngine.evaluate(indicatorSnapshot);
-
-    // 3. Confidence
-    const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
-
-    // Guard C — Option A: Strictly enforce 15m authoritative timeframe without silent fallback
-    const timeframeToUse: Timeframe = '15m';
-    const rawCandles = context.marketSnapshot.candles?.[timeframeToUse];
-
+    const rawCandles = context.marketSnapshot.candles?.[targetTimeframe];
     if (!rawCandles || rawCandles.length === 0) {
-      return this.createNoSignalResult(context, ['Authoritative 15m candle data is unavailable (Option A strict gate)'], indicatorSnapshot, conditionResult);
+      return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Missing required candle data for timeframe ${targetTimeframe}`], targetTimeframe);
     }
 
     const getCandleCloseTime = (c: NormalizedCandle, tf: string): number => {
       return (c as any).closeTime ?? ((c.openTime ?? c.timestamp ?? 0) + CandleValidator.timeframeToMs(tf));
     };
 
-    const closedCandles = rawCandles.filter(c => getCandleCloseTime(c, timeframeToUse) <= context.timestamp);
-
+    const closedCandles = rawCandles.filter(c => getCandleCloseTime(c, targetTimeframe) <= context.timestamp);
     if (closedCandles.length < 2) {
-      return this.createNoSignalResult(context, ['Insufficient closed candle data for analysis (minimum 2 closed candles required)'], indicatorSnapshot, conditionResult);
+      return this.createNoSignalResult(context, [`Insufficient closed candle data for analysis (minimum 2 closed candles required for timeframe ${targetTimeframe})`], targetTimeframe);
     }
+
+    // Build Closed-Candle Projections for targetTimeframe
+    const currentCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
+      [targetTimeframe]: closedCandles,
+    };
+
+    const snapshotCurrent: MarketSnapshot = {
+      ...context.marketSnapshot,
+      timestamp: context.timestamp,
+      candles: currentCandlesRecord as any,
+    };
+
+    // 1. Indicators
+    const indicatorSnapshot = this.indicatorEngine.evaluate(snapshotCurrent);
+
+    // 2. Conditions
+    const conditionResult = this.conditionEngine.evaluate(indicatorSnapshot);
+
+    // 3. Confidence
+    const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
     const currentCandle = closedCandles[closedCandles.length - 1];
     const previousCandle = closedCandles[closedCandles.length - 2];
@@ -87,21 +99,19 @@ export class VWAPStrategy implements IStrategy {
     const previousPrice = previousCandle?.close || currentPrice;
 
     if (!currentPrice || currentPrice <= 0) {
-      return this.createNoSignalResult(context, ['Invalid or missing current price'], indicatorSnapshot, conditionResult);
+      return this.createNoSignalResult(context, ['Invalid or missing current price'], targetTimeframe, indicatorSnapshot, conditionResult);
     }
 
     // Guard B — Account balance validation
     if (!context.accountBalance || context.accountBalance <= 0) {
-      return this.createNoSignalResult(context, ['Account balance is zero or unconfigured'], indicatorSnapshot, conditionResult);
+      return this.createNoSignalResult(context, ['Account balance is zero or unconfigured'], targetTimeframe, indicatorSnapshot, conditionResult);
     }
 
-    // Retrieve standard indicators needed for Risk evaluation
-    const tfIndicators = indicatorSnapshot.timeframes[timeframeToUse];
+    // Retrieve standard indicators needed for evaluation strictly on targetTimeframe
+    const tfIndicators = indicatorSnapshot.timeframes[targetTimeframe];
     if (!tfIndicators) {
-      return this.createNoSignalResult(context, ['Indicators failed to calculate'], indicatorSnapshot, conditionResult);
+      return this.createNoSignalResult(context, [`Indicators failed to calculate for ${targetTimeframe}`], targetTimeframe, indicatorSnapshot, conditionResult);
     }
-    const atrArray = tfIndicators.atr[this.config.conditionConfig.atrPeriod];
-    const currentAtr = atrArray ? atrArray[atrArray.length - 1] : 0;
 
     // -- Strategy Specific Logic: VWAP Calculation & Validation --
     const vwapValues = VWAPCalculator.calculate(closedCandles);
@@ -111,13 +121,13 @@ export class VWAPStrategy implements IStrategy {
     // Distance from VWAP Check (Over-extension)
     const deviationPercent = Math.abs(currentPrice - currentVwap) / currentVwap * 100;
     if (deviationPercent > this.config.vwapRules.maxDeviationThresholdPercent) {
-      return this.createNoSignalResult(context, ['Price excessively extended away from VWAP'], indicatorSnapshot, conditionResult);
+      return this.createNoSignalResult(context, ['Price excessively extended away from VWAP'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore);
     }
 
     // Sideways Chop Check (Minimum Displacement)
     const displacementPercent = Math.abs(currentPrice - previousPrice) / previousPrice * 100;
     if (displacementPercent < this.config.vwapRules.minSidewaysDisplacementPercent) {
-      return this.createNoSignalResult(context, ['No meaningful VWAP displacement (sideways market)'], indicatorSnapshot, conditionResult);
+      return this.createNoSignalResult(context, ['No meaningful VWAP displacement (sideways market)'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore);
     }
 
     // Volume Confirmation Check
@@ -129,14 +139,17 @@ export class VWAPStrategy implements IStrategy {
     }
 
     if (currentCandle.volume < avgVolume * this.config.vwapRules.minVolumeMultiplier) {
-      return this.createNoSignalResult(context, ['Low volume rejection (volume confirmation not met)'], indicatorSnapshot, conditionResult);
+      return this.createNoSignalResult(context, ['Low volume rejection (volume confirmation not met)'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore);
     }
 
     // Identify interactions with VWAP (Crossovers)
     const crossedAboveVwap = previousPrice <= previousVwap && currentPrice > currentVwap;
     const crossedBelowVwap = previousPrice >= previousVwap && currentPrice < currentVwap;
 
-    // 4. Risk
+    // 4. Risk strictly on targetTimeframe ATR
+    const atrArray = tfIndicators.atr?.[this.config.conditionConfig.atrPeriod];
+    const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
+
     const riskContext: RiskContext = {
       timestamp: context.timestamp,
       currentPrice,
@@ -159,27 +172,26 @@ export class VWAPStrategy implements IStrategy {
 
     if (crossedAboveVwap) {
       finalSignalType = SignalType.BUY;
-      reasoning.push('VWAP: Strong volume crossover above fair value');
+      reasoning.push(`VWAP: Strong volume crossover above fair value on ${targetTimeframe}`);
     } else if (crossedBelowVwap) {
       if (this.manifest.supportsShort) {
         finalSignalType = SignalType.SELL;
-        reasoning.push('VWAP: Strong volume crossover below fair value');
+        reasoning.push(`VWAP: Strong volume crossover below fair value on ${targetTimeframe}`);
       } else {
         reasoning.push('VWAP: Bearish setup detected but shorting is disabled');
       }
     } else {
-      return this.createNoSignalResult(context, ['No definitive VWAP crossover'], indicatorSnapshot, conditionResult, customIndicators);
+      return this.createNoSignalResult(context, ['No definitive VWAP crossover'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore, customIndicators);
     }
 
-    // Apply confidence threshold from config using Model C directional arbitration
-    // Option A: Evaluate authoritative decision gate on primary timeframe (15m)
-    const primaryTfConfidence = confidenceScore.timeframes[timeframeToUse];
+    // Apply confidence threshold from config using Model C directional arbitration on targetTimeframe
+    const primaryTfConfidence = confidenceScore.timeframes?.[targetTimeframe];
     const longScore = primaryTfConfidence
       ? (primaryTfConfidence.longScore ?? primaryTfConfidence.score)
-      : confidenceScore.overallLongScore;
+      : (confidenceScore.overallLongScore ?? 0);
     const shortScore = primaryTfConfidence
       ? (primaryTfConfidence.shortScore ?? 0)
-      : confidenceScore.overallShortScore;
+      : (confidenceScore.overallShortScore ?? 0);
 
     const minConfidence = this.config.signalRules.minConfidenceScore;
     if (finalSignalType === SignalType.BUY) {
@@ -218,8 +230,8 @@ export class VWAPStrategy implements IStrategy {
     let activeSignal: TradingSignal | null = null;
     if (hasSignal && finalSignalType !== null) {
       const directionalScore = finalSignalType === SignalType.SELL
-        ? (primaryTfConfidence?.shortScore ?? confidenceScore.overallShortScore!)
-        : (primaryTfConfidence?.longScore ?? confidenceScore.overallLongScore!);
+        ? (primaryTfConfidence?.shortScore ?? confidenceScore.overallShortScore ?? 0)
+        : (primaryTfConfidence?.longScore ?? confidenceScore.overallLongScore ?? 0);
 
       const stopLoss = finalSignalType === SignalType.BUY
         ? currentPrice - riskAssessment.stopLossDistance
@@ -231,7 +243,7 @@ export class VWAPStrategy implements IStrategy {
 
       activeSignal = {
         symbol: context.marketSnapshot.symbol,
-        timeframe: timeframeToUse,
+        timeframe: targetTimeframe,
         type: finalSignalType,
         confidenceScore: directionalScore,
         riskAssessment,
@@ -248,12 +260,11 @@ export class VWAPStrategy implements IStrategy {
       };
     }
 
-    // Pinned primary confidenceScore: evaluate on primary timeframe evidence to preserve legacy scalar output
     const directionalConfidence = finalSignalType === SignalType.SELL
-      ? (primaryTfConfidence?.shortScore ?? confidenceScore.overallShortScore!)
+      ? (primaryTfConfidence?.shortScore ?? confidenceScore.overallShortScore ?? 0)
       : finalSignalType === SignalType.BUY
-      ? (primaryTfConfidence?.longScore ?? confidenceScore.overallLongScore!)
-      : (primaryTfConfidence?.score ?? confidenceScore.overallScore);
+      ? (primaryTfConfidence?.longScore ?? confidenceScore.overallLongScore ?? 0)
+      : (primaryTfConfidence?.score ?? confidenceScore.overallScore ?? 0);
 
     return {
       strategyId: this.manifest.id,
@@ -267,7 +278,8 @@ export class VWAPStrategy implements IStrategy {
         conditionResult,
         confidenceScore,
         strategyConfig: this.config,
-        customIndicators
+        customIndicators,
+        targetTimeframe,
       }
     };
   }
@@ -275,20 +287,27 @@ export class VWAPStrategy implements IStrategy {
   private createNoSignalResult(
     context: Readonly<StrategyContext>,
     reasoning: string[],
+    targetTimeframe?: Timeframe,
     indicatorSnapshot?: any,
     conditionResult?: any,
+    confidenceScore?: ConfidenceScore,
     customIndicators?: any[]
   ): EvaluationResult {
+    const tfConf = targetTimeframe && confidenceScore?.timeframes ? confidenceScore.timeframes[targetTimeframe] : undefined;
+    const resolvedScore = tfConf?.score ?? confidenceScore?.overallScore ?? 0;
+
     return {
       strategyId: this.manifest.id,
       timestamp: context.timestamp,
-      confidenceScore: 0,
+      confidenceScore: resolvedScore,
       hasSignal: false,
       metadata: {
         reasoning,
         signal: null,
+        targetTimeframe,
         indicatorSnapshot: indicatorSnapshot || { timestamp: context.timestamp, timeframes: {} },
         conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] },
+        confidenceScore: confidenceScore || null,
         strategyConfig: this.config,
         customIndicators: customIndicators || []
       }

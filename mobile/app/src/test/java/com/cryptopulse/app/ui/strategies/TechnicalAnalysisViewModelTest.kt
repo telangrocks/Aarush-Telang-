@@ -1591,6 +1591,110 @@ class TechnicalAnalysisViewModelTest {
         assertEquals("Must use canonical registered ScalperV2 for activation", "ScalperV2", dispatchedStrategy)
         assertEquals(listOf("BTCUSDT", "ETHUSDT"), dispatchedSymbols)
     }
+
+    @Test
+    fun `activateAutonomousBot with empty candidate list blocks activation and never calls repository`() = runTest {
+        var activateCalled = false
+
+        val customBotRepo = object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = MutableStateFlow<String?>(null).asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+                activateCalled = true
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.STOPPED, isActive = false, coinId = null, strategy = null))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strategy, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = createMockSessionRepository("ScalperV2"),
+            botRepository = customBotRepo,
+            technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        var successCalled = false
+        viewModel.activateAutonomousBot(emptyList(), null) {
+            successCalled = true
+        }
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse("Activation success callback must not be called when candidates are empty", successCalled)
+        assertFalse("BotRepository.activateBot must not be invoked when candidates are empty", activateCalled)
+        assertEquals("Cannot activate bot: no eligible candidates available.", viewModel.activationError.value)
+    }
+
+    @Test
+    fun `activateAutonomousBot with multiple candidates passes all symbols without single-symbol fallback`() = runTest {
+        var dispatchedSymbols: List<String>? = null
+        val candidatesList = listOf("CL/USDT", "SOL/USDT", "QNT/USDT", "ZEC/USDT", "HYPE/USDT", "ETH/USDT")
+
+        val customBotRepo = object : BotRepository {
+            private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+            override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = MutableStateFlow<String?>(null).asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+                dispatchedSymbols = symbols
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(state = BotState.STOPPED, isActive = false, coinId = null, strategy = null))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult("mock"))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = NetworkResult.Success(BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 4.0, strategy, "BUY", "2026-08-25T00:00:00Z", 50000.0, 50100.0, 100.0, "WAIT_FOR_PRICE"))
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = createMockSessionRepository("ScalperV2"),
+            botRepository = customBotRepo,
+            technicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+            strategyRepository = createMockStrategyRepository(),
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        var successCalled = false
+        viewModel.activateAutonomousBot(candidatesList, null) {
+            successCalled = true
+        }
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(successCalled)
+        assertEquals("Must pass all candidate symbols without fallback", candidatesList, dispatchedSymbols)
+        assertEquals(6, dispatchedSymbols?.size)
+        assertNull(viewModel.activationError.value)
+    }
 }
 
 private fun createDummySnapshot(strategy: String, displayName: String, score: Int): AnalysisSnapshot {

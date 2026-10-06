@@ -11,7 +11,9 @@ import { normalizeEnvironment as normEnvUtil, isEnvironmentSupported, getSupport
 import { normalizeRegion, resolveCanonicalRoutingRegion } from "../utils/region";
 import { WebCryptoSigner } from "../infrastructure/crypto/WebCryptoSigner";
 import { MarketOpportunityScanner, ExecutionEligibilityGate, type ScannerScanResult, type MarketOpportunity } from "../engine/scanner";
+import { isExcludedAsset } from "../domain/trading/AssetClassification";
 import { PriceNormalizer } from "../utils/PriceNormalizer";
+import { extractUsdtBalance } from "../utils/balance";
 
 const DISCOVERY_CACHE = new Map<string, { timestamp: number, data: any }>();
 const CACHE_TTL_MS = 60000;
@@ -668,26 +670,23 @@ export async function handleGetExchangeBalances(
       balances: formattedBalances,
     });
   } catch (e: unknown) {
-    const classified = classifyException(e, "exchange-balance");
+    const exchangeId = user?.exchange_name?.toLowerCase() || "bybit";
+    const classified = classifyException(e, exchangeId);
     console.error(`[exchange-balance] exception (${classified.technicalDetail}):`, e);
     if (isPermanentAuthFailure(classified.code)) {
-      await invalidateExchangeConnection(
-        c.env.DB,
-        userId,
-        classified.code,
-        classified.friendlyMessage,
-        c.env.TRADING_BOTS,
-        user?.exchange_name ? {
-          exchangeName: user.exchange_name,
-          config: {
+      if (user?.exchange_name && decryptedKey && decryptedSecret) {
+        try {
+          await ExchangeManager.invalidateUserProvider(user.exchange_name, {
             environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
             apiKey: decryptedKey,
             secret: decryptedSecret,
             password: decryptedPassphrase,
             region: resolveCanonicalRoutingRegion(user.exchange_region),
-          }
-        } : undefined
-      );
+          });
+        } catch (err) {
+          console.warn(`[exchange-balance] ProviderPool eviction warning for user ${userId}:`, err);
+        }
+      }
       c.status(422);
     } else {
       c.status(400);
@@ -708,6 +707,7 @@ export function mapScanResultToCandidates(scanResult: any): any[] {
     ? scanResult.allQualifiedOpportunities 
     : (scanResult.topOpportunities || []);
   for (const opp of sourcePool) {
+    if (isExcludedAsset(opp.symbol)) continue;
     if (!seenPairs.has(opp.symbol)) {
       seenPairs.add(opp.symbol);
       distinctOpportunities.push(opp);
@@ -1552,7 +1552,7 @@ export async function handleGetTechnicalAnalysis(
     let accountBalance = 1000;
     try {
       const balanceResult = await adapter.fetchBalance();
-      accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
+      accountBalance = extractUsdtBalance(balanceResult);
     } catch (balErr: unknown) {
       new StructuredLogger().warn(`[TechnicalAnalysis] Balance fetch non-fatal fallback on ${user.exchange_name}`, { error: String(balErr) });
     }
@@ -2095,7 +2095,7 @@ export async function handleTriggerManualTradeAlert(
     let accountBalance = 1000;
     try {
       const balanceResult = await adapter.fetchBalance();
-      accountBalance = (balanceResult as any)?.free?.USDT ?? (balanceResult as any)?.total?.USDT ?? (balanceResult as any)?.USDT?.free ?? 1000;
+      accountBalance = extractUsdtBalance(balanceResult);
     } catch (_) {}
 
     const targetEntryPrice = typeof config?.entryPrice === 'number' && config.entryPrice > 0 ? config.entryPrice : currentPrice;
@@ -2151,7 +2151,14 @@ export async function handleTriggerManualTradeAlert(
         ? config.positionSize
         : undefined
     );
-    const positionSize = secondaryTradeAmount ?? 5.0;
+    const rawPositionSize = secondaryTradeAmount ?? 5.0;
+    // Ensure individual trade allocation cannot exceed portfolio exposure safety limit if explicitly configured
+    const configuredMaxExposure = typeof config?.maxPortfolioExposureUsdt === 'number' && config.maxPortfolioExposureUsdt > 0
+      ? config.maxPortfolioExposureUsdt
+      : (typeof config?.maxPortfolioExposure === 'number' && config.maxPortfolioExposure > 0 ? config.maxPortfolioExposure : undefined);
+    const positionSize = configuredMaxExposure !== undefined
+      ? Math.min(rawPositionSize, configuredMaxExposure)
+      : rawPositionSize;
 
     let tickSize = 0;
     let minPrice = 0;

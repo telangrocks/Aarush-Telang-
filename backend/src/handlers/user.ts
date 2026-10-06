@@ -13,6 +13,7 @@ import {
   revokeAllUserRefreshTokens,
   createAuditLog,
   runTransaction,
+  markTokenRevokedInCache,
   MIN_PASSWORD_LENGTH,
   MAX_LOGIN_ATTEMPTS,
   LOGIN_LOCKOUT_MINUTES,
@@ -631,6 +632,7 @@ export async function handleLogout(
       },
     ]);
 
+    markTokenRevokedInCache(jti);
     logAuthEvent(c, "user_logout", { userId });
 
     return c.json({ success: true, message: "Logged out successfully" });

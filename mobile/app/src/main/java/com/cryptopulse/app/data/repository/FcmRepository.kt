@@ -15,7 +15,7 @@ class FcmRepositoryImpl @Inject constructor(
     private val dispatcherProvider: DispatcherProvider
 ) : FcmRepository {
     override suspend fun registerToken(token: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
-        when (val result = fcmRemoteDataSource.registerToken(FcmRegisterRequestDto(token))) {
+        when (val result = fcmRemoteDataSource.registerToken(FcmRegisterRequestDto(fcmToken = token))) {
             is NetworkResult.Success -> NetworkResult.Success(Unit)
             is NetworkResult.Error -> result
         }

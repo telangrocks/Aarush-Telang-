@@ -96,7 +96,7 @@ export class AnalysisSnapshotMapper {
       timeframeStatus: 'ALIGNED',
       indicatorSummary: indicators,
       conditionSummary: checkpoints,
-      confidenceScore: result.metadata?.confidenceScore?.overallScore ?? result.confidenceScore,
+      confidenceScore: result.confidenceScore || result.metadata?.confidenceScore?.overallScore || 0,
       confidenceExplanation: result.metadata?.reasoning || [],
       requiredScore: minConfidenceScore,
     };

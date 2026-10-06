@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TradingBot } from "../../src/trading-bot";
+import { FinalDispatchSafetyGate } from "../../src/engine/safety/FinalDispatchSafetyGate";
 
 // Mock security crypto
 vi.mock("../../src/crypto", () => ({
@@ -619,6 +620,141 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       const pollData2 = await pollRes2.json<any>();
       expect(pollData2.committedStrategy).toBe('Momentum');
       expect(pollData2.engineStatus.activeStrategy).toBe('Momentum');
+    });
+  });
+
+  describe("Market Price-Lineage Alignment (FinalDispatchSafetyGate referencePrice)", () => {
+    it("passes fresh currentPrice as referencePrice for MARKET order dispatch", async () => {
+      mockDb.prepare = vi.fn().mockImplementation((query: string) => {
+        if (query.includes('PRAGMA table_info')) {
+          return {
+            all: vi.fn().mockResolvedValue({ results: [{ name: 'target_entry_price' }, { name: 'entry_status' }] })
+          };
+        }
+        return {
+          bind: vi.fn().mockReturnValue({
+            run: vi.fn().mockResolvedValue({ success: true }),
+            first: vi.fn().mockResolvedValue({
+              exchange_name: 'bybit',
+              exchange_environment: 'demo',
+              exchange_region: 'global',
+              exchange_api_key: 'key',
+              exchange_api_secret_iv: 'bW9ja19pdk1vY2tJdk1vY2s=',
+              exchange_api_secret_encrypted: 'sec'
+            })
+          })
+        };
+      });
+
+      const bot = new TradingBot(mockState, mockEnv);
+      mockStorage.set('userId', 'user-lineage-1');
+
+      // Alert has targetEntryPrice = 52000, while ticker last = 50100
+      const testAlert = {
+        id: 'alert-market-lineage',
+        symbol: 'BTC/USDT',
+        signalPrice: 50100,
+        targetEntryPrice: 52000,
+        entryPrice: 52000,
+        stopLoss: 48000,
+        takeProfit: 55000,
+        positionSize: 1000,
+        strategy: 'ScalperV2',
+        side: 'BUY',
+        timestamp: new Date().toISOString(),
+        status: 'pending'
+      };
+
+      await bot.fetch(new Request('http://bot/register-alert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alert: testAlert })
+      }));
+
+      const gateSpy = vi.spyOn(FinalDispatchSafetyGate, 'validate');
+
+      const execRes = await bot.fetch(new Request('http://bot/execute-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: 'user-lineage-1',
+          alertId: 'alert-market-lineage',
+          entryIntent: 'IMMEDIATE' // Market order
+        })
+      }));
+
+      expect(execRes.status).toBe(200);
+      expect(gateSpy).toHaveBeenCalled();
+      const lastCall = gateSpy.mock.calls[gateSpy.mock.calls.length - 1];
+      const constraints = lastCall[1];
+      // For MARKET orders, referencePrice must strictly equal currentPrice (50100), NOT targetPrice (52000)
+      expect(constraints.referencePrice).toBe(50100);
+    });
+
+    it("passes targetPrice as referencePrice for LIMIT order dispatch", async () => {
+      mockDb.prepare = vi.fn().mockImplementation((query: string) => {
+        if (query.includes('PRAGMA table_info')) {
+          return {
+            all: vi.fn().mockResolvedValue({ results: [{ name: 'target_entry_price' }, { name: 'entry_status' }] })
+          };
+        }
+        return {
+          bind: vi.fn().mockReturnValue({
+            run: vi.fn().mockResolvedValue({ success: true }),
+            first: vi.fn().mockResolvedValue({
+              exchange_name: 'bybit',
+              exchange_environment: 'demo',
+              exchange_region: 'global',
+              exchange_api_key: 'key',
+              exchange_api_secret_iv: 'bW9ja19pdk1vY2tJdk1vY2s=',
+              exchange_api_secret_encrypted: 'sec'
+            })
+          })
+        };
+      });
+
+      const bot = new TradingBot(mockState, mockEnv);
+      mockStorage.set('userId', 'user-lineage-2');
+
+      const testAlert = {
+        id: 'alert-limit-lineage',
+        symbol: 'BTC/USDT',
+        signalPrice: 50100,
+        targetEntryPrice: 52000,
+        entryPrice: 52000,
+        stopLoss: 48000,
+        takeProfit: 55000,
+        positionSize: 1000,
+        strategy: 'ScalperV2',
+        side: 'BUY',
+        timestamp: new Date().toISOString(),
+        status: 'pending'
+      };
+
+      await bot.fetch(new Request('http://bot/register-alert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alert: testAlert })
+      }));
+
+      const gateSpy = vi.spyOn(FinalDispatchSafetyGate, 'validate');
+
+      const execRes = await bot.fetch(new Request('http://bot/execute-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: 'user-lineage-2',
+          alertId: 'alert-limit-lineage',
+          entryIntent: 'WAIT_FOR_PRICE' // Limit order
+        })
+      }));
+
+      expect(execRes.status).toBe(200);
+      expect(gateSpy).toHaveBeenCalled();
+      const lastCall = gateSpy.mock.calls[gateSpy.mock.calls.length - 1];
+      const constraints = lastCall[1];
+      // For LIMIT orders, referencePrice resolves to targetPrice (52000)
+      expect(constraints.referencePrice).toBe(52000);
     });
   });
 });

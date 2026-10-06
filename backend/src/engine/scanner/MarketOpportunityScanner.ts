@@ -20,36 +20,7 @@ import { MarketRegimeEngine, MarketRegime } from '../regime/MarketRegimeEngine';
 import { ExecutionEligibilityGate } from './ExecutionEligibilityGate';
 import { MetricsEngine } from '../../telemetry/MetricsEngine';
 import { StructuredLogger } from '../../infrastructure/telemetry/Telemetry';
-
-const STABLECOINS = new Set([
-  'USDT', 'USDC', 'BUSD', 'TUSD', 'FDUSD', 'DAI', 'USDP',
-  'USDE', 'PYUSD', 'FRAX', 'USDD', 'GUSD', 'USDJ', 'EURT',
-  'USDY', 'LUSD', 'CRVUSD'
-]);
-
-const LEVERAGED_TOKEN_REGEX = /.*(2L|3L|4L|5L|10L|2S|3S|4S|5S|10S|UP|DOWN|BULL|BEAR)(USDT|USDC|DAI)?$/i;
-
-function extractBaseAsset(symbol: string): string {
-  if (!symbol) return '';
-  const clean = symbol.trim().toUpperCase();
-  if (clean.includes('/')) return clean.split('/')[0];
-  if (clean.includes('-')) return clean.split('-')[0];
-  if (clean.includes('_')) return clean.split('_')[0];
-  for (const q of ['USDT', 'USDC', 'BUSD', 'USD', 'BTC', 'ETH', 'EUR']) {
-    if (clean.endsWith(q) && clean.length > q.length) {
-      return clean.slice(0, clean.length - q.length);
-    }
-  }
-  return clean;
-}
-
-function isExcludedAsset(symbolStr: string): boolean {
-  const clean = String(symbolStr || '').trim().toUpperCase();
-  const base = extractBaseAsset(clean);
-  if (STABLECOINS.has(clean) || STABLECOINS.has(base)) return true;
-  if (LEVERAGED_TOKEN_REGEX.test(clean) || LEVERAGED_TOKEN_REGEX.test(base)) return true;
-  return false;
-}
+import { isExcludedAsset } from '../../domain/trading/AssetClassification';
 
 export interface ScannerScanResult {
   readonly timestamp: number;
@@ -262,16 +233,12 @@ export class MarketOpportunityScanner {
     // ─────────────────────────────────────────────────────────────────────────
     // STAGE 3 & 4: Staged Multi-Timeframe Retrieval & Technical Analysis
     // ─────────────────────────────────────────────────────────────────────────
-    // Prioritize top liquid quality candidates for deep multi-timeframe candle evaluation
-    qualityCandidates.sort((a, b) => b.quality.turnover24hUsdt - a.quality.turnover24hUsdt);
-    const deepCandidates = qualityCandidates.slice(0, 25);
-
     // ─────────────────────────────────────────────────────────────────────────
-    // STAGE 2.5: Budget & Execution Constraint Gate (Post-Top-25)
-    // Reduce Top 25 quality-ranked candidates down to 0 <= N <= 25 affordable candidates
+    // STAGE 2.5: Budget & Execution Constraint Gate (Pre-Top-25)
+    // Reduce quality candidates down to affordable candidates FIRST
     // ─────────────────────────────────────────────────────────────────────────
     const affordableCandidates = (options?.tradeAmountUsdt !== undefined && options.tradeAmountUsdt > 0)
-      ? deepCandidates.filter(({ market, ticker, quality }) => {
+      ? qualityCandidates.filter(({ market, ticker, quality }) => {
           const px = typeof ticker.last?.toNumber === 'function' ? ticker.last.toNumber() : Number(ticker.last ?? ticker.price ?? 0);
           const eligibility = ExecutionEligibilityGate.evaluate({
             tradeAmountUsdt: options.tradeAmountUsdt!,
@@ -282,13 +249,20 @@ export class MarketOpportunityScanner {
           });
           return eligibility.isExecutable;
         })
-      : deepCandidates;
+      : qualityCandidates;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // STAGE 3 & 4: Staged Multi-Timeframe Retrieval & Technical Analysis
+    // Prioritize top liquid affordable candidates for deep multi-timeframe candle evaluation
+    // ─────────────────────────────────────────────────────────────────────────
+    affordableCandidates.sort((a, b) => b.quality.turnover24hUsdt - a.quality.turnover24hUsdt);
+    const deepCandidates = affordableCandidates.slice(0, 25);
 
     const BATCH_SIZE = 5;
     const evaluatedOpportunities: MarketOpportunity[] = [];
 
-    for (let i = 0; i < affordableCandidates.length; i += BATCH_SIZE) {
-      const batch = affordableCandidates.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < deepCandidates.length; i += BATCH_SIZE) {
+      const batch = deepCandidates.slice(i, i + BATCH_SIZE);
 
       const batchResults = await Promise.all(
         batch.map(async ({ market, ticker, quality }) => {

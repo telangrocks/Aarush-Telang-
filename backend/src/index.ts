@@ -277,9 +277,17 @@ api.use("*", async (c, next) => {
     c.status(401);
     return c.json({ error: "Invalid token type. Access token required." });
   }
-  if (payload?.jti && await isTokenRevoked(c, payload.jti)) {
-    c.status(401);
-    return c.json({ error: "Token has been revoked" });
+  const isHighStakes = c.req.path.includes("/execute-trade") || c.req.path.includes("/credentials") || c.req.path.includes("/password");
+  try {
+    if (payload?.jti && await isTokenRevoked(c, payload.jti, { failClosed: isHighStakes })) {
+      c.status(401);
+      return c.json({ error: "Token has been revoked" });
+    }
+  } catch (_err) {
+    if (isHighStakes) {
+      c.status(503);
+      return c.json({ error: "Authentication verification service temporarily unavailable. Operation locked for safety." });
+    }
   }
   await next();
 });

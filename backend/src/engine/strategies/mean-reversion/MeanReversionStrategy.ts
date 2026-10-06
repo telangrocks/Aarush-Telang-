@@ -69,55 +69,39 @@ export class MeanReversionStrategy implements IStrategy {
     this.riskEngine = new RiskEngine(config.riskParameters);
   }
 
-  public evaluate(context: Readonly<StrategyContext>): EvaluationResult {
-    // Four-Timeframe Confluence Architecture:
-    // 4h  → Structural Anti-Runaway Gate (EMA separation <= 5.0%)
-    // 1h  → Macro Anti-Runaway Gate (EMA separation <= 5.0%)
-    // 15m → Intermediate Setup & Risk Anchor (EMA separation <= 5.0%, ATR14)
-    // 5m  → Precision Mean-Reversion Entry Trigger (RSI 2-step reversal)
-    const ENTRY_TIMEFRAME = "5m" as const;
-    const RISK_TIMEFRAME = "15m" as const;
-    const ALL_REQUIRED_TIMEFRAMES = ["5m", "15m", "1h", "4h"] as const;
+  public evaluate(context: Readonly<StrategyContext>, targetTimeframe: Timeframe): EvaluationResult {
     const MIN_CLOSED_CANDLES = 51;
 
+    // 0. Fail-Closed Validation: Ensure targetTimeframe is supported by manifest
+    if (!this.manifest.supportedTimeframes.includes(targetTimeframe)) {
+      return this.createNoSignalResult(context, [`Unsupported timeframe ${targetTimeframe} for ${this.manifest.id}`], targetTimeframe);
+    }
+
     // 1. Snapshot Evaluation Reference Time (T & T_previous)
-    const raw5mCandles = context.marketSnapshot?.candles?.[ENTRY_TIMEFRAME];
-    if (!raw5mCandles || raw5mCandles.length === 0) {
-      return this.createNoSignalResult(context, [`[MTF DATA] Missing required candle data for timeframe ${ENTRY_TIMEFRAME}`]);
+    const rawCandles = context.marketSnapshot?.candles?.[targetTimeframe];
+    if (!rawCandles || rawCandles.length === 0) {
+      return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Missing required candle data for timeframe ${targetTimeframe}`], targetTimeframe);
     }
 
-    // Filter forming 5m candles: only closed candles at or before context.timestamp
-    const closed5mAtRef = raw5mCandles.filter(c => getCandleCloseTime(c, ENTRY_TIMEFRAME) <= context.timestamp);
-    if (closed5mAtRef.length < MIN_CLOSED_CANDLES) {
-      return this.createNoSignalResult(context, [`[MTF DATA] Insufficient closed candle data for timeframe ${ENTRY_TIMEFRAME} (got ${closed5mAtRef.length}, required >= ${MIN_CLOSED_CANDLES})`]);
+    // Filter forming candles: only closed candles at or before context.timestamp
+    const closedCandlesAtRef = rawCandles.filter(c => getCandleCloseTime(c, targetTimeframe) <= context.timestamp);
+    if (closedCandlesAtRef.length < MIN_CLOSED_CANDLES) {
+      return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Insufficient closed candle data for timeframe ${targetTimeframe} (got ${closedCandlesAtRef.length}, required >= ${MIN_CLOSED_CANDLES})`], targetTimeframe);
     }
 
-    const latestClosed5m = closed5mAtRef[closed5mAtRef.length - 1];
-    const T = getCandleCloseTime(latestClosed5m, ENTRY_TIMEFRAME);
-    const fiveMinMs = CandleValidator.timeframeToMs(ENTRY_TIMEFRAME);
-    const T_previous = T - fiveMinMs;
+    const latestClosed = closedCandlesAtRef[closedCandlesAtRef.length - 1];
+    const T = getCandleCloseTime(latestClosed, targetTimeframe);
+    const tfMs = CandleValidator.timeframeToMs(targetTimeframe);
+    const T_previous = T - tfMs;
 
-    // 2. Build Closed-Candle Projections for T and T_previous across all 4 required timeframes
-    const currentCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {};
-    const previousCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {};
-
-    for (const tf of ALL_REQUIRED_TIMEFRAMES) {
-      const rawTfCandles = context.marketSnapshot?.candles?.[tf];
-      if (!rawTfCandles || rawTfCandles.length === 0) {
-        return this.createNoSignalResult(context, [`[MTF DATA] Missing required candle data for timeframe ${tf}`]);
-      }
-
-      // Filter closed candles at or before T (forming candles strictly excluded)
-      const closedAtT = rawTfCandles.filter(c => getCandleCloseTime(c, tf) <= T);
-      if (closedAtT.length < MIN_CLOSED_CANDLES) {
-        return this.createNoSignalResult(context, [`[MTF DATA] Insufficient closed candle data for timeframe ${tf} (got ${closedAtT.length}, required >= ${MIN_CLOSED_CANDLES})`]);
-      }
-      currentCandlesRecord[tf] = closedAtT;
-
-      // Filter closed candles at or before T_previous
-      const closedAtTPrev = rawTfCandles.filter(c => getCandleCloseTime(c, tf) <= T_previous);
-      previousCandlesRecord[tf] = closedAtTPrev;
-    }
+    // 2. Build Closed-Candle Projections for T and T_previous strictly on targetTimeframe
+    const currentCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
+      [targetTimeframe]: closedCandlesAtRef,
+    };
+    const closedCandlesAtPrev = rawCandles.filter(c => getCandleCloseTime(c, targetTimeframe) <= T_previous);
+    const previousCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
+      [targetTimeframe]: closedCandlesAtPrev,
+    };
 
     // 3. Technical Indicator & Condition Evaluations on Independent Projections
     const snapshotCurrent: MarketSnapshot = {
@@ -139,86 +123,54 @@ export class MeanReversionStrategy implements IStrategy {
 
     // Previous technical evaluation
     let previousIndicatorSnapshot: any = null;
-    let hasValidPreviousData = true;
-
-    for (const tf of ALL_REQUIRED_TIMEFRAMES) {
-      if (!previousCandlesRecord[tf] || previousCandlesRecord[tf]!.length < 50) {
-        hasValidPreviousData = false;
-        break;
-      }
-    }
+    const hasValidPreviousData = Boolean(previousCandlesRecord[targetTimeframe] && previousCandlesRecord[targetTimeframe]!.length >= 50);
 
     if (hasValidPreviousData) {
       previousIndicatorSnapshot = this.indicatorEngine.evaluate(snapshotPrevious);
     }
 
-    // 4. Pure Market Alignment Helper
+    // 4. Pure Market Alignment Helper (Authoritative on targetTimeframe Entry Trigger)
+    const tfUpper = targetTimeframe.toUpperCase();
     const evaluateMarketAlignment = (
       indSnapshot: any
     ): {
       isAlignedBuy: boolean;
       isAlignedSell: boolean;
       tfReasoning: string[];
-      separation15m: number;
+      separation: number;
       hasBuyCurl: boolean;
       hasSellCurl: boolean;
     } => {
       const tfReasoning: string[] = [];
-      let isStabilityPassing = true;
-      let sep15m = 0;
+      let sepTf = 0;
 
-      // Anti-Runaway Structural Gates: 4H, 1H, 15M EMA20/EMA50 separation <= 5.0%
-      const STABILITY_TIMEFRAMES = ["4h", "1h", "15m"] as const;
-      const TF_ROLES: Record<string, string> = {
-        "4h": "Structural Bias",
-        "1h": "Macro Trend",
-        "15m": "Intermediate Setup & Risk Anchor",
-        "5m": "Precision Reversal Trigger"
-      };
+      const tfInd = indSnapshot?.timeframes?.[targetTimeframe];
+      const ema20Arr = tfInd?.ema?.[this.config.conditionConfig.emaFastPeriod]; // 20
+      const ema50Arr = tfInd?.ema?.[this.config.conditionConfig.emaSlowPeriod]; // 50
 
-      for (const tf of STABILITY_TIMEFRAMES) {
-        const tfInd = indSnapshot?.timeframes?.[tf];
-        const ema20Arr = tfInd?.ema?.[this.config.conditionConfig.emaFastPeriod]; // 20
-        const ema50Arr = tfInd?.ema?.[this.config.conditionConfig.emaSlowPeriod]; // 50
-
-        if (!ema20Arr || !ema50Arr || ema20Arr.length === 0 || ema50Arr.length === 0) {
-          isStabilityPassing = false;
-          tfReasoning.push(`[MTF FAIL-CLOSED] ${TF_ROLES[tf]} (${tf}) missing required EMA indicators.`);
-          continue;
-        }
-
+      if (ema20Arr && ema50Arr && ema20Arr.length > 0 && ema50Arr.length > 0) {
         const currentEma20 = ema20Arr[ema20Arr.length - 1];
         const currentEma50 = ema50Arr[ema50Arr.length - 1];
 
         if (
-          typeof currentEma20 !== "number" || isNaN(currentEma20) ||
-          typeof currentEma50 !== "number" || isNaN(currentEma50) || currentEma50 <= 0
+          typeof currentEma20 === "number" && !isNaN(currentEma20) &&
+          typeof currentEma50 === "number" && !isNaN(currentEma50) && currentEma50 > 0
         ) {
-          isStabilityPassing = false;
-          tfReasoning.push(`[MTF FAIL-CLOSED] ${TF_ROLES[tf]} (${tf}) invalid EMA values.`);
-          continue;
-        }
-
-        const emaSeparation = Math.abs(currentEma20 - currentEma50) / currentEma50 * 100;
-        if (tf === "15m") {
-          sep15m = emaSeparation;
-        }
-
-        if (emaSeparation <= this.config.trendFilter.maxEmaSeparationPercent) {
-          tfReasoning.push(`[MTF STABLE] ${TF_ROLES[tf]} (${tf}) EMA separation (${emaSeparation.toFixed(2)}%) <= ${this.config.trendFilter.maxEmaSeparationPercent}%.`);
-        } else {
-          isStabilityPassing = false;
-          tfReasoning.push(`[MTF RUNAWAY] ${TF_ROLES[tf]} (${tf}) EMA separation (${emaSeparation.toFixed(2)}%) > ${this.config.trendFilter.maxEmaSeparationPercent}%. Strong trend detected.`);
+          sepTf = Math.abs(currentEma20 - currentEma50) / currentEma50 * 100;
+          if (sepTf <= this.config.trendFilter.maxEmaSeparationPercent) {
+            tfReasoning.push(`[${tfUpper} INFO] EMA separation (${sepTf.toFixed(2)}%) <= ${this.config.trendFilter.maxEmaSeparationPercent}%.`);
+          } else {
+            tfReasoning.push(`[${tfUpper} INFO] EMA separation (${sepTf.toFixed(2)}%) > ${this.config.trendFilter.maxEmaSeparationPercent}%. Strong trend detected.`);
+          }
         }
       }
 
-      // 5M Precision Reversal Trigger: 2-step RSI14 reversal
-      const tf5mInd = indSnapshot?.timeframes?.[ENTRY_TIMEFRAME];
-      const rsiArr = tf5mInd?.rsi?.[this.config.conditionConfig.rsiPeriod]; // 14
+      // Precision Reversal Trigger on targetTimeframe: 2-step RSI14 reversal
+      const rsiArr = tfInd?.rsi?.[this.config.conditionConfig.rsiPeriod]; // 14
 
       if (!rsiArr || rsiArr.length < 2) {
-        tfReasoning.push(`[MTF FAIL-CLOSED] 5m entry trigger missing required RSI values.`);
-        return { isAlignedBuy: false, isAlignedSell: false, tfReasoning, separation15m: sep15m, hasBuyCurl: false, hasSellCurl: false };
+        tfReasoning.push(`[TIMEFRAME FAIL-CLOSED] ${targetTimeframe} entry trigger missing required RSI values.`);
+        return { isAlignedBuy: false, isAlignedSell: false, tfReasoning, separation: sepTf, hasBuyCurl: false, hasSellCurl: false };
       }
 
       const previousRsi = rsiArr[rsiArr.length - 2];
@@ -228,8 +180,8 @@ export class MeanReversionStrategy implements IStrategy {
         typeof previousRsi !== "number" || isNaN(previousRsi) ||
         typeof currentRsi !== "number" || isNaN(currentRsi)
       ) {
-        tfReasoning.push(`[MTF FAIL-CLOSED] 5m RSI contains invalid or NaN values.`);
-        return { isAlignedBuy: false, isAlignedSell: false, tfReasoning, separation15m: sep15m, hasBuyCurl: false, hasSellCurl: false };
+        tfReasoning.push(`[TIMEFRAME FAIL-CLOSED] ${targetTimeframe} RSI contains invalid or NaN values.`);
+        return { isAlignedBuy: false, isAlignedSell: false, tfReasoning, separation: sepTf, hasBuyCurl: false, hasSellCurl: false };
       }
 
       let hasBuyCurl = false;
@@ -247,23 +199,23 @@ export class MeanReversionStrategy implements IStrategy {
       }
 
       if (hasBuyCurl) {
-        tfReasoning.push(`[MTF 5M TRIGGER] Valid 5m oversold curl detected (prev RSI: ${previousRsi.toFixed(2)} <= ${this.config.conditionConfig.rsiOversold}, curr RSI: ${currentRsi.toFixed(2)} > ${previousRsi.toFixed(2)}).`);
+        tfReasoning.push(`[${tfUpper} TRIGGER] Valid ${targetTimeframe} oversold curl detected (prev RSI: ${previousRsi.toFixed(2)} <= ${this.config.conditionConfig.rsiOversold}, curr RSI: ${currentRsi.toFixed(2)} > ${previousRsi.toFixed(2)}).`);
       }
       if (hasSellCurl) {
-        tfReasoning.push(`[MTF 5M TRIGGER] Valid 5m overbought curl detected (prev RSI: ${previousRsi.toFixed(2)} >= ${this.config.conditionConfig.rsiOverbought}, curr RSI: ${currentRsi.toFixed(2)} < ${previousRsi.toFixed(2)}).`);
+        tfReasoning.push(`[${tfUpper} TRIGGER] Valid ${targetTimeframe} overbought curl detected (prev RSI: ${previousRsi.toFixed(2)} >= ${this.config.conditionConfig.rsiOverbought}, curr RSI: ${currentRsi.toFixed(2)} < ${previousRsi.toFixed(2)}).`);
       }
       if (!hasBuyCurl && !hasSellCurl) {
-        tfReasoning.push(`[MTF 5M TRIGGER] No valid 5m RSI reversal curl (prev RSI: ${previousRsi.toFixed(2)}, curr RSI: ${currentRsi.toFixed(2)}).`);
+        tfReasoning.push(`[${tfUpper} TRIGGER] No valid ${targetTimeframe} RSI reversal curl (prev RSI: ${previousRsi.toFixed(2)}, curr RSI: ${currentRsi.toFixed(2)}).`);
       }
 
-      const isAlignedBuy = isStabilityPassing && hasBuyCurl;
-      const isAlignedSell = isStabilityPassing && hasSellCurl;
+      const isAlignedBuy = hasBuyCurl;
+      const isAlignedSell = hasSellCurl;
 
       return {
         isAlignedBuy,
         isAlignedSell,
         tfReasoning,
-        separation15m: sep15m,
+        separation: sepTf,
         hasBuyCurl,
         hasSellCurl
       };
@@ -286,34 +238,34 @@ export class MeanReversionStrategy implements IStrategy {
     let targetSignalType: SignalType | null = null;
     if (isNewBuyEvent) {
       targetSignalType = SignalType.BUY;
-      reasoning.push("Mean Reversion: Buy setup confirmed via oversold bounce");
-      reasoning.push("[MTF EDGE EVENT] New BUY event: 4TF confluence transitioned from NOT ALIGNED to ALIGNED.");
+      reasoning.push(`Mean Reversion: Buy setup confirmed via oversold bounce on ${targetTimeframe}`);
+      reasoning.push(`[${tfUpper} EDGE EVENT] New BUY event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
     } else if (isNewSellEvent) {
       if (this.manifest.supportsShort) {
         targetSignalType = SignalType.SELL;
-        reasoning.push("Mean Reversion: Sell setup confirmed via overbought rejection");
-        reasoning.push("[MTF EDGE EVENT] New SELL event: 4TF confluence transitioned from NOT ALIGNED to ALIGNED.");
+        reasoning.push(`Mean Reversion: Sell setup confirmed via overbought rejection on ${targetTimeframe}`);
+        reasoning.push(`[${tfUpper} EDGE EVENT] New SELL event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
       } else {
         reasoning.push("Mean Reversion: Sell setup detected but shorting is disabled");
       }
     } else {
       if (currentAlignment.isAlignedBuy && previousAlignment.isAlignedBuy) {
-        reasoning.push("[MTF CONTINUATION] Trend continuation suppressed: 4TF BUY confluence already active on previous bar.");
+        reasoning.push(`[${tfUpper} CONTINUATION] Trend continuation suppressed: ${targetTimeframe} BUY trigger already active on previous bar.`);
       } else if (currentAlignment.isAlignedSell && previousAlignment.isAlignedSell) {
-        reasoning.push("[MTF CONTINUATION] Trend continuation suppressed: 4TF SELL confluence already active on previous bar.");
+        reasoning.push(`[${tfUpper} CONTINUATION] Trend continuation suppressed: ${targetTimeframe} SELL trigger already active on previous bar.`);
       } else if (!currentAlignment.isAlignedBuy && !currentAlignment.isAlignedSell) {
-        reasoning.push("[MTF REJECTED] Trade cancelled: Multi-timeframe confluence failed across 4h, 1h, 15m, and 5m.");
+        reasoning.push(`No qualified signal generated on ${targetTimeframe} trigger.`);
       }
     }
 
-    // Telemetry confidence score
-    const primaryTfConfidence = currentConfidenceScore.timeframes[ENTRY_TIMEFRAME];
+    // Telemetry confidence score strictly for targetTimeframe
+    const primaryTfConfidence = currentConfidenceScore.timeframes[targetTimeframe];
     const longScore = primaryTfConfidence
       ? (primaryTfConfidence.longScore ?? primaryTfConfidence.score)
-      : (currentConfidenceScore.overallLongScore ?? currentConfidenceScore.overallScore);
+      : 0;
     const shortScore = primaryTfConfidence
       ? (primaryTfConfidence.shortScore ?? 0)
-      : (currentConfidenceScore.overallShortScore ?? 0);
+      : 0;
 
     if (targetSignalType === SignalType.BUY) {
       reasoning.push(`Mean Reversion BUY setup active: LongScore (${longScore}), ShortScore (${shortScore}).`);
@@ -323,19 +275,19 @@ export class MeanReversionStrategy implements IStrategy {
 
     const customIndicators = [
       {
-        name: "EMA Separation (15m)",
-        value: `${currentAlignment.separation15m.toFixed(2)}%`,
-        signal: currentAlignment.separation15m <= this.config.trendFilter.maxEmaSeparationPercent ? "BULLISH" : "BEARISH"
+        name: `EMA Separation (${targetTimeframe})`,
+        value: `${currentAlignment.separation.toFixed(2)}%`,
+        signal: currentAlignment.separation <= this.config.trendFilter.maxEmaSeparationPercent ? "BULLISH" : "BEARISH"
       },
       {
-        name: "2-Step Reversal (5m)",
+        name: `2-Step Reversal (${targetTimeframe})`,
         value: currentAlignment.hasBuyCurl ? "Oversold Bounce" : currentAlignment.hasSellCurl ? "Overbought Rejection" : "Neutral",
         signal: currentAlignment.hasBuyCurl ? "BULLISH" : currentAlignment.hasSellCurl ? "BEARISH" : "NEUTRAL"
       }
     ];
 
     if (!targetSignalType) {
-      const directionalConfidence = (primaryTfConfidence?.score ?? currentConfidenceScore.overallScore);
+      const directionalConfidence = (primaryTfConfidence?.score ?? 0);
       return {
         strategyId: this.manifest.id,
         timestamp: context.timestamp,
@@ -348,31 +300,32 @@ export class MeanReversionStrategy implements IStrategy {
           conditionResult: currentConditionResult,
           confidenceScore: currentConfidenceScore,
           strategyConfig: this.config,
-          customIndicators
+          customIndicators,
+          targetTimeframe,
         }
       };
     }
 
     // 5. Risk validation downstream of edge transition
-    const entryCandles = currentCandlesRecord[ENTRY_TIMEFRAME]!;
+    const entryCandles = currentCandlesRecord[targetTimeframe]!;
     const latestCandleClose = entryCandles[entryCandles.length - 1]?.close || 0;
     const currentPrice = latestCandleClose > 0 ? latestCandleClose : context.marketSnapshot.currentPrice || 0;
 
     if (currentPrice <= 0) {
-      return this.createNoSignalResult(context, ["Invalid current price (zero or negative)"], currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
+      return this.createNoSignalResult(context, ["Invalid current price (zero or negative)"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
 
     if (!context.accountBalance || context.accountBalance <= 0) {
-      return this.createNoSignalResult(context, ["Account balance is zero or unconfigured"], currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
+      return this.createNoSignalResult(context, ["Account balance is zero or unconfigured"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
 
-    // 15m ATR risk anchor strictly preserved for Mean Reversion
-    const tfIndicators15m = currentIndicatorSnapshot.timeframes[RISK_TIMEFRAME];
-    const atrArray15m = tfIndicators15m?.atr?.[this.config.conditionConfig.atrPeriod]; // 14
-    const currentAtr = (atrArray15m && atrArray15m.length > 0) ? atrArray15m[atrArray15m.length - 1] : 0;
+    // ATR risk calculation strictly on targetTimeframe ATR
+    const tfIndicators = currentIndicatorSnapshot.timeframes[targetTimeframe];
+    const atrArray = tfIndicators?.atr?.[this.config.conditionConfig.atrPeriod]; // 14
+    let currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
 
     if (!currentAtr || currentAtr <= 0 || isNaN(currentAtr)) {
-      return this.createNoSignalResult(context, ["ATR is zero or unavailable — cannot calculate risk parameters"], currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
+      return this.createNoSignalResult(context, ["ATR is zero or unavailable — cannot calculate risk parameters"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
 
     const riskContext: RiskContext = {
@@ -398,15 +351,16 @@ export class MeanReversionStrategy implements IStrategy {
           conditionResult: currentConditionResult,
           confidenceScore: currentConfidenceScore,
           strategyConfig: this.config,
-          customIndicators
+          customIndicators,
+          targetTimeframe,
         }
       };
     }
 
     // 6. Construct TradingSignal
     const directionalScore = targetSignalType === SignalType.SELL
-      ? (primaryTfConfidence?.shortScore ?? currentConfidenceScore.overallShortScore ?? 0)
-      : (primaryTfConfidence?.longScore ?? currentConfidenceScore.overallLongScore ?? 0);
+      ? (primaryTfConfidence?.shortScore ?? 0)
+      : (primaryTfConfidence?.longScore ?? 0);
 
     const stopLoss = targetSignalType === SignalType.BUY
       ? currentPrice - riskAssessment.stopLossDistance
@@ -418,7 +372,7 @@ export class MeanReversionStrategy implements IStrategy {
 
     const activeSignal: TradingSignal = {
       symbol: context.marketSnapshot.symbol,
-      timeframe: ENTRY_TIMEFRAME,
+      timeframe: targetTimeframe,
       type: targetSignalType,
       confidenceScore: directionalScore,
       riskAssessment,
@@ -446,7 +400,8 @@ export class MeanReversionStrategy implements IStrategy {
         conditionResult: currentConditionResult,
         confidenceScore: currentConfidenceScore,
         strategyConfig: this.config,
-        customIndicators
+        customIndicators,
+        targetTimeframe,
       }
     };
   }
@@ -454,6 +409,7 @@ export class MeanReversionStrategy implements IStrategy {
   private createNoSignalResult(
     context: Readonly<StrategyContext>,
     reasoning: string[],
+    targetTimeframe?: Timeframe,
     indicatorSnapshot?: any,
     conditionResult?: any,
     confidenceScore?: any,
@@ -467,6 +423,7 @@ export class MeanReversionStrategy implements IStrategy {
       metadata: {
         reasoning,
         signal: null,
+        targetTimeframe,
         indicatorSnapshot: indicatorSnapshot || { timestamp: context.timestamp, timeframes: {} },
         conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] },
         confidenceScore: confidenceScore || null,

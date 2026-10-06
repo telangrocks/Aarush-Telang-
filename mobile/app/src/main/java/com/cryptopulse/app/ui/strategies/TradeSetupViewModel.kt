@@ -205,6 +205,13 @@ class TradeSetupViewModel @Inject constructor(
             return TradeSetupConfigResult.ValidationFailed(mapOf("tradeAmount" to err))
         }
 
+        val minTradeAmount = 5.0
+        if (tradeAmount < minTradeAmount) {
+            val err = "Trade amount must be at least ${String.format(Locale.US, "%.2f", minTradeAmount)} $quoteAsset."
+            _uiState.update { it.copy(tradeAmountError = err, isLoading = false) }
+            return TradeSetupConfigResult.ValidationFailed(mapOf("tradeAmount" to err))
+        }
+
         if (bal <= 0.0) {
             val err = "Insufficient $quoteAsset balance for trade."
             _uiState.update { it.copy(error = err, isLoading = false) }

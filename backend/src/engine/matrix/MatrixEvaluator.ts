@@ -3,6 +3,7 @@ import { StrategyRegistry } from '../strategies/StrategyRegistry';
 import { StrategyContext } from '../context/StrategyContext';
 import { MultiTimeframeCandleStore } from '../scanner/MultiTimeframeCandleStore';
 import { MarketSnapshot } from '../market-data/MarketSnapshot';
+import { Timeframe } from '../market-data/Timeframe';
 import {
   computeScanContentHash,
   computeScanInstanceDigest,
@@ -157,8 +158,9 @@ async function evaluateCell(
     }
 
     // 3. Technical Analysis Evaluation (ZERO NETWORK CALLS)
+    const targetTf: Timeframe = strategyId === 'VWAP' ? '15m' : '5m';
     const context = new StrategyContext(marketSnapshot, accountBalance).freeze();
-    const evalResult = strategy.evaluate(context);
+    const evalResult = strategy.evaluate(context, targetTf);
     const hasSignal = Boolean(evalResult?.hasSignal);
     const sig = evalResult?.metadata?.signal;
 

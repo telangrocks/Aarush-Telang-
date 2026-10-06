@@ -149,7 +149,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, contextTs);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     // Evaluation must proceed without error and ignore the forming candle
     expect(result.strategyId).toBe('Momentum');
@@ -204,7 +204,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     expect(result.strategyId).toBe('Momentum');
     expect(result.metadata.reasoning).toBeInstanceOf(Array);
@@ -223,7 +223,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     expect(result.strategyId).toBe('Momentum');
     expect(result.metadata.confidenceScore).toBeDefined();
@@ -241,7 +241,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = defaultStrategy.evaluate(context);
+    const result = defaultStrategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(false);
     expect(result.metadata.signal).toBeNull();
@@ -260,7 +260,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     // Data-count gate passes (no rejection for insufficient candles)
     expect(result.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data'))).toBe(false);
@@ -290,7 +290,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       '4h': createBullishCandles(250, '4h', BASE_TIME),
     }, contextTs);
 
-    const res201Raw = defaultStrategy.evaluate(new StrategyContext(snap201Raw, 10000).freeze());
+    const res201Raw = defaultStrategy.evaluate(new StrategyContext(snap201Raw, 10000).freeze(), '5m');
     expect(res201Raw.hasSignal).toBe(false);
     expect(res201Raw.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data for timeframe 5m (got 200, required >= 201)'))).toBe(true);
 
@@ -303,7 +303,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       '4h': createBullishCandles(250, '4h', BASE_TIME),
     }, contextTs);
 
-    const res202Raw = testStrategy.evaluate(new StrategyContext(snap202Raw, 10000).freeze());
+    const res202Raw = testStrategy.evaluate(new StrategyContext(snap202Raw, 10000).freeze(), '5m');
     expect(res202Raw.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data for timeframe 5m'))).toBe(false);
   });
 
@@ -333,12 +333,12 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     // If confluence aligned on surge, it emits new BUY event
     if (result.hasSignal) {
       expect(result.metadata.signal?.type).toBe(SignalType.BUY);
-      expect(result.metadata.reasoning.some((r: string) => r.includes('[MTF EDGE EVENT] New BUY event'))).toBe(true);
+      expect(result.metadata.reasoning.some((r: string) => r.includes('[5M EDGE EVENT] New BUY event'))).toBe(true);
     }
   });
 
@@ -355,12 +355,12 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     // Both previous and current bars were aligned BUY -> continuation suppressed!
     expect(result.hasSignal).toBe(false);
     expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes('[MTF CONTINUATION] Trend continuation suppressed'))).toBe(true);
+    expect(result.metadata.reasoning.some((r: string) => r.includes('[5M CONTINUATION] Trend continuation suppressed'))).toBe(true);
   });
 
   // --------------------------------------------------------------------------
@@ -388,51 +388,39 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     // If SELL aligned at T while T_previous had no SELL alignment, it emits SELL
     if (result.hasSignal) {
       expect(result.metadata.signal?.type).toBe(SignalType.SELL);
-      expect(result.metadata.reasoning.some((r: string) => r.includes('[MTF EDGE EVENT] New SELL event'))).toBe(true);
+      expect(result.metadata.reasoning.some((r: string) => r.includes('[5M EDGE EVENT] New SELL event'))).toBe(true);
     }
   });
 
   // --------------------------------------------------------------------------
-  // TEST 10: Any timeframe below 201 closed candles fails closed
+  // TEST 10: 5m candle requirement vs higher TFs
   // --------------------------------------------------------------------------
-  it('10. Any timeframe below 201 closed candles fails closed (15m, 1h, 4h)', () => {
-    // 15m has 200 candles
+  it('10. 5m below 201 closed candles fails closed; higher timeframes below 201 are omitted without failing', () => {
+    // 5m has 200 candles (< 201) -> fails closed
+    const snap5m = buildMtfSnapshot({
+      '5m': createBullishCandles(200, '5m', BASE_TIME),
+      '15m': createBullishCandles(250, '15m', BASE_TIME),
+      '1h': createBullishCandles(250, '1h', BASE_TIME),
+      '4h': createBullishCandles(250, '4h', BASE_TIME),
+    }, BASE_TIME);
+    const res5m = defaultStrategy.evaluate(new StrategyContext(snap5m, 10000).freeze(), '5m');
+    expect(res5m.hasSignal).toBe(false);
+    expect(res5m.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data for timeframe 5m'))).toBe(true);
+
+    // 15m has 200 candles -> higher TF omitted from projection, but 5m still evaluates
     const snap15m = buildMtfSnapshot({
       '5m': createBullishCandles(250, '5m', BASE_TIME),
       '15m': createBullishCandles(200, '15m', BASE_TIME),
       '1h': createBullishCandles(250, '1h', BASE_TIME),
       '4h': createBullishCandles(250, '4h', BASE_TIME),
     }, BASE_TIME);
-    const res15m = defaultStrategy.evaluate(new StrategyContext(snap15m, 10000).freeze());
-    expect(res15m.hasSignal).toBe(false);
-    expect(res15m.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data for timeframe 15m'))).toBe(true);
-
-    // 1h has 200 candles
-    const snap1h = buildMtfSnapshot({
-      '5m': createBullishCandles(250, '5m', BASE_TIME),
-      '15m': createBullishCandles(250, '15m', BASE_TIME),
-      '1h': createBullishCandles(200, '1h', BASE_TIME),
-      '4h': createBullishCandles(250, '4h', BASE_TIME),
-    }, BASE_TIME);
-    const res1h = defaultStrategy.evaluate(new StrategyContext(snap1h, 10000).freeze());
-    expect(res1h.hasSignal).toBe(false);
-    expect(res1h.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data for timeframe 1h'))).toBe(true);
-
-    // 4h has 200 candles
-    const snap4h = buildMtfSnapshot({
-      '5m': createBullishCandles(250, '5m', BASE_TIME),
-      '15m': createBullishCandles(250, '15m', BASE_TIME),
-      '1h': createBullishCandles(250, '1h', BASE_TIME),
-      '4h': createBullishCandles(200, '4h', BASE_TIME),
-    }, BASE_TIME);
-    const res4h = defaultStrategy.evaluate(new StrategyContext(snap4h, 10000).freeze());
-    expect(res4h.hasSignal).toBe(false);
-    expect(res4h.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data for timeframe 4h'))).toBe(true);
+    const res15m = defaultStrategy.evaluate(new StrategyContext(snap15m, 10000).freeze(), '5m');
+    expect(res15m.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data'))).toBe(false);
   });
 
   // --------------------------------------------------------------------------
@@ -453,7 +441,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       accountBalance: 0,
       freeze: () => mockContextZeroBalance
     } as any;
-    const resultZeroBalance = testStrategy.evaluate(mockContextZeroBalance);
+    const resultZeroBalance = testStrategy.evaluate(mockContextZeroBalance, '5m');
     expect(resultZeroBalance.hasSignal).toBe(false);
     expect(resultZeroBalance.metadata.reasoning.some((r: string) => r.includes('Account balance not available'))).toBe(true);
 
@@ -466,20 +454,20 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       close: 100
     }));
     const snapZeroAtr = buildMtfSnapshot({
-      '5m': createBullishCandles(250, '5m', BASE_TIME),
+      '5m': zeroAtr15m,
       '15m': zeroAtr15m,
       '1h': createBullishCandles(250, '1h', BASE_TIME),
       '4h': createBullishCandles(250, '4h', BASE_TIME),
     }, BASE_TIME);
-    const resZeroAtr = testStrategy.evaluate(new StrategyContext(snapZeroAtr, 10000).freeze());
+    const resZeroAtr = testStrategy.evaluate(new StrategyContext(snapZeroAtr, 10000).freeze(), '5m');
     expect(resZeroAtr.hasSignal).toBe(false);
     expect(resZeroAtr.metadata.reasoning.some((r: string) => r.includes('ATR is zero or unavailable'))).toBe(true);
   });
 
   // --------------------------------------------------------------------------
-  // TEST 12: No 5m-only signal can pass without 4h, 1h, and 15m confirmation
+  // TEST 12: 5m entry trigger is authoritative: 4h and 15m disagreement cannot veto 5m signal
   // --------------------------------------------------------------------------
-  it('12. No 5m-only signal can pass without 4h, 1h, and 15m confirmation', () => {
+  it('12. 5m entry trigger is authoritative: 4h and 15m disagreement cannot veto 5m signal', () => {
     // 5m is strongly bullish, but 4h is bearish
     const snap4hBearish = buildMtfSnapshot({
       '5m': createBullishCandles(250, '5m', BASE_TIME),
@@ -488,10 +476,9 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       '4h': createBearishCandles(250, '4h', BASE_TIME),
     }, BASE_TIME);
 
-    const res4h = testStrategy.evaluate(new StrategyContext(snap4hBearish, 10000).freeze());
-    expect(res4h.hasSignal).toBe(false);
-    expect(res4h.metadata.signal).toBeNull();
-    expect(res4h.metadata.reasoning.some((r: string) => r.includes('4h Structural Bias') && (r.includes('contradicts BUY') || r.includes('does not support BUY')))).toBe(true);
+    const res4h = testStrategy.evaluate(new StrategyContext(snap4hBearish, 10000).freeze(), '5m');
+    expect(res4h.metadata.reasoning.some((r: string) => r.includes('[MTF REJECTED]'))).toBe(false);
+    expect(res4h.metadata.targetTimeframe).toBe('5m');
 
     // 5m is strongly bullish, but 15m is bearish
     const snap15mBearish = buildMtfSnapshot({
@@ -501,9 +488,8 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       '4h': createBullishCandles(250, '4h', BASE_TIME),
     }, BASE_TIME);
 
-    const res15m = testStrategy.evaluate(new StrategyContext(snap15mBearish, 10000).freeze());
-    expect(res15m.hasSignal).toBe(false);
-    expect(res15m.metadata.signal).toBeNull();
-    expect(res15m.metadata.reasoning.some((r: string) => r.includes('15m Intermediate Momentum') && (r.includes('contradicts BUY') || r.includes('does not support BUY')))).toBe(true);
+    const res15m = testStrategy.evaluate(new StrategyContext(snap15mBearish, 10000).freeze(), '5m');
+    expect(res15m.metadata.reasoning.some((r: string) => r.includes('[MTF REJECTED]'))).toBe(false);
+    expect(res15m.metadata.targetTimeframe).toBe('5m');
   });
 });

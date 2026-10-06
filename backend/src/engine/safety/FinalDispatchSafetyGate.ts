@@ -35,8 +35,12 @@ export class FinalDispatchSafetyGate {
       throw new UnifiedError(`Quantity ${payload.amount.toString()} is below minimum ${constraints.minQty}`, 'RISK_GATE_REJECTED');
     }
 
-    if (payload.price) {
-      const notional = payload.amount.multipliedBy(payload.price);
+    const effectivePrice = (payload.price && !payload.price.isNaN() && payload.price.gt(0))
+      ? payload.price
+      : (constraints.referencePrice && constraints.referencePrice > 0 ? new BigNumber(constraints.referencePrice) : undefined);
+
+    if (effectivePrice) {
+      const notional = payload.amount.multipliedBy(effectivePrice);
       if (notional.lt(constraints.minNotional)) {
         throw new UnifiedError(`Notional ${notional.toString()} is below minimum ${constraints.minNotional}`, 'RISK_GATE_REJECTED');
       }
@@ -81,10 +85,8 @@ export class FinalDispatchSafetyGate {
     // 4. Exposure Limits
     if (constraints.maxExposure && constraints.currentExposure !== undefined) {
       let notional = 0;
-      if (payload.price && !payload.price.isNaN() && payload.price.gt(0)) {
-        notional = payload.amount.multipliedBy(payload.price).toNumber();
-      } else if (constraints.referencePrice && constraints.referencePrice > 0) {
-        notional = payload.amount.multipliedBy(constraints.referencePrice).toNumber();
+      if (effectivePrice) {
+        notional = payload.amount.multipliedBy(effectivePrice).toNumber();
       } else if (constraints.estimatedNotional && constraints.estimatedNotional > 0) {
         notional = constraints.estimatedNotional;
       }

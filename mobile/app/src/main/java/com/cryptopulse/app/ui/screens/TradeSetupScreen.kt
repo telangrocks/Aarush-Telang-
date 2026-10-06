@@ -705,13 +705,21 @@ fun TradeSetupTargetEntryPriceCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Enter your trading capital",
+                text = "Order Allocation per Trade (USDT)",
                 color = Color(0xFF94B0D0),
                 fontSize = 13.5.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = 0.2.sp
             )
         }
+
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "USDT allocated per trade (e.g. 5.00, 50.00, 100.00 USDT · Min 5.00 USDT)",
+            color = Color(0xFF6B8AAB),
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Normal
+        )
 
         Spacer(Modifier.height(8.dp))
 

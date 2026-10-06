@@ -75,6 +75,7 @@ function mockIndicators(
     sep1h?: number;
     sep15m?: number;
     atr15m?: number;
+    atr5m?: number;
     currentRsi5m?: number;
     previousRsi5m?: number;
     prevSnapshotRsiCurr?: number;
@@ -86,6 +87,7 @@ function mockIndicators(
     sep1h = 1.0,
     sep15m = 1.0,
     atr15m = 2.0,
+    atr5m = options.atr5m ?? options.atr15m ?? 2.0,
     currentRsi5m = 28,
     previousRsi5m = 22,
     prevSnapshotRsiCurr = 50,
@@ -133,7 +135,7 @@ function mockIndicators(
           ema: { 20: [100], 50: [100] },
           rsi: { 14: [rsiPrev, rsiCurr] },
           macd: { "12,26,9": [] },
-          atr: { 14: [1.0] },
+          atr: { 14: [atr5m] },
           volume: [1000]
         }
       }
@@ -156,13 +158,13 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         "4h": createCandles(60, "4h", BASE_TIME),
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(false);
       expect(res.metadata.signal).toBeNull();
       expect(res.metadata.reasoning[0]).toContain("Insufficient closed candle data for timeframe 5m");
     });
 
-    it("2. missing 4H -> NO SIGNAL", () => {
+    it("2. missing 4H -> opportunistically omitted without failing closed", () => {
       const snap = buildMtfSnapshot({
         "5m": createCandles(60, "5m", BASE_TIME),
         "15m": createCandles(60, "15m", BASE_TIME),
@@ -170,13 +172,11 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         "4h": [],
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
-      expect(res.hasSignal).toBe(false);
-      expect(res.metadata.signal).toBeNull();
-      expect(res.metadata.reasoning[0]).toContain("Missing required candle data for timeframe 4h");
+      const res = strategy.evaluate(ctx, '5m');
+      expect(res.metadata.reasoning.some((r: string) => r.includes("Missing required candle data for timeframe 4h"))).toBe(false);
     });
 
-    it("3. missing 1H -> NO SIGNAL", () => {
+    it("3. missing 1H -> opportunistically omitted without failing closed", () => {
       const snap = buildMtfSnapshot({
         "5m": createCandles(60, "5m", BASE_TIME),
         "15m": createCandles(60, "15m", BASE_TIME),
@@ -184,13 +184,11 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         "4h": createCandles(60, "4h", BASE_TIME),
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
-      expect(res.hasSignal).toBe(false);
-      expect(res.metadata.signal).toBeNull();
-      expect(res.metadata.reasoning[0]).toContain("Missing required candle data for timeframe 1h");
+      const res = strategy.evaluate(ctx, '5m');
+      expect(res.metadata.reasoning.some((r: string) => r.includes("Missing required candle data for timeframe 1h"))).toBe(false);
     });
 
-    it("4. missing 15M -> NO SIGNAL", () => {
+    it("4. missing 15M -> opportunistically omitted with 5m ATR fallback", () => {
       const snap = buildMtfSnapshot({
         "5m": createCandles(60, "5m", BASE_TIME),
         "15m": [],
@@ -198,10 +196,8 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         "4h": createCandles(60, "4h", BASE_TIME),
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
-      expect(res.hasSignal).toBe(false);
-      expect(res.metadata.signal).toBeNull();
-      expect(res.metadata.reasoning[0]).toContain("Missing required candle data for timeframe 15m");
+      const res = strategy.evaluate(ctx, '5m');
+      expect(res.metadata.reasoning.some((r: string) => r.includes("Missing required candle data for timeframe 15m"))).toBe(false);
     });
 
     it("5. missing 5M -> NO SIGNAL", () => {
@@ -212,7 +208,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         "4h": createCandles(60, "4h", BASE_TIME),
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(false);
       expect(res.metadata.signal).toBeNull();
       expect(res.metadata.reasoning[0]).toContain("Missing required candle data for timeframe 5m");
@@ -241,7 +237,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
 
       mockIndicators(strategy, { currentRsi5m: 28, previousRsi5m: 22 });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
 
       expect(res.strategyId).toBe("MeanReversion");
       if (res.hasSignal) {
@@ -255,34 +251,34 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
   // 2. STRUCTURAL FILTERS (Tests 7 - 9)
   // ==========================================================================
   describe("Structural Anti-Runaway Filters", () => {
-    it("7. 4H separation > 5% -> NO SIGNAL", () => {
+    it("7. 4H separation > 5% -> 5m oversold curl still emits BUY (informational runaway)", () => {
       const snap = createDefaultMtfSnapshot();
       mockIndicators(strategy, { sep4h: 5.5, sep1h: 1.0, sep15m: 1.0, currentRsi5m: 28, previousRsi5m: 22 });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
-      expect(res.hasSignal).toBe(false);
-      expect(res.metadata.signal).toBeNull();
-      expect(res.metadata.reasoning.some((r: string) => r.includes("[MTF RUNAWAY] Structural Bias (4h)"))).toBe(true);
+      const res = strategy.evaluate(ctx, '5m');
+      expect(res.hasSignal).toBe(true);
+      expect(res.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(res.metadata.targetTimeframe).toBe('5m');
     });
 
-    it("8. 1H separation > 5% -> NO SIGNAL", () => {
+    it("8. 1H separation > 5% -> 5m oversold curl still emits BUY (informational runaway)", () => {
       const snap = createDefaultMtfSnapshot();
       mockIndicators(strategy, { sep4h: 1.0, sep1h: 6.2, sep15m: 1.0, currentRsi5m: 28, previousRsi5m: 22 });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
-      expect(res.hasSignal).toBe(false);
-      expect(res.metadata.signal).toBeNull();
-      expect(res.metadata.reasoning.some((r: string) => r.includes("[MTF RUNAWAY] Macro Trend (1h)"))).toBe(true);
+      const res = strategy.evaluate(ctx, '5m');
+      expect(res.hasSignal).toBe(true);
+      expect(res.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(res.metadata.targetTimeframe).toBe('5m');
     });
 
-    it("9. 15M separation > 5% -> NO SIGNAL", () => {
+    it("9. 15M separation > 5% -> 5m oversold curl still emits BUY (informational runaway)", () => {
       const snap = createDefaultMtfSnapshot();
       mockIndicators(strategy, { sep4h: 1.0, sep1h: 1.0, sep15m: 5.8, currentRsi5m: 28, previousRsi5m: 22 });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
-      expect(res.hasSignal).toBe(false);
-      expect(res.metadata.signal).toBeNull();
-      expect(res.metadata.reasoning.some((r: string) => r.includes("[MTF RUNAWAY] Intermediate Setup & Risk Anchor (15m)"))).toBe(true);
+      const res = strategy.evaluate(ctx, '5m');
+      expect(res.hasSignal).toBe(true);
+      expect(res.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(res.metadata.targetTimeframe).toBe('5m');
     });
   });
 
@@ -300,7 +296,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         previousRsi5m: 22 // <= 25 and curl up > 22
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal).not.toBeNull();
       expect(res.metadata.signal?.type).toBe(SignalType.BUY);
@@ -316,7 +312,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         previousRsi5m: 78 // >= 75 and curl down < 78
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal).not.toBeNull();
       expect(res.metadata.signal?.type).toBe(SignalType.SELL);
@@ -333,7 +329,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         previousRsi5m: 22
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(false);
       expect(res.metadata.signal).toBeNull();
       expect(res.metadata.reasoning.some((r: string) => r.includes("No valid 5m RSI reversal curl"))).toBe(true);
@@ -360,7 +356,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       } as any);
 
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal?.type).toBe(SignalType.BUY);
@@ -382,7 +378,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       } as any);
 
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal?.type).toBe(SignalType.SELL);
@@ -405,7 +401,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       } as any);
 
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal?.type).toBe(SignalType.SELL);
@@ -425,10 +421,10 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         prevSnapshotRsiPrev: 50 // Previous bar was neutral
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal?.type).toBe(SignalType.BUY);
-      expect(res.metadata.reasoning.some((r: string) => r.includes("[MTF EDGE EVENT] New BUY event"))).toBe(true);
+      expect(res.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New BUY event"))).toBe(true);
     });
 
     it("17. repeated BUY -> suppressed", () => {
@@ -440,10 +436,10 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         prevSnapshotRsiPrev: 22 // Previous bar was already in valid BUY curl state
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(false);
       expect(res.metadata.signal).toBeNull();
-      expect(res.metadata.reasoning.some((r: string) => r.includes("[MTF CONTINUATION] Trend continuation suppressed"))).toBe(true);
+      expect(res.metadata.reasoning.some((r: string) => r.includes("[5M CONTINUATION] Trend continuation suppressed"))).toBe(true);
     });
 
     it("18. first valid SELL -> emitted", () => {
@@ -455,10 +451,10 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         prevSnapshotRsiPrev: 50 // Previous bar neutral
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal?.type).toBe(SignalType.SELL);
-      expect(res.metadata.reasoning.some((r: string) => r.includes("[MTF EDGE EVENT] New SELL event"))).toBe(true);
+      expect(res.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New SELL event"))).toBe(true);
     });
 
     it("19. repeated SELL -> suppressed", () => {
@@ -470,10 +466,10 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         prevSnapshotRsiPrev: 78 // Previous bar was already in valid SELL curl state
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(false);
       expect(res.metadata.signal).toBeNull();
-      expect(res.metadata.reasoning.some((r: string) => r.includes("[MTF CONTINUATION] Trend continuation suppressed"))).toBe(true);
+      expect(res.metadata.reasoning.some((r: string) => r.includes("[5M CONTINUATION] Trend continuation suppressed"))).toBe(true);
     });
 
     it("20. BUY -> SELL -> new SELL emitted", () => {
@@ -485,10 +481,10 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         prevSnapshotRsiPrev: 22  // Previous was valid BUY
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal?.type).toBe(SignalType.SELL);
-      expect(res.metadata.reasoning.some((r: string) => r.includes("[MTF EDGE EVENT] New SELL event"))).toBe(true);
+      expect(res.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New SELL event"))).toBe(true);
     });
 
     it("21. SELL -> BUY -> new BUY emitted", () => {
@@ -500,10 +496,10 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         prevSnapshotRsiPrev: 78  // Previous was valid SELL
       });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal?.type).toBe(SignalType.BUY);
-      expect(res.metadata.reasoning.some((r: string) => r.includes("[MTF EDGE EVENT] New BUY event"))).toBe(true);
+      expect(res.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New BUY event"))).toBe(true);
     });
   });
 
@@ -516,7 +512,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       // 15m ATR is 4.0, 5m ATR is 1.0
       mockIndicators(strategy, { currentRsi5m: 28, previousRsi5m: 22, atr15m: 4.0 });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
       // Stop loss distance should be 4.0 * 1.2 = 4.8
@@ -527,7 +523,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       const snap = createDefaultMtfSnapshot(60, BASE_TIME);
       mockIndicators(strategy, { currentRsi5m: 28, previousRsi5m: 22, atr15m: 5.0 });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal?.riskAssessment.stopLossDistance).toBeCloseTo(6.0, 4); // 5.0 * 1.2
@@ -539,7 +535,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       const snap = createDefaultMtfSnapshot(60, BASE_TIME);
       mockIndicators(strategy, { currentRsi5m: 28, previousRsi5m: 22, atr15m: 5.0 });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
       expect(res.metadata.signal?.riskAssessment.takeProfitDistance).toBeCloseTo(12.5, 4); // 5.0 * 2.5
@@ -551,7 +547,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       const snap = createDefaultMtfSnapshot(60, BASE_TIME);
       mockIndicators(strategy, { currentRsi5m: 28, previousRsi5m: 22 });
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
       const exposurePercent = (res.metadata.signal?.riskAssessment.maximumExposure! / 10000) * 100;
@@ -574,7 +570,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       } as any);
 
       const ctx = new StrategyContext(snap, 10000).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(false);
       expect(res.metadata.signal).toBeNull();

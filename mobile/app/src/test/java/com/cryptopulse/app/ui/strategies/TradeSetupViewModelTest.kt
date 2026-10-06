@@ -266,6 +266,96 @@ class TradeSetupViewModelTest {
         val config = (result as TradeSetupConfigResult.Success).config
         assertTrue(config.riskParameters.isEmpty())
     }
+
+    @Test
+    fun `validateAndConfirmTrade fails when trade amount is below minNotional`() = runTest {
+        viewModel.setConstraints(testCandidate, "Bybit")
+        viewModel.updateTradeAmount("3.00", 1000.0)
+
+        val result = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 1000.0)
+        assertTrue(result is TradeSetupConfigResult.ValidationFailed)
+        val error = (result as TradeSetupConfigResult.ValidationFailed).errors["tradeAmount"]
+        assertNotNull(error)
+        assertTrue(error!!.contains("at least 5.00"))
+    }
+
+    @Test
+    fun `validateAndConfirmTrade succeeds for 5, 50, and 100 USDT allocations`() = runTest {
+        viewModel.setConstraints(testCandidate, "Bybit")
+
+        for (amount in listOf("5.00", "50.00", "100.00")) {
+            viewModel.updateTradeAmount(amount, 100000.0)
+            val result = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 100000.0)
+            assertTrue(result is TradeSetupConfigResult.Success)
+            val config = (result as TradeSetupConfigResult.Success).config
+            assertEquals(amount.toDouble(), config.tradeValueUsdt)
+        }
+    }
+
+    @Test
+    fun `validateAndConfirmTrade preserves selected budget 10 when wallet is 500`() = runTest {
+        viewModel.setConstraints(testCandidate, "Bybit")
+        viewModel.updateTradeAmount("10.00", 500.0)
+
+        val result = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 500.0)
+        assertTrue(result is TradeSetupConfigResult.Success)
+        val config = (result as TradeSetupConfigResult.Success).config
+        assertEquals(10.0, config.tradeValueUsdt)
+        assertEquals(10.0, sessionRepository.tradeSetupConfig.value?.tradeValueUsdt)
+    }
+
+    @Test
+    fun `validateAndConfirmTrade preserves selected budget 50 and 100 when wallet is 500`() = runTest {
+        viewModel.setConstraints(testCandidate, "Bybit")
+
+        viewModel.updateTradeAmount("50.00", 500.0)
+        val result50 = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 500.0)
+        assertTrue(result50 is TradeSetupConfigResult.Success)
+        assertEquals(50.0, sessionRepository.tradeSetupConfig.value?.tradeValueUsdt)
+
+        viewModel.updateTradeAmount("100.00", 500.0)
+        val result100 = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 500.0)
+        assertTrue(result100 is TradeSetupConfigResult.Success)
+        assertEquals(100.0, sessionRepository.tradeSetupConfig.value?.tradeValueUsdt)
+    }
+
+    @Test
+    fun `wallet balance increase from 500 to 1000 does not mutate selected budget 10 in session repository`() = runTest {
+        viewModel.setConstraints(testCandidate, "Bybit")
+        viewModel.updateTradeAmount("10.00", 500.0)
+        viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 500.0)
+        assertEquals(10.0, sessionRepository.tradeSetupConfig.value?.tradeValueUsdt)
+
+        // Wallet balance increases to 1000.0
+        exchangeRepository.mockBalances = listOf(BalanceItem("USDT", 1000.0, 0.0, total = 1000.0))
+
+        // Authoritative trade budget in sessionRepository remains strictly 10.0
+        assertEquals(10.0, sessionRepository.tradeSetupConfig.value?.tradeValueUsdt)
+    }
+
+    @Test
+    fun `missing or invalid budget fails validation and never persists to session repository`() = runTest {
+        viewModel.setConstraints(testCandidate, "Bybit")
+        sessionRepository.clearSession()
+
+        // Blank
+        viewModel.updateTradeAmount("", 500.0)
+        val resultBlank = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 500.0)
+        assertTrue(resultBlank is TradeSetupConfigResult.ValidationFailed)
+        assertNull(sessionRepository.tradeSetupConfig.value)
+
+        // Zero
+        viewModel.updateTradeAmount("0.0", 500.0)
+        val resultZero = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 500.0)
+        assertTrue(resultZero is TradeSetupConfigResult.ValidationFailed)
+        assertNull(sessionRepository.tradeSetupConfig.value)
+
+        // Negative
+        viewModel.updateTradeAmount("-10.0", 500.0)
+        val resultNeg = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 500.0)
+        assertTrue(resultNeg is TradeSetupConfigResult.ValidationFailed)
+        assertNull(sessionRepository.tradeSetupConfig.value)
+    }
 }
 
 class FakeTradeSessionRepository : TradeSessionRepository {

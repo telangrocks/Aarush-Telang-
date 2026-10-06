@@ -298,20 +298,73 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | null 
   }
 }
 
+// In-memory cache for revoked and validated JTIs within Worker isolate (optimization)
+const revokedJtiCache = new Map<string, number>(); // jti -> expiresAt (timestamp)
+const validJtiCache = new Map<string, number>();   // jti -> cachedUntil (timestamp)
+const JTI_CACHE_TTL_MS = 60 * 1000;                // 60-second in-memory validity cache for read-only polling
+const REVOKED_CACHE_TTL_MS = 15 * 60 * 1000;       // 15-minute revoked cache
+
+export function markTokenRevokedInCache(jti: string): void {
+  validJtiCache.delete(jti);
+  revokedJtiCache.set(jti, Date.now() + REVOKED_CACHE_TTL_MS);
+}
+
 /**
  * Checks if a JWT has been revoked.
+ * Supports dual-path degradation: on read-only endpoints, uses fast in-memory cache and
+ * degrades gracefully if D1 is throttled.
+ * On high-stakes endpoints (failClosed: true), authoritatively verifies against D1 and
+ * strictly fails closed if D1 check fails.
  */
 export async function isTokenRevoked(
   c: Context<{ Bindings: Env }>,
   jti: string,
+  options?: { failClosed?: boolean }
 ): Promise<boolean> {
-  const row = await c.env.DB.prepare(
-    "SELECT jti FROM jwt_blacklist WHERE jti = ?",
-  )
-    .bind(jti)
-    .first<{ jti: string }>();
+  const now = Date.now();
 
-  return !!row;
+  // 1. Fast path: check revoked cache
+  const revokedExpiry = revokedJtiCache.get(jti);
+  if (revokedExpiry) {
+    if (now < revokedExpiry) {
+      return true; // Token is known to be revoked
+    } else {
+      revokedJtiCache.delete(jti);
+    }
+  }
+
+  // 2. Fast path for read-only endpoints: check valid cache (optimization to reduce D1 reads)
+  if (!options?.failClosed) {
+    const validUntil = validJtiCache.get(jti);
+    if (validUntil && now < validUntil) {
+      return false; // Token is known to be valid in this isolate
+    }
+  }
+
+  // 3. Authoritative check in D1 jwt_blacklist
+  try {
+    const row = await c.env.DB.prepare(
+      "SELECT jti FROM jwt_blacklist WHERE jti = ?",
+    )
+      .bind(jti)
+      .first<{ jti: string }>();
+
+    if (row) {
+      markTokenRevokedInCache(jti);
+      return true;
+    }
+
+    // Cache valid state for read-only requests (60 seconds)
+    validJtiCache.set(jti, now + JTI_CACHE_TTL_MS);
+    return false;
+  } catch (err) {
+    if (options?.failClosed) {
+      console.error("[AUTH] D1 jwt_blacklist lookup failed on high-stakes endpoint - FAILING CLOSED:", err);
+      throw err;
+    }
+    console.warn("[AUTH] D1 jwt_blacklist lookup failed on read-only endpoint - degrading gracefully on valid signature:", err);
+    return false;
+  }
 }
 
 /**

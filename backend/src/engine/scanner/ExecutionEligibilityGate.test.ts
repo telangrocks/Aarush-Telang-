@@ -353,7 +353,7 @@ describe('MarketOpportunityScanner Stage 2 Execution Eligibility Integration', (
     expect(result.allQualifiedOpportunities.map(o => o.symbol)).toContain('XRP/USDT');
   });
 
-  it('strictly enforces canonical Top-25 turnover ranking: unaffordable Top-25 markets are removed post-ranking without lower-turnover replacement', async () => {
+  it('strictly enforces canonical pipeline ordering: Quality Filter -> Affordability Eligibility -> Turnover Sort -> Top 25', async () => {
     // Generate 30 markets:
     // First 10: high turnover ($100M down to $91M), but BTC-like (minOrderQty=0.001 at $65,000 -> requires $65)
     // Next 20: moderate turnover ($50M down to $31M), but XRP-like (price=$1, minOrderQty=1, qtyStep=1 -> requires $5)
@@ -409,10 +409,9 @@ describe('MarketOpportunityScanner Stage 2 Execution Eligibility Integration', (
     // Canonical ordering:
     // 1. All 30 pass quality screening (turnover/spread/range)
     expect(result.qualityCount).toBe(30);
-    // 2. Top 25 sliced by turnover: 10 expensive (ranks 1-10) + 15 affordable (ranks 11-25)
-    // 3. Post-Top-25 budget gate drops the 10 expensive markets
-    // 4. Exactly 15 affordable candidates remain (AFFORDABLE 16-20 are rank 26-30 and NOT pulled in)
-    expect(result.allQualifiedOpportunities.length).toBe(15);
+    // 2. Affordability filter evaluates before Top 25: 10 expensive markets fail, 20 affordable pass
+    // 3. All 20 affordable markets are sorted by turnover and enter the candidate pool
+    expect(result.allQualifiedOpportunities.length).toBe(20);
     for (const opp of result.allQualifiedOpportunities) {
       expect(opp.symbol.startsWith('AFFORDABLE')).toBe(true);
     }

@@ -62,7 +62,8 @@ describe('Endurance Stress Tests', () => {
       try {
         const ctx = new StrategyContext(snapshot).freeze();
         for (const [, strategy] of allStrategies) {
-          strategy.evaluate(ctx);
+          const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+          strategy.evaluate(ctx, targetTf);
         }
       } catch {
         errors++;
@@ -78,7 +79,8 @@ describe('Endurance Stress Tests', () => {
     const ctx = new StrategyContext(snapshot).freeze();
 
     for (const [, strategy] of allStrategies) {
-      const result = strategy.evaluate(ctx);
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      const result = strategy.evaluate(ctx, targetTf);
       expect(result.strategyId).toBeDefined();
       expect(result.hasSignal).toBe(false);
       expect(result.metadata?.signal ?? null).toBeNull();
@@ -90,7 +92,8 @@ describe('Endurance Stress Tests', () => {
     const snapshot = baseSnapshot({ candles: {} as any });
     const ctx = new StrategyContext(snapshot).freeze();
     for (const [, strategy] of allStrategies) {
-      const result = strategy.evaluate(ctx);
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      const result = strategy.evaluate(ctx, targetTf);
       expect(result.hasSignal).toBe(false);
     }
   });
@@ -107,7 +110,8 @@ describe('Endurance Stress Tests', () => {
     const ctx = new StrategyContext(snapshot).freeze();
     for (const [, strategy] of allStrategies) {
       // Should not throw — graceful degradation
-      expect(() => strategy.evaluate(ctx)).not.toThrow();
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      expect(() => strategy.evaluate(ctx, targetTf)).not.toThrow();
     }
   });
 
@@ -125,7 +129,8 @@ describe('Endurance Stress Tests', () => {
     });
     const ctx = new StrategyContext(snapshot).freeze();
     for (const [, strategy] of allStrategies) {
-      expect(() => strategy.evaluate(ctx)).not.toThrow();
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      expect(() => strategy.evaluate(ctx, targetTf)).not.toThrow();
     }
   });
 
@@ -143,7 +148,8 @@ describe('Endurance Stress Tests', () => {
     });
     const ctx = new StrategyContext(snapshot).freeze();
     for (const [, strategy] of allStrategies) {
-      expect(() => strategy.evaluate(ctx)).not.toThrow();
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      expect(() => strategy.evaluate(ctx, targetTf)).not.toThrow();
     }
   });
 
@@ -164,7 +170,8 @@ describe('Endurance Stress Tests', () => {
       });
       const ctx = new StrategyContext(snap).freeze();
       for (const [, strategy] of allStrategies) {
-        const result = strategy.evaluate(ctx);
+        const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+        const result = strategy.evaluate(ctx, targetTf);
         expect(result.strategyId).toBeDefined();
         if (result.hasSignal) totalHasSignalCount++;
       }

@@ -27,19 +27,24 @@ class FcmService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        Log.d("FcmService", "New FCM token generated: $token")
+        Log.d("FcmService", "New FCM token generated (length: ${token.length})")
 
         serviceScope.launch {
             try {
-                val jwtToken = tokenManager.getToken() ?: return@launch
-                val response = fcmRepository.registerToken(token)
-                if (response is com.cryptopulse.app.core.network.NetworkResult.Success) {
-                    Log.d("FcmService", "FCM token registered with backend")
+                tokenManager.saveFcmToken(token)
+                val jwtToken = tokenManager.getToken()
+                if (!jwtToken.isNullOrEmpty()) {
+                    val response = fcmRepository.registerToken(token)
+                    if (response is com.cryptopulse.app.core.network.NetworkResult.Success) {
+                        Log.d("FcmService", "FCM token registered with backend successfully")
+                    } else {
+                        Log.e("FcmService", "Failed to register FCM token with backend")
+                    }
                 } else {
-                    Log.e("FcmService", "Failed to register FCM token")
+                    Log.d("FcmService", "User not authenticated yet; FCM token cached for post-login registration")
                 }
             } catch (e: Exception) {
-                Log.e("FcmService", "Error registering FCM token", e)
+                Log.e("FcmService", "Error processing FCM token", e)
             }
         }
     }
@@ -88,6 +93,7 @@ class FcmService : FirebaseMessagingService() {
                     put("timestamp", it)
                 }
                 data["entryIntent"]?.let { put("entryIntent", it) }
+                data["timeframe"]?.let { put("timeframe", it) }
                 put("type", "TRADE_ALERT")
                 put("alertType", "TRADE_ALERT")
             }

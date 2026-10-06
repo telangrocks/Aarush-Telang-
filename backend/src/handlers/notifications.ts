@@ -1,5 +1,6 @@
 import { Context } from "hono";
 import { Env } from "../index";
+import { BackendDiagnosticSink } from "../telemetry/BackendDiagnosticSink";
 
 export interface FcmTokenPayload {
   fcmToken: string;
@@ -158,11 +159,14 @@ export async function sendTradeNotification(
     estimatedPnl: number;
     positionSize?: number;
     strategy: string;
+    timeframe?: string;
     timestamp?: string;
     confidenceScore?: number;
     reasoning?: string[];
   },
+  sink?: BackendDiagnosticSink,
 ): Promise<void> {
+  const startMs = Date.now();
   const user = await env.DB.prepare(
     "SELECT fcm_token FROM users WHERE id = ?",
   )
@@ -171,6 +175,24 @@ export async function sendTradeNotification(
 
   const fcmToken = user?.fcm_token;
   if (!fcmToken) {
+    sink?.emit({
+      userId,
+      category: "NOTIFICATION",
+      component: "notifications",
+      eventName: "FCM_DISPATCH_RESULT",
+      severity: "WARN",
+      correlationId: alertId,
+      symbol: opportunity.symbol,
+      strategyId: opportunity.strategy,
+      durationMs: 0,
+      payload: {
+        alertId,
+        success: false,
+        transport: "fcm_v1",
+        httpStatus: 0,
+        errorCode: "MISSING_FCM_TOKEN",
+      }
+    });
     return;
   }
 
@@ -192,6 +214,9 @@ export async function sendTradeNotification(
     estimatedPnl: opportunity.estimatedPnl.toString(),
     serverTimestamp: (opportunity.timestamp ? new Date(opportunity.timestamp).getTime() : Date.now()).toString(),
   };
+  if (opportunity.timeframe) {
+    dataPayload.timeframe = opportunity.timeframe;
+  }
   if (opportunity.targetEntryPrice != null) {
     dataPayload.targetEntryPrice = opportunity.targetEntryPrice.toString();
   }
@@ -240,14 +265,69 @@ export async function sendTradeNotification(
         body: JSON.stringify(payload),
       });
 
+      const durationMs = Date.now() - startMs;
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`FCM v1 trade notification send failed: ${response.status} ${errorText}`);
+        sink?.emit({
+          userId,
+          category: "NOTIFICATION",
+          component: "notifications",
+          eventName: "FCM_DISPATCH_RESULT",
+          severity: "ERROR",
+          correlationId: alertId,
+          symbol: opportunity.symbol,
+          strategyId: opportunity.strategy,
+          durationMs,
+          payload: {
+            alertId,
+            success: false,
+            transport: "fcm_v1",
+            httpStatus: response.status,
+            errorCode: "HTTP_ERROR"
+          }
+        });
       } else {
         console.log(`FCM v1 trade notification sent successfully to user ${userId}`);
+        sink?.emit({
+          userId,
+          category: "NOTIFICATION",
+          component: "notifications",
+          eventName: "FCM_DISPATCH_RESULT",
+          severity: "INFO",
+          correlationId: alertId,
+          symbol: opportunity.symbol,
+          strategyId: opportunity.strategy,
+          durationMs,
+          payload: {
+            alertId,
+            success: true,
+            transport: "fcm_v1",
+            httpStatus: response.status,
+            errorCode: null
+          }
+        });
       }
     } catch (err) {
       console.error("FCM v1 trade notification failed:", err);
+      sink?.emit({
+        userId,
+        category: "NOTIFICATION",
+        component: "notifications",
+        eventName: "FCM_DISPATCH_RESULT",
+        severity: "ERROR",
+        correlationId: alertId,
+        symbol: opportunity.symbol,
+        strategyId: opportunity.strategy,
+        durationMs: Date.now() - startMs,
+        payload: {
+          alertId,
+          success: false,
+          transport: "fcm_v1",
+          httpStatus: 0,
+          errorCode: "NETWORK_ERROR"
+        }
+      });
     }
     return;
   }
@@ -273,15 +353,89 @@ export async function sendTradeNotification(
         }),
       });
 
+      const durationMs = Date.now() - startMs;
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`FCM Legacy trade notification send failed: ${response.status} ${errorText}`);
+        sink?.emit({
+          userId,
+          category: "NOTIFICATION",
+          component: "notifications",
+          eventName: "FCM_DISPATCH_RESULT",
+          severity: "ERROR",
+          correlationId: alertId,
+          symbol: opportunity.symbol,
+          strategyId: opportunity.strategy,
+          durationMs,
+          payload: {
+            alertId,
+            success: false,
+            transport: "fcm_legacy",
+            httpStatus: response.status,
+            errorCode: "HTTP_ERROR"
+          }
+        });
+      } else {
+        sink?.emit({
+          userId,
+          category: "NOTIFICATION",
+          component: "notifications",
+          eventName: "FCM_DISPATCH_RESULT",
+          severity: "INFO",
+          correlationId: alertId,
+          symbol: opportunity.symbol,
+          strategyId: opportunity.strategy,
+          durationMs,
+          payload: {
+            alertId,
+            success: true,
+            transport: "fcm_legacy",
+            httpStatus: response.status,
+            errorCode: null
+          }
+        });
       }
     } catch (error) {
       console.error("FCM Legacy notification failed:", error);
+      sink?.emit({
+        userId,
+        category: "NOTIFICATION",
+        component: "notifications",
+        eventName: "FCM_DISPATCH_RESULT",
+        severity: "ERROR",
+        correlationId: alertId,
+        symbol: opportunity.symbol,
+        strategyId: opportunity.strategy,
+        durationMs: Date.now() - startMs,
+        payload: {
+          alertId,
+          success: false,
+          transport: "fcm_legacy",
+          httpStatus: 0,
+          errorCode: "NETWORK_ERROR"
+        }
+      });
     }
     return;
   }
 
   console.warn("FCM notification skipped: neither FCM v1 nor FCM Legacy credentials configured.");
+  sink?.emit({
+    userId,
+    category: "NOTIFICATION",
+    component: "notifications",
+    eventName: "FCM_DISPATCH_RESULT",
+    severity: "WARN",
+    correlationId: alertId,
+    symbol: opportunity.symbol,
+    strategyId: opportunity.strategy,
+    durationMs: Date.now() - startMs,
+    payload: {
+      alertId,
+      success: false,
+      transport: "fcm_v1",
+      httpStatus: 0,
+      errorCode: "NO_FCM_CREDENTIALS"
+    }
+  });
 }

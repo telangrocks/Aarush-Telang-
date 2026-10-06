@@ -44,8 +44,9 @@ describe('Partial Candle Validation', () => {
     it(`should not crash with ${count} candles`, () => {
       const ctx = new StrategyContext(makeSnapshot(count)).freeze();
       for (const [, strategy] of registry.getAllStrategies()) {
-        expect(() => strategy.evaluate(ctx)).not.toThrow();
-        const result = strategy.evaluate(ctx);
+        const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+        expect(() => strategy.evaluate(ctx, targetTf)).not.toThrow();
+        const result = strategy.evaluate(ctx, targetTf);
         expect(result.strategyId).toBeDefined();
       }
     });
@@ -60,7 +61,8 @@ describe('Invalid Candle Handling', () => {
     (nanSnap.candles['15m'] as any[])[25].close = NaN;
     const ctx = new StrategyContext(nanSnap).freeze();
     for (const [, strategy] of registry.getAllStrategies()) {
-      expect(() => strategy.evaluate(ctx)).not.toThrow();
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      expect(() => strategy.evaluate(ctx, targetTf)).not.toThrow();
     }
   });
 
@@ -70,7 +72,8 @@ describe('Invalid Candle Handling', () => {
     (zeroSnap.candles['15m'] as any[])[10].open = 0;
     const ctx = new StrategyContext(zeroSnap).freeze();
     for (const [, strategy] of registry.getAllStrategies()) {
-      expect(() => strategy.evaluate(ctx)).not.toThrow();
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      expect(() => strategy.evaluate(ctx, targetTf)).not.toThrow();
     }
   });
 
@@ -79,7 +82,8 @@ describe('Invalid Candle Handling', () => {
     (snap.candles['15m'] as any[]).forEach(c => { c.volume = 0; });
     const ctx = new StrategyContext(snap).freeze();
     for (const [, strategy] of registry.getAllStrategies()) {
-      expect(() => strategy.evaluate(ctx)).not.toThrow();
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      expect(() => strategy.evaluate(ctx, targetTf)).not.toThrow();
     }
   });
 
@@ -89,7 +93,8 @@ describe('Invalid Candle Handling', () => {
     (snap.candles['15m'] as any[])[1].timestamp = (snap.candles['15m'] as any[])[0].timestamp;
     const ctx = new StrategyContext(snap).freeze();
     for (const [, strategy] of registry.getAllStrategies()) {
-      expect(() => strategy.evaluate(ctx)).not.toThrow();
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      expect(() => strategy.evaluate(ctx, targetTf)).not.toThrow();
     }
   });
 });
@@ -111,7 +116,8 @@ describe('Plugin Isolation', () => {
     // Run evaluation manually using the same isolation pattern the Orchestrator uses
     for (const [id, strategy] of registry.getAllStrategies()) {
       try {
-        strategy.evaluate(ctx);
+        const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+        strategy.evaluate(ctx, targetTf);
         results.push(id);
       } catch {
         // Isolated — continue to next strategy
@@ -260,7 +266,8 @@ describe('Durable Object Recovery Simulation', () => {
     const ctx = new StrategyContext(makeSnapshot(100)).freeze();
     const reg = StrategyRegistry.getInstance();
     for (const [, strategy] of reg.getAllStrategies()) {
-      expect(() => strategy.evaluate(ctx)).not.toThrow();
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      expect(() => strategy.evaluate(ctx, targetTf)).not.toThrow();
     }
   });
 });

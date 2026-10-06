@@ -132,12 +132,12 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(true);
     expect(result.metadata.signal).not.toBeNull();
     expect(result.metadata.signal?.type).toBe(SignalType.BUY);
-    expect(result.metadata.reasoning.some((r: string) => r.includes('[MTF CONFIRMED]'))).toBe(true);
+    expect(result.metadata.targetTimeframe).toBe('5m');
   });
 
   // --------------------------------------------------------------------------
@@ -152,18 +152,18 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(true);
     expect(result.metadata.signal).not.toBeNull();
     expect(result.metadata.signal?.type).toBe(SignalType.SELL);
-    expect(result.metadata.reasoning.some((r: string) => r.includes('[MTF CONFIRMED]'))).toBe(true);
+    expect(result.metadata.targetTimeframe).toBe('5m');
   });
 
   // --------------------------------------------------------------------------
   // TEST 3: 15m Conflict
   // --------------------------------------------------------------------------
-  it('3. 15m conflict: 4h LONG + 1h LONG + 15m SHORT + 5m BUY -> NO TRADE', () => {
+  it('3. 15m conflict: 4h LONG + 1h LONG + 15m SHORT + 5m BUY -> 5m BUY qualifies (MTF informational only)', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBearishCandles(35, 150, '15m'), // Contradicts LONG
@@ -172,17 +172,17 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(false);
-    expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes('15m Intermediate Momentum') && r.includes('contradicts BUY'))).toBe(true);
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+    expect(result.metadata.targetTimeframe).toBe('5m');
   });
 
   // --------------------------------------------------------------------------
   // TEST 4: 1h Conflict
   // --------------------------------------------------------------------------
-  it('4. 1h conflict: 4h LONG + 1h SHORT + 15m LONG + 5m BUY -> NO TRADE', () => {
+  it('4. 1h conflict: 4h LONG + 1h SHORT + 15m LONG + 5m BUY -> 5m BUY qualifies (MTF informational only)', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBullishCandles(35, 100, '15m'),
@@ -191,17 +191,17 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(false);
-    expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes('1h Macro Trend') && r.includes('contradicts BUY'))).toBe(true);
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+    expect(result.metadata.targetTimeframe).toBe('5m');
   });
 
   // --------------------------------------------------------------------------
   // TEST 5: 4h Conflict
   // --------------------------------------------------------------------------
-  it('5. 4h conflict: 4h SHORT + 1h LONG + 15m LONG + 5m BUY -> NO TRADE', () => {
+  it('5. 4h conflict: 4h SHORT + 1h LONG + 15m LONG + 5m BUY -> 5m BUY qualifies (MTF informational only)', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBullishCandles(35, 100, '15m'),
@@ -210,17 +210,17 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(false);
-    expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes('4h Structural Bias') && r.includes('contradicts BUY'))).toBe(true);
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+    expect(result.metadata.targetTimeframe).toBe('5m');
   });
 
   // --------------------------------------------------------------------------
   // TEST 6: 5m Conflict
   // --------------------------------------------------------------------------
-  it('6. 5m conflict: 4h LONG + 1h LONG + 15m LONG + 5m SELL -> NO TRADE', () => {
+  it('6. 5m conflict: 4h LONG + 1h LONG + 15m LONG + 5m SELL -> 5m SELL qualifies (MTF cannot veto)', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBearishCandles(35, 150, '5m'), // 5m generates SELL
       '15m': createBullishCandles(35, 100, '15m'), // higher timeframes are LONG
@@ -229,17 +229,18 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(false);
-    expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes('contradicts SELL'))).toBe(true);
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal?.type).toBe(SignalType.SELL);
   });
 
   // --------------------------------------------------------------------------
   // TEST 7: Missing 15m
   // --------------------------------------------------------------------------
-  it('7. Missing 15m: 15m missing from market snapshot -> NO TRADE', () => {
+  // TEST 7: Missing 15m
+  // --------------------------------------------------------------------------
+  it('7. Missing 15m: 15m missing from market snapshot -> 5m BUY still qualifies (higher TFs opportunistic)', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '1h': createBullishCandles(35, 100, '1h'),
@@ -247,17 +248,16 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(false);
-    expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes('Missing required candle data for timeframe 15m'))).toBe(true);
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
   });
 
   // --------------------------------------------------------------------------
   // TEST 8: Missing 1h
   // --------------------------------------------------------------------------
-  it('8. Missing 1h: 1h missing from market snapshot -> NO TRADE', () => {
+  it('8. Missing 1h: 1h missing from market snapshot -> 5m BUY still qualifies (higher TFs opportunistic)', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBullishCandles(35, 100, '15m'),
@@ -265,17 +265,16 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(false);
-    expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes('Missing required candle data for timeframe 1h'))).toBe(true);
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
   });
 
   // --------------------------------------------------------------------------
   // TEST 9: Missing 4h
   // --------------------------------------------------------------------------
-  it('9. Missing 4h: 4h missing from market snapshot -> NO TRADE', () => {
+  it('9. Missing 4h: 4h missing from market snapshot -> 5m BUY still qualifies (higher TFs opportunistic)', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBullishCandles(35, 100, '15m'),
@@ -283,17 +282,16 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(false);
-    expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes('Missing required candle data for timeframe 4h'))).toBe(true);
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
   });
 
   // --------------------------------------------------------------------------
   // TEST 10: Candle Depth Boundaries (34 vs 35)
   // --------------------------------------------------------------------------
-  it('10a. Insufficient candles boundary: 15m has 34 candles (< 35) -> NO TRADE', () => {
+  it('10a. Insufficient candles boundary: 15m has 34 candles (< 35) -> 5m BUY still qualifies (15m omitted from projection)', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBullishCandles(34, 100, '15m'), // Exactly 34 candles: under 35 requirement
@@ -302,11 +300,10 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(false);
-    expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data for timeframe 15m (got 34, required >= 35)'))).toBe(true);
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
   });
 
   it('10b. Insufficient candles boundary: 5m has 34 candles (< 35) -> NO TRADE', () => {
@@ -318,7 +315,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(false);
     expect(result.metadata.signal).toBeNull();
@@ -334,7 +331,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(true);
     expect(result.metadata.signal).not.toBeNull();
@@ -353,7 +350,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(false);
     expect(result.metadata.signal).toBeNull();
@@ -373,7 +370,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(true);
     const sig = result.metadata.signal!;
@@ -392,7 +389,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
   // --------------------------------------------------------------------------
   // PROOF OF CAUSAL RELEVANCE: EACH TIMEFRAME ALONE CHANGES OUTCOME
   // --------------------------------------------------------------------------
-  describe('Proof of Causal Relevance: Each Timeframe Is Causally Active', () => {
+  describe('Proof of 5m Authority: Higher Timeframes Cannot Veto 5m Signals', () => {
     const baseBullish = {
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBullishCandles(35, 100, '15m'),
@@ -400,8 +397,8 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
       '4h': createBullishCandles(35, 100, '4h'),
     };
 
-    it('Proof A: Changing ONLY 4h flips outcome from BUY to NO TRADE', () => {
-      const resBase = strategy.evaluate(new StrategyContext(buildMtfSnapshot(baseBullish), 10000).freeze());
+    it('Proof A: Changing ONLY 4h does NOT veto 5m BUY', () => {
+      const resBase = strategy.evaluate(new StrategyContext(buildMtfSnapshot(baseBullish), 10000).freeze(), '5m');
       expect(resBase.hasSignal).toBe(true);
       expect(resBase.metadata.signal?.type).toBe(SignalType.BUY);
 
@@ -409,29 +406,29 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
         ...baseBullish,
         '4h': createBearishCandles(35, 150, '4h'),
       });
-      const resInvert4h = strategy.evaluate(new StrategyContext(snapInvert4h, 10000).freeze());
-      expect(resInvert4h.hasSignal).toBe(false);
-      expect(resInvert4h.metadata.signal).toBeNull();
+      const resInvert4h = strategy.evaluate(new StrategyContext(snapInvert4h, 10000).freeze(), '5m');
+      expect(resInvert4h.hasSignal).toBe(true);
+      expect(resInvert4h.metadata.signal?.type).toBe(SignalType.BUY);
     });
 
-    it('Proof B: Changing ONLY 1h flips outcome from BUY to NO TRADE', () => {
+    it('Proof B: Changing ONLY 1h does NOT veto 5m BUY', () => {
       const snapInvert1h = buildMtfSnapshot({
         ...baseBullish,
         '1h': createBearishCandles(35, 150, '1h'),
       });
-      const resInvert1h = strategy.evaluate(new StrategyContext(snapInvert1h, 10000).freeze());
-      expect(resInvert1h.hasSignal).toBe(false);
-      expect(resInvert1h.metadata.signal).toBeNull();
+      const resInvert1h = strategy.evaluate(new StrategyContext(snapInvert1h, 10000).freeze(), '5m');
+      expect(resInvert1h.hasSignal).toBe(true);
+      expect(resInvert1h.metadata.signal?.type).toBe(SignalType.BUY);
     });
 
-    it('Proof C: Changing ONLY 15m flips outcome from BUY to NO TRADE', () => {
+    it('Proof C: Changing ONLY 15m does NOT veto 5m BUY', () => {
       const snapInvert15m = buildMtfSnapshot({
         ...baseBullish,
         '15m': createBearishCandles(35, 150, '15m'),
       });
-      const resInvert15m = strategy.evaluate(new StrategyContext(snapInvert15m, 10000).freeze());
-      expect(resInvert15m.hasSignal).toBe(false);
-      expect(resInvert15m.metadata.signal).toBeNull();
+      const resInvert15m = strategy.evaluate(new StrategyContext(snapInvert15m, 10000).freeze(), '5m');
+      expect(resInvert15m.hasSignal).toBe(true);
+      expect(resInvert15m.metadata.signal?.type).toBe(SignalType.BUY);
     });
 
     it('Proof D: Changing ONLY 5m flips outcome from BUY to NO TRADE', () => {
@@ -439,7 +436,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
         ...baseBullish,
         '5m': createFlatCandles(35, 100, '5m'),
       });
-      const resInvert5m = strategy.evaluate(new StrategyContext(snapInvert5m, 10000).freeze());
+      const resInvert5m = strategy.evaluate(new StrategyContext(snapInvert5m, 10000).freeze(), '5m');
       expect(resInvert5m.hasSignal).toBe(false);
       expect(resInvert5m.metadata.signal).toBeNull();
     });
@@ -460,7 +457,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     });
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = longOnlyStrategy.evaluate(context);
+    const result = longOnlyStrategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(false);
     expect(result.metadata.signal).toBeNull();
@@ -496,7 +493,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
       }, 'BTC/USDT', 550, BASE_TIME);
 
       const context = new StrategyContext(snapshot, 10000).freeze();
-      const result = strategy.evaluate(context);
+      const result = strategy.evaluate(context, '5m');
 
       expect(result.hasSignal).toBe(true);
       const sig = result.metadata.signal!;
@@ -518,7 +515,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
       }, 'BTC/USDT', latestClosed5m.close, BASE_TIME);
 
       const context = new StrategyContext(snapshot, 10000).freeze();
-      const result = strategy.evaluate(context);
+      const result = strategy.evaluate(context, '5m');
 
       expect(result.metadata.indicatorSnapshot.timestamp).toBe(expectedT);
     });
@@ -558,7 +555,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
       }, 'BTC/USDT', 100, BASE_TIME);
 
       const context = new StrategyContext(snapshot, 10000).freeze();
-      const result = strategy.evaluate(context);
+      const result = strategy.evaluate(context, '5m');
 
       // Higher timeframe forming candles must not pollute the evaluation
       expect(result.hasSignal).toBe(true);
@@ -579,7 +576,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
       }, 'BTC/USDT', 100, contextTimestamp);
 
       const context = new StrategyContext(snapshot, 10000).freeze();
-      const result = strategy.evaluate(context);
+      const result = strategy.evaluate(context, '5m');
 
       // Only 34 closed candles remain at contextTimestamp -> must fail closed
       expect(result.hasSignal).toBe(false);

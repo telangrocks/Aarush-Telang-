@@ -49,8 +49,8 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
     // Generate 520 markets
     const markets: any[] = [];
     
-    // 480 valid linear perpetuals
-    for (let i = 1; i <= 480; i++) {
+    // 479 valid linear perpetuals + 1 SOXL/USDT
+    for (let i = 1; i <= 479; i++) {
       markets.push({
         id: `COIN${i}USDT`,
         symbol: `COIN${i}/USDT`,
@@ -62,6 +62,16 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
         precision: { price: 0.01, amount: 0.01 },
       });
     }
+    markets.push({
+      id: 'SOXLUSDT',
+      symbol: 'SOXL/USDT',
+      base: 'SOXL',
+      quote: 'USDT',
+      active: true,
+      category: 'linear',
+      limits: { cost: { min: 5 }, amount: { min: 0.01 } },
+      precision: { price: 0.01, amount: 0.01 },
+    });
 
     // 10 stablecoins
     const stables = ['USDT', 'USDC', 'DAI', 'FDUSD', 'TUSD', 'BUSD', 'USDE', 'PYUSD', 'FRAX', 'LUSD'];
@@ -83,6 +93,19 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
         id: `${lt}USDT`,
         symbol: `${lt}/USDT`,
         base: lt,
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+      });
+    });
+
+    // 3 commodities (precious metals & energy)
+    const commodities = ['XAU', 'XAG', 'USOIL'];
+    commodities.forEach((c) => {
+      markets.push({
+        id: `${c}USDT`,
+        symbol: `${c}/USDT`,
+        base: c,
         quote: 'USDT',
         active: true,
         category: 'linear',
@@ -113,7 +136,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
       });
     }
 
-    expect(markets.length).toBe(520);
+    expect(markets.length).toBe(523);
 
     // Mock tickers for all markets
     mockProvider = {
@@ -138,8 +161,8 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
     const scanner = new MarketOpportunityScanner(mockProvider);
     const result = await scanner.scan();
 
-    expect(result.universeSize).toBe(520);
-    // 520 - 10 stablecoins - 10 leveraged - 10 spot - 10 inactive = 480 eligible
+    expect(result.universeSize).toBe(523);
+    // 523 - 10 stablecoins - 10 leveraged - 3 commodities - 10 spot - 10 inactive = 480 eligible (including SOXL)
     expect(result.eligibleCount).toBe(480);
     // All tickers had $500k turnover (< $1,000,000 threshold), so 0 quality candidates
     expect(result.qualityCount).toBe(0);
@@ -488,13 +511,11 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
     expect(ethOpp.opportunityId).toBe('ETH/USDT:ScalperV2:LONG');
   });
 
-  it('strictly enforces canonical pipeline ordering: Quality Filter -> Turnover Sort -> Top 25 -> Budget Eligibility', async () => {
+  it('strictly enforces canonical pipeline ordering: Quality Filter -> Budget Eligibility -> Turnover Sort -> Top 25 (promotes affordable rank 26+)', async () => {
     // 30 qualified linear markets with descending turnover:
     // COIN1 has $30M, COIN2 has $29M, ..., COIN30 has $1M.
-    // COIN1 to COIN25 form the true Top 25.
-    // COIN26 to COIN30 are ranked 26 to 30.
-    // Configure top 5 (COIN1..COIN5) with minNotional = 10 USDT.
-    // Configure remaining 25 (COIN6..COIN30) with minNotional = 5 USDT.
+    // Configure top 5 (COIN1..COIN5) with minNotional = 10 USDT (unaffordable at $5 budget).
+    // Configure remaining 25 (COIN6..COIN30) with minNotional = 5 USDT (affordable at $5 budget).
     const markets = Array.from({ length: 30 }, (_, i) => ({
       id: `COIN${i + 1}USDT`,
       symbol: `COIN${i + 1}/USDT`,
@@ -537,11 +558,11 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
     // 1. All 30 pass quality screening
     expect(result.qualityCount).toBe(30);
 
-    // 2. Budget gate evaluates on Top 25 (COIN1..COIN25):
+    // 2. Budget gate evaluates BEFORE Top 25:
     // COIN1..COIN5 fail budget ($5 < $10 minNotional)
-    // COIN6..COIN25 pass budget (20 candidates)
-    // COIN26..COIN30 are rank 26-30 and must NEVER be pulled in to fill the quota!
-    expect(result.allQualifiedOpportunities.length).toBe(20);
+    // COIN6..COIN30 pass budget (25 affordable candidates)
+    // All 25 affordable candidates are sorted by turnover and fill the Top 25 pool!
+    expect(result.allQualifiedOpportunities.length).toBe(25);
 
     const evaluatedSymbols = result.allQualifiedOpportunities.map(o => o.symbol);
 
@@ -550,12 +571,65 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
       expect(evaluatedSymbols).not.toContain(`COIN${i}/USDT`);
     }
 
-    // Assert affordable Top 25 candidates (COIN6..COIN25) are present
+    // Assert affordable candidates (COIN6..COIN25) are present
     for (let i = 6; i <= 25; i++) {
       expect(evaluatedSymbols).toContain(`COIN${i}/USDT`);
     }
 
-    // Crucial check: COIN26..COIN30 must NOT be present (no replacement from #26+)
+    // Crucial check: COIN26..COIN30 ARE promoted into the Top 25 pool because they are affordable!
+    for (let i = 26; i <= 30; i++) {
+      expect(evaluatedSymbols).toContain(`COIN${i}/USDT`);
+    }
+  });
+
+  it('preserves raw turnover Top 25 when budget is unconstrained (undefined)', async () => {
+    const markets = Array.from({ length: 30 }, (_, i) => ({
+      id: `COIN${i + 1}USDT`,
+      symbol: `COIN${i + 1}/USDT`,
+      base: `COIN${i + 1}`,
+      quote: 'USDT',
+      active: true,
+      category: 'linear',
+      contractType: 'LinearPerpetual',
+      precision: { price: 0.01, amount: 0.01 },
+      limits: {
+        cost: { min: i < 5 ? 10.0 : 5.0 },
+        amount: { min: 0.01 }
+      },
+    }));
+
+    const tickers = Array.from({ length: 30 }, (_, i) => ({
+      symbol: `COIN${i + 1}/USDT`,
+      last: 100.0,
+      bid: 99.98,
+      ask: 100.02,
+      quoteVolume: (30 - i) * 1_000_000,
+      high: 102.5,
+      low: 97.5,
+    }));
+
+    const fetchCandlesSpy = vi.fn().mockImplementation((_sym: string, tf: string) => {
+      return Promise.resolve(generateCandles(tf as ScannerTimeframe, 60, 'BULL'));
+    });
+
+    mockProvider = {
+      fetchMarkets: vi.fn().mockResolvedValue(markets),
+      fetchTickers: vi.fn().mockResolvedValue(tickers),
+      fetchCandles: fetchCandlesSpy,
+    } as unknown as IExchangeProvider & ICandleProvider;
+
+    const scanner = new MarketOpportunityScanner(mockProvider);
+    // No budget constraint passed
+    const result = await scanner.scan();
+
+    expect(result.allQualifiedOpportunities.length).toBe(25);
+    const evaluatedSymbols = result.allQualifiedOpportunities.map(o => o.symbol);
+
+    // With no budget constraint, raw turnover Top 25 (COIN1..COIN25) are selected
+    for (let i = 1; i <= 25; i++) {
+      expect(evaluatedSymbols).toContain(`COIN${i}/USDT`);
+    }
+    // COIN26..COIN30 remain excluded from the top 25
     for (let i = 26; i <= 30; i++) {
       expect(evaluatedSymbols).not.toContain(`COIN${i}/USDT`);
     }

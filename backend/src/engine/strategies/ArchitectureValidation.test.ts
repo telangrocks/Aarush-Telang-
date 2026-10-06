@@ -48,27 +48,27 @@ describe('Architecture v2.1 Plugin Validation', () => {
     const context = new StrategyContext(snapshot).freeze();
 
     // Evaluate Scalper
-    const scalperResult = scalper!.evaluate(context);
+    const scalperResult = scalper!.evaluate(context, '5m');
     expect(scalperResult.strategyId).toBe('ScalperV2');
     expect(scalperResult.hasSignal).toBeDefined();
 
     // Evaluate Momentum
-    const momentumResult = momentum!.evaluate(context);
+    const momentumResult = momentum!.evaluate(context, '5m');
     expect(momentumResult.strategyId).toBe('Momentum');
     expect(momentumResult.hasSignal).toBeDefined();
 
     // Evaluate Breakout
-    const breakoutResult = breakout!.evaluate(context);
+    const breakoutResult = breakout!.evaluate(context, '5m');
     expect(breakoutResult.strategyId).toBe('Breakout');
     expect(breakoutResult.hasSignal).toBeDefined();
 
     // Evaluate MeanReversion
-    const meanReversionResult = meanReversion!.evaluate(context);
+    const meanReversionResult = meanReversion!.evaluate(context, '5m');
     expect(meanReversionResult.strategyId).toBe('MeanReversion');
     expect(meanReversionResult.hasSignal).toBeDefined();
 
     // Evaluate VWAP
-    const vwapResult = vwap!.evaluate(context);
+    const vwapResult = vwap!.evaluate(context, '15m');
     expect(vwapResult.strategyId).toBe('VWAP');
     expect(vwapResult.hasSignal).toBeDefined();
 

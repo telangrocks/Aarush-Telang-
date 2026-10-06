@@ -40,6 +40,7 @@ class AuthRepositoryImpl @Inject constructor(
                 val refresh = result.data.refreshToken
                 if (!access.isNullOrBlank() && !refresh.isNullOrBlank()) {
                     tokenManager.saveTokens(access, refresh)
+                    tokenManager.markRegistrationCompleted()
                     NetworkResult.Success(Unit)
                 } else {
                     NetworkResult.Error(NetworkError.Serialization)

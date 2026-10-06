@@ -1,4 +1,5 @@
 import { type IExchangeProvider } from "./exchanges";
+import { isExcludedAsset } from "./domain/trading/AssetClassification";
 
 export interface AnalysisCandidate {
   score: number;
@@ -42,34 +43,6 @@ function calculateRSI(closes: number[], period = 14): number {
   return 100 - 100 / (1 + rs);
 }
 
-function extractBaseAsset(symbol: string): string {
-  if (!symbol) return "";
-  const clean = symbol.trim().toUpperCase();
-  if (clean.includes("/")) return clean.split("/")[0];
-  if (clean.includes("-")) return clean.split("-")[0];
-  if (clean.includes("_")) return clean.split("_")[0];
-  for (const q of ["USDT", "USDC", "BUSD", "USD", "BTC", "ETH", "EUR", "INR"]) {
-    if (clean.endsWith(q) && clean.length > q.length) {
-      return clean.slice(0, clean.length - q.length);
-    }
-  }
-  return clean;
-}
-
-const STABLECOINS = new Set([
-  "USDT", "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP",
-  "USDE", "PYUSD", "FRAX", "USDD", "GUSD", "USDJ", "EURT",
-  "USDY", "LUSD", "CRVUSD"
-]);
-const LEVERAGED_TOKEN_REGEX = /.*(2L|3L|4L|5L|10L|2S|3S|4S|5S|10S|UP|DOWN|BULL|BEAR)(USDT|USDC|DAI)?$/i;
-
-function isExcludedAsset(symbolStr: string): boolean {
-  const clean = String(symbolStr || "").trim().toUpperCase();
-  const base = extractBaseAsset(clean);
-  if (STABLECOINS.has(clean) || STABLECOINS.has(base)) return true;
-  if (LEVERAGED_TOKEN_REGEX.test(clean) || LEVERAGED_TOKEN_REGEX.test(base)) return true;
-  return false;
-}
 
 export async function analyzeMarket(
   tickers: any[],

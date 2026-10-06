@@ -669,7 +669,13 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const isBuy = order.side.toLowerCase() === 'buy';
     const isLimit = order.type.toLowerCase() === 'limit';
     
-    const qtyBN = new BigNumber(order.amount);
+    let qtyBN = new BigNumber(order.amount);
+    if ((order as any).params?.stepSize) {
+      const stepBN = new BigNumber((order as any).params.stepSize);
+      if (!stepBN.isZero()) {
+        qtyBN = qtyBN.dividedBy(stepBN).integerValue(BigNumber.ROUND_FLOOR).multipliedBy(stepBN);
+      }
+    }
     const qtyStr = qtyBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
 
     const category = order.category || 'linear';
@@ -717,7 +723,14 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
 
     if ((order as any).takeProfit) {
-      const tpBN = new BigNumber((order as any).takeProfit);
+      let tpBN = new BigNumber((order as any).takeProfit);
+      if ((order as any).params?.tickSize) {
+        const tickBN = new BigNumber((order as any).params.tickSize);
+        if (!tickBN.isZero()) {
+          const roundMode = isBuy ? BigNumber.ROUND_CEIL : BigNumber.ROUND_FLOOR;
+          tpBN = tpBN.dividedBy(tickBN).integerValue(roundMode).multipliedBy(tickBN);
+        }
+      }
       params.takeProfit = tpBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
       if (category !== 'spot') {
         params.tpTriggerBy = (order as any).tpTriggerBy || 'LastPrice';
@@ -726,7 +739,14 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
 
     if ((order as any).stopLoss) {
-      const slBN = new BigNumber((order as any).stopLoss);
+      let slBN = new BigNumber((order as any).stopLoss);
+      if ((order as any).params?.tickSize) {
+        const tickBN = new BigNumber((order as any).params.tickSize);
+        if (!tickBN.isZero()) {
+          const roundMode = isBuy ? BigNumber.ROUND_FLOOR : BigNumber.ROUND_CEIL;
+          slBN = slBN.dividedBy(tickBN).integerValue(roundMode).multipliedBy(tickBN);
+        }
+      }
       params.stopLoss = slBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
       if (category !== 'spot') {
         params.slTriggerBy = (order as any).slTriggerBy || 'LastPrice';

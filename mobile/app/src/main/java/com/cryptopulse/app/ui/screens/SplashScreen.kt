@@ -96,9 +96,10 @@ fun SplashScreen(
         var destination = "onboarding"
         var activeBotCoinId: String? = null
         var activeBotStrategy: String? = null
+        var token: String? = null
         try {
             withContext(Dispatchers.IO) {
-                var token = tokenManager.getToken()
+                token = tokenManager.getToken()
                 if (tokenManager.isTokenExpired(token)) {
                     val refreshToken = tokenManager.getRefreshToken()
                     if (!refreshToken.isNullOrEmpty() && !tokenManager.isTokenExpired(refreshToken) && authRepository != null) {
@@ -183,7 +184,7 @@ fun SplashScreen(
                         val serverAlert = validPendingAlerts.firstOrNull { it.id == persistedId }
                         if (serverAlert != null) {
                             val mappedAlert = serverAlert.toMap()
-                            tradeAlertManager?.onNewAlertReceived(mappedAlert)
+                            tradeAlertManager?.restoreAlertForViewing(mappedAlert)
                             recoveredAlert = mappedAlert
                             destination = "trade_alert"
                         } else {
@@ -195,7 +196,7 @@ fun SplashScreen(
                             validPendingAlerts.size == 1 -> {
                                 val singleAlert = validPendingAlerts.first()
                                 val mappedAlert = singleAlert.toMap()
-                                tradeAlertManager?.onNewAlertReceived(mappedAlert)
+                                tradeAlertManager?.restoreAlertForViewing(mappedAlert)
                                 recoveredAlert = mappedAlert
                                 destination = "trade_alert"
                             }
@@ -230,7 +231,7 @@ fun SplashScreen(
                 )
             }
         } catch (e: Exception) {
-            destination = "onboarding"
+            destination = if (!token.isNullOrEmpty() || tokenManager.hasCachedTokenSync()) "connect_exchange" else "onboarding"
         }
 
         delay(2000)
@@ -240,7 +241,8 @@ fun SplashScreen(
             }
         } catch (e: Exception) {
             // Fallback navigation in case of unexpected route failure
-            navController.navigate("onboarding") {
+            val fallback = if (!token.isNullOrEmpty() || tokenManager.hasCachedTokenSync()) "connect_exchange" else "onboarding"
+            navController.navigate(fallback) {
                 popUpTo("splash") { inclusive = true }
             }
         }

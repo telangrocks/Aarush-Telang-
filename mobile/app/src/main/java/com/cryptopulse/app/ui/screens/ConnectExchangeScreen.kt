@@ -78,6 +78,9 @@ fun ConnectExchangeScreen(
     // and successfully re-connect (uiState becomes Connected / readyForCandidates flips to true)
     // we navigate forward to market_candidates.
     LaunchedEffect(uiState, readyForCandidates, candidates, hasSubmittedNewConnection) {
+        if (navController.currentDestination?.route != "connect_exchange" && navController.currentDestination?.route != "change_api_keys") {
+            return@LaunchedEffect
+        }
         Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] LaunchedEffect triggered: uiState=$uiState, readyForCandidates=$readyForCandidates, candidatesCount=${candidates.size}, isChangingApiKeys=$isChangingApiKeys, hasSubmittedNewConnection=$hasSubmittedNewConnection")
         val shouldNavigate = if (isChangingApiKeys) {
             hasSubmittedNewConnection && (uiState is ExchangeUiState.Connected || readyForCandidates)
@@ -97,16 +100,18 @@ fun ConnectExchangeScreen(
     // opened this screen intentionally to change their API keys.
     // Preserves existing connection, credentials, and candidates completely safe.
     LaunchedEffect(Unit) {
-        if (isChangingApiKeys) {
+        if (isChangingApiKeys || navController.currentDestination?.route != "connect_exchange") {
             // Stay on Connect Exchange screen; do not redirect and do NOT call viewModel.resetState().
             return@LaunchedEffect
         }
         val (isConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
         Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Initial connection check: isConnected=$isConnected")
         if (isConnected) {
-            Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] navigation call (existing connection): navController.navigate('trade_setup')")
-            navController.navigate("trade_setup") {
-                popUpTo("connect_exchange") { inclusive = true }
+            if (navController.currentDestination?.route == "connect_exchange") {
+                Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] navigation call (existing connection): navController.navigate('trade_setup')")
+                navController.navigate("trade_setup") {
+                    popUpTo("connect_exchange") { inclusive = true }
+                }
             }
         } else {
             viewModel.checkExistingConnection(forceRemote = true)

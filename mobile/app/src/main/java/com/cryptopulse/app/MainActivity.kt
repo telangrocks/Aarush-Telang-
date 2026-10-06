@@ -62,8 +62,57 @@ import androidx.navigation.NavHostController
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
 
+    private data class ValidatedAlertData(
+        val alertId: String,
+        val symbol: String,
+        val side: String,
+        val strategy: String,
+        val entryPrice: Double,
+        val stopLoss: Double,
+        val takeProfit: Double,
+        val estimatedPnl: Double,
+        val positionSize: Double,
+        val timestamp: Long?
+    ) {
+        val cleanSymbol: String
+            get() = symbol.replace("/USDT", "").replace("USDT", "")
+
+        val pairName: String
+            get() = if (symbol.contains("/")) symbol else if (cleanSymbol.isNotBlank()) "$cleanSymbol/USDT" else "UNKNOWN/USDT"
+
+        fun toAlertMap(): Map<String, Any> = buildMap {
+            put("id", alertId)
+            put("alertId", alertId)
+            put("symbol", pairName)
+            put("side", side.uppercase())
+            put("strategy", strategy)
+            put("entryPrice", entryPrice)
+            put("signalPrice", entryPrice)
+            put("stopLoss", stopLoss)
+            put("takeProfit", takeProfit)
+            put("estimatedPnl", estimatedPnl)
+            put("positionSize", positionSize)
+            put("type", "TRADE_ALERT")
+            put("alertType", "TRADE_ALERT")
+            timestamp?.let {
+                put("timestamp", it)
+                put("serverTimestamp", it)
+            }
+        }
+
+        fun toMarketCandidate(): com.cryptopulse.app.ui.screens.MarketCandidate = com.cryptopulse.app.ui.screens.MarketCandidate(
+            rank = 1,
+            symbol = cleanSymbol,
+            pairName = pairName,
+            coinName = cleanSymbol,
+            currentMarketPrice = entryPrice,
+            tradeSide = side.uppercase()
+        )
+    }
+
     private var currentNavController: NavHostController? = null
-    private var pendingAlertIntentData: Map<String, Any>? = null
+    private var pendingValidatedAlert: ValidatedAlertData? = null
+    private var lastHandledAlertId: String? = null
 
     @Inject
     lateinit var tokenManager: TokenManager
@@ -94,7 +143,10 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        handleIncomingAlertIntent(intent)
+        val initialAlert = if (savedInstanceState == null) parseValidatedAlert(intent) else null
+        if (savedInstanceState == null) {
+            handleIncomingAlertIntent(intent)
+        }
         setContent {
             CryptoPulseTheme {
                 Surface(
@@ -104,7 +156,16 @@ class MainActivity : FragmentActivity() {
                     val navController = rememberNavController()
                     val tokenState by tokenManager.tokenFlow.collectAsState(initial = com.cryptopulse.app.data.local.TokenState.Uninitialized)
                     val token = (tokenState as? com.cryptopulse.app.data.local.TokenState.Authenticated)?.token
-                    val startDestination = "splash"
+
+                    val isRegistered = tokenManager.isRegistrationCompletedSync()
+                    val hasCachedToken = tokenManager.hasCachedTokenSync()
+
+                    val startDestination = when {
+                        initialAlert != null || pendingValidatedAlert != null -> "authenticated_flow"
+                        !isRegistered -> "onboarding"
+                        hasCachedToken -> "authenticated_flow"
+                        else -> "auth"
+                    }
                     val coroutineScope = rememberCoroutineScope()
 
                     val performLogout: () -> Unit = {
@@ -118,7 +179,7 @@ class MainActivity : FragmentActivity() {
                         coroutineScope.launch {
                             sessionManager.performLogout(this@MainActivity)
                         }
-                        navController.navigate("onboarding") {
+                        navController.navigate("auth") {
                             popUpTo("authenticated_flow") {
                                 inclusive = true
                             }
@@ -134,15 +195,18 @@ class MainActivity : FragmentActivity() {
                                 toRoute = destination.route ?: "unknown",
                                 trigger = "NAV_CONTROLLER"
                             )
-                            pendingAlertIntentData?.let { alert ->
+                            pendingValidatedAlert?.let { alert ->
                                 try {
                                     val parentEntry = navController.getBackStackEntry("authenticated_flow")
                                     val vm = androidx.lifecycle.ViewModelProvider(parentEntry)[ExchangeViewModel::class.java]
-                                    vm.setPendingAlert(alert)
-                                    if (destination.route != "trade_alert") {
-                                        navController.navigate("trade_alert")
+                                    vm.selectCandidate(alert.toMarketCandidate())
+                                    vm.setPendingAlert(alert.toAlertMap())
+                                    if (destination.route != "technical_analysis") {
+                                        navController.navigate("technical_analysis") {
+                                            popUpTo("connect_exchange") { inclusive = true }
+                                        }
                                     }
-                                    pendingAlertIntentData = null
+                                    pendingValidatedAlert = null
                                 } catch (_: Exception) {}
                             }
                         }
@@ -202,7 +266,8 @@ class MainActivity : FragmentActivity() {
                                 }
                             )
                         }
-                        navigation(startDestination = "connect_exchange", route = "authenticated_flow") {
+                        val authStartDest = if (initialAlert != null || pendingValidatedAlert != null) "technical_analysis" else "connect_exchange"
+                        navigation(startDestination = authStartDest, route = "authenticated_flow") {
                             composable("connect_exchange") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
                                     navController.getBackStackEntry("authenticated_flow")
@@ -218,35 +283,44 @@ class MainActivity : FragmentActivity() {
                                     navController.getBackStackEntry("authenticated_flow")
                                 }
                                 val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
-                                val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>(parentEntry)
-                                val uiState by tradeSetupViewModel.uiState.collectAsState()
-                                val budget = uiState.tradeAmountUsdt.toDoubleOrNull() ?: 5.0
+                                val sessionConfig by tradeSessionRepository.tradeSetupConfig.collectAsState()
+                                val selectedBudget = sessionConfig?.tradeValueUsdt?.takeIf { it > 0.0 }
                                 
                                 val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
                                 
-                                LaunchedEffect(Unit) {
-                                    viewModel.fetchMarketCandidates(budget)
+                                LaunchedEffect(selectedBudget) {
+                                    if (selectedBudget == null) {
+                                        if (!navController.popBackStack("trade_setup", inclusive = false)) {
+                                            navController.navigate("trade_setup") {
+                                                popUpTo("market_candidates") { inclusive = true }
+                                            }
+                                        }
+                                    } else {
+                                        viewModel.fetchMarketCandidates(selectedBudget)
+                                    }
                                 }
                                 
-                                MarketCandidatesScreen(
-                                    viewModel = viewModel,
-                                    budget = budget,
-                                    onCandidateClick = {
-                                        // Informational overview only: no coin-binding navigation
-                                    },
-                                    onSetUpTrading = {
-                                        navController.navigate("risk_management")
-                                    },
-                                    onBack = { navController.popBackStack() },
-                                    onIncreaseBudget = {
-                                        if (!navController.popBackStack("trade_setup", inclusive = false)) {
-                                            navController.navigate("trade_setup")
+                                if (selectedBudget != null) {
+                                    MarketCandidatesScreen(
+                                        viewModel = viewModel,
+                                        budget = selectedBudget,
+                                        onCandidateClick = {
+                                            // Informational overview only: no coin-binding navigation
+                                        },
+                                        onSetUpTrading = {
+                                            navController.navigate("risk_management")
+                                        },
+                                        onBack = { navController.popBackStack() },
+                                        onIncreaseBudget = {
+                                            if (!navController.popBackStack("trade_setup", inclusive = false)) {
+                                                navController.navigate("trade_setup")
+                                            }
+                                        },
+                                        onChangeApiKeys = {
+                                            navController.navigate("change_api_keys")
                                         }
-                                    },
-                                    onChangeApiKeys = {
-                                        navController.navigate("change_api_keys")
-                                    }
-                                )
+                                    )
+                                }
                             }
                             composable("change_api_keys") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
@@ -378,10 +452,15 @@ class MainActivity : FragmentActivity() {
                                 val isLoadingPreview by technicalAnalysisViewModel.isLoadingPreview.collectAsState()
 
                                 LaunchedEffect(Unit) {
-                                    if (viewModel.selectedCandidate.value == null) {
-                                        tradeSetupConfig?.let { config ->
-                                            config.symbol?.let { sym ->
-                                                viewModel.restoreSession(sym, config.strategyId)
+                                    initialAlert?.let { alert ->
+                                        viewModel.selectCandidate(alert.toMarketCandidate())
+                                        viewModel.setPendingAlert(alert.toAlertMap())
+                                    } ?: run {
+                                        if (viewModel.selectedCandidate.value == null) {
+                                            tradeSetupConfig?.let { config ->
+                                                config.symbol?.let { sym ->
+                                                    viewModel.restoreSession(sym, config.strategyId)
+                                                }
                                             }
                                         }
                                     }
@@ -452,9 +531,11 @@ class MainActivity : FragmentActivity() {
                                     },
                                     onActivateBot = {
                                         val targetSymbols = candidates.map { it.pairName }
-                                        val symbolsToUse = if (targetSymbols.isNotEmpty()) targetSymbols else listOf(candidate.pairName)
+                                        if (targetSymbols.isEmpty()) {
+                                            android.util.Log.w("MainActivity", "Cannot activate autonomous bot: affordable candidate list is empty.")
+                                        }
                                         technicalAnalysisViewModel.activateAutonomousBot(
-                                            symbols = symbolsToUse,
+                                            symbols = targetSymbols,
                                             config = tradeSetupConfig,
                                             onSuccess = {
                                                 com.cryptopulse.app.service.BackgroundMonitoringService.startService(applicationContext)
@@ -466,9 +547,21 @@ class MainActivity : FragmentActivity() {
                                             com.cryptopulse.app.service.BackgroundMonitoringService.stopService(applicationContext)
                                         }
                                     },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = {
+                                        if (!navController.popBackStack()) {
+                                            navController.navigate("market_candidates") {
+                                                popUpTo("authenticated_flow") { inclusive = false }
+                                            }
+                                        }
+                                    },
                                     onExecuteTrade = {
-                                        technicalAnalysisViewModel.triggerTradeAlert(analysisState?.symbol, applicationContext)
+                                        val parentEntry = try { navController.getBackStackEntry("authenticated_flow") } catch (_: Exception) { null }
+                                        val exchangeVm = parentEntry?.let { androidx.lifecycle.ViewModelProvider(it)[ExchangeViewModel::class.java] }
+                                        if (exchangeVm?.pendingAlert?.value != null) {
+                                            navController.navigate("trade_alert")
+                                        } else {
+                                            technicalAnalysisViewModel.triggerTradeAlert(analysisState?.symbol, applicationContext)
+                                        }
                                     },
                                     onRetry = {
                                         technicalAnalysisViewModel.selectStrategyForViewing(viewedStrategyId, candidate.pairName)
@@ -567,78 +660,177 @@ class MainActivity : FragmentActivity() {
                         requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
                     }
                 }
-                try {
-                    val token = tokenManager.getToken()
-                    if (!token.isNullOrEmpty()) {
+            }
+
+            val tokenState by tokenManager.tokenFlow.collectAsState()
+            LaunchedEffect(tokenState) {
+                if (tokenState is com.cryptopulse.app.data.local.TokenState.Authenticated) {
+                    try {
                         val fcmToken = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            try {
-                                val task = com.google.firebase.messaging.FirebaseMessaging.getInstance().token
-                                com.google.android.gms.tasks.Tasks.await(task)
-                            } catch (e: Exception) {
-                                null
+                            val cachedToken = tokenManager.getFcmToken()
+                            if (!cachedToken.isNullOrEmpty()) {
+                                cachedToken
+                            } else {
+                                try {
+                                    val task = com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                                    val resolved = com.google.android.gms.tasks.Tasks.await(task)
+                                    if (!resolved.isNullOrEmpty()) {
+                                        tokenManager.saveFcmToken(resolved)
+                                    }
+                                    resolved
+                                } catch (e: Exception) {
+                                    null
+                                }
                             }
                         }
                         if (!fcmToken.isNullOrEmpty()) {
                             fcmRepository.registerToken(fcmToken)
                         }
+                    } catch (e: Exception) {
+                        // Silently fail - FCM registration is optional and must not crash app
                     }
-                } catch (e: Exception) {
-                    // Silently fail - FCM registration is optional
                 }
             }
         }
     }
 
-    private fun handleIncomingAlertIntent(intent: Intent?) {
-        if (intent == null) return
+    private fun parseValidatedAlert(intent: Intent?): ValidatedAlertData? {
+        if (intent == null) return null
 
         val isAlert = intent.getBooleanExtra("extra_alert", false) ||
                 intent.getStringExtra("extra_alert") == "true" ||
                 intent.getStringExtra("type") == "TRADE_ALERT" ||
                 intent.getStringExtra("alertType") == "TRADE_ALERT"
 
-        if (!isAlert) return
+        if (!isAlert) return null
 
-        val extractedAlertId = intent.getStringExtra("alert_id")
+        val alertId = intent.getStringExtra("alert_id")
             ?: intent.getStringExtra("id")
             ?: intent.getStringExtra("alertId")
             ?: intent.getStringExtra("alert_opportunity_id")
             ?: intent.getStringExtra("opportunityId")
-            ?: return
 
-        lifecycleScope.launch {
-            val cachedAlert = tradeAlertManager.getActiveAlert()
-                ?: kotlinx.coroutines.withTimeoutOrNull(500) { tradeAlertManager.dataStore.getActiveAlertFlow().firstOrNull() }
-            val exactAlert: Map<String, Any>? = if (cachedAlert != null && (cachedAlert["id"] == extractedAlertId || cachedAlert["alertId"] == extractedAlertId)) {
-                cachedAlert
-            } else {
-                val remoteResult = kotlinx.coroutines.withTimeoutOrNull(2500) { botRepository.getAlerts() }
-                val serverAlert = if (remoteResult is com.cryptopulse.app.core.network.NetworkResult.Success) {
-                    remoteResult.data.firstOrNull { it.id == extractedAlertId }
-                } else null
-                serverAlert?.toMap()
-            }
+        val symbol = intent.getStringExtra("alert_symbol")
+            ?: intent.getStringExtra("symbol")
 
-            if (exactAlert != null) {
-                tradeAlertManager.onNewAlertReceived(exactAlert)
-                val nav = currentNavController
-                try {
-                    if (nav != null) {
-                        val parentEntry = nav.getBackStackEntry("authenticated_flow")
-                        val vm = androidx.lifecycle.ViewModelProvider(parentEntry)[ExchangeViewModel::class.java]
-                        vm.setPendingAlert(exactAlert)
-                        if (nav.currentDestination?.route != "trade_alert") {
-                            nav.navigate("trade_alert")
-                        }
-                    } else {
-                        pendingAlertIntentData = exactAlert
+        val side = intent.getStringExtra("side")
+            ?: intent.getStringExtra("alert_side")
+
+        val strategy = intent.getStringExtra("strategy")
+            ?: intent.getStringExtra("alert_strategy")
+            ?: intent.getStringExtra("strategyId")
+
+        val entryPrice = intent.getStringExtra("entryPrice")?.toDoubleOrNull()
+            ?: intent.getDoubleExtra("alert_entry_price", -1.0).takeIf { it > 0.0 }
+            ?: intent.getStringExtra("signalPrice")?.toDoubleOrNull()
+
+        val stopLoss = intent.getStringExtra("stopLoss")?.toDoubleOrNull()
+            ?: intent.getDoubleExtra("alert_stop_loss", -1.0).takeIf { it > 0.0 }
+
+        val takeProfit = intent.getStringExtra("takeProfit")?.toDoubleOrNull()
+            ?: intent.getDoubleExtra("alert_take_profit", -1.0).takeIf { it > 0.0 }
+
+        val estimatedPnl = intent.getStringExtra("estimatedPnl")?.toDoubleOrNull()
+            ?: intent.getDoubleExtra("alert_estimated_pnl", 0.0)
+
+        val positionSize = intent.getStringExtra("positionSize")?.toDoubleOrNull()
+            ?: intent.getDoubleExtra("alert_position_size", 0.0)
+
+        val timestamp = intent.getStringExtra("serverTimestamp")?.toLongOrNull()
+            ?: intent.getStringExtra("timestamp")?.toLongOrNull()
+            ?: intent.getLongExtra("alert_timestamp", 0L).takeIf { it > 0L }
+
+        // MANDATORY SAFETY REQUIREMENT: Never silently substitute 0.0 for execution-critical fields
+        if (alertId.isNullOrBlank() ||
+            symbol.isNullOrBlank() ||
+            side.isNullOrBlank() || (!side.equals("BUY", ignoreCase = true) && !side.equals("SELL", ignoreCase = true)) ||
+            strategy.isNullOrBlank() ||
+            entryPrice == null || entryPrice <= 0.0 ||
+            stopLoss == null || stopLoss <= 0.0 ||
+            takeProfit == null || takeProfit <= 0.0
+        ) {
+            android.util.Log.w("MainActivity", "[SAFETY_GATE] Trade alert rejected: missing or invalid mandatory fields (alertId=$alertId, symbol=$symbol, side=$side, strategy=$strategy, entry=$entryPrice, SL=$stopLoss, TP=$takeProfit)")
+            return null
+        }
+
+        // Stale alert validation (5-minute freshness window)
+        if (timestamp != null && timestamp > 0L && (System.currentTimeMillis() - timestamp) > 300_000L) {
+            android.util.Log.w("MainActivity", "[STALE_ALERT] Alert $alertId is stale (${(System.currentTimeMillis() - timestamp) / 1000}s old). Rejecting.")
+            return null
+        }
+
+        // Check if alert was already handled/resolved
+        if (tradeAlertManager.isAlertHandled(alertId)) {
+            android.util.Log.w("MainActivity", "[DUPLICATE_ALERT] Alert $alertId is already resolved/handled. Rejecting.")
+            return null
+        }
+
+        return ValidatedAlertData(
+            alertId = alertId,
+            symbol = symbol,
+            side = side,
+            strategy = strategy,
+            entryPrice = entryPrice,
+            stopLoss = stopLoss,
+            takeProfit = takeProfit,
+            estimatedPnl = estimatedPnl,
+            positionSize = positionSize,
+            timestamp = timestamp
+        )
+    }
+
+    private fun handleIncomingAlertIntent(intent: Intent?) {
+        if (intent == null) return
+        val alert = parseValidatedAlert(intent)
+        if (alert == null) return
+
+        if (alert.alertId == lastHandledAlertId) {
+            android.util.Log.d("MainActivity", "[DEDUP] Alert ${alert.alertId} was already processed in this activity instance.")
+            return
+        }
+        lastHandledAlertId = alert.alertId
+
+        // Immediate intent extra cleansing to prevent recreation loops
+        intent.removeExtra("extra_alert")
+        intent.removeExtra("type")
+        intent.removeExtra("alertType")
+        intent.removeExtra("alert_id")
+        intent.removeExtra("id")
+        intent.removeExtra("alertId")
+        intent.removeExtra("alert_opportunity_id")
+        intent.removeExtra("opportunityId")
+
+        val alertMap = alert.toAlertMap()
+        val candidate = alert.toMarketCandidate()
+
+        tradeAlertManager.restoreAlertForViewing(alertMap)
+
+        tradeSessionRepository.setTradeSetupConfig(
+            com.cryptopulse.app.domain.models.TradeSetupConfig(
+                strategyId = alert.strategy,
+                symbol = alert.pairName,
+                entryPrice = alert.entryPrice,
+                tradeValueUsdt = alert.positionSize
+            )
+        )
+
+        val nav = currentNavController
+        try {
+            if (nav != null) {
+                val parentEntry = nav.getBackStackEntry("authenticated_flow")
+                val vm = androidx.lifecycle.ViewModelProvider(parentEntry)[ExchangeViewModel::class.java]
+                vm.selectCandidate(candidate)
+                vm.setPendingAlert(alertMap)
+                if (nav.currentDestination?.route != "technical_analysis") {
+                    nav.navigate("technical_analysis") {
+                        popUpTo("connect_exchange") { inclusive = true }
                     }
-                } catch (_: Exception) {
-                    pendingAlertIntentData = exactAlert
                 }
             } else {
-                android.util.Log.w("MainActivity", "[ALERT_RESOLUTION_FAILED] Alert $extractedAlertId no longer pending or available.")
+                pendingValidatedAlert = alert
             }
+        } catch (_: Exception) {
+            pendingValidatedAlert = alert
         }
     }
 

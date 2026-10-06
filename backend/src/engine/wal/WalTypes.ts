@@ -1,4 +1,5 @@
 import { OrderRequest } from '../../exchanges/models/NormalizedDomain';
+import { Timeframe } from '../market-data/Timeframe';
 
 export type IntentStatus =
   | 'NONE'
@@ -37,6 +38,7 @@ export interface EconomicIntent {
   qty: string;
   price?: string;
   status: IntentStatus;
+  timeframe?: Timeframe;
   
   // Natively attached Bybit Linear Protection parameters
   requestedStopLoss?: string;

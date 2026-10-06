@@ -150,4 +150,70 @@ describe("ReconciliationEngine Unit Tests", () => {
     expect(reconciled.exchangeConfirmedStopLoss).toBeUndefined();
     expect(reconciled.exchangeConfirmedTakeProfit).toBeUndefined();
   });
+
+  describe("reconcilePositionLifecycle", () => {
+    it("returns status OPEN when position is still active on exchange with size > 0", async () => {
+      const adapter: any = {
+        fetchPositions: async () => [
+          {
+            symbol: 'SOXL/USDT',
+            size: new BigNumber(10),
+            entryPrice: new BigNumber(25.0)
+          }
+        ]
+      };
+
+      const dbPosition = {
+        id: 'pos-1',
+        symbol: 'SOXL/USDT',
+        status: 'OPEN',
+        side: 'BUY'
+      };
+
+      const result = await ReconciliationEngine.reconcilePositionLifecycle(adapter, dbPosition, Date.now());
+      expect(result).not.toBeNull();
+      expect(result?.status).toBe('OPEN');
+    });
+
+    it("returns status CLOSED with exit price and realized PnL when position is closed on exchange", async () => {
+      const adapter: any = {
+        fetchPositions: async () => [],
+        fetchClosedPnl: async () => [
+          {
+            symbol: 'SOXL/USDT',
+            orderType: 'Market',
+            execType: 'Trade',
+            avgExitPrice: 28.5,
+            closedPnl: 35.0,
+            updatedTime: 1727719200000
+          }
+        ]
+      };
+
+      const dbPosition = {
+        id: 'pos-1',
+        symbol: 'SOXL/USDT',
+        status: 'OPEN',
+        side: 'BUY',
+        take_profit: 28.5,
+        stop_loss: 23.0
+      };
+
+      const result = await ReconciliationEngine.reconcilePositionLifecycle(adapter, dbPosition, Date.now());
+      expect(result).not.toBeNull();
+      expect(result?.status).toBe('CLOSED');
+      expect(result?.closePrice).toBe(28.5);
+      expect(result?.realizedPnl).toBe(35.0);
+      expect(result?.closeReason).toBe('take_profit');
+    });
+
+    it("returns null for positions already CLOSED or CANCELLED (monotonic terminal state)", async () => {
+      const adapter: any = { fetchPositions: async () => [] };
+      const closedPos = { id: 'pos-closed', status: 'CLOSED' };
+      const cancelledPos = { id: 'pos-cancelled', status: 'CANCELLED' };
+
+      expect(await ReconciliationEngine.reconcilePositionLifecycle(adapter, closedPos, Date.now())).toBeNull();
+      expect(await ReconciliationEngine.reconcilePositionLifecycle(adapter, cancelledPos, Date.now())).toBeNull();
+    });
+  });
 });

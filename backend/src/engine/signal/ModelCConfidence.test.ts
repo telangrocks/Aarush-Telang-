@@ -322,7 +322,7 @@ describe('Model C Long + Short Confidence Architecture', () => {
       expect(strategy.manifest.supportsShort).toBe(true);
 
       const ctx = new StrategyContext(bearishSnapshot).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.strategyId).toBe('ScalperV2');
     });
 
@@ -331,7 +331,7 @@ describe('Model C Long + Short Confidence Architecture', () => {
       expect(strategy.manifest.supportsShort).toBe(true);
 
       const ctx = new StrategyContext(bearishSnapshot).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.strategyId).toBe('Momentum');
     });
 
@@ -340,7 +340,7 @@ describe('Model C Long + Short Confidence Architecture', () => {
       expect(strategy.manifest.supportsShort).toBe(true);
 
       const ctx = new StrategyContext(bearishSnapshot).freeze();
-      const res = strategy.evaluate(ctx);
+      const res = strategy.evaluate(ctx, '5m');
       expect(res.strategyId).toBe('Breakout');
     });
 

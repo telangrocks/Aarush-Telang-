@@ -266,7 +266,16 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
 
-    // Existing active LONG position in runtime activePositions
+    // Existing active LONG position in runtime activePositions and D1
+    dbPositions.push({
+      id: "pos-active-long",
+      user_id: "user-p1",
+      symbol: "BTCUSDT",
+      side: "BUY",
+      entry_price: 49500,
+      quantity: 0.01,
+      status: "OPEN"
+    });
     mockStorage.set("activePositions", [{
       id: "pos-active-long",
       userId: "user-p1",
@@ -443,10 +452,10 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
     mockStorage.set("monitoredSymbols", ["BTC/USDT"]);
     mockStorage.set("alerts", [existingAlert]);
 
-    // Mock orchestrator returns signal from Momentum strategy on BTC/USDT
+    // Mock orchestrator returns signal from ScalperV2 strategy on BTC/USDT
     mockExecuteCycle.mockResolvedValue([
       {
-        strategyId: 'momentum',
+        strategyId: 'scalper-v2',
         confidenceScore: 85,
         hasSignal: true,
         metadata: {
@@ -678,6 +687,193 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
     expect(() => FinalDispatchSafetyGate.validate(req, constraints)).toThrow(
       "Order notional 500 exceeds max exposure 400"
     );
+  });
+
+  it("Level 2 allows high allocation ($50,000) when account balance is sufficient ($100,000) and no artificial $1,000 cap blocks it", async () => {
+    const exchangesMock = await import("../../src/exchanges");
+    const mockProvider = await exchangesMock.ExchangeManager.getProvider("bybit" as any, {} as any);
+    (mockProvider as any).fetchBalance = vi.fn().mockResolvedValue({ free: { USDT: 100000 }, total: { USDT: 100000 } });
+
+    const bot = new TradingBot(mockState, mockEnv);
+    const alert = {
+      id: "alert-btc-50k",
+      symbol: "BTC/USDT",
+      side: "BUY" as const,
+      entryPrice: 50000,
+      targetEntryPrice: 50000,
+      signalPrice: 50000,
+      positionSize: 50000, // Proposed $50,000 allocation
+      status: "pending" as const,
+      strategy: "scalper-v2"
+    };
+    mockStorage.set("alerts", [alert]);
+    mockStorage.set("userId", "user-p1");
+    mockStorage.set("lastAccountBalance", 100000);
+
+    const req = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "user-p1", coinId: "BTC/USDT", alertId: "alert-btc-50k" })
+    });
+
+    const res = await bot.fetch(req);
+    expect(res.status).toBe(200);
+    const body = await res.json<any>();
+    expect(body.success).toBe(true);
+  });
+
+  it("Level 2 rejects $50,000 allocation when proposed notional exceeds account balance ($20,000)", async () => {
+    const exchangesMock = await import("../../src/exchanges");
+    const mockProvider = await exchangesMock.ExchangeManager.getProvider("bybit" as any, {} as any);
+    (mockProvider as any).fetchBalance = vi.fn().mockResolvedValue({ free: { USDT: 20000 }, total: { USDT: 20000 } });
+
+    const bot = new TradingBot(mockState, mockEnv);
+    const alert = {
+      id: "alert-btc-over-bal",
+      symbol: "BTC/USDT",
+      side: "BUY" as const,
+      entryPrice: 50000,
+      targetEntryPrice: 50000,
+      signalPrice: 50000,
+      positionSize: 50000, // Proposed $50,000
+      status: "pending" as const,
+      strategy: "scalper-v2"
+    };
+    mockStorage.set("alerts", [alert]);
+    mockStorage.set("userId", "user-p1");
+    mockStorage.set("lastAccountBalance", 20000);
+
+    const req = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "user-p1", coinId: "BTC/USDT", alertId: "alert-btc-over-bal" })
+    });
+
+    const res = await bot.fetch(req);
+    expect(res.status).toBe(409);
+    const body = await res.json<any>();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("PORTFOLIO_EXPOSURE_EXCEEDED");
+    expect(body.message).toContain("Aggregate portfolio exposure");
+  });
+
+  it("Level 2 fails closed with HTTP 409 when account balance is unverified or zero", async () => {
+    const exchangesMock = await import("../../src/exchanges");
+    const mockProvider = await exchangesMock.ExchangeManager.getProvider("bybit" as any, {} as any);
+    (mockProvider as any).fetchBalance = vi.fn().mockRejectedValue(new Error("Exchange balance unverified"));
+
+    const bot = new TradingBot(mockState, mockEnv);
+    const alert = {
+      id: "alert-btc-nobal",
+      symbol: "BTC/USDT",
+      side: "BUY" as const,
+      entryPrice: 50000,
+      targetEntryPrice: 50000,
+      signalPrice: 50000,
+      positionSize: 100,
+      status: "pending" as const,
+      strategy: "scalper-v2"
+    };
+    mockStorage.set("alerts", [alert]);
+    mockStorage.set("userId", "user-p1");
+    mockStorage.set("lastAccountBalance", 0);
+
+    const req = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "user-p1", coinId: "BTC/USDT", alertId: "alert-btc-nobal" })
+    });
+
+    const res = await bot.fetch(req);
+    expect(res.status).toBe(409);
+    const body = await res.json<any>();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("PORTFOLIO_EXPOSURE_EXCEEDED");
+  });
+
+  it("Level 2 confirms explicit exposure limit cannot bypass live balance when balance is zero", async () => {
+    const exchangesMock = await import("../../src/exchanges");
+    const mockProvider = await exchangesMock.ExchangeManager.getProvider("bybit" as any, {} as any);
+    (mockProvider as any).fetchBalance = vi.fn().mockRejectedValue(new Error("Exchange balance unverified"));
+
+    const bot = new TradingBot(mockState, mockEnv);
+    const alert = {
+      id: "alert-btc-bypass-attempt",
+      symbol: "BTC/USDT",
+      side: "BUY" as const,
+      entryPrice: 50000,
+      targetEntryPrice: 50000,
+      signalPrice: 50000,
+      positionSize: 100,
+      status: "pending" as const,
+      strategy: "scalper-v2"
+    };
+    mockStorage.set("alerts", [alert]);
+    mockStorage.set("userId", "user-p1");
+    mockStorage.set("lastAccountBalance", 0);
+    // Explicit limit attempted to bypass live zero balance
+    mockStorage.set("strategyConfig", { maxPortfolioExposureUsdt: 50000 });
+
+    const req = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "user-p1", coinId: "BTC/USDT", alertId: "alert-btc-bypass-attempt" })
+    });
+
+    const res = await bot.fetch(req);
+    expect(res.status).toBe(409);
+    const body = await res.json<any>();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("PORTFOLIO_EXPOSURE_EXCEEDED");
+  });
+
+  it("Level 2 fails closed with HTTP 400 INVALID_ALERT_POSITION_SIZE when target.positionSize is invalid or zero", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+    const alert = {
+      id: "alert-btc-nosize",
+      symbol: "BTC/USDT",
+      side: "BUY" as const,
+      entryPrice: 50000,
+      targetEntryPrice: 50000,
+      signalPrice: 50000,
+      positionSize: 0, // Invalid size
+      status: "pending" as const,
+      strategy: "scalper-v2"
+    };
+    mockStorage.set("alerts", [alert]);
+    mockStorage.set("userId", "user-p1");
+    mockStorage.set("lastAccountBalance", 50000);
+
+    const req = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "user-p1", coinId: "BTC/USDT", alertId: "alert-btc-nosize" })
+    });
+
+    const res = await bot.fetch(req);
+    expect(res.status).toBe(400);
+    const body = await res.json<any>();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("INVALID_ALERT_POSITION_SIZE");
+  });
+
+  it("/execute legacy route fails closed with HTTP 400 MISSING_POSITION_SIZE when position size is missing or <= 0", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set("userId", "user-p1");
+    mockStorage.set("coinId", "BTC/USDT");
+    mockStorage.set("strategy", "scalper-v2");
+
+    const req = new Request("http://bot/mock-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "user-p1", symbol: "BTC/USDT", strategy: "scalper-v2", positionSizeUsdt: 0 })
+    });
+
+    const res = await bot.fetch(req);
+    expect(res.status).toBe(400);
+    const body = await res.json<any>();
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("MISSING_POSITION_SIZE");
   });
 
   // =========================================================================

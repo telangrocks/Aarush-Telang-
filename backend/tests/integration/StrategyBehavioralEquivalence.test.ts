@@ -93,8 +93,8 @@ describe('Suite 5: Behavioral Equivalence (StrategyBehavioralEquivalence)', () =
     const legacyContext = new StrategyContext(legacySnapshot, 1000);
     const mtfContext = new StrategyContext(mtfSnapshot, 1000);
 
-    const legacyRes = strategy.evaluate(legacyContext);
-    const mtfRes = strategy.evaluate(mtfContext);
+    const legacyRes = strategy.evaluate(legacyContext, '5m');
+    const mtfRes = strategy.evaluate(mtfContext, '5m');
 
     expect(mtfRes.hasSignal).toBe(legacyRes.hasSignal);
     expect(mtfRes.confidenceScore).toBe(legacyRes.confidenceScore);
@@ -108,8 +108,8 @@ describe('Suite 5: Behavioral Equivalence (StrategyBehavioralEquivalence)', () =
     const legacyContext = new StrategyContext(legacySnapshot, 1000);
     const mtfContext = new StrategyContext(mtfSnapshot, 1000);
 
-    const legacyRes = strategy.evaluate(legacyContext);
-    const mtfRes = strategy.evaluate(mtfContext);
+    const legacyRes = strategy.evaluate(legacyContext, '5m');
+    const mtfRes = strategy.evaluate(mtfContext, '5m');
 
     expect(mtfRes.hasSignal).toBe(legacyRes.hasSignal);
     expect(mtfRes.confidenceScore).toBe(legacyRes.confidenceScore);
@@ -122,8 +122,8 @@ describe('Suite 5: Behavioral Equivalence (StrategyBehavioralEquivalence)', () =
     const legacyContext = new StrategyContext(legacySnapshot, 1000);
     const mtfContext = new StrategyContext(mtfSnapshot, 1000);
 
-    const legacyRes = strategy.evaluate(legacyContext);
-    const mtfRes = strategy.evaluate(mtfContext);
+    const legacyRes = strategy.evaluate(legacyContext, '5m');
+    const mtfRes = strategy.evaluate(mtfContext, '5m');
 
     expect(mtfRes.hasSignal).toBe(legacyRes.hasSignal);
     expect(mtfRes.confidenceScore).toBe(legacyRes.confidenceScore);
@@ -136,8 +136,8 @@ describe('Suite 5: Behavioral Equivalence (StrategyBehavioralEquivalence)', () =
     const legacyContext = new StrategyContext(legacySnapshot, 1000);
     const mtfContext = new StrategyContext(mtfSnapshot, 1000);
 
-    const legacyRes = strategy.evaluate(legacyContext);
-    const mtfRes = strategy.evaluate(mtfContext);
+    const legacyRes = strategy.evaluate(legacyContext, '5m');
+    const mtfRes = strategy.evaluate(mtfContext, '5m');
 
     expect(mtfRes.hasSignal).toBe(legacyRes.hasSignal);
     expect(mtfRes.confidenceScore).toBe(legacyRes.confidenceScore);
@@ -150,8 +150,8 @@ describe('Suite 5: Behavioral Equivalence (StrategyBehavioralEquivalence)', () =
     const legacyContext = new StrategyContext(legacySnapshot, 1000);
     const mtfContext = new StrategyContext(mtfSnapshot, 1000);
 
-    const legacyRes = strategy.evaluate(legacyContext);
-    const mtfRes = strategy.evaluate(mtfContext);
+    const legacyRes = strategy.evaluate(legacyContext, '15m');
+    const mtfRes = strategy.evaluate(mtfContext, '15m');
 
     expect(mtfRes.hasSignal).toBe(legacyRes.hasSignal);
     expect(mtfRes.confidenceScore).toBe(legacyRes.confidenceScore);
@@ -169,8 +169,9 @@ describe('Suite 5: Behavioral Equivalence (StrategyBehavioralEquivalence)', () =
     const { legacySnapshot, mtfSnapshot } = createMarketSnapshotPair();
 
     for (const strategy of strategies) {
-      const legRes = strategy.evaluate(new StrategyContext(legacySnapshot, 1000));
-      const mtfRes = strategy.evaluate(new StrategyContext(mtfSnapshot, 1000));
+      const targetTf = strategy.manifest.id === 'VWAP' ? '15m' : '5m';
+      const legRes = strategy.evaluate(new StrategyContext(legacySnapshot, 1000), targetTf);
+      const mtfRes = strategy.evaluate(new StrategyContext(mtfSnapshot, 1000), targetTf);
 
       // With confidence score mitigation, presence of 1h/4h does not distort primary confidenceScore
       expect(mtfRes.confidenceScore).toBe(legRes.confidenceScore);

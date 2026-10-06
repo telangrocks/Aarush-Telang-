@@ -37,7 +37,7 @@ describe('BybitAdapter V5 Unit Tests', () => {
 
     let capturedParams: any = null;
     (adapter as any).makeRequest = async (method: string, path: string, params: any) => {
-      capturedParams = params;
+      if (path === '/v5/order/create') capturedParams = params;
       return { orderId: 'test_order_123', orderLinkId: params.orderLinkId };
     };
 
@@ -140,7 +140,7 @@ describe('BybitAdapter V5 Unit Tests', () => {
 
       let capturedParams: any = null;
       (adapter as any).makeRequest = async (_method: string, _path: string, params: any) => {
-        capturedParams = params;
+        if (_path === '/v5/order/create') capturedParams = params;
         return { orderId: 'ord_sol_1', orderLinkId: params.orderLinkId };
       };
 
@@ -170,7 +170,7 @@ describe('BybitAdapter V5 Unit Tests', () => {
 
       let capturedParams: any = null;
       (adapter as any).makeRequest = async (_method: string, _path: string, params: any) => {
-        capturedParams = params;
+        if (_path === '/v5/order/create') capturedParams = params;
         return { orderId: 'ord_btc_1', orderLinkId: params.orderLinkId };
       };
 

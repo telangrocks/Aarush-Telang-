@@ -148,7 +148,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, contextTs);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     expect(result.strategyId).toBe("Breakout");
     if (result.hasSignal) {
@@ -176,7 +176,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     expect(result.strategyId).toBe("Breakout");
     expect(result.metadata.reasoning).toBeInstanceOf(Array);
@@ -194,7 +194,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = defaultStrategy.evaluate(context);
+    const result = defaultStrategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(false);
     expect(result.metadata.signal).toBeNull();
@@ -213,7 +213,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     expect(result.metadata.reasoning.some((r: string) => r.includes("Insufficient closed candle data"))).toBe(false);
   });
@@ -233,7 +233,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, contextTs);
 
-    const res35Raw = defaultStrategy.evaluate(new StrategyContext(snap35Raw, 10000).freeze());
+    const res35Raw = defaultStrategy.evaluate(new StrategyContext(snap35Raw, 10000).freeze(), '5m');
     expect(res35Raw.hasSignal).toBe(false);
     expect(res35Raw.metadata.reasoning.some((r: string) => r.includes("Insufficient closed candle data for timeframe 5m (got 34, required >= 35)"))).toBe(true);
 
@@ -245,7 +245,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, contextTs);
 
-    const res36Raw = testStrategy.evaluate(new StrategyContext(snap36Raw, 10000).freeze());
+    const res36Raw = testStrategy.evaluate(new StrategyContext(snap36Raw, 10000).freeze(), '5m');
     expect(res36Raw.metadata.reasoning.some((r: string) => r.includes("Insufficient closed candle data for timeframe 5m"))).toBe(false);
   });
 
@@ -276,14 +276,14 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     if (result.hasSignal) {
       expect(result.metadata.signal?.type).toBe(SignalType.BUY);
       expect(result.metadata.signal?.entryPrice).toBe(breakoutClose);
       expect(result.metadata.signal?.stopLoss).toBeLessThan(breakoutClose);
       expect(result.metadata.signal?.takeProfit).toBeGreaterThan(breakoutClose);
-      expect(result.metadata.reasoning.some((r: string) => r.includes("[MTF EDGE EVENT] New BUY event"))).toBe(true);
+      expect(result.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New BUY event"))).toBe(true);
     }
   });
 
@@ -312,21 +312,21 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     if (result.hasSignal) {
       expect(result.metadata.signal?.type).toBe(SignalType.SELL);
       expect(result.metadata.signal?.entryPrice).toBe(breakdownClose);
       expect(result.metadata.signal?.stopLoss).toBeGreaterThan(breakdownClose);
       expect(result.metadata.signal?.takeProfit).toBeLessThan(breakdownClose);
-      expect(result.metadata.reasoning.some((r: string) => r.includes("[MTF EDGE EVENT] New SELL event"))).toBe(true);
+      expect(result.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New SELL event"))).toBe(true);
     }
   });
 
   // --------------------------------------------------------------------------
   // TEST 8: One required timeframe disagrees -> NO TRADE
   // --------------------------------------------------------------------------
-  it("8. Disagreement: 4H bullish + 1H bullish + 15M BEARISH + 5M BUY -> NO TRADE", () => {
+  it("8. Disagreement: 4H bullish + 1H bullish + 15M BEARISH + 5M BUY -> 5M BUY qualifies (MTF cannot veto)", () => {
     const snapshot = buildMtfSnapshot({
       "5m": createBullishCandles(50, "5m", BASE_TIME),
       "15m": createBearishCandles(50, "15m", BASE_TIME), // 15m contradicts BUY!
@@ -335,11 +335,11 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(false);
-    expect(result.metadata.signal).toBeNull();
-    expect(result.metadata.reasoning.some((r: string) => r.includes("[MTF REJECTED]") || r.includes("contradicts BUY"))).toBe(true);
+    // 15m contradiction cannot veto 5m trigger; MTF is purely informational
+    expect(result.metadata.reasoning.some((r: string) => r.includes("[MTF REJECTED]"))).toBe(false);
+    expect(result.metadata.targetTimeframe).toBe('5m');
   });
 
   // --------------------------------------------------------------------------
@@ -354,7 +354,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     expect(result.hasSignal).toBe(false);
     expect(result.metadata.signal).toBeNull();
@@ -373,10 +373,10 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     }, BASE_TIME);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = testStrategy.evaluate(context);
+    const result = testStrategy.evaluate(context, '5m');
 
     // If both current and previous bar are aligned, it must suppress continuation
-    if (result.metadata.reasoning.some((r: string) => r.includes("[MTF CONTINUATION]"))) {
+    if (result.metadata.reasoning.some((r: string) => r.includes("[5M CONTINUATION]"))) {
       expect(result.hasSignal).toBe(false);
       expect(result.metadata.signal).toBeNull();
     }
@@ -428,7 +428,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
 
     expect(universe.length).toBe(25);
 
-    const evaluatedResults = universe.map(ctx => defaultStrategy.evaluate(ctx));
+    const evaluatedResults = universe.map(ctx => defaultStrategy.evaluate(ctx, '5m'));
 
     expect(evaluatedResults.length).toBe(25);
     // Verify each evaluation is independent and corresponds to the exact candidate symbol

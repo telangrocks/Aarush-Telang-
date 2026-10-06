@@ -21,6 +21,7 @@ class TradeAlertAudioManager(
     private var audioFocusRequest: AudioFocusRequest? = null
     private val scope = CoroutineScope(Dispatchers.IO)
     private var fadeJob: Job? = null
+    private var audioTimeoutJob: Job? = null
     private var isPlaying = false
 
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
@@ -55,6 +56,7 @@ class TradeAlertAudioManager(
             }
 
             fadeJob?.cancel()
+            audioTimeoutJob?.cancel()
             val oldPlayer = mediaPlayer
             mediaPlayer = null
             if (oldPlayer != null) {
@@ -85,12 +87,17 @@ class TradeAlertAudioManager(
                 }
                 isLooping = true
                 setVolume(0.0f, 0.0f)
+                setOnErrorListener { _, what, extra ->
+                    TradeAlertLogger.error("MEDIA_PLAYER_ERROR", Exception("MediaPlayer playback error: what=$what extra=$extra"))
+                    stopAlert()
+                    true
+                }
                 prepare()
                 start()
             }
             mediaPlayer = newPlayer
             isPlaying = true
-            TradeAlertLogger.log("AUDIO_STARTED", "Custom female voice alert playing on loop")
+            TradeAlertLogger.log("AUDIO_STARTED", "Custom female voice alert playing (bounded by 30s watchdog)")
 
             // 200ms Volume Fade-In
             fadeJob = scope.launch {
@@ -104,7 +111,15 @@ class TradeAlertAudioManager(
                     delay(delayTime)
                 }
             }
+
+            // Centralized Hardware Lifetime Watchdog
+            audioTimeoutJob = scope.launch {
+                delay(TradeAlertManager.TRADE_ALERT_HARDWARE_TIMEOUT_MS)
+                TradeAlertLogger.log("AUDIO_WATCHDOG_TIMEOUT", "Audio playback reached 30s limit; stopping automatically.")
+                stopAlert()
+            }
         } catch (e: Exception) {
+            isPlaying = false
             TradeAlertLogger.error("AUDIO_START_ERROR", e)
         }
     }
@@ -122,6 +137,9 @@ class TradeAlertAudioManager(
 
     @Synchronized
     fun stopAlert() {
+        audioTimeoutJob?.cancel()
+        audioTimeoutJob = null
+
         if (!isPlaying && mediaPlayer == null) return
         isPlaying = false
 

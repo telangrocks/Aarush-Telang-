@@ -64,7 +64,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
 
     LaunchedEffect(viewModel.isAuthenticated) {
         if (viewModel.isAuthenticated) {
-            navController.navigate("connect_exchange") {
+            navController.navigate("splash") {
                 popUpTo("onboarding") { inclusive = true }
             }
         }

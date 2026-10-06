@@ -56,27 +56,27 @@ const vwap = registry.getStrategy('VWAP')!;
 describe('Individual Strategy Evaluation', () => {
   bench('ScalperV2 - single evaluation', () => {
     const ctx = new StrategyContext(snapshot).freeze();
-    scalper.evaluate(ctx);
+    scalper.evaluate(ctx, '5m');
   });
 
   bench('Momentum - single evaluation', () => {
     const ctx = new StrategyContext(snapshot).freeze();
-    momentum.evaluate(ctx);
+    momentum.evaluate(ctx, '5m');
   });
 
   bench('Breakout - single evaluation', () => {
     const ctx = new StrategyContext(snapshot).freeze();
-    breakout.evaluate(ctx);
+    breakout.evaluate(ctx, '5m');
   });
 
   bench('MeanReversion - single evaluation', () => {
     const ctx = new StrategyContext(snapshot).freeze();
-    meanReversion.evaluate(ctx);
+    meanReversion.evaluate(ctx, '5m');
   });
 
   bench('VWAP - single evaluation', () => {
     const ctx = new StrategyContext(snapshot).freeze();
-    vwap.evaluate(ctx);
+    vwap.evaluate(ctx, '15m');
   });
 });
 
@@ -85,11 +85,11 @@ describe('Individual Strategy Evaluation', () => {
 describe('Combined Strategy Evaluation', () => {
   bench('All 5 strategies on a single snapshot', () => {
     const ctx = new StrategyContext(snapshot).freeze();
-    scalper.evaluate(ctx);
-    momentum.evaluate(ctx);
-    breakout.evaluate(ctx);
-    meanReversion.evaluate(ctx);
-    vwap.evaluate(ctx);
+    scalper.evaluate(ctx, '5m');
+    momentum.evaluate(ctx, '5m');
+    breakout.evaluate(ctx, '5m');
+    meanReversion.evaluate(ctx, '5m');
+    vwap.evaluate(ctx, '15m');
   });
 });
 
@@ -108,11 +108,11 @@ describe('Symbol-Scale Evaluation', () => {
     const batch = makeSymbolBatch(10);
     for (const s of batch) {
       const ctx = new StrategyContext(s).freeze();
-      scalper.evaluate(ctx);
-      momentum.evaluate(ctx);
-      breakout.evaluate(ctx);
-      meanReversion.evaluate(ctx);
-      vwap.evaluate(ctx);
+      scalper.evaluate(ctx, '5m');
+      momentum.evaluate(ctx, '5m');
+      breakout.evaluate(ctx, '5m');
+      meanReversion.evaluate(ctx, '5m');
+      vwap.evaluate(ctx, '15m');
     }
   });
 
@@ -120,11 +120,11 @@ describe('Symbol-Scale Evaluation', () => {
     const batch = makeSymbolBatch(25);
     for (const s of batch) {
       const ctx = new StrategyContext(s).freeze();
-      scalper.evaluate(ctx);
-      momentum.evaluate(ctx);
-      breakout.evaluate(ctx);
-      meanReversion.evaluate(ctx);
-      vwap.evaluate(ctx);
+      scalper.evaluate(ctx, '5m');
+      momentum.evaluate(ctx, '5m');
+      breakout.evaluate(ctx, '5m');
+      meanReversion.evaluate(ctx, '5m');
+      vwap.evaluate(ctx, '15m');
     }
   });
 
@@ -132,11 +132,11 @@ describe('Symbol-Scale Evaluation', () => {
     const batch = makeSymbolBatch(50);
     for (const s of batch) {
       const ctx = new StrategyContext(s).freeze();
-      scalper.evaluate(ctx);
-      momentum.evaluate(ctx);
-      breakout.evaluate(ctx);
-      meanReversion.evaluate(ctx);
-      vwap.evaluate(ctx);
+      scalper.evaluate(ctx, '5m');
+      momentum.evaluate(ctx, '5m');
+      breakout.evaluate(ctx, '5m');
+      meanReversion.evaluate(ctx, '5m');
+      vwap.evaluate(ctx, '15m');
     }
   });
 
@@ -144,11 +144,11 @@ describe('Symbol-Scale Evaluation', () => {
     const batch = makeSymbolBatch(100);
     for (const s of batch) {
       const ctx = new StrategyContext(s).freeze();
-      scalper.evaluate(ctx);
-      momentum.evaluate(ctx);
-      breakout.evaluate(ctx);
-      meanReversion.evaluate(ctx);
-      vwap.evaluate(ctx);
+      scalper.evaluate(ctx, '5m');
+      momentum.evaluate(ctx, '5m');
+      breakout.evaluate(ctx, '5m');
+      meanReversion.evaluate(ctx, '5m');
+      vwap.evaluate(ctx, '15m');
     }
   });
 });

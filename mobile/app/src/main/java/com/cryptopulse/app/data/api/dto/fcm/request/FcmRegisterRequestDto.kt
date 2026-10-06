@@ -1,3 +1,8 @@
 package com.cryptopulse.app.data.api.dto.fcm.request
 
-data class FcmRegisterRequestDto(val token: String)
+import com.google.gson.annotations.SerializedName
+
+data class FcmRegisterRequestDto(
+    @SerializedName("fcmToken")
+    val fcmToken: String
+)

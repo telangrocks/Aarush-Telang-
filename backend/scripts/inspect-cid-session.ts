@@ -33,6 +33,23 @@ interface CidEventRow {
   payload: string;
 }
 
+interface BotTelemetryRow {
+  id: string;
+  user_id: string;
+  timestamp: number;
+  category: string;
+  component: string;
+  event_name: string;
+  severity: string;
+  correlation_id: string | null;
+  cycle_id: string | null;
+  symbol: string | null;
+  strategy_id: string | null;
+  duration_ms: number | null;
+  payload: string;
+  created_at: number;
+}
+
 function runWranglerD1(query: string): any {
   const escaped = query.replace(/"/g, '\\"');
   const cmd = `npx wrangler d1 execute crypto_pulse_db --remote --json --command="${escaped}"`;
@@ -49,16 +66,62 @@ function runWranglerD1(query: string): any {
   }
 }
 
+function printBotTelemetryEvents(events: BotTelemetryRow[]): void {
+  if (!events || events.length === 0) {
+    console.log("No backend bot telemetry events found.");
+    return;
+  }
+
+  console.log("\n" + "=".repeat(96));
+  console.log(`BACKEND AUTONOMOUS BOT TELEMETRY (${events.length} events)`);
+  console.log("=".repeat(96));
+
+  for (const ev of events) {
+    const timeStr = new Date(ev.timestamp).toISOString().slice(11, 23);
+    const sevStr = ev.severity.padEnd(5, " ");
+    const catStr = `[${ev.category}]`.padEnd(14, " ");
+    const compStr = `[${ev.component}]`.padEnd(22, " ");
+    const durStr = ev.duration_ms !== null ? `(${ev.duration_ms}ms)` : "";
+    const corrStr = ev.correlation_id ? `corr=${ev.correlation_id.slice(0, 16)}` : "";
+    const cycleStr = ev.cycle_id ? `cycle=${ev.cycle_id}` : "";
+    const symStr = ev.symbol ? `sym=${ev.symbol}` : "";
+    const stratStr = ev.strategy_id ? `strat=${ev.strategy_id}` : "";
+
+    let payloadObj: any = {};
+    try {
+      payloadObj = JSON.parse(ev.payload);
+    } catch (_) {}
+
+    let payloadSummary = "";
+    if (ev.event_name === "STRATEGY_EVALUATION") {
+      payloadSummary = payloadObj.hasSignal
+        ? `SIGNAL=${payloadObj.signalType} score=${payloadObj.confidenceScore}`
+        : (payloadObj.errorCode ? `ERR=${payloadObj.errorCode}` : "NO_SIGNAL");
+    } else if (ev.event_name === "FINAL_DISPATCH_GATE") {
+      payloadSummary = `gate=${payloadObj.gate} passed=${payloadObj.passed}`;
+    } else {
+      payloadSummary = JSON.stringify(payloadObj).slice(0, 80);
+    }
+
+    const meta = [symStr, stratStr, corrStr, cycleStr, durStr].filter(Boolean).join(" ");
+
+    console.log(`${timeStr} ${sevStr} ${catStr} ${compStr} ${ev.event_name.padEnd(24, " ")} ${meta} | ${payloadSummary}`);
+  }
+}
+
 async function main() {
   const arg = process.argv[2];
   if (!arg || arg === "--help" || arg === "-h") {
     console.log(`
 ================================================================================
-CryptoPulse CID Forensic Inspector
+CryptoPulse CID Forensic Inspector (Client CID + Backend Autonomous Bot Telemetry)
 ================================================================================
 Usage:
   npx tsx backend/scripts/inspect-cid-session.ts <SESSION_ID>
   npx tsx backend/scripts/inspect-cid-session.ts --list
+  npx tsx backend/scripts/inspect-cid-session.ts --alert <ALERT_ID>
+  npx tsx backend/scripts/inspect-cid-session.ts --correlation <CORRELATION_ID>
+  npx tsx backend/scripts/inspect-cid-session.ts --user <USER_ID>
 ================================================================================
 `);
     process.exit(0);
@@ -74,6 +137,36 @@ Usage:
       return;
     }
     console.table(sessions);
+    return;
+  }
+
+  if (arg === "--alert" || arg === "--correlation") {
+    const corrId = (process.argv[3] || "").trim();
+    if (!corrId) {
+      console.error("ERROR: Must provide correlation ID or alert ID.");
+      process.exit(1);
+    }
+    console.log(`Querying backend bot telemetry for correlation ID: ${corrId}...`);
+    const escaped = corrId.replace(/'/g, "''");
+    const events: BotTelemetryRow[] = runWranglerD1(
+      `SELECT * FROM bot_telemetry_events WHERE correlation_id = '${escaped}' ORDER BY timestamp ASC;`
+    );
+    printBotTelemetryEvents(events || []);
+    return;
+  }
+
+  if (arg === "--user") {
+    const userId = (process.argv[3] || "").trim();
+    if (!userId) {
+      console.error("ERROR: Must provide user ID.");
+      process.exit(1);
+    }
+    console.log(`Querying backend bot telemetry for user ID: ${userId}...`);
+    const escaped = userId.replace(/'/g, "''");
+    const events: BotTelemetryRow[] = runWranglerD1(
+      `SELECT * FROM bot_telemetry_events WHERE user_id = '${escaped}' ORDER BY timestamp DESC LIMIT 50;`
+    );
+    printBotTelemetryEvents((events || []).reverse());
     return;
   }
 
@@ -255,6 +348,16 @@ Usage:
       console.log(`    - Seq #${w.seq} [${w.category}] [${w.component}] ${w.event_name}: ${w.payload.slice(0, 120)}`);
     }
     if (warnOrHigher.length > 10) console.log(`    ... and ${warnOrHigher.length - 10} more.`);
+  }
+
+  // Query concurrent backend bot telemetry events for this session's user and active timeframe
+  const minTime = session.created_at - 60000;
+  const maxTime = session.expires_at || (session.created_at + 86400000);
+  const backendBotEvents: BotTelemetryRow[] = runWranglerD1(
+    `SELECT * FROM bot_telemetry_events WHERE user_id = '${session.user_id}' AND timestamp BETWEEN ${minTime} AND ${maxTime} ORDER BY timestamp ASC LIMIT 100;`
+  );
+  if (backendBotEvents && backendBotEvents.length > 0) {
+    printBotTelemetryEvents(backendBotEvents);
   }
 
   console.log("\n" + "=".repeat(96));

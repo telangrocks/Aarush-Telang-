@@ -6,5 +6,6 @@ enum class TradeAlertState {
     VOICE_PLAYING,
     USER_VIEWING_ALERT,
     ALERT_REPLACED,
+    HARDWARE_SILENCED,
     STOPPING,
 }

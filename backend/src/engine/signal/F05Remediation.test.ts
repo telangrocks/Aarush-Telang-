@@ -230,7 +230,7 @@ describe('F-05 Remediation & Synthetic Signal Injection Elimination', () => {
     };
 
     const context = new StrategyContext(snapshot, 10000).freeze();
-    const result = strategy.evaluate(context);
+    const result = strategy.evaluate(context, '5m');
 
     // Invariant: no synthetic signal is manufactured
     expect(result.hasSignal).toBe(false);

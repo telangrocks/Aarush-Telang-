@@ -10,6 +10,7 @@ import { MetricsEngine } from '../../telemetry/MetricsEngine';
 import { StructuredLogger } from '../../infrastructure/telemetry/Telemetry';
 import { OrchestratorCycleEvent, StrategyExecutionEvent, StrategyErrorEvent } from '../../telemetry/TelemetryEvents';
 import { UnifiedError } from '../../exchanges/models/UnifiedError';
+import { BackendDiagnosticSink } from '../../telemetry/BackendDiagnosticSink';
 
 export class StrategyOrchestrator {
   private stateMachine: EngineStateMachine;
@@ -28,7 +29,8 @@ export class StrategyOrchestrator {
     symbol: string,
     strategyId?: string,
     config?: Record<string, any>,
-    accountBalance: number = 1000
+    accountBalance: number = 1000,
+    telemetryContext?: { userId: string; cycleId: string; sink?: BackendDiagnosticSink }
   ): Promise<EvaluationResult[]> {
     const cycleStart = performance.now();
     let successfulEvaluations = 0;
@@ -117,15 +119,19 @@ export class StrategyOrchestrator {
       if (strategyId) {
         const strategy = registry.createStrategy(strategyId, config)!;
         this.logger.info(`[Orchestrator] Evaluating strategy: ${strategyId} (with config overrides)`);
-        const { result, success } = this.evaluateWithTelemetry(strategy, strategyId, symbol, frozenContext);
-        if (result) results.push(result);
-        tallySignal(result, success);
+        for (const tf of strategy.manifest.supportedTimeframes) {
+          const { result, success } = this.evaluateWithTelemetry(strategy, strategyId, tf, symbol, frozenContext, telemetryContext);
+          if (result) results.push(result);
+          tallySignal(result, success);
+        }
       } else {
         for (const [id, strategy] of registry.getAllStrategies()) {
           this.logger.info(`[Orchestrator] Evaluating strategy: ${id}`);
-          const { result, success } = this.evaluateWithTelemetry(strategy, id, symbol, frozenContext);
-          if (result) results.push(result);
-          tallySignal(result, success);
+          for (const tf of strategy.manifest.supportedTimeframes) {
+            const { result, success } = this.evaluateWithTelemetry(strategy, id, tf, symbol, frozenContext, telemetryContext);
+            if (result) results.push(result);
+            tallySignal(result, success);
+          }
         }
       }
 
@@ -158,14 +164,16 @@ export class StrategyOrchestrator {
   private evaluateWithTelemetry(
     strategy: IStrategy,
     id: string,
+    targetTimeframe: Timeframe,
     symbol: string,
-    frozenContext: Readonly<StrategyContext>
+    frozenContext: Readonly<StrategyContext>,
+    telemetryContext?: { userId: string; cycleId: string; sink?: BackendDiagnosticSink }
   ): { result: EvaluationResult | null; success: boolean } {
     const metrics = MetricsEngine.getInstance();
     const evalStart = performance.now();
 
     try {
-      const result = strategy.evaluate(frozenContext);
+      const result = strategy.evaluate(frozenContext, targetTimeframe);
       const durationMs = performance.now() - evalStart;
 
       const sigType = result.hasSignal ? (result.metadata?.signal?.type ?? null) : null;
@@ -182,6 +190,29 @@ export class StrategyOrchestrator {
       };
       metrics.record(event);
 
+      // Backend Diagnostic Sink: Emit STRATEGY_EVALUATION on actionable signal (sampling/volume control)
+      if (result.hasSignal && telemetryContext?.userId && telemetryContext?.sink) {
+        const safeSignalType = sigType === 'BUY' || sigType === 'SELL' ? sigType : null;
+        telemetryContext.sink.emit({
+          userId: telemetryContext.userId,
+          category: 'STRATEGY',
+          component: 'StrategyOrchestrator',
+          eventName: 'STRATEGY_EVALUATION',
+          severity: 'INFO',
+          cycleId: telemetryContext.cycleId,
+          symbol,
+          strategyId: id,
+          durationMs,
+          payload: {
+            hasSignal: true,
+            signalType: safeSignalType,
+            confidenceScore: Math.round(result.confidenceScore || 0),
+            targetTimeframe,
+            errorCode: null
+          }
+        });
+      }
+
       return { result, success: true };
     } catch (e: any) {
       const durationMs = performance.now() - evalStart;
@@ -195,6 +226,27 @@ export class StrategyOrchestrator {
         timestamp: Date.now()
       };
       metrics.record(errorEvent);
+
+      // Backend Diagnostic Sink: Emit STRATEGY_EVALUATION on strategy error/exception
+      if (telemetryContext?.userId && telemetryContext?.sink) {
+        telemetryContext.sink.emit({
+          userId: telemetryContext.userId,
+          category: 'STRATEGY',
+          component: 'StrategyOrchestrator',
+          eventName: 'STRATEGY_EVALUATION',
+          severity: 'ERROR',
+          cycleId: telemetryContext.cycleId,
+          symbol,
+          strategyId: id,
+          durationMs,
+          payload: {
+            hasSignal: false,
+            signalType: null,
+            confidenceScore: 0,
+            errorCode: 'STRATEGY_EVAL_EXCEPTION'
+          }
+        });
+      }
 
       return { result: null, success: false };
     }

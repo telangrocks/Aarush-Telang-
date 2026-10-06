@@ -332,9 +332,9 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
 
     // Verify executeCycle called for each candidate symbol in order
     expect(mockExecuteCycle).toHaveBeenCalledTimes(3);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(1, "SOL/USDT", undefined, undefined, 5000);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(2, "ETH/USDT", undefined, undefined, 5000);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(3, "BTC/USDT", undefined, undefined, 5000);
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(1, "SOL/USDT", undefined, undefined, 5000, expect.anything());
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(2, "ETH/USDT", undefined, undefined, 5000, expect.anything());
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(3, "BTC/USDT", undefined, undefined, 5000, expect.anything());
 
     // Verify alarm re-scheduled
     expect(mockState.storage.setAlarm).toHaveBeenCalled();
@@ -379,8 +379,8 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
 
     // Verify both symbols were attempted
     expect(mockExecuteCycle).toHaveBeenCalledTimes(2);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(1, "FAIL/USDT", undefined, undefined, 5000);
-    expect(mockExecuteCycle).toHaveBeenNthCalledWith(2, "PASS/USDT", undefined, undefined, 5000);
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(1, "FAIL/USDT", undefined, undefined, 5000, expect.anything());
+    expect(mockExecuteCycle).toHaveBeenNthCalledWith(2, "PASS/USDT", undefined, undefined, 5000, expect.anything());
 
     // Verify PASS/USDT successfully generated an alert
     const alerts = mockStorage.get("alerts");
@@ -393,9 +393,9 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
   });
 
   // =========================================================================
-  // 5. MarketRegime rejection uses continue and does not stop later candidates
+  // 5. MarketRegime evaluation emits telemetry without vetoing candidates
   // =========================================================================
-  it("Requirement 5: MarketRegime check failure uses candidate-level continue and evaluates later candidates", async () => {
+  it("Requirement 5: MarketRegime evaluation emits telemetry without vetoing candidates (Pass 2 decoupling)", async () => {
     const bot = new TradingBot(mockState, mockEnv);
 
     mockStorage.set("isActive", true);
@@ -403,14 +403,6 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("strategy", "scalper-v2");
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["REGIME_REJECT/USDT", "REGIME_ACCEPT/USDT"]);
-
-    vi.spyOn(MarketRegimeEngine, "isStrategyAllowed").mockImplementation((strat: string, regime: any) => {
-      // Reject REGIME_REJECT/USDT, accept REGIME_ACCEPT/USDT
-      if (regime.symbol === "REGIME_REJECT/USDT" || regime.dominantDirection === "REJECT") {
-        return { allowed: false, reason: "Regime volatile" };
-      }
-      return { allowed: true, reason: "Regime favorable" };
-    });
 
     vi.spyOn(MarketRegimeEngine, "evaluate").mockImplementation((highs: number[], lows: number[], closes: number[], currentPrice: number) => {
       // Simulate evaluate
@@ -436,11 +428,13 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     // Both candidates were processed by executeCycle
     expect(mockExecuteCycle).toHaveBeenCalledTimes(2);
 
-    // Alert was generated ONLY for candidate 2 (REGIME_ACCEPT/USDT)
+    // In Pass 2 architecture, MarketRegime is non-gating informational telemetry.
+    // Both candidates evaluate and generate alerts without being vetoed.
     const alerts = mockStorage.get("alerts");
     expect(alerts).toBeDefined();
-    expect(alerts.length).toBe(1);
-    expect(alerts[0].symbol).toBe("REGIME_ACCEPT/USDT");
+    expect(alerts.length).toBe(2);
+    expect(alerts[0].symbol).toBe("REGIME_REJECT/USDT");
+    expect(alerts[1].symbol).toBe("REGIME_ACCEPT/USDT");
   });
 
   // =========================================================================
@@ -628,4 +622,110 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     expect(mockStorage.get("monitoredSymbols")).toEqual([]);
     expect(mockStorage.get("coinId")).toBeNull();
   });
+
+  // =========================================================================
+  // 10. Multi-symbol intra-cycle coalescing isolates per symbol
+  // =========================================================================
+  it("Requirement 10: Multi-symbol intra-cycle coalescing isolates per symbol without cross-symbol suppression", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+
+    mockStorage.set("isActive", true);
+    mockStorage.set("userId", "user-p3-coalesce");
+    mockStorage.set("strategy", "scalper-v2");
+    mockStorage.set("positionSize", 100);
+    mockStorage.set("monitoredSymbols", ["BTC/USDT", "ETH/USDT"]);
+
+    mockExecuteCycle.mockImplementation((symbol: string) => {
+      if (symbol === "BTC/USDT") {
+        return Promise.resolve([
+          {
+            strategyId: 'scalper-v2',
+            confidenceScore: 91,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '5m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 65000,
+                stopLoss: 64000,
+                takeProfit: 67000,
+                timeframe: '5m',
+                riskAssessment: { positionSizeRecommendation: 100 }
+              }
+            }
+          },
+          {
+            strategyId: 'scalper-v2',
+            confidenceScore: 85,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '15m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 65000,
+                stopLoss: 63500,
+                takeProfit: 68000,
+                timeframe: '15m',
+                riskAssessment: { positionSizeRecommendation: 100 }
+              }
+            }
+          }
+        ]);
+      } else if (symbol === "ETH/USDT") {
+        return Promise.resolve([
+          {
+            strategyId: 'scalper-v2',
+            confidenceScore: 82,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '5m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 3500,
+                stopLoss: 3400,
+                takeProfit: 3700,
+                timeframe: '5m',
+                riskAssessment: { positionSizeRecommendation: 100 }
+              }
+            }
+          },
+          {
+            strategyId: 'scalper-v2',
+            confidenceScore: 89,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '15m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 3500,
+                stopLoss: 3350,
+                takeProfit: 3800,
+                timeframe: '15m',
+                riskAssessment: { positionSizeRecommendation: 100 }
+              }
+            }
+          }
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await bot.alarm();
+
+    const alerts = mockStorage.get("alerts") || [];
+    
+    // Verify BTC produced exactly one alert: its highest-confidence timeframe (5m @ 91%)
+    const btcAlerts = alerts.filter((a: any) => a.symbol === "BTC/USDT");
+    expect(btcAlerts.length).toBe(1);
+    expect(btcAlerts[0].timeframe).toBe("5m");
+
+    // Verify ETH produced exactly one alert: its highest-confidence timeframe (15m @ 89%)
+    const ethAlerts = alerts.filter((a: any) => a.symbol === "ETH/USDT");
+    expect(ethAlerts.length).toBe(1);
+    expect(ethAlerts[0].timeframe).toBe("15m");
+
+    // Verify total alerts = 2 (BTC did NOT suppress ETH)
+    expect(alerts.length).toBe(2);
+  });
 });
+

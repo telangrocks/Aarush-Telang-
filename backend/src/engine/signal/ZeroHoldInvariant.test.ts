@@ -153,7 +153,7 @@ describe('Zero-Hold Invariant Suite', () => {
     };
 
     const ctx = new StrategyContext(bearishSnapshot).freeze();
-    const result = strategy.evaluate(ctx);
+    const result = strategy.evaluate(ctx, '5m');
 
     // Must NOT convert to BUY
     expect(result.metadata.signal?.type).not.toBe('BUY');

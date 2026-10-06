@@ -41,18 +41,6 @@ class BotRepositoryImpl @Inject constructor(
     private var pollingJob: Job? = null
     private val pollingMutex = Mutex()
 
-    init {
-        tokenManager?.let { tm ->
-            scope.launch {
-                tm.tokenFlow.collect { state ->
-                    if (state is TokenState.Unauthenticated || state is TokenState.Uninitialized) {
-                        stopObserving()
-                    }
-                }
-            }
-        }
-    }
-
     private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
     override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
 
@@ -67,6 +55,18 @@ class BotRepositoryImpl @Inject constructor(
 
     private val _isConnected = MutableStateFlow(false)
     override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+    init {
+        tokenManager?.let { tm ->
+            scope.launch {
+                tm.tokenFlow.collect { state ->
+                    if (state is TokenState.Unauthenticated || state is TokenState.Uninitialized) {
+                        stopObserving()
+                    }
+                }
+            }
+        }
+    }
 
     override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
         if (symbols.isEmpty()) {
