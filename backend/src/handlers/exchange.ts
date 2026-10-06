@@ -27,15 +27,6 @@ function normalizeEnvironment(value: unknown): ExchangeEnvironment | null {
   return normEnvUtil(value) as ExchangeEnvironment | null;
 }
 
-function resolveEgressConfig(exchangeName: string, env: Env) {
-  const e = env as any;
-  return {
-    egressProxyUrl: e.EGRESS_PROXY_URL,
-    egressProxySecret: e.EGRESS_PROXY_SECRET,
-    egressGatewayFetcher: e.EGRESS_GATEWAY,
-  };
-}
-
 export function isPermanentAuthFailure(code: string): boolean {
   return (
     code === "INVALID_API_KEY" ||
@@ -175,7 +166,6 @@ export async function handleValidateExchange(
         secret: cleanApiSecret,
         password: cleanApiPassphrase,
         region: resolvedRegion,
-        ...resolveEgressConfig(exchangeName, c.env),
       });
       if (provider && typeof provider.getHost === "function") {
         actualHost = provider.getHost();
@@ -367,7 +357,6 @@ export async function handleConnectExchange(
       secret: cleanApiSecret,
       password: cleanApiPassphrase,
       region: resolvedRegion,
-      ...resolveEgressConfig(exchangeName, c.env),
     };
 
     const validationStartTime = Date.now();
@@ -649,7 +638,6 @@ export async function handleGetExchangeBalances(
       secret: decryptedSecret,
       password: decryptedPassphrase,
       region: resolveCanonicalRoutingRegion(user.exchange_region),
-      ...resolveEgressConfig(user.exchange_name, c.env),
     });
 
     const balanceRes = await adapter.fetchBalance();
@@ -908,7 +896,6 @@ export async function handleGetPersonalizedMarketCandidates(
         apiKey: cleanKey,
         secret: cleanSecret,
         region: resolveCanonicalRoutingRegion(user.exchange_region),
-        ...resolveEgressConfig(user.exchange_name, c.env),
       });
 
       console.log(`[DIAGNOSTIC] Stage 5: CCXT client created for provider=${user.exchange_name}`);
@@ -1235,7 +1222,6 @@ export async function handleGetMarketOpportunities(
       apiKey: cleanKey,
       secret: cleanSecret,
       region,
-      ...resolveEgressConfig(exchangeName, c.env),
     });
 
     const scanner = new MarketOpportunityScanner(adapter as any);
@@ -1316,7 +1302,6 @@ export async function handleGetTicker(
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
       region: resolveCanonicalRoutingRegion(user.exchange_region),
-      ...resolveEgressConfig(user.exchange_name, c.env),
     });
 
     const ticker = await adapter.fetchTicker(symbol);
@@ -1388,7 +1373,6 @@ export async function handleGetKlines(
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
       region: resolveCanonicalRoutingRegion(user.exchange_region),
-      ...resolveEgressConfig(user.exchange_name, c.env),
     });
 
     const klines = await adapter.fetchKlines(symbol, interval, limit);
@@ -1521,7 +1505,6 @@ export async function handleGetTechnicalAnalysis(
       secret,
       password,
       region: resolveCanonicalRoutingRegion(user.exchange_region),
-      ...resolveEgressConfig(user.exchange_name, c.env),
     });
 
     const ticker = await adapter.fetchTicker(symbol);
@@ -2078,7 +2061,6 @@ export async function handleTriggerManualTradeAlert(
       secret,
       password,
       region: resolveCanonicalRoutingRegion(user.exchange_region),
-      ...resolveEgressConfig(user.exchange_name, c.env),
     });
 
     const registry = StrategyRegistry.getInstance();

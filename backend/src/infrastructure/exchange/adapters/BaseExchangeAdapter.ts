@@ -85,8 +85,7 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       // Direct Native Fetch (Direct Connection Architecture to api-demo.bybit.com / api.bybit.com)
-      const fetcher = this.config?.egressGatewayFetcher || globalThis;
-      const response = await fetcher.fetch(url, {
+      const response = await fetch(url, {
         ...options,
         signal: controller.signal,
       });
