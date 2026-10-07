@@ -10,6 +10,7 @@ describe('AdapterCandleProvider Unit Tests', () => {
     connect: vi.fn(),
     disconnect: vi.fn(),
     fetchMarkets: vi.fn(),
+    fetchMarket: vi.fn(),
     fetchBalance: vi.fn(),
     fetchTicker: vi.fn().mockResolvedValue({
       symbol: 'BTC/USDT',

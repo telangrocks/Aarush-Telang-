@@ -212,6 +212,20 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
           },
         },
       ]),
+      fetchMarket: vi.fn().mockResolvedValue({
+        id: 'BTCUSDT',
+        symbol: 'BTC/USDT',
+        base: 'BTC',
+        quote: 'USDT',
+        category: 'linear',
+        contractType: 'LinearPerpetual',
+        precision: { price: 0.1, amount: 0.001 },
+        limits: {
+          price: { min: new BigNumber(0.1), max: new BigNumber(1000000) },
+          amount: { min: new BigNumber(0.001), max: new BigNumber(100) },
+          cost: { min: new BigNumber(5) },
+        },
+      }),
       createOrder: vi.fn().mockImplementation(async (req: any) => ({
         id: 'ord-bybit-pass2-123',
         symbol: req.symbol,

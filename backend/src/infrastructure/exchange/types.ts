@@ -12,6 +12,7 @@ export interface IExchangeAdapter {
   disconnect(): Promise<void>;
 
   fetchMarkets(): Promise<Market[]>;
+  fetchMarket(symbol: string): Promise<Market | null>;
   fetchBalance(): Promise<Balance[]>;
   fetchTicker(symbol: string): Promise<Ticker>;
   fetchKlines(symbol: string, interval: string, limit?: number): Promise<any[]>;

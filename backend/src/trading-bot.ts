@@ -1713,8 +1713,7 @@ export class TradingBot {
                 let hasAuthoritativeMetadata = false;
 
                 try {
-                  const markets = await adapter.fetchMarkets();
-                  const matched = markets.find(m => m.symbol === orderSymbol || m.id === orderSymbol.replace('/', ''));
+                  const matched = await adapter.fetchMarket(orderSymbol);
                   if (matched) {
                     matchedCategory = (matched as any).category;
                     hasAuthoritativeMetadata = true;

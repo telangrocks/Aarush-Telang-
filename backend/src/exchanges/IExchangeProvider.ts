@@ -6,6 +6,7 @@ export interface IExchangeProvider {
   disconnect(): Promise<void>;
   
   fetchMarkets(): Promise<Market[]>;
+  fetchMarket(symbol: string): Promise<Market | null>;
   fetchBalance(): Promise<Balance[]>;
   fetchTicker(symbol: string): Promise<Ticker>;
   fetchTickers(symbols?: string[]): Promise<Ticker[]>;

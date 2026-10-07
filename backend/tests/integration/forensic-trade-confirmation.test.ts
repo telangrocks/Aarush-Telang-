@@ -132,6 +132,22 @@ describe('Forensic Investigation: Trade Confirmation Flow', () => {
           priceLimitRatioY: 0.2
         }
       ]),
+      fetchMarket: vi.fn().mockResolvedValue({
+        id: 'SOPHUSDT',
+        symbol: 'SOPH/USDT',
+        base: 'SOPH',
+        quote: 'USDT',
+        category: 'linear',
+        contractType: 'LinearPerpetual',
+        precision: { price: 0.000001, amount: 10 },
+        limits: {
+          price: { min: new BigNumber(0.000001), max: new BigNumber(19.999998) },
+          amount: { min: new BigNumber(10), max: new BigNumber(16500000) },
+          cost: { min: new BigNumber(5) }
+        },
+        priceLimitRatioX: 0.1,
+        priceLimitRatioY: 0.2
+      }),
       createOrder: vi.fn().mockImplementation(async (req: any) => {
         capturedBybitOrder = req;
         return {

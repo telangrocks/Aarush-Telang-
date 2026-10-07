@@ -566,6 +566,55 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return candles;
   }
 
+  private mapInstrumentToMarket(item: any, category: string): Market {
+    const symbol = `${item.baseCoin}/${item.quoteCoin}`;
+    const priceStepStr = item.priceFilter?.tickSize;
+    const amountStepStr = item.lotSizeFilter?.qtyStep || item.lotSizeFilter?.basePrecision;
+    const minAmountStr = item.lotSizeFilter?.minOrderQty;
+    const minPriceStr = item.priceFilter?.minPrice;
+    const minNotionalStr = item.lotSizeFilter?.minNotionalValue || item.lotSizeFilter?.minOrderAmt;
+
+    const priceStep = priceStepStr !== undefined ? parseFloat(priceStepStr) : 0;
+    const amountStep = amountStepStr !== undefined ? parseFloat(amountStepStr) : 0;
+    const minAmount = minAmountStr !== undefined ? parseFloat(minAmountStr) : 0;
+    const minPrice = minPriceStr !== undefined ? parseFloat(minPriceStr) : 0;
+    const minNotional = minNotionalStr !== undefined ? parseFloat(minNotionalStr) : 0;
+
+    return {
+      id: item.symbol,
+      symbol,
+      base: item.baseCoin,
+      quote: item.quoteCoin,
+      category: item._category || category,
+      active: item.status === 'Trading',
+      precision: { price: priceStep, amount: amountStep },
+      limits: {
+        amount: { min: new BigNumber(minAmount) },
+        price: { min: new BigNumber(minPrice) },
+        cost: { min: new BigNumber(minNotional) },
+      },
+      priceLimitRatioX: item.priceLimitRatioX ? parseFloat(item.priceLimitRatioX) : undefined,
+      priceLimitRatioY: item.priceLimitRatioY ? parseFloat(item.priceLimitRatioY) : undefined,
+    } as any;
+  }
+
+  public async fetchMarket(symbol: string): Promise<Market | null> {
+    const { canonicalSymbol } = this.normalizeSymbol(symbol);
+    const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
+
+    const res = await this.makeRequest('GET', '/v5/market/instruments-info', {
+      category: 'linear',
+      symbol: rawSymbol,
+    }, false);
+
+    const item = res?.list?.[0];
+    if (!item || item.status !== 'Trading') {
+      return null;
+    }
+
+    return this.mapInstrumentToMarket(item, 'linear');
+  }
+
   public async fetchMarkets(): Promise<Market[]> {
     let list: any[] = [];
     let cursor: string | undefined = undefined;
@@ -604,35 +653,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
     const markets: Market[] = [];
     for (const item of list) {
-      const symbol = `${item.baseCoin}/${item.quoteCoin}`;
-      const priceStepStr = item.priceFilter?.tickSize;
-      const amountStepStr = item.lotSizeFilter?.qtyStep || item.lotSizeFilter?.basePrecision;
-      const minAmountStr = item.lotSizeFilter?.minOrderQty;
-      const minPriceStr = item.priceFilter?.minPrice;
-      const minNotionalStr = item.lotSizeFilter?.minNotionalValue || item.lotSizeFilter?.minOrderAmt;
-
-      const priceStep = priceStepStr !== undefined ? parseFloat(priceStepStr) : 0;
-      const amountStep = amountStepStr !== undefined ? parseFloat(amountStepStr) : 0;
-      const minAmount = minAmountStr !== undefined ? parseFloat(minAmountStr) : 0;
-      const minPrice = minPriceStr !== undefined ? parseFloat(minPriceStr) : 0;
-      const minNotional = minNotionalStr !== undefined ? parseFloat(minNotionalStr) : 0;
-
-      markets.push({
-        id: item.symbol,
-        symbol,
-        base: item.baseCoin,
-        quote: item.quoteCoin,
-        category: item._category || 'linear',
-        active: item.status === 'Trading',
-        precision: { price: priceStep, amount: amountStep },
-        limits: {
-          amount: { min: new BigNumber(minAmount) },
-          price: { min: new BigNumber(minPrice) },
-          cost: { min: new BigNumber(minNotional) },
-        },
-        priceLimitRatioX: item.priceLimitRatioX ? parseFloat(item.priceLimitRatioX) : undefined,
-        priceLimitRatioY: item.priceLimitRatioY ? parseFloat(item.priceLimitRatioY) : undefined,
-      } as any);
+      markets.push(this.mapInstrumentToMarket(item, item._category || 'linear'));
     }
     return markets;
   }

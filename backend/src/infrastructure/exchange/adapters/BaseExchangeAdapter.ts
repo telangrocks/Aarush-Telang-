@@ -101,6 +101,7 @@ export abstract class BaseExchangeAdapter implements IExchangeProvider, IExchang
   }
 
   abstract fetchMarkets(): Promise<Market[]>;
+  abstract fetchMarket(symbol: string): Promise<Market | null>;
   abstract fetchBalance(): Promise<Balance[]>;
   abstract fetchTicker(symbol: string): Promise<Ticker>;
   abstract fetchTickers(symbols?: string[]): Promise<Ticker[]>;

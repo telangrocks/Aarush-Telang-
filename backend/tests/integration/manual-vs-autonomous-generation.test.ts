@@ -26,6 +26,16 @@ vi.mock('../../src/exchanges', async (importOriginal) => {
             }
           }
         ]),
+        fetchMarket: vi.fn().mockImplementation(async (sym: string) => ({
+          id: 'BTCUSDT',
+          symbol: 'BTC/USDT',
+          category: 'linear',
+          precision: { price: 0.1, amount: 0.001 },
+          limits: {
+            cost: { min: 5 },
+            amount: { min: 0.001 }
+          }
+        })),
         createOrder: vi.fn().mockResolvedValue({ id: 'ord-123', status: 'closed', filled: { toNumber: () => 0.02 }, amount: { toNumber: () => 0.02 }, average: { toNumber: () => 50100 } }),
         supportsOco: vi.fn().mockReturnValue(false),
         createOcoOrder: vi.fn()

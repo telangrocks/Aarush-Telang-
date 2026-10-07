@@ -51,6 +51,17 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
           { id: 'REGIMEACCEPTUSDT', symbol: 'REGIME_ACCEPT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
           { id: 'REGIMEREJECTUSDT', symbol: 'REGIME_REJECT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
         ]),
+        fetchMarket: vi.fn().mockImplementation(async (sym: string) => {
+          const list = [
+            { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+            { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+            { id: 'SOLUSDT', symbol: 'SOL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+            { id: 'PASSUSDT', symbol: 'PASS/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+            { id: 'REGIMEACCEPTUSDT', symbol: 'REGIME_ACCEPT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+            { id: 'REGIMEREJECTUSDT', symbol: 'REGIME_REJECT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+          ];
+          return list.find(m => m.symbol === sym || m.id === sym.replace('/', '')) || null;
+        }),
         fetchPositions: vi.fn().mockResolvedValue([]),
         createOrder: vi.fn().mockResolvedValue({
           id: 'ord-mock-123',

@@ -20,6 +20,7 @@ describe('Exchange Connectivity Module Fixes Unit Tests', () => {
         throw new UnifiedError('Connection refused by exchange', 'EXCHANGE_NOT_REACHABLE');
       }
       fetchMarkets = async () => [];
+      fetchMarket = async () => null;
       fetchBalance = async () => [];
       fetchTicker = async () => ({} as any);
       fetchTickers = async () => [];
@@ -71,6 +72,7 @@ describe('Exchange Connectivity Module Fixes Unit Tests', () => {
     class TimeoutTestAdapter extends BaseExchangeAdapter {
       readonly exchangeId = 'timeout-test';
       fetchMarkets = async () => [];
+      fetchMarket = async () => null;
       fetchBalance = async () => [];
       fetchTicker = async () => ({ symbol: 'BTC/USDT', timestamp: 0, last: new BigNumber(0), bid: new BigNumber(0), ask: new BigNumber(0), high: new BigNumber(0), low: new BigNumber(0), volume: new BigNumber(0), quoteVolume: new BigNumber(0) });
       fetchTickers = async () => [];
