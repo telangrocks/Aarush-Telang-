@@ -64,7 +64,7 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
 
     LaunchedEffect(viewModel.isAuthenticated) {
         if (viewModel.isAuthenticated) {
-            navController.navigate("splash") {
+            navController.navigate("authenticated_flow") {
                 popUpTo("onboarding") { inclusive = true }
             }
         }

@@ -39,6 +39,95 @@ export function isPermanentAuthFailure(code: string): boolean {
   );
 }
 
+function selectBoundedDiscoveryMarkets(
+  markets: any[],
+  tickers: any[],
+  userAllocation: number | null,
+  maxCandidates: number = 8
+): any[] {
+  const tickerMap = new Map<string, any>();
+  for (const t of tickers) {
+    const sym = String(t.pairName || t.symbol || '').toUpperCase();
+    if (sym) {
+      tickerMap.set(sym, t);
+      tickerMap.set(sym.replace('/', ''), t);
+    }
+  }
+
+  const seenSymbols = new Set<string>();
+  const eligibleAfterStage1And25: { market: any; ticker: any; px: number }[] = [];
+  const scored: { market: any; turnover: number }[] = [];
+
+  const toNum = (v: any, fallback = 0): number => {
+    if (v === undefined || v === null) return fallback;
+    if (typeof v?.toNumber === 'function') {
+      const n = v.toNumber();
+      return Number.isFinite(n) ? n : fallback;
+    }
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  for (const m of markets) {
+    if (!m || m.active === false) continue;
+    const cat = String(m.category || 'linear').toLowerCase();
+    if (cat !== 'linear') continue;
+    if (m.contractType && m.contractType !== 'LinearPerpetual') continue;
+    const quote = String(m.quote || (m.symbol ? m.symbol.split('/')[1] : 'USDT') || 'USDT').toUpperCase();
+    if (quote !== 'USDT') continue;
+
+    const sym = String(m.symbol || m.id || '').toUpperCase();
+    if (!sym || seenSymbols.has(sym) || isExcludedAsset(sym)) continue;
+    seenSymbols.add(sym);
+
+    const t = tickerMap.get(sym) || tickerMap.get(sym.replace('/', ''));
+    if (!t) continue;
+
+    const px = toNum(t.last ?? t.price, 0);
+    if (!(px > 0)) continue;
+
+    if (userAllocation !== null && userAllocation > 0) {
+      const qtyStep = toNum(t.qtyStep ?? m?.precision?.amount, 0);
+      const minOrderQty = toNum(t.minOrderQty ?? m?.limits?.amount?.min, 0);
+      const minNotional = toNum(t.minNotional ?? m?.limits?.cost?.min, 0);
+      const elig = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: userAllocation,
+        currentPrice: px,
+        qtyStep: qtyStep > 0 ? qtyStep : 0,
+        minOrderQty: minOrderQty > 0 ? minOrderQty : 0,
+        minNotional: minNotional > 0 ? minNotional : 0,
+      });
+      if (!elig.isExecutable) continue;
+    }
+
+    eligibleAfterStage1And25.push({ market: m, ticker: t, px });
+  }
+
+  if (eligibleAfterStage1And25.length <= maxCandidates) {
+    return eligibleAfterStage1And25.map((item) => item.market);
+  }
+
+  for (const { market: m, ticker: t, px } of eligibleAfterStage1And25) {
+    const turnover = toNum(t.quoteVolume24h ?? t.quoteVolume, 0);
+    if (turnover < 1_000_000) continue;
+
+    const bid = toNum(t.bid ?? t._bid, px);
+    const ask = toNum(t.ask ?? t._ask, px);
+    const spreadPercent = (bid > 0 && ask > 0 && ask >= bid) ? ((ask - bid) / px) * 100 : 0;
+    if (spreadPercent > 0.15) continue;
+
+    const high = toNum(t.highPrice24h ?? t.high, px);
+    const low = toNum(t.lowPrice24h ?? t.low, px);
+    const rangePercent = (high > 0 && low > 0 && high >= low) ? ((high - low) / px) * 100 : 0;
+    if (rangePercent < 1.5) continue;
+
+    scored.push({ market: m, turnover });
+  }
+
+  scored.sort((a, b) => b.turnover - a.turnover);
+  return scored.slice(0, maxCandidates).map((s) => s.market);
+}
+
 export async function invalidateExchangeConnection(
   db: any,
   userId: string,
@@ -55,7 +144,14 @@ export async function invalidateExchangeConnection(
     .bind(failureCode, userId)
     .run();
 
-  // 2. In-Memory Provider Eviction (Second)
+  // 2. In-Memory Provider & Discovery/Opportunity Cache Eviction (Second)
+  for (const k of Array.from(DISCOVERY_CACHE.keys())) {
+    if (k.startsWith(`${userId}_`)) DISCOVERY_CACHE.delete(k);
+  }
+  for (const k of Array.from(OPPORTUNITY_CACHE.keys())) {
+    if (k.startsWith(`${userId}_`)) OPPORTUNITY_CACHE.delete(k);
+  }
+
   if (exchangeConfig) {
     try {
       await ExchangeManager.invalidateUserProvider(exchangeConfig.exchangeName, exchangeConfig.config);
@@ -817,7 +913,11 @@ export async function handleGetPersonalizedMarketCandidates(
     }
     console.log(`[DIAGNOSTIC] Stage 3: Exchange record loaded: exchange_name=${user.exchange_name}, env=${user.exchange_environment}`);
 
-    const cacheKey = `${userId}_${user.exchange_name}_${user.exchange_environment}`;
+    const queryBudget = c.req.query("budget");
+    const parsedBudget = queryBudget ? parseFloat(queryBudget) : null;
+    const userAllocation = (parsedBudget !== null && !isNaN(parsedBudget) && parsedBudget > 0) ? parsedBudget : null;
+
+    const cacheKey = `${userId}_${user.exchange_name}_${user.exchange_environment}_${userAllocation !== null ? String(userAllocation) : 'default'}`;
     const cached = DISCOVERY_CACHE.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
       console.log(`[DIAGNOSTIC] Cache hit for ${cacheKey}`);
@@ -839,10 +939,6 @@ export async function handleGetPersonalizedMarketCandidates(
           if (scanResult && scanResult.topOpportunities) {
             console.log(`[DIAGNOSTIC] Stage 3.5: Retrieved authoritative DO scanner state: universeSize=${scanResult.universeSize}, eligible=${scanResult.eligibleCount}, top=${scanResult.topOpportunities?.length || 0}`);
             const candidates = mapScanResultToCandidates(scanResult);
-            
-            const queryBudget = c.req.query("budget");
-            const parsedBudget = queryBudget ? parseFloat(queryBudget) : null;
-            const userAllocation = (parsedBudget !== null && !isNaN(parsedBudget) && parsedBudget > 0) ? parsedBudget : null;
 
             if (candidates.length > 0 || userAllocation !== null) {
               console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully from DO (${candidates.length} items)`);
@@ -965,6 +1061,8 @@ export async function handleGetPersonalizedMarketCandidates(
           console.warn(`[DIAGNOSTIC] Stage 7: Invalid or missing spot price for ${m.symbol}, skipping symbol.`);
           continue;
         }
+        const bidPx = typeof t?.bid?.toNumber === 'function' ? t.bid.toNumber() : (typeof t?.bid === 'number' && t.bid > 0 ? t.bid : (t?.info?.bid1Price ? parseFloat(t.info.bid1Price) || px : px));
+        const askPx = typeof t?.ask?.toNumber === 'function' ? t.ask.toNumber() : (typeof t?.ask === 'number' && t.ask > 0 ? t.ask : (t?.info?.ask1Price ? parseFloat(t.info.ask1Price) || px : px));
         const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : 0);
         const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : (vol * px));
         const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (typeof t?.high === 'number' ? t.high : px);
@@ -1004,6 +1102,8 @@ export async function handleGetPersonalizedMarketCandidates(
           category: m.category || 'linear',
           timestamp: typeof t?.timestamp === 'number' ? t.timestamp : Date.now(),
           price: px,
+          _bid: bidPx,
+          _ask: askPx,
           volume24h: vol,
           quoteVolume24h: qVol,
           highPrice24h: high,
@@ -1038,56 +1138,52 @@ export async function handleGetPersonalizedMarketCandidates(
     
     // Stage 9: Opportunity discovery and candidate evaluation (Fallback Path)
     let candidates: any[] = [];
-    const queryBudget = c.req.query("budget");
-    const parsedBudget = queryBudget ? parseFloat(queryBudget) : null;
-    const userAllocation = (parsedBudget !== null && !isNaN(parsedBudget) && parsedBudget > 0) ? parsedBudget : null;
+    const boundedMarkets = selectBoundedDiscoveryMarkets(activeMarkets, tickers, userAllocation, 8);
+    if (boundedMarkets.length === 0) {
+      console.log(`[DIAGNOSTIC] Stage 9: 0 eligible markets after bounded pre-selection (universe=${activeMarkets.length}, budget=${userAllocation ?? 'default'}). Returning empty array without scanner invocation.`);
+      DISCOVERY_CACHE.set(cacheKey, { timestamp: Date.now(), data: [] });
+      return c.json([]);
+    }
 
     try {
       const scanner = new MarketOpportunityScanner(adapter as any);
       const scanResult = await scanner.scan({
-        markets: activeMarkets,
+        markets: boundedMarkets,
         tickers,
         ...(userAllocation !== null ? { tradeAmountUsdt: userAllocation } : {})
       });
 
-      if (scanResult && scanResult.topOpportunities && scanResult.topOpportunities.length > 0) {
-        console.log(`[DIAGNOSTIC] Stage 9: MarketOpportunityScanner produced ${scanResult.topOpportunities.length} opportunities (${scanResult.allQualifiedOpportunities.length} total qualified)`);
-        candidates = mapScanResultToCandidates(scanResult);
-      } else if (userAllocation !== null) {
-        console.log(`[DIAGNOSTIC] Stage 9: Scanner returned 0 candidates for strict budget ${userAllocation}. Skipping legacy fallback.`);
-        candidates = [];
-      } else {
-        console.log(`[DIAGNOSTIC] Stage 9: Scanner returned 0 candidates, falling back to legacy analyzeMarket`);
-        candidates = await analyzeMarket(tickers as any, adapter as any);
-      }
-      console.log(`[DIAGNOSTIC] Stage 9: evaluation completed with ${candidates.length} candidates`);
-    } catch (aErr: any) {
-      if (userAllocation !== null) {
-        console.error("[DIAGNOSTIC] Stage 9 EXCEPTION: Modern scanner threw exception with strict budget. Aborting without fallback:", aErr?.message);
-        c.status(500);
+      if (
+        !scanResult ||
+        scanResult.screenedCount === 0 ||
+        (scanResult.allQualifiedOpportunities.length > 0 &&
+          scanResult.allQualifiedOpportunities.every((o: any) => o.state === 'DATA_DEGRADED'))
+      ) {
+        c.status(503);
         return c.json({
           success: false,
-          stage: "9. scanner evaluation",
-          error: aErr?.message || String(aErr),
-          constructor: aErr?.constructor?.name || "ScannerError",
-          stack: aErr?.stack || String(aErr)
+          code: 'MARKET_DATA_DEGRADED',
+          error: 'Market data temporarily degraded or unavailable during discovery scan.',
         });
       }
 
-      console.warn("[DIAGNOSTIC] Stage 9: Modern scanner threw exception, attempting fallback to analyzeMarket:", aErr?.message);
-      try {
-        candidates = await analyzeMarket(tickers as any, adapter as any);
-      } catch (fallbackErr: any) {
-        console.error("[DIAGNOSTIC] Stage 9 EXCEPTION: analyzeMarket fallback also failed:", fallbackErr?.message, fallbackErr?.stack);
-        c.status(500);
-        return c.json({
-          success: false,
-          stage: "9. analyzeMarket exited",
-          error: fallbackErr?.message || String(fallbackErr),
-          constructor: fallbackErr?.constructor?.name || "AnalysisError",
-          stack: fallbackErr?.stack || String(fallbackErr)
-        });
+      if (scanResult.topOpportunities && scanResult.topOpportunities.length > 0) {
+        console.log(`[DIAGNOSTIC] Stage 9: MarketOpportunityScanner produced ${scanResult.topOpportunities.length} opportunities (${scanResult.allQualifiedOpportunities.length} total qualified)`);
+        candidates = mapScanResultToCandidates(scanResult);
+      } else {
+        candidates = [];
       }
+      console.log(`[DIAGNOSTIC] Stage 9: evaluation completed with ${candidates.length} candidates`);
+    } catch (aErr: any) {
+      console.error("[DIAGNOSTIC] Stage 9 EXCEPTION: Modern scanner threw exception. Aborting without legacy fallback:", aErr?.message);
+      c.status(500);
+      return c.json({
+        success: false,
+        stage: "9. scanner evaluation",
+        error: aErr?.message || String(aErr),
+        constructor: aErr?.constructor?.name || "ScannerError",
+        stack: aErr?.stack || String(aErr)
+      });
     }
 
     // Stage 10: response serialized
@@ -1184,7 +1280,7 @@ export async function handleGetMarketOpportunities(
     const environment = normalizeEnvironment(user?.exchange_environment) ?? "mainnet";
     const region = resolveCanonicalRoutingRegion(user?.exchange_region);
 
-    const cacheKey = `${exchangeName}_${environment}_${region}`;
+    const cacheKey = `${userId}_${exchangeName}_${environment}_${region}`;
     const cached = OPPORTUNITY_CACHE.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < OPPORTUNITY_CACHE_TTL_MS) {
       console.log(`[DIAGNOSTIC] /market/opportunities cache hit for ${cacheKey}`);
@@ -1224,8 +1320,41 @@ export async function handleGetMarketOpportunities(
       region,
     });
 
+    const markets = await adapter.fetchMarkets();
+    const tickers = await adapter.fetchTickers();
+    const boundedMarkets = selectBoundedDiscoveryMarkets(markets || [], tickers || [], null, 8);
+    if (boundedMarkets.length === 0) {
+      const emptyScanResult: ScannerScanResult = {
+        timestamp: Date.now(),
+        executionDurationMs: 0,
+        universeSize: (markets || []).length,
+        eligibleCount: 0,
+        qualityCount: 0,
+        screenedCount: 0,
+        allQualifiedOpportunities: [],
+        topOpportunities: [],
+        telemetry: {} as any,
+      };
+      OPPORTUNITY_CACHE.set(cacheKey, { timestamp: Date.now(), data: emptyScanResult });
+      return formatOpportunitiesResponse(c, emptyScanResult);
+    }
+
     const scanner = new MarketOpportunityScanner(adapter as any);
-    const scanResult = await scanner.scan();
+    const scanResult = await scanner.scan({ markets: boundedMarkets, tickers });
+
+    if (
+      !scanResult ||
+      scanResult.screenedCount === 0 ||
+      (scanResult.allQualifiedOpportunities.length > 0 &&
+        scanResult.allQualifiedOpportunities.every((o: any) => o.state === 'DATA_DEGRADED'))
+    ) {
+      c.status(503);
+      return c.json({
+        success: false,
+        code: 'MARKET_DATA_DEGRADED',
+        error: 'Market data temporarily degraded or unavailable during opportunity scan.',
+      });
+    }
 
     OPPORTUNITY_CACHE.set(cacheKey, { timestamp: Date.now(), data: scanResult });
 
@@ -1797,8 +1926,9 @@ export async function handleExecuteTrade(
       }),
     );
 
-    const data = await response.json<{ success: boolean; message: string; order?: any }>();
-    c.status(response.status as any);
+    const data = await response.json<{ success: boolean; message: string; order?: any; code?: string; error?: string }>();
+    const effectiveStatus = response.status === 200 && data && data.success === false ? 409 : response.status;
+    c.status(effectiveStatus as any);
     return c.json(data);
   } catch (e: unknown) {
     const error = e as Error;
@@ -2146,17 +2276,21 @@ export async function handleTriggerManualTradeAlert(
     let minPrice = 0;
     let matchedMarket: any = null;
     try {
-      const markets = await adapter.fetchMarkets();
-      const cleanSymbol = orderSymbol.toUpperCase();
-      const rawBase = cleanSymbol.split('/')[0];
-      const rawId = cleanSymbol.replace('/', '');
+      if (typeof (adapter as any).fetchMarket === 'function') {
+        matchedMarket = await (adapter as any).fetchMarket(orderSymbol);
+      } else if (typeof adapter.fetchMarkets === 'function') {
+        const markets = await adapter.fetchMarkets();
+        const cleanSymbol = orderSymbol.toUpperCase();
+        const rawBase = cleanSymbol.split('/')[0];
+        const rawId = cleanSymbol.replace('/', '');
 
-      matchedMarket = markets.find(m =>
-        m.symbol?.toUpperCase() === cleanSymbol ||
-        m.id?.toUpperCase() === rawId ||
-        m.symbol?.toUpperCase() === rawId ||
-        (m.base?.toUpperCase() === rawBase && m.quote?.toUpperCase() === 'USDT')
-      );
+        matchedMarket = markets.find(m =>
+          m.symbol?.toUpperCase() === cleanSymbol ||
+          m.id?.toUpperCase() === rawId ||
+          m.symbol?.toUpperCase() === rawId ||
+          (m.base?.toUpperCase() === rawBase && m.quote?.toUpperCase() === 'USDT')
+        );
+      }
 
       if (matchedMarket) {
         if (typeof matchedMarket.precision?.price === 'number' && matchedMarket.precision.price > 0) {
@@ -2280,6 +2414,7 @@ export async function handleTriggerManualTradeAlert(
 
     const estimatedPnl = Math.abs(finalTakeProfit - targetEntryPrice) * (targetEntryPrice > 0 ? positionSize / targetEntryPrice : 0);
     const entryIntent = (config?.entryIntent as any) || 'WAIT_FOR_PRICE';
+    const targetTimeframe = (config?.timeframe || manifest?.supportedTimeframes?.[0] || '5m') as any;
 
     const alert: TradeAlert = {
       id: crypto.randomUUID(),
@@ -2296,7 +2431,9 @@ export async function handleTriggerManualTradeAlert(
       estimatedPnl: parseFloat(estimatedPnl.toFixed(2)),
       timestamp: new Date().toISOString(),
       status: 'pending',
-
+      source: 'MANUAL',
+      generation: undefined,
+      timeframe: targetTimeframe,
     };
 
     const botId = c.env.TRADING_BOTS.idFromName(userId);

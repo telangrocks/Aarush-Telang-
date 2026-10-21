@@ -173,16 +173,17 @@ class BackgroundMonitoringService : Service() {
     }
 
     private fun showTradeAlert(alert: com.cryptopulse.app.domain.models.BotAlert) {
-        val map = mapOf<String, Any>(
-            "id" to alert.id,
-            "symbol" to alert.symbol,
-            "entryPrice" to alert.entryPrice,
-            "stopLoss" to alert.stopLoss,
-            "takeProfit" to alert.takeProfit,
-            "estimatedPnl" to alert.estimatedPnl,
-            "strategy" to (alert.strategy ?: ""),
-            "side" to (alert.side ?: "")
-        )
+        val map = buildMap<String, Any> {
+            put("id", alert.id)
+            put("symbol", alert.symbol)
+            put("entryPrice", alert.entryPrice)
+            put("stopLoss", alert.stopLoss)
+            put("takeProfit", alert.takeProfit)
+            put("estimatedPnl", alert.estimatedPnl)
+            put("strategy", alert.strategy ?: "")
+            put("side", alert.side ?: "")
+            alert.timeframe?.let { put("timeframe", it) }
+        }
         tradeAlertManager.onNewAlertReceived(map)
     }
 }

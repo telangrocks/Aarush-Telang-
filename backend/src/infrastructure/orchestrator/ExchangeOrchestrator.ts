@@ -85,8 +85,14 @@ export class ExchangeOrchestrator {
     }
 
     try {
-      // 3. Retry Pipeline Execution
-      const value = await this.retryPolicy.execute(() => operation(adapter));
+      // 3. Retry Pipeline Execution (Disabled for non-idempotent order mutations to prevent blind duplicate submissions)
+      const isOrderMutation =
+        operationName === 'createOrder' ||
+        operationName === 'createOcoOrder' ||
+        operationName === 'emergencyClosePosition';
+      const value = isOrderMutation
+        ? await operation(adapter)
+        : await this.retryPolicy.execute(() => operation(adapter));
       circuitBreaker.recordSuccess();
 
       const durationMs = performance.now() - startTime;

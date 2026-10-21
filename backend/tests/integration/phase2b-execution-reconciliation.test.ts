@@ -63,7 +63,10 @@ describe("Phase 2B — Authoritative Execution & Fill Reconciliation Tests", () 
         prepare: vi.fn().mockImplementation((query: string) => ({
           bind: vi.fn().mockImplementation((...args: any[]) => ({
             run: vi.fn().mockImplementation(async () => {
-              if (query.includes('UPDATE trade_positions')) {
+              if (query.includes('DELETE FROM trade_positions')) {
+                const id = args[0];
+                d1Positions.delete(id);
+              } else if (query.includes('UPDATE trade_positions')) {
                 const id = args.find((a: any) => typeof a === 'string' && d1Positions.has(a)) || args[args.length - 2] || args[4] || args[1];
                 const pos = d1Positions.get(id);
                 if (pos) {
@@ -295,9 +298,8 @@ describe("Phase 2B — Authoritative Execution & Fill Reconciliation Tests", () 
     expect(data.isTerminal).toBe(true);
     expect(data.entryStatus).toBe("FAILED");
 
-    // Verify D1 updated to CANCELLED
+    // Verify D1 record deleted from active positions on terminal cancellation
     const updatedPos = d1Positions.get(alertId);
-    expect(updatedPos.status).toBe("CANCELLED");
-    expect(updatedPos.entry_status).toBe("FAILED");
+    expect(updatedPos).toBeUndefined();
   });
 });

@@ -66,17 +66,9 @@ describe("Phase 2E — Mock-Only Monitoring Isolation Adversarial Tests", () => 
           bind: vi.fn().mockImplementation((...args: any[]) => ({
             run: vi.fn().mockImplementation(async () => {
               capturedD1Updates.push({ query, args });
-              if (query.includes('UPDATE trade_positions') && query.includes("SET status = 'CLOSED'")) {
-                const id = args[5] || args[6];
-                const pos = d1Positions.get(id);
-                if (pos) {
-                  pos.status = 'CLOSED';
-                  pos.closed_at = args[0];
-                  pos.close_price = args[1];
-                  pos.realized_pnl = args[2];
-                  pos.close_reason = args[3];
-                  d1Positions.set(id, pos);
-                }
+              if (query.includes('DELETE FROM trade_positions')) {
+                const id = args[0];
+                d1Positions.delete(id);
               }
               return { success: true };
             }),
@@ -137,11 +129,9 @@ describe("Phase 2E — Mock-Only Monitoring Isolation Adversarial Tests", () => 
 
     await (bot as any).monitorOpenPositions();
 
-    // Verify D1 closed
+    // Verify D1 closed and deleted from active positions
     const updatedPos = d1Positions.get(posId);
-    expect(updatedPos.status).toBe("CLOSED");
-    expect(updatedPos.close_reason).toBe("stop_loss");
-    expect(updatedPos.close_price).toBe(1.1000);
+    expect(updatedPos).toBeUndefined();
 
     // Verify removed from DO activePositions
     const remainingActive = mockStorage.get('activePositions');
@@ -182,9 +172,7 @@ describe("Phase 2E — Mock-Only Monitoring Isolation Adversarial Tests", () => 
     await (bot as any).monitorOpenPositions();
 
     const updatedPos = d1Positions.get(posId);
-    expect(updatedPos.status).toBe("CLOSED");
-    expect(updatedPos.close_reason).toBe("take_profit");
-    expect(updatedPos.close_price).toBe(1.2500);
+    expect(updatedPos).toBeUndefined();
     expect(mockCreateOrder).not.toHaveBeenCalled();
   });
 

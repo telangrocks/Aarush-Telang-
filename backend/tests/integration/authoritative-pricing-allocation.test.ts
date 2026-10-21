@@ -649,6 +649,7 @@ describe('Authoritative Bybit Price Normalization & Trade Allocation Priority', 
       expect(capturedAlert.stopLoss).not.toBe(0.01); // No $0.01 floor!
       expect(capturedAlert.stopLoss).toBe(0.005674); // ATR based calculation: 0.005969 - 0.000295 = 0.005674
       expect(capturedAlert.takeProfit).toBe(0.006362); // Model A: 0.005969 + 0.000393 = 0.006362
+      expect(capturedAlert.timeframe).toBe('5m');
     });
 
     it('Handler Integration: 25 USDT SOPH Long Alert produces exact 25 USDT positionSize', async () => {

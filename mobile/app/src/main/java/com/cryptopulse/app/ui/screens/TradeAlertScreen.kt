@@ -243,7 +243,9 @@ fun TradeAlertScreen(
     signalPrice: Double = 0.0,
     targetEntryPrice: Double? = null,
     tradeAmountUsdt: Double = 0.0,
-    viewModel: ExchangeViewModel = hiltViewModel(),
+    strategy: String? = null,
+    timeframe: String? = null,
+    viewModel: ExchangeViewModel,
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val scope = rememberCoroutineScope()
@@ -630,7 +632,15 @@ fun TradeAlertScreen(
                                 SummaryRow("Ticker Name", candidate.pairName, Color.White, "trade_alert_pair")
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
-                                // 2. Entry Price
+                                // 2. Strategy
+                                SummaryRow("Strategy", formatStrategyName(strategy), Color.White, "trade_alert_strategy")
+                                HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
+
+                                // 3. Timeframe
+                                SummaryRow("Timeframe", formatTimeframe(timeframe), Color.White, "trade_alert_timeframe")
+                                HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
+
+                                // 4. Entry Price
                                 SummaryRow("Entry Price", "${formatPrice(entryPrice)} USDT", Color.White, "trade_alert_entry")
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
@@ -692,6 +702,24 @@ private fun SummaryRow(label: String, value: String, valueColor: Color, testTag:
             style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
         )
     }
+}
+
+internal fun formatStrategyName(strategy: String?): String {
+    if (strategy.isNullOrBlank()) return "—"
+    val clean = strategy.trim().replace(Regex("(?i)_new$"), "")
+    return when (clean.lowercase().replace(Regex("[-_\\s]"), "")) {
+        "scalperv2", "scalping", "scalper" -> "Scalper V2"
+        "momentum" -> "Momentum"
+        "breakout" -> "Breakout"
+        "meanreversion", "reversion" -> "Mean Reversion"
+        "vwap" -> "VWAP"
+        else -> clean
+    }
+}
+
+internal fun formatTimeframe(timeframe: String?): String {
+    if (timeframe.isNullOrBlank()) return "—"
+    return timeframe.trim().lowercase()
 }
 
 

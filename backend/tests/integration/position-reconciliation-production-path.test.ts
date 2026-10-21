@@ -59,19 +59,9 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
         prepare: vi.fn().mockImplementation((query: string) => ({
           bind: vi.fn().mockImplementation((...args: any[]) => ({
             run: vi.fn().mockImplementation(async () => {
-              if (query.includes('UPDATE trade_positions') && query.includes("SET status = 'CLOSED'")) {
-                // UPDATE trade_positions SET status = 'CLOSED', closed_at = ?, close_price = ?, realized_pnl = ?, close_reason = ?, updated_at = ? WHERE id = ?
-                const id = args[5];
-                const pos = d1Positions.get(id);
-                if (pos) {
-                  pos.status = 'CLOSED';
-                  pos.closed_at = args[0];
-                  pos.close_price = args[1];
-                  pos.realized_pnl = args[2];
-                  pos.close_reason = args[3];
-                  pos.updated_at = args[4];
-                  d1Positions.set(id, pos);
-                }
+              if (query.includes('DELETE FROM trade_positions')) {
+                const id = args[0];
+                d1Positions.delete(id);
               }
               return { success: true };
             }),
@@ -248,11 +238,11 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
     // Verify TradingBot queried Bybit
     expect(mockFetchPositions).toHaveBeenCalledWith("linear");
 
-    // Both positions MUST be reconciled to CLOSED in D1
+    // Both positions MUST be reconciled and deleted from active positions in D1
     const pos1 = d1Positions.get("pos-1");
     const pos2 = d1Positions.get("pos-2");
-    expect(pos1.status).toBe("CLOSED");
-    expect(pos2.status).toBe("CLOSED");
+    expect(pos1).toBeUndefined();
+    expect(pos2).toBeUndefined();
   });
 
   // 4. fetchPositions('linear') throws → ZERO D1 rows are changed
@@ -295,9 +285,9 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
 
     expect(mockFetchPositions).toHaveBeenCalledWith("linear");
 
-    // The BUY position is NOT validated by the SHORT position; recognized as closed on long side
+    // The BUY position is NOT validated by the SHORT position; recognized as closed on long side and deleted from D1
     const posBuy = d1Positions.get("pos-buy");
-    expect(posBuy.status).toBe("CLOSED");
+    expect(posBuy).toBeUndefined();
   });
 
   // 6. Two D1 rows + one Bybit position + fetchClosedPnl() contains orderId matching only one D1 order_id
@@ -321,12 +311,10 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
 
     expect(mockFetchPositions).toHaveBeenCalledWith("linear");
 
-    // ONLY the uniquely proven row is closed
+    // ONLY the uniquely proven row is closed and deleted from D1
     const posClosed = d1Positions.get("pos-closed");
     const posActive = d1Positions.get("pos-active");
-    expect(posClosed.status).toBe("CLOSED");
-    expect(posClosed.close_price).toBe(0.0063);
-    expect(posClosed.realized_pnl).toBe(8.2);
+    expect(posClosed).toBeUndefined();
 
     // The other ambiguous row MUST remain OPEN
     expect(posActive.status).toBe("OPEN");

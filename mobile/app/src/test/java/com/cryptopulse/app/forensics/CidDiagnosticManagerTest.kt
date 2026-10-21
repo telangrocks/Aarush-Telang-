@@ -34,8 +34,17 @@ class CidDiagnosticManagerTest {
         val postedBatches = CopyOnWriteArrayList<CidPostEventsRequestDto>()
         var shouldFailNetwork = false
         var failWithCode: Int? = null
+        var startSessionFailCode: Int? = null
+        var startSessionErrorBody: String? = null
 
         override suspend fun startSession(body: CidStartSessionRequestDto): Response<CidStartSessionResponseDto> {
+            if (startSessionFailCode != null) {
+                val errorJson = startSessionErrorBody ?: "{\"error\":\"Unauthorized\"}"
+                return Response.error(
+                    startSessionFailCode!!,
+                    errorJson.toResponseBody("application/json".toMediaTypeOrNull())
+                )
+            }
             return Response.success(
                 CidStartSessionResponseDto(
                     success = true,
@@ -253,5 +262,31 @@ class CidDiagnosticManagerTest {
         CidDiagnosticManager.onAnalysisPollResult(com.cryptopulse.app.core.network.NetworkResult.Success(buySnapshot), "ScalperV2")
 
         assertTrue("Session remains active through filtered bot polls", CidDiagnosticManager.isSessionActive())
+    }
+
+    @Test
+    fun testStartAuthorizedSessionFailsWithErrorBodyExtraction() {
+        val mockService = MockCidService()
+        mockService.startSessionFailCode = 401
+        mockService.startSessionErrorBody = "{\"error\":\"Unauthorized. Valid user authentication required.\"}"
+        var onResultCalled = false
+        var resultError: String? = null
+
+        CidDiagnosticManager.startAuthorizedSession(
+            cidService = mockService,
+            appVersion = "1.0.0",
+            deviceModel = "Pixel 7 Pro",
+            environment = "demo"
+        ) { success, errorMsg ->
+            onResultCalled = true
+            resultError = errorMsg
+        }
+
+        Thread.sleep(200)
+
+        assertTrue("onResult callback must be called", onResultCalled)
+        assertEquals("{\"error\":\"Unauthorized. Valid user authentication required.\"}", resultError)
+        assertFalse("Session must be inactive on failure", CidDiagnosticManager.isSessionActive())
+        assertNull("Session ID must be null on failure", CidDiagnosticManager.getSessionId())
     }
 }

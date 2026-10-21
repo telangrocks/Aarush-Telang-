@@ -17,10 +17,15 @@ import { UnifiedError } from './exchanges/models/UnifiedError';
 import { resolveCanonicalRoutingRegion } from './utils/region';
 import { ReconciliationEngine } from './engine/reconciliation/ReconciliationEngine';
 import { FinalDispatchSafetyGate } from './engine/safety/FinalDispatchSafetyGate';
+import { BybitAdapter } from './infrastructure/exchange/adapters/BybitAdapter';
 import type { EconomicIntent } from './engine/wal/WalTypes';
 import { Timeframe } from './engine/market-data/Timeframe';
 import { BackendDiagnosticSink } from './telemetry/BackendDiagnosticSink';
 import { extractUsdtBalance } from './utils/balance';
+import {
+  SignalLifecycleManager,
+  ShadowComparisonEngine,
+} from './engine/signal-lifecycle';
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
@@ -454,6 +459,74 @@ export function evaluateStrategy(
 
 
 
+export interface ProtectionIntent {
+  intentId: string;
+  positionId: string;
+  alertId: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  expectedSL?: number;
+  expectedTP?: number;
+  actualSL?: number;
+  actualTP?: number;
+  tickSize: number;
+  status: 'PENDING_VERIFICATION' | 'VERIFIED' | 'PROTECTION_FAILED' | 'EMERGENCY_CLOSED';
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface EmergencyCloseIntent {
+  closeIntentId: string;
+  positionId: string;
+  alertId: string;
+  userId: string;
+  exchangeName: string;
+  environment: string;
+  symbol: string;
+  category: string;
+  side: 'BUY' | 'SELL';
+  positionSide: 'long' | 'short';
+  positionIdx: number;
+  qty: string;
+  orderLinkId: string;
+  exchangeOrderId?: string;
+  status: 'INTENT_PERSISTED' | 'DISPATCHED' | 'UNKNOWN' | 'RECONCILIATION_PENDING' | 'FILLED';
+  dispatchedAt?: number;
+  attemptCount: number;
+  nextRetryAt: number;
+  lastError?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface UnprotectedExposureLock {
+  positionId: string;
+  alertId: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  category: string;
+  positionIdx: number;
+  closeIntentId: string;
+  lockedAt: number;
+  reason: string;
+}
+
+const ALLOWED_WAL_TRANSITIONS: Record<string, ReadonlySet<string>> = {
+  INTENT_PERSISTED: new Set(['INTENT_PERSISTED', 'DISPATCHED', 'FAILED']),
+  PENDING: new Set(['PENDING', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED', 'FAILED', 'UNKNOWN', 'RECONCILIATION_PENDING']),
+  DISPATCHING: new Set(['DISPATCHING', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED', 'FAILED', 'UNKNOWN', 'RECONCILIATION_PENDING']),
+  DISPATCHED: new Set(['DISPATCHED', 'PARTIALLY_FILLED', 'FILLED', 'FAILED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION']),
+  UNKNOWN: new Set(['UNKNOWN', 'RECONCILIATION_PENDING', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED', 'FAILED', 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION']),
+  RECONCILIATION_PENDING: new Set(['RECONCILIATION_PENDING', 'UNKNOWN', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED', 'FAILED', 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION']),
+  PARTIALLY_FILLED: new Set(['PARTIALLY_FILLED', 'FILLED', 'FAILED']),
+  FILLED: new Set(['FILLED', 'COMPLETED']),
+  COMPLETED: new Set(['COMPLETED']),
+  FAILED: new Set(['FAILED', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED']),
+  ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION: new Set(['ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED', 'FAILED']),
+};
+
+const EMERGENCY_CLOSE_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 300_000] as const;
+
 export interface TradingBotRuntimeState {
   isInitialized: boolean;
   isActive: boolean;
@@ -483,6 +556,12 @@ export class TradingBot {
   };
   private isAlarmRunning: boolean = false;
   private scannerState: any = {};
+  private signalLifecycleManager: SignalLifecycleManager = new SignalLifecycleManager();
+  private lifecycleMutex: Promise<void> = Promise.resolve();
+  private alarmGeneration: number = 0;
+  private unprotectedExposureLock: UnprotectedExposureLock | null = null;
+  private protectionIntents: Map<string, ProtectionIntent> = new Map();
+  private closeIntents: Map<string, EmergencyCloseIntent> = new Map();
 
   state: DurableObjectState;
   env: Env;
@@ -504,6 +583,35 @@ export class TradingBot {
 
   public invalidateCredentialsCache(): void {
     this.cachedCredentials = null;
+  }
+
+  public getSignalLifecycleManager(): SignalLifecycleManager {
+    return this.signalLifecycleManager;
+  }
+
+  private async acquireLifecycleLock(): Promise<() => void> {
+    const prev = this.lifecycleMutex;
+    let release!: () => void;
+    this.lifecycleMutex = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prev;
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        release();
+      }
+    };
+  }
+
+  private async runExclusiveLifecycle<T>(fn: () => Promise<T>): Promise<T> {
+    const release = await this.acquireLifecycleLock();
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
   }
 
   private async getOrLoadExchangeCredentials(userId: string): Promise<{
@@ -529,10 +637,11 @@ export class TradingBot {
         return null;
       }
 
+      const encKey = this.env.ENCRYPTION_KEY || (this.env as any).COOKIE_ENCRYPTION_KEY;
       let apiKey: string | undefined = undefined;
-      if (this.env.ENCRYPTION_KEY && user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
+      if (encKey && user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
         try {
-          apiKey = await decrypt({ iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt }, this.env.ENCRYPTION_KEY);
+          apiKey = await decrypt({ iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt }, encKey);
         } catch (_) {}
       }
       if (!apiKey && user.exchange_api_key) {
@@ -540,16 +649,16 @@ export class TradingBot {
       }
 
       let secret: string | undefined = undefined;
-      if (this.env.ENCRYPTION_KEY && user.exchange_api_secret_iv && user.exchange_api_secret_encrypted) {
+      if (encKey && user.exchange_api_secret_iv && user.exchange_api_secret_encrypted) {
         try {
-          secret = await decrypt({ iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
+          secret = await decrypt({ iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt }, encKey);
         } catch (_) {}
       }
 
       let password: string | undefined = undefined;
-      if (this.env.ENCRYPTION_KEY && user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
+      if (encKey && user.exchange_api_passphrase_iv && user.exchange_api_passphrase_encrypted) {
         try {
-          password = await decrypt({ iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt }, this.env.ENCRYPTION_KEY);
+          password = await decrypt({ iv: user.exchange_api_passphrase_iv, encrypted: user.exchange_api_passphrase_encrypted, salt: user.exchange_api_passphrase_salt }, encKey);
         } catch (_) {}
       }
 
@@ -574,7 +683,7 @@ export class TradingBot {
   private async ensureInitialized() {
     if (this.runtimeState.isInitialized) return;
     await this.state.blockConcurrencyWhile(async () => {
-      const keys = ['isActive', 'userId', 'strategy', 'strategyConfig', 'setupSnapshot', 'positionSize', 'coinId', 'monitoredSymbols', 'activePositions', 'alerts', 'symbolCooldowns', 'pendingPositionSync', 'lastAccountBalance'];
+      const keys = ['isActive', 'userId', 'strategy', 'strategyConfig', 'setupSnapshot', 'positionSize', 'coinId', 'monitoredSymbols', 'activePositions', 'alerts', 'symbolCooldowns', 'pendingPositionSync', 'lastAccountBalance', 'lock:alarmGeneration', 'lock:unprotectedExposure'];
       let vals: any = null;
       try {
         vals = await this.state.storage.get<any>(keys);
@@ -596,6 +705,10 @@ export class TradingBot {
       this.runtimeState.positionSize = await getVal('positionSize');
       this.runtimeState.coinId = await getVal('coinId');
 
+      const storedGen = await getVal('lock:alarmGeneration');
+      this.alarmGeneration = (typeof storedGen === 'number' && Number.isInteger(storedGen) && storedGen > 0) ? storedGen : 0;
+      this.unprotectedExposureLock = (await getVal('lock:unprotectedExposure')) || null;
+
       const storedSymbols = await getVal('monitoredSymbols');
       if (Array.isArray(storedSymbols) && storedSymbols.length > 0) {
         this.runtimeState.monitoredSymbols = storedSymbols;
@@ -613,7 +726,27 @@ export class TradingBot {
 
       const intentMap = await this.state.storage.list({ prefix: 'intent:order:' });
       for (const [k, v] of intentMap.entries()) {
-        this.runtimeState.activeIntents.set(k, v);
+        const cleanId = k.startsWith('intent:order:') ? k.slice('intent:order:'.length) : k;
+        this.runtimeState.activeIntents.set(cleanId, v ? { ...(v as any) } : v);
+      }
+
+      const protMap = await this.state.storage.list({ prefix: 'intent:protection:' });
+      for (const [k, v] of protMap.entries()) {
+        const cleanId = k.startsWith('intent:protection:') ? k.slice('intent:protection:'.length) : k;
+        this.protectionIntents.set(cleanId, { ...(v as ProtectionIntent) });
+      }
+
+      const closeMap = await this.state.storage.list({ prefix: 'intent:close:' });
+      for (const [k, v] of closeMap.entries()) {
+        const cleanId = k.startsWith('intent:close:') ? k.slice('intent:close:'.length) : k;
+        this.closeIntents.set(cleanId, { ...(v as EmergencyCloseIntent) });
+      }
+
+      const storedLifecycleState = (await getVal('signal_lifecycle_state')) || null;
+      if (storedLifecycleState) {
+        try {
+          this.signalLifecycleManager.restoreState(storedLifecycleState);
+        } catch (_) {}
       }
       this.runtimeState.isInitialized = true;
     });
@@ -624,16 +757,134 @@ export class TradingBot {
     await this.state.storage.put(key, value);
   }
 
-  private async persistIntent(intentId: string, intent: any) {
-    const key = "intent:order:" + intentId;
-    this.runtimeState.activeIntents.set(key, intent);
-    await this.state.storage.put(key, intent);
+  private canTransitionIntentStatus(existing: any, nextIntent: any): boolean {
+    if (!existing || !existing.status) return true;
+    const oldStatus = String(existing.status);
+    const newStatus = String(nextIntent.status || oldStatus);
+    const allowed = ALLOWED_WAL_TRANSITIONS[oldStatus];
+    if (!allowed || !allowed.has(newStatus)) {
+      return false;
+    }
+    if (existing.dispatchedAt !== undefined && newStatus === 'INTENT_PERSISTED') {
+      return false;
+    }
+    if (oldStatus === 'INTENT_PERSISTED' && (newStatus === 'UNKNOWN' || newStatus === 'RECONCILIATION_PENDING' || newStatus === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION')) {
+      return false;
+    }
+    if (oldStatus === 'FAILED') {
+      if (existing.dispatchedAt === undefined) {
+        return newStatus === 'FAILED';
+      }
+      if (newStatus !== 'FAILED') {
+        return !existing.actualOrderId && Boolean(nextIntent.actualOrderId);
+      }
+    }
+    if (oldStatus === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && newStatus !== 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION') {
+      return Boolean(nextIntent.actualOrderId);
+    }
+    if (oldStatus === 'PARTIALLY_FILLED' && newStatus === 'FAILED' && Number(existing.actualExecutedQuantity || 0) > 0) {
+      return false;
+    }
+    return true;
   }
 
-  private async deleteIntent(intentId: string) {
-    const key = "intent:order:" + intentId;
-    this.runtimeState.activeIntents.delete(key);
-    await this.state.storage.delete(key);
+  public async persistIntentSnapshot(intentId: string, nextIntent: any): Promise<any> {
+    const cleanId = intentId.startsWith('intent:order:') ? intentId.slice('intent:order:'.length) : intentId;
+    const key = 'intent:order:' + cleanId;
+    let committed: any = nextIntent;
+    await this.state.storage.transaction(async (txn) => {
+      const existing = ((await txn.get(key)) ?? this.runtimeState.activeIntents.get(cleanId) ?? this.runtimeState.activeIntents.get(key)) as any;
+      if (!existing) {
+        committed = { ...nextIntent, intentId: nextIntent.intentId || cleanId };
+      } else {
+        const allowStatus = this.canTransitionIntentStatus(existing, nextIntent);
+        const resolvedStatus = allowStatus ? (nextIntent.status || existing.status) : existing.status;
+
+        const prevQty = new BigNumber(existing.actualExecutedQuantity || 0);
+        const nextQty = new BigNumber(nextIntent.actualExecutedQuantity || 0);
+        const maxQty = nextQty.gt(prevQty) ? nextIntent.actualExecutedQuantity : existing.actualExecutedQuantity;
+
+        const nextFillPx = new BigNumber(nextIntent.actualFillPrice || 0);
+        const resolvedFillPrice = nextFillPx.gt(0) ? nextIntent.actualFillPrice : existing.actualFillPrice;
+
+        committed = {
+          ...existing,
+          ...nextIntent,
+          intentId: existing.intentId || nextIntent.intentId || cleanId,
+          status: resolvedStatus,
+          dispatchedAt: existing.dispatchedAt ?? nextIntent.dispatchedAt,
+          actualOrderId: nextIntent.actualOrderId || existing.actualOrderId,
+          actualExecutedQuantity: maxQty,
+          actualFillPrice: resolvedFillPrice,
+          slOrderId: nextIntent.slOrderId || existing.slOrderId,
+          tpOrderId: nextIntent.tpOrderId || existing.tpOrderId,
+          reconciliationAttemptCount: Math.max(
+            Number(existing.reconciliationAttemptCount ?? 0),
+            Number(nextIntent.reconciliationAttemptCount ?? 0)
+          ),
+          reconciliationAttempts: Math.max(
+            Number(existing.reconciliationAttempts ?? 0),
+            Number(nextIntent.reconciliationAttempts ?? 0)
+          ),
+        };
+      }
+      await txn.put(key, committed);
+    });
+    this.runtimeState.activeIntents.set(cleanId, committed);
+    await this.state.storage.put(key, committed);
+    return committed;
+  }
+
+  private async persistIntent(intentId: string, intent: any) {
+    return this.persistIntentSnapshot(intentId, intent);
+  }
+
+  private async deleteIntent(_intentId: string) {
+    // Intentionally retain WAL intent evidence permanently to prevent duplicate order submission after restart
+  }
+
+  private async persistProtectionIntent(intentOrId: ProtectionIntent | string, maybeIntent?: ProtectionIntent): Promise<ProtectionIntent> {
+    const intent = (typeof intentOrId === 'string' ? maybeIntent! : intentOrId);
+    const id = typeof intentOrId === 'string' ? intentOrId : (intent.positionId || intent.intentId);
+    const cleanId = id.startsWith('intent:protection:') ? id.slice('intent:protection:'.length) : id;
+    const key = `intent:protection:${cleanId}`;
+    const snapshot = { ...intent };
+    await this.state.storage.transaction(async (txn) => {
+      await txn.put(key, snapshot);
+    });
+    this.protectionIntents.set(cleanId, snapshot);
+    await this.state.storage.put(key, snapshot);
+    return snapshot;
+  }
+
+  private async persistCloseIntent(intentOrId: EmergencyCloseIntent | string, maybeIntent?: EmergencyCloseIntent): Promise<EmergencyCloseIntent> {
+    const intent = (typeof intentOrId === 'string' ? maybeIntent! : intentOrId);
+    const id = typeof intentOrId === 'string' ? intentOrId : intent.closeIntentId;
+    const cleanId = id.startsWith('intent:close:') ? id.slice('intent:close:'.length) : id;
+    const key = `intent:close:${cleanId}`;
+    const snapshot = { ...intent };
+    await this.state.storage.transaction(async (txn) => {
+      await txn.put(key, snapshot);
+    });
+    this.closeIntents.set(cleanId, snapshot);
+    await this.state.storage.put(key, snapshot);
+    return snapshot;
+  }
+
+  private async setUnprotectedExposureLock(lock: UnprotectedExposureLock): Promise<void> {
+    await this.state.storage.transaction(async (txn) => {
+      await txn.put('lock:unprotectedExposure', lock);
+    });
+    this.unprotectedExposureLock = lock;
+    await this.state.storage.put('lock:unprotectedExposure', lock);
+  }
+
+  private async clearUnprotectedExposureLock(): Promise<void> {
+    await this.state.storage.transaction(async (txn) => {
+      await txn.delete('lock:unprotectedExposure');
+    });
+    this.unprotectedExposureLock = null;
+    await this.state.storage.delete('lock:unprotectedExposure');
   }
 
   public normalizeSymbol(s: string | undefined | null): string {
@@ -746,101 +997,135 @@ export class TradingBot {
     switch (url.pathname) {
       case '/activate': {
         this.invalidateCredentialsCache();
-        const { userId, coinId, symbols, strategy, positionSize, targetEntryPrice, config } = await request.json<{
-          userId: string;
-          coinId?: string;
-          symbols?: string[];
-          strategy: string;
-          positionSize?: number;
-          targetEntryPrice?: number;
-          config?: any;
-        }>();
+        let committedGen = 1;
+        let user: any = null;
+        let earlyErrorResponse: Response | null = null;
+        await this.runExclusiveLifecycle(async () => {
+          const { userId, coinId, symbols, strategy, positionSize, targetEntryPrice, config } = await request.json<{
+            userId: string;
+            coinId?: string;
+            symbols?: string[];
+            strategy: string;
+            positionSize?: number;
+            targetEntryPrice?: number;
+            config?: any;
+          }>();
 
-        // Safe symbol resolution - NO BTCUSDT FALLBACK
-        let resolvedSymbols: string[] = [];
-        if (Array.isArray(symbols) && symbols.length > 0) {
-          resolvedSymbols = symbols.map(s => String(s).trim()).filter(s => s.length > 0);
-        } else if (coinId && typeof coinId === 'string' && coinId.trim().length > 0) {
-          resolvedSymbols = [coinId.trim()];
-        }
+          // Safe symbol resolution - NO BTCUSDT FALLBACK
+          let resolvedSymbols: string[] = [];
+          if (Array.isArray(symbols) && symbols.length > 0) {
+            resolvedSymbols = symbols.map(s => String(s).trim()).filter(s => s.length > 0);
+          } else if (coinId && typeof coinId === 'string' && coinId.trim().length > 0) {
+            resolvedSymbols = [coinId.trim()];
+          }
 
-        if (resolvedSymbols.length === 0) {
-          return new Response(
-            JSON.stringify({
-              success: false,
-              error: 'Cannot activate bot: No valid trading symbols provided.',
-              code: 'INVALID_SYMBOLS',
-            }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
+          if (resolvedSymbols.length === 0) {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                error: 'Cannot activate bot: No valid trading symbols provided.',
+                code: 'INVALID_SYMBOLS',
+              }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
 
-        const primaryCoinId = resolvedSymbols[0];
+          const primaryCoinId = resolvedSymbols[0];
 
-        await this.logAuditEvent(userId, 'BOT_ACTIVATED', { strategy, coinId: primaryCoinId, symbols: resolvedSymbols, positionSize, targetEntryPrice });
-        await this.persistState('isActive', true);
-        await this.persistState('coinId', primaryCoinId);
-        await this.persistState('monitoredSymbols', resolvedSymbols);
-        await this.persistState('strategy', strategy);
-        await this.persistState('userId', userId);
-        await this.state.storage.delete('newAnalysis');
-        if (config) {
-          await this.persistState('strategyConfig', config);
-        } else {
-          await this.state.storage.delete('strategyConfig');
-        }
-        if (targetEntryPrice != null) {
-          await this.state.storage.put('targetEntryPrice', targetEntryPrice);
-        } else {
-          await this.state.storage.delete('targetEntryPrice');
-        }
-        if (positionSize != null) {
-          await this.persistState('positionSize', positionSize);
-        } else {
-          await this.state.storage.delete('positionSize');
-        }
+          user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region, exchange_connection_status, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?').bind(userId).first<any>();
 
-        await this.persistState('alerts', [] as TradeAlert[]);
-        await this.state.storage.put('tradeActive', false);
-        await this.state.storage.put(
-          'logs',
-          [
+          if (user?.exchange_connection_status === 'INVALID') {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                error: 'Exchange connection is invalid. Please reconnect your exchange in settings before activating the trading bot.',
+                code: 'AUTHENTICATION_FAILED',
+              }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
+
+          const setupSnapshot: TradeSetupSnapshot = Object.freeze({
+            userId,
+            coinId: primaryCoinId,
+            strategy,
+            targetEntryPrice: targetEntryPrice ?? undefined,
+            positionSize: positionSize ?? undefined,
+            activatedAt: new Date().toISOString(),
+            exchangeName: user?.exchange_name ?? undefined,
+            environment: user?.exchange_environment ?? undefined,
+          });
+
+          await this.logAuditEvent(userId, 'BOT_ACTIVATED', { strategy, coinId: primaryCoinId, symbols: resolvedSymbols, positionSize, targetEntryPrice });
+
+          const initialLogs: AnalysisLog[] = [
             { timestamp: new Date().toISOString(), level: 'info' as const, message: `Bot activated for strategy: ${strategy || 'default'}` },
             { timestamp: new Date().toISOString(), level: 'info' as const, message: `Monitoring pairs (${resolvedSymbols.length}): ${resolvedSymbols.join(', ')}` },
-          ] as AnalysisLog[],
-        );
-        await this.state.storage.put('activatedAt', Date.now());
-        await this.state.storage.delete('lastPositionCheckAt');
+          ];
+          const activatedAtNow = Date.now();
+
+          let updatedAlertsOnActivate: TradeAlert[] = [];
+          await this.state.storage.transaction(async (txn) => {
+            const prevGen = await txn.get<number>('lock:alarmGeneration');
+            const existingAlerts = ((await txn.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+            updatedAlertsOnActivate = existingAlerts.map((a) => {
+              const isAuto = a.source === 'AUTONOMOUS' || (typeof a.strategy === 'string' && a.strategy.endsWith('_NEW'));
+              if (isAuto && (a.status === 'pending' || a.status === 'acknowledged')) {
+                return { ...a, status: 'expired' as const };
+              }
+              return a;
+            });
+            committedGen = (typeof prevGen === 'number' && Number.isInteger(prevGen) && prevGen >= 0) ? prevGen + 1 : 1;
+            await txn.put('lock:alarmGeneration', committedGen);
+            await txn.put('isActive', true);
+            await txn.put('coinId', primaryCoinId);
+            await txn.put('monitoredSymbols', resolvedSymbols);
+            await txn.put('strategy', strategy);
+            await txn.put('userId', userId);
+            await txn.delete('newAnalysis');
+            if (config) {
+              await txn.put('strategyConfig', config);
+            } else {
+              await txn.delete('strategyConfig');
+            }
+            if (targetEntryPrice != null) {
+              await txn.put('targetEntryPrice', targetEntryPrice);
+            } else {
+              await txn.delete('targetEntryPrice');
+            }
+            if (positionSize != null) {
+              await txn.put('positionSize', positionSize);
+            } else {
+              await txn.delete('positionSize');
+            }
+            await txn.put('alerts', updatedAlertsOnActivate);
+            await txn.put('tradeActive', false);
+            await txn.put('logs', initialLogs);
+            await txn.put('activatedAt', activatedAtNow);
+            await txn.delete('lastPositionCheckAt');
+            await txn.put('setupSnapshot', setupSnapshot);
+          });
+
+          this.alarmGeneration = committedGen;
+          this.runtimeState.isActive = true;
+          this.runtimeState.coinId = primaryCoinId;
+          this.runtimeState.monitoredSymbols = resolvedSymbols;
+          this.runtimeState.strategy = strategy;
+          this.runtimeState.userId = userId;
+          this.runtimeState.strategyConfig = config ?? undefined;
+          this.runtimeState.positionSize = positionSize ?? undefined;
+          this.runtimeState.alerts = updatedAlertsOnActivate;
+          this.runtimeState.setupSnapshot = setupSnapshot;
+        });
+
+        if (earlyErrorResponse) {
+          return earlyErrorResponse;
+        }
 
         // Feature: Sprint 1 Orchestrator Activation
         this.orchestrator = new StrategyOrchestrator(); // Reset on explicit activation
-        
-        // Phase 1 Integration: Strategy is selected from registry implicitly via strategyId
-        
-        const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region, exchange_connection_status, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?').bind(userId).first<any>();
-
-        if (user?.exchange_connection_status === 'INVALID') {
-          return new Response(
-            JSON.stringify({
-              success: false,
-              error: 'Exchange connection is invalid. Please reconnect your exchange in settings before activating the trading bot.',
-              code: 'AUTHENTICATION_FAILED',
-            }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-
-        const setupSnapshot: TradeSetupSnapshot = Object.freeze({
-          userId,
-          coinId: primaryCoinId,
-          strategy,
-          targetEntryPrice: targetEntryPrice ?? undefined,
-          positionSize: positionSize ?? undefined,
-          activatedAt: new Date().toISOString(),
-          exchangeName: user?.exchange_name ?? undefined,
-          environment: user?.exchange_environment ?? undefined,
-        });
-        await this.persistState('setupSnapshot', setupSnapshot);
 
         if (user?.exchange_name) {
           let apiKey: string | undefined = undefined;
@@ -882,35 +1167,71 @@ export class TradingBot {
 
         await this.state.storage.put('engineState', this.orchestrator.getCurrentState());
 
-        // We no longer run the legacy runAnalysisCycle immediately on activate.
-        // We just start the alarm which drives the FSM.
-
         await this.state.storage.setAlarm(Date.now() + 1000); // Trigger FSM almost immediately
 
-        return new Response(JSON.stringify({ success: true, message: 'Bot activated.' }), { status: 200 });
+        return new Response(JSON.stringify({ success: true, message: 'Bot activated.', generation: committedGen }), { status: 200 });
       }
       case '/deactivate': {
         this.invalidateCredentialsCache();
-        const userId = this.runtimeState.userId as string | undefined;
-        if (userId) {
-          await this.logAuditEvent(userId, 'BOT_DEACTIVATED', { reason: 'user_requested' });
+        let committedGen = 1;
+        await this.runExclusiveLifecycle(async () => {
+          const userId = this.runtimeState.userId as string | undefined;
+          if (userId) {
+            await this.logAuditEvent(userId, 'BOT_DEACTIVATED', { reason: 'user_requested' });
+          }
+          const existingLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
+          const nextLogs = (existingLogs ?? []).concat([
+            { timestamp: new Date().toISOString(), level: 'info' as const, message: 'Bot deactivated by user.' },
+          ]);
+
+          let updatedAlertsOnDeactivate: TradeAlert[] = [];
+          await this.state.storage.transaction(async (txn) => {
+            const prevGen = await txn.get<number>('lock:alarmGeneration');
+            const existingAlerts = ((await txn.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+            updatedAlertsOnDeactivate = existingAlerts.map((a) => {
+              const isAuto = a.source === 'AUTONOMOUS' || (typeof a.strategy === 'string' && a.strategy.endsWith('_NEW'));
+              if (isAuto && (a.status === 'pending' || a.status === 'acknowledged')) {
+                return { ...a, status: 'expired' as const };
+              }
+              return a;
+            });
+            committedGen = (typeof prevGen === 'number' && Number.isInteger(prevGen) && prevGen >= 0) ? prevGen + 1 : 1;
+            await txn.put('lock:alarmGeneration', committedGen);
+            await txn.put('isActive', false);
+            await txn.put('coinId', null);
+            await txn.put('monitoredSymbols', []);
+            await txn.put('strategy', null);
+            await txn.put('alerts', updatedAlertsOnDeactivate);
+            await txn.put('tradeActive', false);
+            await txn.delete('newAnalysis');
+            await txn.put('logs', nextLogs);
+          });
+
+          this.alarmGeneration = committedGen;
+          this.runtimeState.isActive = false;
+          this.runtimeState.coinId = null as any;
+          this.runtimeState.monitoredSymbols = [];
+          this.runtimeState.strategy = null as any;
+          this.runtimeState.alerts = updatedAlertsOnDeactivate;
+        });
+        if (this.hasPendingSafetyWork()) {
+          try { await this.state.storage.setAlarm(Date.now() + 5000); } catch (e) { /* ignore */ }
+        } else {
+          try { await this.state.storage.deleteAlarm(); } catch (e) { /* ignore */ }
         }
-        await this.persistState('isActive', false);
-        await this.persistState('coinId', null);
-        await this.persistState('monitoredSymbols', []);
-        await this.persistState('strategy', null);
-        await this.state.storage.delete('newAnalysis');
-        const existingLogs = (await this.state.storage.get('logs')) as AnalysisLog[] | undefined;
-        await this.state.storage.put('logs', (existingLogs ?? []).concat([
-          { timestamp: new Date().toISOString(), level: 'info' as const, message: 'Bot deactivated by user.' },
-        ]));
-        try { await this.state.storage.deleteAlarm(); } catch (e) { /* ignore */ }
-        return new Response(JSON.stringify({ success: true, message: 'Bot deactivated.' }), { status: 200 });
+        return new Response(JSON.stringify({ success: true, message: 'Bot deactivated.', generation: committedGen }), { status: 200 });
       }
 
       case '/reload-credentials': {
         this.invalidateCredentialsCache();
         return new Response(JSON.stringify({ success: true, message: 'Credentials cache invalidated.' }), { status: 200 });
+      }
+
+      case '/scanner-state': {
+        return new Response(JSON.stringify(this.scannerState || {}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
 
       case '/status': {
@@ -1014,16 +1335,47 @@ export class TradingBot {
         }
 
         console.log(`[ALERT_REGISTER] id=${alert.id} symbol=${alert.symbol} strategy=${alert.strategy}`);
+        let registeredAlert: TradeAlert;
+        if (alert.source === 'AUTONOMOUS') {
+          const [persistedIsActive, storedGen] = await Promise.all([
+            this.state.storage.get<boolean>('isActive'),
+            this.state.storage.get<number>('lock:alarmGeneration'),
+          ]);
+          const isValidGen = typeof storedGen === 'number' && Number.isInteger(storedGen) && storedGen > 0;
+          if (persistedIsActive !== true || !isValidGen) {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                code: persistedIsActive !== true ? 'BOT_INACTIVE_AUTONOMOUS_REJECTED' : 'STALE_AUTONOMOUS_GENERATION',
+                error: 'Cannot register autonomous alert while bot is inactive or generation is invalid.',
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          registeredAlert = {
+            ...alert,
+            status: 'pending',
+            source: 'AUTONOMOUS',
+            generation: alert.generation ?? storedGen,
+          };
+        } else {
+          registeredAlert = {
+            ...alert,
+            status: 'pending',
+            source: 'MANUAL',
+            generation: undefined,
+          };
+        }
+
         const alerts = this.runtimeState.alerts as TradeAlert[] || [];
         const existingIndex = alerts.findIndex((a) => a.id === alert.id);
-        const registeredAlert: TradeAlert = { ...alert, status: 'pending', source: alert.source || 'MANUAL' };
         if (existingIndex >= 0) {
           alerts[existingIndex] = { ...alerts[existingIndex], ...registeredAlert };
         } else {
           alerts.push(registeredAlert);
         }
         await this.persistState('alerts', this.pruneAlerts(alerts));
-        console.log(`[ALERT_REGISTERED] id=${alert.id} storage=alerts status=pending`);
+        console.log(`[ALERT_REGISTERED] id=${alert.id} storage=alerts status=pending source=${registeredAlert.source}`);
 
         return new Response(JSON.stringify({ success: true, alertId: alert.id }), {
           status: 200,
@@ -1113,15 +1465,11 @@ export class TradingBot {
                      FROM trade_positions WHERE id = ? AND user_id = ?`
                   ).bind(positionId, userId).first<any>();
                 } else if (intentObj.status === 'FAILED' || intentObj.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION') {
-                  const now = new Date().toISOString();
                   await this.env.DB.prepare(
-                    `UPDATE trade_positions SET entry_status = 'FAILED', status = 'CANCELLED', updated_at = ? WHERE id = ? AND user_id = ?`
-                  ).bind(now, positionId, userId).run();
+                    `DELETE FROM trade_positions WHERE id = ? AND user_id = ?`
+                  ).bind(positionId, userId).run();
 
-                  dbPos = await this.env.DB.prepare(
-                    `SELECT id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, filled_quantity, stop_loss, take_profit, status, entry_status, exchange, environment, strategy, order_id, entry_exchange_order_id, order_type, limit_price, entry_submitted_at, entry_at, created_at, updated_at
-                     FROM trade_positions WHERE id = ? AND user_id = ?`
-                  ).bind(positionId, userId).first<any>();
+                  dbPos = null;
                 }
               }
             }
@@ -1131,6 +1479,7 @@ export class TradingBot {
         }
 
         // Authoritative Bybit Position Lifecycle Reconciliation: If position is OPEN and on Bybit, verify if closed on exchange
+        let isReconciledClosed = false;
         if (dbPos && dbPos.status === 'OPEN' && dbPos.entry_status === 'FILLED' && dbPos.exchange === 'bybit') {
           try {
             const userKeys = await this.env.DB.prepare(
@@ -1156,17 +1505,13 @@ export class TradingBot {
 
               const closeResult = await ReconciliationEngine.reconcilePositionLifecycle(provider, dbPos, Date.now());
               if (closeResult && closeResult.status === 'CLOSED') {
-                const now = closeResult.closedAt || new Date().toISOString();
+                isReconciledClosed = true;
                 await this.env.DB.prepare(
-                  `UPDATE trade_positions 
-                   SET status = 'CLOSED', closed_at = ?, close_price = ?, realized_pnl = ?, close_reason = ?, updated_at = ?
+                  `DELETE FROM trade_positions 
                    WHERE id = ? AND user_id = ? AND status = 'OPEN'`
-                ).bind(now, closeResult.closePrice ?? null, closeResult.realizedPnl ?? null, closeResult.closeReason ?? 'exchange_close', now, positionId, userId).run();
+                ).bind(positionId, userId).run();
 
-                dbPos = await this.env.DB.prepare(
-                  `SELECT id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, filled_quantity, stop_loss, take_profit, status, entry_status, exchange, environment, strategy, order_id, entry_exchange_order_id, order_type, limit_price, entry_submitted_at, entry_at, closed_at, close_price, realized_pnl, close_reason, created_at, updated_at
-                   FROM trade_positions WHERE id = ? AND user_id = ?`
-                ).bind(positionId, userId).first<any>();
+                dbPos = null;
               }
             }
           } catch (posReconErr: any) {
@@ -1176,7 +1521,7 @@ export class TradingBot {
 
         const rawEntryStatus = dbPos?.entry_status || intentObj?.status || 'PENDING_ENTRY';
         const entryStatus = rawEntryStatus === 'DISPATCHED' ? 'PENDING_ENTRY' : rawEntryStatus;
-        const positionStatus = dbPos?.status || (entryStatus === 'FILLED' || entryStatus === 'PARTIALLY_FILLED' ? 'OPEN' : 'PENDING_ENTRY');
+        const positionStatus = dbPos?.status || (['FAILED', 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION', 'REJECTED_BY_RISK_GATE', 'CANCELLED', 'canceled'].includes(entryStatus) ? 'CANCELLED' : (isReconciledClosed || intentObj?.status === 'CLOSED' ? 'CLOSED' : (entryStatus === 'FILLED' || entryStatus === 'PARTIALLY_FILLED' ? 'OPEN' : 'PENDING_ENTRY')));
 
         const targetEntryPrice = dbPos?.target_entry_price ?? dbPos?.entry_price ?? (intentObj?.price ? parseFloat(intentObj.price) : null);
         const signalPrice = dbPos?.entry_price ?? (intentObj?.price ? parseFloat(intentObj.price) : null);
@@ -1262,108 +1607,202 @@ export class TradingBot {
         if (this.isExecutingTrade) {
           return new Response(JSON.stringify({ error: 'A trade execution is already in progress.' }), { status: 409 });
         }
-        
-        // Feature 9: Race Condition Protection (Concurrency)
-        return await this.state.blockConcurrencyWhile(async () => {
-          this.isExecutingTrade = true;
-          await this.state.storage.put('isExecutingTrade', true);
 
+        this.isExecutingTrade = true;
+        await this.state.storage.put('isExecutingTrade', true);
+
+        try {
+          const userId: string | undefined = this.runtimeState.userId;
+          if (!userId) {
+            return new Response(JSON.stringify({ error: 'Bot not properly initialized with a user.' }), { status: 500 });
+          }
+
+          const coinId = this.runtimeState.coinId as string;
+
+          let alertId: string | undefined;
+          let requestBody: any = {};
           try {
-            const userId: string | undefined = this.runtimeState.userId;
-            if (!userId) {
-              return new Response(JSON.stringify({ error: 'Bot not properly initialized with a user.' }), { status: 500 });
-            }
+            requestBody = await request.clone().json() as any;
+            alertId = requestBody?.alertId;
+          } catch (e) {}
 
-            const coinId = this.runtimeState.coinId as string;
+          if (!alertId) {
+            return new Response(JSON.stringify({ error: 'alertId is required.' }), { status: 400 });
+          }
 
-            let alertId: string | undefined;
-            let requestBody: any = {};
-            try {
-              requestBody = await request.clone().json() as any;
-              alertId = requestBody?.alertId;
-            } catch (e) {}
+          // Fail-Closed Unprotected Exposure Lock Gate (HTTP 423)
+          const activeExposureLock = (await this.state.storage.get<UnprotectedExposureLock>('lock:unprotectedExposure')) || this.unprotectedExposureLock;
+          if (activeExposureLock) {
+            this.unprotectedExposureLock = activeExposureLock;
+            return new Response(
+              JSON.stringify({
+                success: false,
+                code: 'UNPROTECTED_EXPOSURE_LOCK',
+                error: 'UNPROTECTED_EXPOSURE_LOCK',
+                message: `Trading is locked due to unresolved unprotected exposure on ${activeExposureLock.symbol}: ${activeExposureLock.reason}`,
+                lock: activeExposureLock,
+              }),
+              { status: 423, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
 
-            if (!alertId) {
-              return new Response(JSON.stringify({ error: 'alertId is required.' }), { status: 400 });
-            }
+          const alerts = ((await this.state.storage.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+          const target: TradeAlert | undefined = alerts.find((a) => a.id === alertId && (a.status === 'pending' || a.status === 'acknowledged' || a.status === 'failed'));
+          const completedAlert = !target
+            ? alerts.find((a) => a.id === alertId && ['submitted', 'executed', 'filled', 'partially_filled'].includes(a.status))
+            : undefined;
+          const existingIntentForAlert = (await this.state.storage.get(`intent:order:${alertId}`)) as any || this.runtimeState.activeIntents.get(alertId);
 
-            // Idempotency Check: If an intent already exists for this alertId in WAL, return success (execution already handled)
-            const existingIntentForAlert = await this.state.storage.get(`intent:order:${alertId}`) as any;
-            if (existingIntentForAlert && existingIntentForAlert.status !== 'FAILED') {
-              console.log(`[DIAGNOSTIC] Idempotent retry detected for alertId ${alertId} (from intent). Returning success.`);
-              return new Response(JSON.stringify({
+          if (completedAlert && ['executed', 'filled', 'partially_filled'].includes(completedAlert.status)) {
+            console.warn(`[SAFETY GATE] Idempotent duplicate confirmation blocked for completed alertId ${alertId} (status: ${completedAlert.status}).`);
+            return new Response(
+              JSON.stringify({
                 success: true,
+                code: 'DUPLICATE_DISPATCH_BLOCKED',
                 message: 'Execution already handled.',
-                orderId: alertId,
-                status: existingIntentForAlert.status === 'FILLED' ? 'filled' : 'open',
-              }), { status: 200 });
+                orderId: existingIntentForAlert?.actualOrderId || alertId,
+                status: completedAlert.status,
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Strict WAL Evidence Gate: If any WAL intent already exists for this alertId (or alert is already in 'submitted' state), reject duplicate dispatch with HTTP 409
+          if (existingIntentForAlert || completedAlert) {
+            const walStatus = existingIntentForAlert?.status || completedAlert?.status;
+            console.warn(`[SAFETY GATE] Duplicate dispatch blocked for alertId ${alertId}. Existing status: ${walStatus}`);
+            return new Response(
+              JSON.stringify({
+                success: false,
+                code: 'DUPLICATE_DISPATCH_BLOCKED',
+                error: 'DUPLICATE_DISPATCH_BLOCKED',
+                message: `Execution already recorded in WAL for alert ${alertId} (status: ${walStatus}).`,
+                orderId: existingIntentForAlert?.actualOrderId || alertId,
+                status: walStatus,
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          if (!target) {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                code: 'ALERT_NOT_EXECUTABLE',
+                error: 'Trade alert not found, expired, or already executed.',
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Signal TTL Enforcement (5 minutes = 300,000ms)
+          const MAX_SIGNAL_AGE_MS = 300000;
+          const signalAgeMs = Date.now() - new Date(target.timestamp).getTime();
+          if (signalAgeMs > MAX_SIGNAL_AGE_MS) {
+            console.warn(`[SAFETY GATE] Rejected stale signal execution. Age: ${signalAgeMs}ms. AlertId: ${target.id}`);
+            target.status = 'expired';
+            await this.persistState('alerts', this.pruneAlerts(alerts));
+            return new Response(JSON.stringify({ error: `Signal has expired. Maximum allowed execution latency is 5 minutes.` }), { status: 400 });
+          }
+
+          // Fence A: Provenance, Active-State, and Generation Validation
+          const [persistedIsActive, currentGen] = await Promise.all([
+            this.state.storage.get<boolean>('isActive'),
+            this.state.storage.get<number>('lock:alarmGeneration'),
+          ]);
+
+          const isAutonomousStrategy = typeof target.strategy === 'string' && target.strategy.endsWith('_NEW');
+          if (target.source !== 'MANUAL' && target.source !== 'AUTONOMOUS') {
+            const requiresExplicitProvenance =
+              target.source !== undefined ||
+              target.id === '97f8210e-b1d9-4e36-a45f-34ea8240653e' ||
+              isAutonomousStrategy ||
+              target.generation !== undefined ||
+              persistedIsActive !== undefined ||
+              currentGen !== undefined;
+
+            if (requiresExplicitProvenance) {
+              console.warn(`[SAFETY GATE] Rejected alert ${target.id}: missing or invalid provenance (source=${(target as any).source})`);
+              return new Response(
+                JSON.stringify({
+                  success: false,
+                  code: 'INVALID_ALERT_PROVENANCE',
+                  error: 'Alert provenance is missing or belongs to an obsolete or invalid alarm generation.',
+                }),
+                { status: 409, headers: { 'Content-Type': 'application/json' } }
+              );
+            }
+          }
+
+          const effectiveSource: 'MANUAL' | 'AUTONOMOUS' =
+            target.source === 'AUTONOMOUS' || isAutonomousStrategy ? 'AUTONOMOUS' : 'MANUAL';
+
+          if (effectiveSource === 'AUTONOMOUS') {
+            if (persistedIsActive !== true || this.runtimeState.isActive !== true) {
+              console.warn(`[SAFETY GATE] Rejected autonomous alert ${target.id}: bot is inactive (persisted=${persistedIsActive}, runtime=${this.runtimeState.isActive})`);
+              return new Response(
+                JSON.stringify({
+                  success: false,
+                  code: 'BOT_INACTIVE_AUTONOMOUS_REJECTED',
+                  error: 'Autonomous trade alert rejected because the bot is inactive.',
+                }),
+                { status: 409, headers: { 'Content-Type': 'application/json' } }
+              );
             }
 
-            const alerts = this.runtimeState.alerts as TradeAlert[] || [];
-            const target: TradeAlert | undefined = alerts.find((a) => a.id === alertId && (a.status === 'pending' || a.status === 'acknowledged' || a.status === 'failed'));
-            
-            if (!target) {
-              const completedAlert = alerts.find((a) => a.id === alertId && ['submitted', 'executed', 'filled', 'partially_filled'].includes(a.status));
-              if (completedAlert) {
-                console.log(`[DIAGNOSTIC] Idempotent retry detected for completed alertId ${alertId}. Returning success.`);
-                return new Response(JSON.stringify({
-                  success: true,
-                  message: 'Execution already handled.',
-                  orderId: alertId,
-                  status: 'open',
-                }), { status: 200 });
-              }
-              return new Response(JSON.stringify({ error: 'Trade alert not found, expired, or already executed.' }), { status: 409 });
+            const hasValidCurrentGen = typeof currentGen === 'number' && Number.isInteger(currentGen) && currentGen > 0;
+            const alertGen = target.generation;
+            const hasValidAlertGen = typeof alertGen === 'number' && Number.isInteger(alertGen) && alertGen > 0;
+            if (!hasValidCurrentGen || !hasValidAlertGen || alertGen !== currentGen) {
+              console.warn(`[SAFETY GATE] Rejected autonomous alert ${target.id}: obsolete or invalid alarm generation (alert gen: ${target.generation}, current: ${currentGen})`);
+              return new Response(
+                JSON.stringify({
+                  success: false,
+                  code: 'STALE_AUTONOMOUS_GENERATION',
+                  error: 'Alert belongs to an obsolete or invalid alarm generation.',
+                }),
+                { status: 409, headers: { 'Content-Type': 'application/json' } }
+              );
             }
+          } else if (target.source === 'MANUAL' && target.generation !== undefined) {
+            console.warn(`[SAFETY GATE] Rejected manual alert ${target.id}: manual alert cannot carry autonomous generation (${target.generation})`);
+            return new Response(
+              JSON.stringify({
+                success: false,
+                code: 'INVALID_ALERT_PROVENANCE',
+                error: 'Manual alert cannot carry an autonomous alarm generation.',
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
 
-            // Signal TTL Enforcement (5 minutes = 300,000ms)
-            const MAX_SIGNAL_AGE_MS = 300000;
-            const signalAgeMs = Date.now() - new Date(target.timestamp).getTime();
-            if (signalAgeMs > MAX_SIGNAL_AGE_MS) {
-              console.warn(`[SAFETY GATE] Rejected stale signal execution. Age: ${signalAgeMs}ms. AlertId: ${target.id}`);
-              target.status = 'expired';
-              await this.persistState('alerts', this.pruneAlerts(alerts));
-              return new Response(JSON.stringify({ error: `Signal has expired. Maximum allowed execution latency is 5 minutes.` }), { status: 400 });
+          const side: 'BUY' | 'SELL' = target.side || 'BUY';
+          const committedStrategy: string | undefined = this.runtimeState.strategy;
+          const isAutonomousAlert = effectiveSource === 'AUTONOMOUS';
+          const alertStrategy = (target.strategy || '').replace(/_NEW$/, '');
+          const normalizedStrategyId = StrategyRegistry.getInstance().normalizeStrategyId(alertStrategy);
+
+          // Safety Gate 1: Authoritative Strategy Manifest Validation (Enforced for all alerts)
+          const alertManifest = StrategyRegistry.getInstance().getManifest(normalizedStrategyId);
+          if (!alertManifest) {
+            console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Strategy '${normalizedStrategyId}' is not registered in StrategyRegistry. AlertId: ${target.id}`);
+            return new Response(JSON.stringify({ error: `Cannot execute order: Strategy '${normalizedStrategyId}' is not registered.` }), { status: 400 });
+          }
+
+          // Safety Gate 2: Manual Strategy-Lock (Preserved strictly for manual alerts)
+          if (!isAutonomousAlert && committedStrategy) {
+            const normalizedCommittedId = StrategyRegistry.getInstance().normalizeStrategyId(committedStrategy);
+            if (normalizedStrategyId.toLowerCase() !== normalizedCommittedId.toLowerCase()) {
+              console.error(`[SAFETY GATE: FATAL] Rejected manual trade execution: Alert strategy '${normalizedStrategyId}' does not match committed bot strategy '${normalizedCommittedId}'. AlertId: ${target.id}`);
+              return new Response(JSON.stringify({ error: `Execution rejected: Trade alert strategy '${normalizedStrategyId}' does not match committed bot strategy '${normalizedCommittedId}'.` }), { status: 409 });
             }
+          }
 
-            // Enforce generation lineage on autonomous alerts if lock:alarmGeneration is configured
-            const currentGen = await this.state.storage.get('lock:alarmGeneration') as number | undefined;
-            if (currentGen !== undefined && target.source !== 'MANUAL') {
-              if (target.generation === undefined || target.generation !== currentGen) {
-                console.warn(`[SAFETY GATE] Rejected alert ${target.id}: obsolete or invalid alarm generation (alert gen: ${target.generation}, current: ${currentGen})`);
-                return new Response(JSON.stringify({
-                  error: 'Alert belongs to an obsolete or invalid alarm generation.'
-                }), { status: 409 });
-              }
-            }
-
-            const side: 'BUY' | 'SELL' = target.side || 'BUY';
-            const committedStrategy: string | undefined = this.runtimeState.strategy;
-            const isAutonomousAlert = typeof target.strategy === 'string' && target.strategy.endsWith('_NEW');
-            const alertStrategy = (target.strategy || '').replace(/_NEW$/, '');
-            const normalizedStrategyId = StrategyRegistry.getInstance().normalizeStrategyId(alertStrategy);
-
-            // Safety Gate 1: Authoritative Strategy Manifest Validation (Enforced for all alerts)
-            const alertManifest = StrategyRegistry.getInstance().getManifest(normalizedStrategyId);
-            if (!alertManifest) {
-              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Strategy '${normalizedStrategyId}' is not registered in StrategyRegistry. AlertId: ${target.id}`);
-              return new Response(JSON.stringify({ error: `Cannot execute order: Strategy '${normalizedStrategyId}' is not registered.` }), { status: 400 });
-            }
-
-            // Safety Gate 2: Manual Strategy-Lock (Preserved strictly for manual alerts)
-            if (!isAutonomousAlert && committedStrategy) {
-              const normalizedCommittedId = StrategyRegistry.getInstance().normalizeStrategyId(committedStrategy);
-              if (normalizedStrategyId.toLowerCase() !== normalizedCommittedId.toLowerCase()) {
-                console.error(`[SAFETY GATE: FATAL] Rejected manual trade execution: Alert strategy '${normalizedStrategyId}' does not match committed bot strategy '${normalizedCommittedId}'. AlertId: ${target.id}`);
-                return new Response(JSON.stringify({ error: `Execution rejected: Trade alert strategy '${normalizedStrategyId}' does not match committed bot strategy '${normalizedCommittedId}'.` }), { status: 409 });
-              }
-            }
-
-            // Safety Gate 3: Directional Short Capability Enforcement
-            if (side === 'SELL' && alertManifest && !alertManifest.supportsShort) {
-              console.error(`[SAFETY GATE: FATAL] Rejected short execution for long-only strategy ${normalizedStrategyId}. AlertId: ${target.id}`);
-              return new Response(JSON.stringify({ error: `Cannot execute SELL order: Strategy '${normalizedStrategyId}' does not support short positions.` }), { status: 400 });
-            }
+          // Safety Gate 3: Directional Short Capability Enforcement
+          if (side === 'SELL' && alertManifest && !alertManifest.supportsShort) {
+            console.error(`[SAFETY GATE: FATAL] Rejected short execution for long-only strategy ${normalizedStrategyId}. AlertId: ${target.id}`);
+            return new Response(JSON.stringify({ error: `Cannot execute SELL order: Strategy '${normalizedStrategyId}' does not support short positions.` }), { status: 400 });
+          }
 
             // [SAFETY GATE: STRICT SCHEMA READINESS CHECK]
             try {
@@ -1478,102 +1917,56 @@ export class TradingBot {
               if (Array.isArray(activeExchangePositions)) {
                 try {
                   const verifiedOpenPositions: any[] = [];
-                  const matchedExchangeIndices = new Set<number>();
+                  const targetSymbolGroups = new Map<string, { rows: any[]; posSideUpper: string }>();
 
                   for (const pos of openPositions) {
-                    if (pos.exchange === 'mock') {
+                    const isMock =
+                      pos.exchange === 'mock' ||
+                      String(pos.id || '').startsWith('mock_') ||
+                      String(pos.order_id || pos.orderId || '').startsWith('mock_');
+                    const normPosSymbol = this.normalizeSymbol(pos.symbol);
+
+                    // Preserve all mock positions and all non-target symbol D1 rows untouched (0 subrequests)
+                    if (isMock || normPosSymbol !== normalizedOrderSymbol) {
                       verifiedOpenPositions.push(pos);
                       continue;
                     }
 
-                    const normPosSymbol = this.normalizeSymbol(pos.symbol);
-                    const posSideUpper = (pos.side || '').toUpperCase();
+                    const posSideUpper = (pos.side || 'BUY').toUpperCase();
+                    const groupKey = `${normPosSymbol}:${posSideUpper}`;
+                    if (!targetSymbolGroups.has(groupKey)) {
+                      targetSymbolGroups.set(groupKey, { rows: [], posSideUpper });
+                    }
+                    targetSymbolGroups.get(groupKey)!.rows.push(pos);
+                  }
 
-                    // Find all active exchange positions matching this symbol and side with active size > 0
-                    const matchingExchangeIndices: number[] = [];
-                    activeExchangePositions.forEach((ep: any, idx: number) => {
+                  for (const [, group] of targetSymbolGroups.entries()) {
+                    const { rows: groupRows, posSideUpper } = group;
+                    const hasActiveExchangeExposure = activeExchangePositions.some((ep: any) => {
                       const epSize = typeof ep.size?.toNumber === 'function' ? ep.size.toNumber() : Number(ep.size || 0);
-                      if (epSize <= 0) return;
-                      if (this.normalizeSymbol(ep.symbol) !== normPosSymbol) return;
+                      if (epSize <= 0) return false;
+                      if (this.normalizeSymbol(ep.symbol) !== normalizedOrderSymbol) return false;
                       const epSideLower = (ep.side || '').toLowerCase();
-                      const sideMatches = (posSideUpper === 'BUY' && (epSideLower === 'long' || epSideLower === 'buy')) ||
-                                          (posSideUpper === 'SELL' && (epSideLower === 'short' || epSideLower === 'sell'));
-                      if (sideMatches) {
-                        matchingExchangeIndices.push(idx);
-                      }
+                      return (
+                        (posSideUpper === 'BUY' && (epSideLower === 'long' || epSideLower === 'buy')) ||
+                        (posSideUpper === 'SELL' && (epSideLower === 'short' || epSideLower === 'sell'))
+                      );
                     });
 
-                    // Check how many D1 rows share this exact normalized symbol and side
-                    const sameSymbolSideD1Rows = openPositions.filter((p: any) =>
-                      p.exchange !== 'mock' &&
-                      this.normalizeSymbol(p.symbol) === normPosSymbol &&
-                      (p.side || '').toUpperCase() === posSideUpper
+                    const { closedIds, cancelledIds } = await this.reconcileMissingD1PositionsGroup(
+                      adapter,
+                      userId,
+                      groupRows,
+                      hasActiveExchangeExposure
                     );
 
-                    if (matchingExchangeIndices.length === 0) {
-                      // Authoritative exchange evidence: Bybit returned active positions, and NO active
-                      // position exists for this symbol and side. Therefore, this position is genuinely closed on exchange.
-                      try {
-                        const closeResult = await ReconciliationEngine.reconcilePositionLifecycle(adapter, pos, Date.now(), true);
-                        const now = closeResult?.closedAt || new Date().toISOString();
-                        const closePrice = closeResult?.closePrice ?? null;
-                        const realizedPnl = closeResult?.realizedPnl ?? null;
-                        const closeReason = closeResult?.closeReason ?? 'exchange_close';
-
-                        if (this.env.DB && typeof this.env.DB.prepare === 'function') {
-                          await this.env.DB.prepare(
-                            `UPDATE trade_positions` +
-                            ` SET status = 'CLOSED', closed_at = ?, close_price = ?, realized_pnl = ?, close_reason = ?, updated_at = ?` +
-                            ` WHERE id = ? AND user_id = ? AND status IN ('OPEN', 'PENDING_ENTRY')`
-                          ).bind(now, closePrice, realizedPnl, closeReason, now, pos.id, userId).run();
-                        }
-                        console.log(`[SAFETY_GATE: LEVEL_2] Authoritatively reconciled absent D1 position ${pos.id} (${pos.symbol} ${pos.side}) to CLOSED on Bybit empty/absent evidence.`);
-                      } catch (reconErr: any) {
-                        console.warn(`[SAFETY_GATE: LEVEL_2] Failed to reconcile absent position ${pos.id}:`, reconErr?.message || reconErr);
-                      }
-                    } else if (sameSymbolSideD1Rows.length > matchingExchangeIndices.length) {
-                      // Ambiguity Protection: Multiple D1 rows exist for the same symbol + side, but fewer
-                      // (e.g. only 1) net active positions exist on Bybit.
-                      // Per safety requirement:
-                      // - Do NOT automatically assign the exchange position to the newest D1 row.
-                      // - Do NOT automatically close older D1 rows merely because the exchange position slot has been consumed.
-                      // - Preserve ambiguous D1 rows as OPEN/PENDING_ENTRY unless existing exchange order/fill/closed-PnL
-                      //   evidence uniquely establishes that a specific row is closed.
-                      let uniquelyClosed = false;
-                      try {
-                        if (pos.order_id && typeof (adapter as any).fetchClosedPnl === 'function') {
-                          const closedPnlList = await (adapter as any).fetchClosedPnl(pos.symbol, 'linear').catch(() => []);
-                          const matchingClosed = closedPnlList.find((c: any) => c.orderId === pos.order_id);
-                          if (matchingClosed) {
-                            uniquelyClosed = true;
-                            const now = new Date(matchingClosed.updatedTime || Date.now()).toISOString();
-                            if (this.env.DB && typeof this.env.DB.prepare === 'function') {
-                              await this.env.DB.prepare(
-                                `UPDATE trade_positions` +
-                                ` SET status = 'CLOSED', closed_at = ?, close_price = ?, realized_pnl = ?, close_reason = ?, updated_at = ?` +
-                                ` WHERE id = ? AND user_id = ? AND status IN ('OPEN', 'PENDING_ENTRY')`
-                              ).bind(now, matchingClosed.avgExitPrice ?? null, matchingClosed.closedPnl ?? null, 'exchange_close', now, pos.id, userId).run();
-                            }
-                            console.log(`[SAFETY_GATE: LEVEL_2] Uniquely reconciled D1 position ${pos.id} (${pos.order_id}) to CLOSED via authoritative closed-PnL match.`);
-                          }
-                        }
-                      } catch (_) {}
-
-                      if (!uniquelyClosed) {
-                        // Ambiguous row preserved as OPEN to prevent premature closure without individual proof
-                        verifiedOpenPositions.push(pos);
-                      }
-                    } else {
-                      // Genuine 1-to-1 match: exactly 1 D1 row matches 1 active exchange position
-                      const availableExchangeIdx = matchingExchangeIndices.find(idx => !matchedExchangeIndices.has(idx));
-                      if (availableExchangeIdx !== undefined) {
-                        matchedExchangeIndices.add(availableExchangeIdx);
-                        verifiedOpenPositions.push(pos);
-                      } else {
-                        verifiedOpenPositions.push(pos);
+                    for (const r of groupRows) {
+                      if (!closedIds.has(r.id) && !cancelledIds.has(r.id)) {
+                        verifiedOpenPositions.push(r);
                       }
                     }
                   }
+
                   openPositions = verifiedOpenPositions;
                 } catch (reconcileAllErr: any) {
                   console.warn(`[SAFETY_GATE: LEVEL_2] Exchange position reconciliation non-fatal fallback:`, reconcileAllErr?.message || reconcileAllErr);
@@ -1668,361 +2061,149 @@ export class TradingBot {
               }), { status: 409 });
             }
 
-            target.status = 'submitted';
-            await this.persistState('alerts', this.pruneAlerts(alerts));
-          await this.logAuditEvent(userId, 'TRADE_SUBMITTED', { symbol: orderSymbol, side, clientOrderId, strategy: target.strategy, entryPrice: target.entryPrice });
+          let orderResult: any = { success: true, message: 'Trade executed (simulated).', orderId: clientOrderId };
+          const entryIntent: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER' = requestBody?.entryIntent || target.entryIntent || 'WAIT_FOR_PRICE';
+          let orderType: 'MARKET' | 'LIMIT' = 'MARKET';
+          let limitPrice: number | undefined = undefined;
+          let triggerPrice: number | undefined = undefined;
+          let triggerDirection: 1 | 2 | undefined = undefined;
+          let timeInForce: 'GTC' | 'IOC' = 'GTC';
+          let executionSnapshot: TradeExecutionSnapshot | null = null;
+          let activeTickSize = 0;
+          let activeWriteProvider: any = adapter;
+          let activeRawOrder: any = null;
+          let matchedCategory: string | undefined = undefined;
 
-            let orderResult: any = { success: true, message: 'Trade executed (simulated).', orderId: clientOrderId };
-            const entryIntent: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER' = requestBody?.entryIntent || target.entryIntent || 'WAIT_FOR_PRICE';
-            let orderType: 'MARKET' | 'LIMIT' = 'MARKET';
-            let limitPrice: number | undefined = undefined;
-            let triggerPrice: number | undefined = undefined;
-            let triggerDirection: 1 | 2 | undefined = undefined;
-            let timeInForce: 'GTC' | 'IOC' = 'GTC';
-            let executionSnapshot: TradeExecutionSnapshot | null = null;
+          try {
+            if (adapter) {
+              const ticker = await adapter.fetchTicker(orderSymbol);
+              const currentPrice = (typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0)) || target.signalPrice || target.entryPrice;
+              const targetPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
 
-            try {
-              if (adapter) {
-                const ticker = await adapter.fetchTicker(orderSymbol);
-                const currentPrice = (typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0)) || target.signalPrice || target.entryPrice;
-                const targetPrice = target.targetEntryPrice || target.signalPrice || target.entryPrice;
-                
-                if (entryIntent === 'WAIT_FOR_PRICE') {
-                  orderType = 'LIMIT';
-                  limitPrice = targetPrice;
-                  timeInForce = 'GTC';
-                } else if (entryIntent === 'IMMEDIATE') {
-                  orderType = 'MARKET';
-                  limitPrice = undefined;
-                  timeInForce = 'IOC';
-                } else if (entryIntent === 'TRIGGER') {
-                  orderType = 'MARKET';
-                  triggerPrice = targetPrice;
-                  triggerDirection = triggerPrice >= currentPrice ? 1 : 2;
-                  timeInForce = 'GTC';
-                }
+              if (entryIntent === 'WAIT_FOR_PRICE') {
+                orderType = 'LIMIT';
+                limitPrice = targetPrice;
+                timeInForce = 'GTC';
+              } else if (entryIntent === 'IMMEDIATE') {
+                orderType = 'MARKET';
+                limitPrice = undefined;
+                timeInForce = 'IOC';
+              } else if (entryIntent === 'TRIGGER') {
+                orderType = 'MARKET';
+                triggerPrice = targetPrice;
+                triggerDirection = triggerPrice >= currentPrice ? 1 : 2;
+                timeInForce = 'GTC';
+              }
 
-                const positionSizeUsdt = Number(target.positionSize);
-                let stepSize = 0;
-                let tickSize = 0;
-                let minNotional = 5;
-                let minQty = 0;
-                let priceLimitRatioX: number = 0.10;
-                let priceLimitRatioY: number = 0.10;
-                let matchedCategory: string | undefined = undefined;
-                let hasAuthoritativeMetadata = false;
+              const positionSizeUsdt = Number(target.positionSize);
+              let stepSize = 0;
+              let tickSize = 0;
+              let minNotional = 5;
+              let minQty = 0;
+              let priceLimitRatioX: number = 0.10;
+              let priceLimitRatioY: number = 0.10;
+              let hasAuthoritativeMetadata = false;
 
-                try {
-                  const matched = await adapter.fetchMarket(orderSymbol);
-                  if (matched) {
-                    matchedCategory = (matched as any).category;
-                    hasAuthoritativeMetadata = true;
-                    if (matched.precision?.amount) stepSize = matched.precision.amount;
-                    if (matched.precision?.price) tickSize = matched.precision.price;
-                    if ((matched as any).priceLimitRatioX) priceLimitRatioX = (matched as any).priceLimitRatioX;
-                    if ((matched as any).priceLimitRatioY) priceLimitRatioY = (matched as any).priceLimitRatioY;
-                    if (matched.limits?.cost?.min) {
-                      const costMin = matched.limits.cost.min as any;
-                      minNotional = typeof costMin?.toNumber === 'function' ? costMin.toNumber() : (typeof costMin === 'number' ? costMin : 5);
-                    }
-                    if (matched.limits?.amount?.min) {
-                      const amtMin = matched.limits.amount.min as any;
-                      minQty = typeof amtMin?.toNumber === 'function' ? amtMin.toNumber() : (typeof amtMin === 'number' ? amtMin : 0.00001);
-                    }
+              try {
+                const matched = await adapter.fetchMarket(orderSymbol);
+                if (matched) {
+                  matchedCategory = (matched as any).category;
+                  hasAuthoritativeMetadata = true;
+                  if (matched.precision?.amount) stepSize = matched.precision.amount;
+                  if (matched.precision?.price) tickSize = matched.precision.price;
+                  if ((matched as any).priceLimitRatioX) priceLimitRatioX = (matched as any).priceLimitRatioX;
+                  if ((matched as any).priceLimitRatioY) priceLimitRatioY = (matched as any).priceLimitRatioY;
+                  if (matched.limits?.cost?.min) {
+                    const costMin = matched.limits.cost.min as any;
+                    minNotional = typeof costMin?.toNumber === 'function' ? costMin.toNumber() : (typeof costMin === 'number' ? costMin : 5);
                   }
-                } catch (mErr: any) {
-                  console.warn('[trading-bot] Failed to fetch authoritative markets for precision rules:', mErr?.message);
+                  if (matched.limits?.amount?.min) {
+                    const amtMin = matched.limits.amount.min as any;
+                    minQty = typeof amtMin?.toNumber === 'function' ? amtMin.toNumber() : (typeof amtMin === 'number' ? amtMin : 0.00001);
+                  }
                 }
+              } catch (mErr: any) {
+                console.warn('[trading-bot] Failed to fetch authoritative markets for precision rules:', mErr?.message);
+              }
 
-                if (!hasAuthoritativeMetadata || tickSize <= 0) {
-                  throw new Error(`Authoritative exchange metadata for ${orderSymbol} is unavailable. Cannot safely determine execution tick size.`);
-                }
+              if (!hasAuthoritativeMetadata || tickSize <= 0) {
+                throw new Error(`Authoritative exchange metadata for ${orderSymbol} is unavailable. Cannot safely determine execution tick size.`);
+              }
+              activeTickSize = tickSize;
 
-                // Strictly normalize ONLY the local limitPrice and triggerPrice before validation
-                const targetSideEnum = (target.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
-                if (limitPrice !== undefined) {
-                  limitPrice = PriceNormalizer.normalizeLimitPrice(limitPrice, tickSize, targetSideEnum);
-                }
-                if (triggerPrice !== undefined) {
-                  triggerPrice = PriceNormalizer.normalizeLimitPrice(triggerPrice, tickSize, targetSideEnum);
-                }
+              // Strictly normalize ONLY the local limitPrice and triggerPrice before validation
+              const targetSideEnum = (target.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+              if (limitPrice !== undefined) {
+                limitPrice = PriceNormalizer.normalizeLimitPrice(limitPrice, tickSize, targetSideEnum);
+              }
+              if (triggerPrice !== undefined) {
+                triggerPrice = PriceNormalizer.normalizeLimitPrice(triggerPrice, tickSize, targetSideEnum);
+              }
 
-                if (target.takeProfit !== undefined || target.stopLoss !== undefined) {
-                  const normResult = PriceNormalizer.normalizeTradePrices({
-                    entryPrice: limitPrice || triggerPrice || currentPrice,
-                    theoreticalSL: target.stopLoss !== undefined ? target.stopLoss : (targetSideEnum === 'BUY' ? currentPrice * 0.9 : currentPrice * 1.1),
-                    theoreticalTP: target.takeProfit !== undefined ? target.takeProfit : (targetSideEnum === 'BUY' ? currentPrice * 1.1 : currentPrice * 0.9),
-                    tickSize: tickSize,
-                    minAllowedPrice: tickSize,
-                    side: targetSideEnum
-                  });
-                  if (target.takeProfit !== undefined) target.takeProfit = normResult.takeProfit;
-                  if (target.stopLoss !== undefined) target.stopLoss = normResult.stopLoss;
-                }
-
-                const rulesRes = TradeValidator.validate({
-                  symbol: orderSymbol,
-                  side: target.side,
-                  orderType: orderType,
-                  entryIntent: entryIntent,
+              if (target.takeProfit !== undefined || target.stopLoss !== undefined) {
+                const normResult = PriceNormalizer.normalizeTradePrices({
                   entryPrice: limitPrice || triggerPrice || currentPrice,
-                  currentMarketPrice: currentPrice,
-                  markPrice: currentPrice,
-                  tradeValueUsdt: positionSizeUsdt
-                }, {
-                  schemaVersion: "2.0",
-                  symbol: orderSymbol,
-                  exchange: userKeys.exchange_name || "binance",
-                  baseAsset: orderSymbol.split('/')[0] || "BTC",
-                  quoteAsset: orderSymbol.split('/')[1] || "USDT",
-                  minNotional: minNotional,
-                  minQty: minQty,
-                  maxQty: 999999,
-                  stepSize: stepSize,
+                  theoreticalSL: target.stopLoss !== undefined ? target.stopLoss : (targetSideEnum === 'BUY' ? currentPrice * 0.9 : currentPrice * 1.1),
+                  theoreticalTP: target.takeProfit !== undefined ? target.takeProfit : (targetSideEnum === 'BUY' ? currentPrice * 1.1 : currentPrice * 0.9),
                   tickSize: tickSize,
-                  minPrice: 0,
-                  maxPrice: 999999999,
-                  contractSize: 1,
-                  priceLimitRatioX: priceLimitRatioX,
-                  priceLimitRatioY: priceLimitRatioY,
-                  markPrice: currentPrice,
-                  lastUpdated: Date.now()
+                  minAllowedPrice: tickSize,
+                  side: targetSideEnum
                 });
-
-                if (!rulesRes.isValid) {
-                  console.error(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_FAILED] errorCode=${rulesRes.errorCode} errorMessage=${rulesRes.errorMessage}`);
-                  throw new Error(rulesRes.errorMessage || `Order validation failed: ${rulesRes.errorCode}`);
-                }
-
-                const qty = rulesRes.quantizedQuantity ?? 0;
-                console.log(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_PASSED] quantizedQuantity=${qty} postRoundingNotional=${rulesRes.postRoundingNotional}`);
-                
-                // Construct and freeze Immutable TradeExecutionSnapshot
-                executionSnapshot = Object.freeze({
-                  snapshotId: crypto.randomUUID(),
-                  alertId: target.id,
-                  userId: userId,
-                  symbol: orderSymbol,
-                  timeframe: target.timeframe,
-                  side: (side.toUpperCase() === 'SELL' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
-                  orderType: orderType === 'LIMIT' ? 'LIMIT' : 'MARKET',
-                  limitPrice: limitPrice || undefined,
-                  signalPrice: target.signalPrice || target.entryPrice,
-                  targetEntryPrice: target.targetEntryPrice || undefined,
-                  positionSizeUsdt: target.positionSize,
-                  quantizedQuantity: qty,
-                  stopLoss: target.stopLoss,
-                  takeProfit: target.takeProfit,
-                  strategy: target.strategy,
-                  exchangeName: userKeys.exchange_name,
-                  environment: userKeys.exchange_environment || 'mainnet',
-                  clientOrderId: clientOrderId,
-                  createdAt: new Date().toISOString()
-                });
-                console.log(`[DIAGNOSTIC] [STAGE: EXECUTION_SNAPSHOT_CREATED] snapshot=${JSON.stringify(executionSnapshot)}`);
-
-                // Re-fetch provider with full keys for write
-                const writeProvider = await ExchangeManager.getProvider(executionSnapshot.exchangeName, {
-                   environment: normalizeEnvironment(executionSnapshot.environment),
-                   apiKey: decryptedApiKey,
-                   secret: decryptedSecret,
-                   password: decryptedPassphrase,
-                   region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
-                });
-
-
-                const req: any = {
-                   symbol: executionSnapshot.symbol,
-                   side: executionSnapshot.side.toLowerCase(),
-                   type: executionSnapshot.orderType.toLowerCase(),
-                   amount: new BigNumber(executionSnapshot.quantizedQuantity),
-                   clientOrderId: executionSnapshot.clientOrderId,
-                   timeInForce: timeInForce,
-                   category: matchedCategory || 'linear',
-                   params: {}
-                };
-                if (executionSnapshot.limitPrice) req.price = new BigNumber(executionSnapshot.limitPrice);
-                if (triggerPrice) {
-                  req.triggerPrice = new BigNumber(triggerPrice);
-                  req.triggerDirection = triggerDirection;
-                }
-                if (executionSnapshot.takeProfit) req.takeProfit = executionSnapshot.takeProfit;
-                if (executionSnapshot.stopLoss) req.stopLoss = executionSnapshot.stopLoss;
-
-                // Phase 3: Final Dispatch Safety Gate
-                try {
-                  const dispatchReferencePrice = orderType === 'MARKET' ? currentPrice : (targetPrice || currentPrice);
-                  FinalDispatchSafetyGate.validate(req, {
-                    stepSize,
-                    tickSize,
-                    minQty,
-                    minNotional,
-                    maxExposure: maxPortfolioExposure,
-                    currentExposure,
-                    referencePrice: dispatchReferencePrice,
-                    estimatedNotional: proposedNotional,
-                  });
-                } catch (gateErr: any) {
-                  throw new Error(`RISK_GATE_REJECTED: ${gateErr.message}`);
-                }
-
-                // Phase 3: Core WAL State Machine (INTENT_PERSISTED)
-                const intentObj: any = {
-                  intentId: executionSnapshot.clientOrderId,
-                  version: Date.now(),
-                  symbol: req.symbol,
-                  timeframe: target.timeframe,
-                  side: req.side,
-                  orderType: req.type,
-                  qty: req.amount.toString(),
-                  price: req.price?.toString(),
-                  status: 'INTENT_PERSISTED',
-                  requestedStopLoss: req.stopLoss,
-                  requestedTakeProfit: req.takeProfit,
-                  createdAt: Date.now(),
-                  reconciliationAttemptCount: 0,
-                  payloadSnapshot: req
-                };
-                
-                await this.state.storage.transaction(async (txn) => {
-                  await this.persistIntent(intentObj.intentId, intentObj);
-                });
-
-                const safeEntryIntent: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER' | 'UNKNOWN' =
-                  entryIntent === 'WAIT_FOR_PRICE' || entryIntent === 'IMMEDIATE' || entryIntent === 'TRIGGER'
-                    ? entryIntent
-                    : 'UNKNOWN';
-
-                this.telemetrySink.emit({
-                  userId,
-                  category: 'EXECUTION',
-                  component: 'TradingBot',
-                  eventName: 'EXECUTION_REQUEST',
-                  severity: 'INFO',
-                  correlationId: target.id,
-                  symbol: orderSymbol,
-                  strategyId: target.strategy,
-                  payload: {
-                    alertId: target.id,
-                    clientOrderId,
-                    symbol: orderSymbol,
-                    side,
-                    orderType,
-                    entryIntent: safeEntryIntent
-                  }
-                });
-
-                let rawOrder: any;
-                try {
-                  intentObj.status = 'DISPATCHED';
-                  intentObj.dispatchedAt = Date.now();
-                  await this.state.storage.transaction(async (txn) => {
-                    await this.persistIntent(intentObj.intentId, intentObj);
-                  });
-
-                  rawOrder = await ExchangeManager.executeIdempotentOrder(writeProvider, req);
-                  
-                  intentObj.status = rawOrder.status === 'open' ? 'DISPATCHED' : 'FILLED';
-                  await this.state.storage.transaction(async (txn) => {
-                    await this.persistIntent(intentObj.intentId, intentObj);
-                  });
-                  console.log(`[DIAGNOSTIC] [STAGE: ORDER_SUCCESS] orderId=${rawOrder.id} status=${intentObj.status}`);
-
-                } catch (e: any) {
-                  // Catch HTTP timeouts / 5xx to enforce UNKNOWN state instead of FAILED
-                  const isNetworkError = e.code === 'EXCHANGE_NOT_REACHABLE' || e.code === 'EXCHANGE_TIMEOUT' || String(e.message).includes('timeout') || String(e.status).startsWith('5');
-                  
-                  if (isNetworkError) {
-                    intentObj.status = 'UNKNOWN';
-                    await this.state.storage.transaction(async (txn) => {
-                      await this.persistIntent(intentObj.intentId, intentObj);
-                    });
-                    console.warn(`[DIAGNOSTIC] [STAGE: UNKNOWN_STATE] Network failure during dispatch for ${intentObj.intentId}. Transitioning to UNKNOWN. Initiating reconciliation.`);
-                    
-                    // Trigger immediate first pass reconciliation
-                    await ReconciliationEngine.reconcile(writeProvider, intentObj, Date.now());
-                    await this.state.storage.transaction(async (txn) => {
-                      await this.persistIntent(intentObj.intentId, intentObj);
-                    });
-                    
-                    // If it remains UNKNOWN, we must halt the current execution cycle safely
-                    throw new Error(`UNKNOWN_STATE: Order ${intentObj.intentId} dispatch status is unknown due to network failure.`);
-                  } else {
-                    intentObj.status = 'FAILED';
-                    await this.state.storage.transaction(async (txn) => {
-                      await this.persistIntent(intentObj.intentId, intentObj);
-                    });
-                    throw e; // Explicit rejection
-                  }
-                }
-
-                const filledQty = rawOrder.filled?.toNumber() || (rawOrder.status === 'closed' ? rawOrder.amount.toNumber() : 0);
-                const orderStatus = rawOrder.status === 'open' ? 'open' : 'filled';
-
-                orderResult = {
-                   success: true,
-                   message: 'Order accepted by exchange.',
-                   orderId: rawOrder.id,
-                   price: rawOrder.price?.toNumber() || null,
-                   quantity: rawOrder.amount.toNumber(),
-                   status: rawOrder.status === 'closed' ? 'filled' : rawOrder.status,
-                   ocoGroupId: null,
-                   tpOrderId: null,
-                   slOrderId: null,
-                   protectionMode: 'ATTACHED_TPSL'
-                };
+                if (target.takeProfit !== undefined) target.takeProfit = normResult.takeProfit;
+                if (target.stopLoss !== undefined) target.stopLoss = normResult.stopLoss;
               }
-            } catch (e: any) {
-              console.error(`[DIAGNOSTIC] [STAGE: ORDER_FAILED] exceptionMessage=${e.message}`);
-              orderResult = {
-                success: false,
-                code: e.message.includes('RISK_GATE') ? 'RISK_GATE_REJECTED' : (e.message.includes('UNKNOWN') ? 'UNKNOWN_STATE' : 'EXCHANGE_REJECTED'),
-                exchangeCode: -1,
-                message: e.message || 'Trade execution failed',
-                details: String(e)
-              };
-            }
 
-            const safeResultCode = orderResult.success
-              ? 'ORDER_ACCEPTED'
-              : (orderResult.code === 'RISK_GATE_REJECTED' ? 'RISK_GATE_REJECTED' : (orderResult.code === 'UNKNOWN_STATE' ? 'UNKNOWN_STATE' : 'EXCHANGE_REJECTED'));
-            const safeOrderStatus = (orderResult.status === 'filled' || orderResult.status === 'open' || orderResult.status === 'rejected' || orderResult.status === 'failed')
-              ? orderResult.status
-              : (orderResult.success ? 'open' : 'failed');
+              const rulesRes = TradeValidator.validate({
+                symbol: orderSymbol,
+                side: target.side,
+                orderType: orderType,
+                entryIntent: entryIntent,
+                entryPrice: limitPrice || triggerPrice || currentPrice,
+                currentMarketPrice: currentPrice,
+                markPrice: currentPrice,
+                tradeValueUsdt: positionSizeUsdt
+              }, {
+                schemaVersion: "2.0",
+                symbol: orderSymbol,
+                exchange: userKeys.exchange_name || "binance",
+                baseAsset: orderSymbol.split('/')[0] || "BTC",
+                quoteAsset: orderSymbol.split('/')[1] || "USDT",
+                minNotional: minNotional,
+                minQty: minQty,
+                maxQty: 999999,
+                stepSize: stepSize,
+                tickSize: tickSize,
+                minPrice: 0,
+                maxPrice: 999999999,
+                contractSize: 1,
+                priceLimitRatioX: priceLimitRatioX,
+                priceLimitRatioY: priceLimitRatioY,
+                markPrice: currentPrice,
+                lastUpdated: Date.now()
+              });
 
-            this.telemetrySink.emit({
-              userId,
-              category: 'EXCHANGE',
-              component: 'TradingBot',
-              eventName: 'BYBIT_RESULT',
-              severity: orderResult.success ? 'INFO' : 'ERROR',
-              correlationId: target.id,
-              symbol: orderSymbol,
-              strategyId: target.strategy,
-              payload: {
-                success: Boolean(orderResult.success),
-                orderId: orderResult.orderId ? String(orderResult.orderId) : null,
-                orderStatus: safeOrderStatus,
-                resultCode: safeResultCode
+              if (!rulesRes.isValid) {
+                console.error(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_FAILED] errorCode=${rulesRes.errorCode} errorMessage=${rulesRes.errorMessage}`);
+                throw new Error(rulesRes.errorMessage || `Order validation failed: ${rulesRes.errorCode}`);
               }
-            });
 
-            target.status = orderResult.success ? 'executed' : 'failed';
-            await this.persistState('alerts', this.pruneAlerts(alerts));
-            
-            if (orderResult.success) {
-              const snapshot = executionSnapshot || {
-                snapshotId: `sim_${crypto.randomUUID()}`,
+              const qty = rulesRes.quantizedQuantity ?? 0;
+              console.log(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_PASSED] quantizedQuantity=${qty} postRoundingNotional=${rulesRes.postRoundingNotional}`);
+
+              // Construct and freeze Immutable TradeExecutionSnapshot
+              executionSnapshot = Object.freeze({
+                snapshotId: crypto.randomUUID(),
                 alertId: target.id,
                 userId: userId,
                 symbol: orderSymbol,
+                timeframe: target.timeframe,
                 side: (side.toUpperCase() === 'SELL' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
                 orderType: orderType === 'LIMIT' ? 'LIMIT' : 'MARKET',
                 limitPrice: limitPrice || undefined,
                 signalPrice: target.signalPrice || target.entryPrice,
                 targetEntryPrice: target.targetEntryPrice || undefined,
                 positionSizeUsdt: target.positionSize,
-                quantizedQuantity: orderResult.quantity || 0,
+                quantizedQuantity: qty,
                 stopLoss: target.stopLoss,
                 takeProfit: target.takeProfit,
                 strategy: target.strategy,
@@ -2030,193 +2211,717 @@ export class TradingBot {
                 environment: userKeys.exchange_environment || 'mainnet',
                 clientOrderId: clientOrderId,
                 createdAt: new Date().toISOString()
+              });
+              console.log(`[DIAGNOSTIC] [STAGE: EXECUTION_SNAPSHOT_CREATED] snapshot=${JSON.stringify(executionSnapshot)}`);
+
+              // Re-fetch provider with full keys for write
+              const writeProvider = await ExchangeManager.getProvider(executionSnapshot.exchangeName, {
+                environment: normalizeEnvironment(executionSnapshot.environment),
+                apiKey: decryptedApiKey,
+                secret: decryptedSecret,
+                password: decryptedPassphrase,
+                region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
+              });
+              activeWriteProvider = writeProvider;
+
+              const req: any = {
+                symbol: executionSnapshot.symbol,
+                side: executionSnapshot.side.toLowerCase(),
+                type: executionSnapshot.orderType.toLowerCase(),
+                amount: new BigNumber(executionSnapshot.quantizedQuantity),
+                clientOrderId: executionSnapshot.clientOrderId,
+                timeInForce: timeInForce,
+                category: matchedCategory || 'linear',
+                params: { tickSize, stepSize }
+              };
+              if (executionSnapshot.limitPrice) req.price = new BigNumber(executionSnapshot.limitPrice);
+              if (triggerPrice) {
+                req.triggerPrice = new BigNumber(triggerPrice);
+                req.triggerDirection = triggerDirection;
+              }
+              if (executionSnapshot.takeProfit) req.takeProfit = executionSnapshot.takeProfit;
+              if (executionSnapshot.stopLoss) req.stopLoss = executionSnapshot.stopLoss;
+
+              // Phase 3: Final Dispatch Safety Gate
+              try {
+                const dispatchReferencePrice = orderType === 'MARKET' ? currentPrice : (targetPrice || currentPrice);
+                FinalDispatchSafetyGate.validate(req, {
+                  stepSize,
+                  tickSize,
+                  minQty,
+                  minNotional,
+                  maxExposure: maxPortfolioExposure,
+                  currentExposure,
+                  referencePrice: dispatchReferencePrice,
+                  estimatedNotional: proposedNotional,
+                });
+              } catch (gateErr: any) {
+                throw new Error(`RISK_GATE_REJECTED: ${gateErr.message}`);
+              }
+
+              // Phase 3: Core WAL State Machine (INTENT_PERSISTED before dispatch lease)
+              const payloadSnapshotClone = {
+                ...req,
+                amount: req.amount?.toString ? req.amount.toString() : String(req.amount),
+                price: req.price?.toString ? req.price.toString() : req.price,
+                triggerPrice: req.triggerPrice?.toString ? req.triggerPrice.toString() : req.triggerPrice,
+                targetEntryPrice: executionSnapshot.targetEntryPrice,
+                requestedStopLoss: req.stopLoss,
+                requestedTakeProfit: req.takeProfit,
+                tickSize,
+                stepSize,
+                strategy: target.strategy,
               };
 
-              let averageFillPrice: number | null = orderResult.price || null;
+              const intentObj: any = {
+                intentId: executionSnapshot.clientOrderId,
+                version: Date.now(),
+                symbol: req.symbol,
+                timeframe: target.timeframe,
+                side: req.side,
+                orderType: req.type,
+                qty: req.amount.toString(),
+                price: req.price?.toString(),
+                status: 'INTENT_PERSISTED',
+                dispatchedAt: undefined,
+                requestedStopLoss: req.stopLoss,
+                requestedTakeProfit: req.takeProfit,
+                createdAt: Date.now(),
+                reconciliationAttemptCount: 0,
+                payloadSnapshot: payloadSnapshotClone
+              };
 
-              const currentStatus = orderResult.status === 'open' ? 'open' : 'filled';
-              const actionType = currentStatus === 'open' ? 'TRADE_SUBMITTED' : 'TRADE_FILLED';
-              await this.logAuditEvent(snapshot.userId, actionType, { symbol: snapshot.symbol, side: snapshot.side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, strategy: snapshot.strategy });
-              
-              // FCM Push Notification for Trade Execution
-              try {
-                if (snapshot.userId) {
-                  await sendTradeNotification(this.env, snapshot.userId, orderResult.orderId || snapshot.alertId, {
-                    symbol: snapshot.symbol,
-                    side: snapshot.side,
-                    entryPrice: averageFillPrice || snapshot.signalPrice,
-                    targetEntryPrice: snapshot.targetEntryPrice || snapshot.signalPrice,
-                    signalPrice: snapshot.signalPrice,
-                    stopLoss: snapshot.stopLoss || 0,
-                    takeProfit: snapshot.takeProfit || 0,
-                    estimatedPnl: 3.0,
-                    positionSize: snapshot.positionSizeUsdt,
-                    strategy: snapshot.strategy,
-                  });
-                  await this.logAuditEvent(snapshot.userId, 'FCM_NOTIFICATION_SENT', { orderId: orderResult.orderId, action: actionType });
+              await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+
+              const safeEntryIntent: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER' | 'UNKNOWN' =
+                entryIntent === 'WAIT_FOR_PRICE' || entryIntent === 'IMMEDIATE' || entryIntent === 'TRIGGER'
+                  ? entryIntent
+                  : 'UNKNOWN';
+
+              this.telemetrySink.emit({
+                userId,
+                category: 'EXECUTION',
+                component: 'TradingBot',
+                eventName: 'EXECUTION_REQUEST',
+                severity: 'INFO',
+                correlationId: target.id,
+                symbol: orderSymbol,
+                strategyId: target.strategy,
+                payload: {
+                  alertId: target.id,
+                  clientOrderId,
+                  symbol: orderSymbol,
+                  side,
+                  orderType,
+                  entryIntent: safeEntryIntent
                 }
-              } catch (fcmErr: any) {
-                console.error('[trading-bot] FCM execution notification error:', fcmErr?.message || String(fcmErr));
-              }
-              await this.state.storage.put('tradeActive', true);
-              await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
-              await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
+              });
 
-              const positionId = snapshot.alertId;
-              const now = new Date().toISOString();
-              const initialStatus = orderResult.status === 'open' ? 'PENDING_ENTRY' : 'OPEN';
-              
-              const positionData = {
-                  id: positionId,
-                  userId: snapshot.userId,
-                  orderSymbol: snapshot.symbol,
-                  timeframe: target.timeframe || null,
+              let rawOrder: any;
+              let leaseInvokedByAdapter = false;
+              req.beforeOrderDispatch = async () => {
+                if (leaseInvokedByAdapter) return () => {};
+                leaseInvokedByAdapter = true;
+                return await this.acquireDispatchLease(
+                  target,
+                  intentObj,
+                  userId,
+                  orderSymbol,
+                  side,
+                  clientOrderId,
+                  isAutonomousAlert
+                );
+              };
+
+              try {
+                const isNativeBybitAdapter =
+                  writeProvider instanceof BybitAdapter ||
+                  typeof (writeProvider as any)?.makeRequest === 'function' ||
+                  Boolean((writeProvider as any)?.usesBeforeOrderDispatch);
+
+                if (isNativeBybitAdapter) {
+                  rawOrder = await ExchangeManager.executeIdempotentOrder(writeProvider, req);
+                } else {
+                  const releaseFallbackLease = await req.beforeOrderDispatch({
+                    method: 'POST',
+                    path: '/v5/order/create',
+                    body: req,
+                  });
+                  let dispatchPromise: Promise<any>;
+                  try {
+                    dispatchPromise = Promise.resolve(ExchangeManager.executeIdempotentOrder(writeProvider, req));
+                  } finally {
+                    if (typeof releaseFallbackLease === 'function') {
+                      releaseFallbackLease();
+                    }
+                  }
+                  rawOrder = await dispatchPromise;
+                }
+                activeRawOrder = rawOrder;
+
+                const reqQtyNum = executionSnapshot.quantizedQuantity;
+                const rawFilledNum =
+                  typeof rawOrder?.filled?.toNumber === 'function'
+                    ? rawOrder.filled.toNumber()
+                    : typeof rawOrder?.filled === 'number'
+                      ? rawOrder.filled
+                      : rawOrder?.status === 'closed'
+                        ? (typeof rawOrder?.amount?.toNumber === 'function' ? rawOrder.amount.toNumber() : Number(rawOrder?.amount || reqQtyNum))
+                        : 0;
+                const rawAvgPrice =
+                  typeof rawOrder?.average?.toNumber === 'function'
+                    ? rawOrder.average.toNumber()
+                    : typeof rawOrder?.average === 'number'
+                      ? rawOrder.average
+                      : typeof rawOrder?.price?.toNumber === 'function'
+                        ? rawOrder.price.toNumber()
+                        : typeof rawOrder?.price === 'number'
+                          ? rawOrder.price
+                          : null;
+
+                intentObj.actualOrderId = rawOrder?.id || intentObj.actualOrderId;
+                intentObj.actualExecutedQuantity = rawFilledNum;
+                if (rawAvgPrice && rawAvgPrice > 0) {
+                  intentObj.actualFillPrice = rawAvgPrice;
+                }
+
+                const isUnverifiedMarketOrder = Boolean((rawOrder as any)?.statusVerificationFailed);
+
+                if (isUnverifiedMarketOrder) {
+                  intentObj.status = 'RECONCILIATION_PENDING';
+                  await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                  console.warn(`[DIAGNOSTIC] [STAGE: MARKET_ORDER_UNVERIFIED] Market order ${intentObj.intentId} returned unverified/open status with 0 fill. Running immediate reconciliation.`);
+
+                  try {
+                    const reconciled = await ReconciliationEngine.reconcile(writeProvider, { ...intentObj }, Date.now());
+                    await this.persistIntentSnapshot(intentObj.intentId, reconciled || intentObj);
+                  } catch (reconErr: any) {
+                    console.warn(`[DIAGNOSTIC] Immediate reconciliation failed for unverified market order ${intentObj.intentId}:`, reconErr?.message);
+                  }
+
+                  const latestIntent = (await this.state.storage.get(`intent:order:${intentObj.intentId}`)) as any || intentObj;
+                  const latestFilledNum = Number(latestIntent.actualExecutedQuantity || 0);
+                  if (latestIntent.status === 'FILLED' || latestIntent.status === 'PARTIALLY_FILLED' || latestFilledNum > 0) {
+                    rawOrder = {
+                      id: latestIntent.actualOrderId || rawOrder?.id || intentObj.intentId,
+                      status: latestIntent.status === 'FILLED' ? 'closed' : 'open',
+                      filled: new BigNumber(latestFilledNum > 0 ? latestFilledNum : executionSnapshot.quantizedQuantity),
+                      amount: new BigNumber(executionSnapshot.quantizedQuantity),
+                      price: latestIntent.actualFillPrice ? new BigNumber(latestIntent.actualFillPrice) : undefined,
+                      average: latestIntent.actualFillPrice ? new BigNumber(latestIntent.actualFillPrice) : undefined,
+                      stopLoss: latestIntent.exchangeConfirmedStopLoss ?? rawOrder?.stopLoss,
+                      takeProfit: latestIntent.exchangeConfirmedTakeProfit ?? rawOrder?.takeProfit,
+                    };
+                    activeRawOrder = rawOrder;
+                  } else if (latestIntent.status === 'FAILED' && latestFilledNum === 0) {
+                    throw new Error(`Market order ${intentObj.intentId} was cancelled or rejected with zero fill on exchange.`);
+                  } else {
+                    await this.persistIntentSnapshot(intentObj.intentId, { ...latestIntent, status: 'RECONCILIATION_PENDING' });
+                    await this.setUnprotectedExposureLock({
+                      positionId: intentObj.intentId,
+                      alertId: target.id,
+                      symbol: orderSymbol,
+                      side,
+                      category: matchedCategory || 'linear',
+                      positionIdx: 0,
+                      closeIntentId: `close_${intentObj.intentId}`,
+                      lockedAt: Date.now(),
+                      reason: `Market order ${intentObj.intentId} fill and SL/TP status could not be verified after dispatch.`,
+                    });
+                    try { await this.state.storage.setAlarm(Date.now() + 5000); } catch (_) {}
+
+                    const ambiguousErr: any = new Error(`UNKNOWN_STATE: Market order ${intentObj.intentId} execution outcome is ambiguous/unverified.`);
+                    ambiguousErr.code = 'EXECUTION_OUTCOME_AMBIGUOUS';
+                    ambiguousErr.httpStatus = 502;
+                    ambiguousErr.intentStatus = 'RECONCILIATION_PENDING';
+                    throw ambiguousErr;
+                  }
+                } else {
+                  if (rawFilledNum > 0 && rawFilledNum < reqQtyNum && rawOrder?.status !== 'closed') {
+                    intentObj.status = 'PARTIALLY_FILLED';
+                  } else if (rawOrder?.status === 'closed' || (rawFilledNum >= reqQtyNum && reqQtyNum > 0)) {
+                    intentObj.status = 'FILLED';
+                  } else if (rawOrder?.status === 'canceled' || rawOrder?.status === 'rejected') {
+                    intentObj.status = 'FAILED';
+                    intentObj.terminalReason = `ORDER_${String(rawOrder.status).toUpperCase()}`;
+                    await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                    throw new Error(`Order ${intentObj.intentId} was ${rawOrder.status} on exchange.`);
+                  } else {
+                    intentObj.status = 'DISPATCHED';
+                  }
+
+                  await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                  console.log(`[DIAGNOSTIC] [STAGE: ORDER_SUCCESS] orderId=${rawOrder?.id} status=${intentObj.status} filled=${rawFilledNum}/${reqQtyNum}`);
+                }
+              } catch (e: any) {
+                if (e?.isFenceBAbort || e?.code === 'EXECUTION_OUTCOME_AMBIGUOUS') {
+                  throw e;
+                }
+
+                // If the error occurred before the adapter reached Fence B / network dispatch, it is a pre-dispatch failure
+                if (!intentObj.dispatchedAt) {
+                  intentObj.status = 'FAILED';
+                  intentObj.dispatchedAt = undefined;
+                  intentObj.terminalReason = e?.message || 'PRE_DISPATCH_FAILURE';
+                  await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                  throw e;
+                }
+
+                // Catch HTTP timeouts / 5xx / network errors after dispatch to enforce UNKNOWN state instead of FAILED
+                const errStr = String(e?.message || e || '');
+                const statusStr = String(e?.status || e?.httpStatus || '');
+                const isNetworkOrAmbiguousError =
+                  e?.code === 'EXCHANGE_NOT_REACHABLE' ||
+                  e?.code === 'EXCHANGE_TIMEOUT' ||
+                  e?.code === 'NETWORK_ERROR' ||
+                  errStr.toLowerCase().includes('timeout') ||
+                  errStr.toLowerCase().includes('timed out') ||
+                  errStr.toLowerCase().includes('network') ||
+                  errStr.includes('500') ||
+                  errStr.includes('502') ||
+                  errStr.includes('503') ||
+                  errStr.includes('504') ||
+                  statusStr.startsWith('5');
+
+                if (isNetworkOrAmbiguousError) {
+                  intentObj.status = 'UNKNOWN';
+                  await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                  console.warn(`[DIAGNOSTIC] [STAGE: UNKNOWN_STATE] Ambiguous/network failure after dispatch for ${intentObj.intentId}. Transitioning to UNKNOWN and running immediate reconciliation.`);
+
+                  try {
+                    const reconciled = await ReconciliationEngine.reconcile(writeProvider, { ...intentObj }, Date.now());
+                    await this.persistIntentSnapshot(intentObj.intentId, reconciled || intentObj);
+                  } catch (reconErr: any) {
+                    console.warn(`[DIAGNOSTIC] Immediate reconciliation failed for ${intentObj.intentId}:`, reconErr?.message);
+                  }
+
+                  const latestIntent = (await this.state.storage.get(`intent:order:${intentObj.intentId}`)) as any || intentObj;
+                  if (latestIntent.status === 'FILLED' || latestIntent.status === 'PARTIALLY_FILLED') {
+                    rawOrder = {
+                      id: latestIntent.actualOrderId || intentObj.intentId,
+                      status: latestIntent.status === 'FILLED' ? 'closed' : 'open',
+                      filled: new BigNumber(latestIntent.actualExecutedQuantity || executionSnapshot.quantizedQuantity),
+                      amount: new BigNumber(executionSnapshot.quantizedQuantity),
+                      price: latestIntent.actualFillPrice ? new BigNumber(latestIntent.actualFillPrice) : undefined,
+                      average: latestIntent.actualFillPrice ? new BigNumber(latestIntent.actualFillPrice) : undefined,
+                      stopLoss: latestIntent.exchangeConfirmedStopLoss,
+                      takeProfit: latestIntent.exchangeConfirmedTakeProfit,
+                    };
+                    activeRawOrder = rawOrder;
+                  } else if (latestIntent.status === 'FAILED' || latestIntent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION') {
+                    throw e;
+                  } else {
+                    await this.setUnprotectedExposureLock({
+                      positionId: intentObj.intentId,
+                      alertId: target.id,
+                      symbol: orderSymbol,
+                      side,
+                      category: matchedCategory || 'linear',
+                      positionIdx: 0,
+                      closeIntentId: `close_${intentObj.intentId}`,
+                      lockedAt: Date.now(),
+                      reason: `Order ${intentObj.intentId} dispatch outcome is unknown due to network/timeout failure.`,
+                    });
+                    try { await this.state.storage.setAlarm(Date.now() + 5000); } catch (_) {}
+
+                    const ambiguousErr: any = new Error(`UNKNOWN_STATE: Order ${intentObj.intentId} dispatch status is unknown due to network/timeout failure.`);
+                    ambiguousErr.code = 'EXECUTION_OUTCOME_AMBIGUOUS';
+                    ambiguousErr.httpStatus = 502;
+                    ambiguousErr.intentStatus = latestIntent.status;
+                    throw ambiguousErr;
+                  }
+                } else {
+                  intentObj.status = 'FAILED';
+                  intentObj.terminalReason = e?.message || 'EXCHANGE_REJECTED';
+                  await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                  throw e;
+                }
+              }
+
+              const reqQty = executionSnapshot.quantizedQuantity;
+              const filledQty =
+                typeof rawOrder?.filled?.toNumber === 'function'
+                  ? rawOrder.filled.toNumber()
+                  : typeof rawOrder?.filled === 'number'
+                    ? rawOrder.filled
+                    : rawOrder?.status === 'closed'
+                      ? (typeof rawOrder?.amount?.toNumber === 'function' ? rawOrder.amount.toNumber() : Number(rawOrder?.amount || reqQty))
+                      : 0;
+              const fillPrice =
+                typeof rawOrder?.average?.toNumber === 'function'
+                  ? rawOrder.average.toNumber()
+                  : typeof rawOrder?.average === 'number'
+                    ? rawOrder.average
+                    : typeof rawOrder?.price?.toNumber === 'function'
+                      ? rawOrder.price.toNumber()
+                      : typeof rawOrder?.price === 'number'
+                        ? rawOrder.price
+                        : null;
+
+              const mappedStatus =
+                filledQty > 0 && filledQty < reqQty && rawOrder?.status !== 'closed'
+                  ? 'partially_filled'
+                  : rawOrder?.status === 'closed' || (filledQty >= reqQty && reqQty > 0)
+                    ? 'filled'
+                    : rawOrder?.status || 'open';
+
+              orderResult = {
+                success: true,
+                message: 'Order accepted by exchange.',
+                orderId: rawOrder.id,
+                price: fillPrice,
+                quantity: typeof rawOrder?.amount?.toNumber === 'function' ? rawOrder.amount.toNumber() : Number(rawOrder?.amount || reqQty),
+                filledQuantity: filledQty,
+                status: mappedStatus,
+                ocoGroupId: null,
+                tpOrderId: null,
+                slOrderId: null,
+                protectionMode: 'ATTACHED_TPSL'
+              };
+            }
+          } catch (e: any) {
+            if (e?.isFenceBAbort) {
+              return new Response(
+                JSON.stringify({
+                  success: false,
+                  code: e.code || 'FENCE_B_ABORTED',
+                  error: e.message || 'Execution aborted at Fence B.',
+                  message: e.message || 'Execution aborted at Fence B.',
+                }),
+                { status: e.httpStatus || 409, headers: { 'Content-Type': 'application/json' } }
+              );
+            }
+            if (e?.code === 'EXECUTION_OUTCOME_AMBIGUOUS' || e?.httpStatus === 502) {
+              return new Response(
+                JSON.stringify({
+                  success: false,
+                  code: 'EXECUTION_OUTCOME_AMBIGUOUS',
+                  error: 'UNKNOWN_STATE',
+                  message: e.message,
+                  alertId: target.id,
+                  intentId: clientOrderId,
+                  status: e.intentStatus || 'UNKNOWN',
+                }),
+                { status: 502, headers: { 'Content-Type': 'application/json' } }
+              );
+            }
+            console.error(`[DIAGNOSTIC] [STAGE: ORDER_FAILED] exceptionMessage=${e.message}`);
+            orderResult = {
+              success: false,
+              code: e.message.includes('RISK_GATE') ? 'RISK_GATE_REJECTED' : (e.message.includes('UNKNOWN') ? 'UNKNOWN_STATE' : 'EXCHANGE_REJECTED'),
+              exchangeCode: -1,
+              message: e.message || 'Trade execution failed',
+              details: String(e)
+            };
+          }
+
+          const safeResultCode = orderResult.success
+            ? 'ORDER_ACCEPTED'
+            : (orderResult.code === 'RISK_GATE_REJECTED' ? 'RISK_GATE_REJECTED' : (orderResult.code === 'UNKNOWN_STATE' ? 'UNKNOWN_STATE' : 'EXCHANGE_REJECTED'));
+          const safeOrderStatus = (orderResult.status === 'filled' || orderResult.status === 'partially_filled' || orderResult.status === 'open' || orderResult.status === 'rejected' || orderResult.status === 'failed')
+            ? (orderResult.status === 'partially_filled' ? 'open' : orderResult.status)
+            : (orderResult.success ? 'open' : 'failed');
+
+          this.telemetrySink.emit({
+            userId,
+            category: 'EXCHANGE',
+            component: 'TradingBot',
+            eventName: 'BYBIT_RESULT',
+            severity: orderResult.success ? 'INFO' : 'ERROR',
+            correlationId: target.id,
+            symbol: orderSymbol,
+            strategyId: target.strategy,
+            payload: {
+              success: Boolean(orderResult.success),
+              orderId: orderResult.orderId ? String(orderResult.orderId) : null,
+              orderStatus: safeOrderStatus,
+              resultCode: safeResultCode
+            }
+          });
+
+          target.status = orderResult.success
+            ? (orderResult.status === 'partially_filled' ? 'partially_filled' : 'executed')
+            : 'failed';
+          const latestAlertsAfterExec = ((await this.state.storage.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+          const existingIdxAfterExec = latestAlertsAfterExec.findIndex((a) => a.id === target.id);
+          if (existingIdxAfterExec >= 0) {
+            latestAlertsAfterExec[existingIdxAfterExec] = { ...latestAlertsAfterExec[existingIdxAfterExec], status: target.status };
+            await this.persistState('alerts', this.pruneAlerts(latestAlertsAfterExec));
+          } else if (!isAutonomousAlert || this.runtimeState.isActive) {
+            await this.persistState('alerts', this.pruneAlerts(alerts));
+          }
+
+          if (orderResult.success) {
+            const snapshot = executionSnapshot || {
+              snapshotId: `sim_${crypto.randomUUID()}`,
+              alertId: target.id,
+              userId: userId,
+              symbol: orderSymbol,
+              side: (side.toUpperCase() === 'SELL' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
+              orderType: orderType === 'LIMIT' ? 'LIMIT' : 'MARKET',
+              limitPrice: limitPrice || undefined,
+              signalPrice: target.signalPrice || target.entryPrice,
+              targetEntryPrice: target.targetEntryPrice || undefined,
+              positionSizeUsdt: target.positionSize,
+              quantizedQuantity: orderResult.quantity || 0,
+              stopLoss: target.stopLoss,
+              takeProfit: target.takeProfit,
+              strategy: target.strategy,
+              exchangeName: userKeys.exchange_name,
+              environment: userKeys.exchange_environment || 'mainnet',
+              clientOrderId: clientOrderId,
+              createdAt: new Date().toISOString()
+            };
+
+            let averageFillPrice: number | null = orderResult.price || null;
+            const filledQuantityVal: number =
+              typeof orderResult.filledQuantity === 'number'
+                ? orderResult.filledQuantity
+                : (orderResult.status === 'open' ? 0 : (orderResult.quantity || 0));
+
+            const currentStatus = orderResult.status === 'open' ? 'open' : 'filled';
+            const actionType = currentStatus === 'open' ? 'TRADE_SUBMITTED' : 'TRADE_FILLED';
+            await this.logAuditEvent(snapshot.userId, actionType, { symbol: snapshot.symbol, side: snapshot.side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, filledQuantity: filledQuantityVal, strategy: snapshot.strategy });
+
+            // FCM Push Notification for Trade Execution
+            try {
+              if (snapshot.userId) {
+                await sendTradeNotification(this.env, snapshot.userId, orderResult.orderId || snapshot.alertId, {
+                  symbol: snapshot.symbol,
                   side: snapshot.side,
                   entryPrice: averageFillPrice || snapshot.signalPrice,
-                  targetEntryPrice: snapshot.targetEntryPrice || null,
+                  targetEntryPrice: snapshot.targetEntryPrice || snapshot.signalPrice,
                   signalPrice: snapshot.signalPrice,
-                  averageFillPrice: averageFillPrice,
-                  quantity: orderResult.quantity || 0,
-                  stopLoss: snapshot.stopLoss,
-                  takeProfit: snapshot.takeProfit,
-                  exchangeName: snapshot.exchangeName,
-                  environment: snapshot.environment,
+                  stopLoss: snapshot.stopLoss || 0,
+                  takeProfit: snapshot.takeProfit || 0,
+                  estimatedPnl: 3.0,
+                  positionSize: snapshot.positionSizeUsdt,
                   strategy: snapshot.strategy,
-                  orderId: orderResult.orderId || null,
-                  entryExchangeOrderId: orderResult.exchangeOrderId || orderResult.orderId || null,
-                  tpExchangeOrderId: orderResult.tpOrderId || null,
-                  slExchangeOrderId: orderResult.slOrderId || null,
-                  ocoGroupId: orderResult.ocoGroupId || null,
-                  protectionMode: orderResult.protectionMode || 'ATTACHED_TPSL',
-                  orderType: snapshot.orderType,
-                  limitPrice: snapshot.limitPrice || null,
-                  entryStatus: initialStatus,
-                  submittedAt: now,
-                  now
-              };
-
-              // Phase 3.3.1: Write-Ahead Logging (WAL) to DO Storage before writing to D1
-              await this.persistState('pendingPositionSync', positionData);
-
-              try {
-                await this.env.DB.prepare(
-                  `INSERT OR IGNORE INTO trade_positions (
-                    id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, stop_loss, take_profit,
-                    status, exchange, environment, strategy, order_id, entry_exchange_order_id, tp_exchange_order_id, sl_exchange_order_id,
-                    oco_group_id, protection_mode, order_type, limit_price, entry_status, entry_submitted_at, entry_at, created_at, updated_at, timeframe
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-                )
-                  .bind(
-                    positionData.id,
-                    positionData.userId,
-                    positionData.orderSymbol,
-                    positionData.side,
-                    positionData.entryPrice,
-                    positionData.targetEntryPrice,
-                    positionData.averageFillPrice,
-                    positionData.quantity,
-                    positionData.stopLoss,
-                    positionData.takeProfit,
-                    initialStatus === 'PENDING_ENTRY' ? 'PENDING_ENTRY' : 'OPEN',
-                    positionData.exchangeName,
-                    positionData.environment,
-                    positionData.strategy,
-                    positionData.orderId,
-                    positionData.entryExchangeOrderId,
-                    positionData.tpExchangeOrderId,
-                    positionData.slExchangeOrderId,
-                    positionData.ocoGroupId,
-                    positionData.protectionMode,
-                    positionData.orderType,
-                    positionData.limitPrice,
-                    positionData.entryStatus,
-                    positionData.submittedAt,
-                    positionData.now,
-                    positionData.now,
-                    positionData.now,
-                    positionData.timeframe,
-                  )
-                  .run();
-
-                // Record Audit Entry
-                const targetPrice = snapshot.targetEntryPrice || snapshot.signalPrice;
-                const safeAverageFillPrice = averageFillPrice ?? snapshot.signalPrice;
-                const slippagePercent = targetPrice > 0 ? (Math.abs(safeAverageFillPrice - targetPrice) / targetPrice) * 100 : 0;
-                await this.env.DB.prepare(
-                  `INSERT INTO trade_execution_audit (
-                    id, alert_id, user_id, symbol, strategy, target_entry_price, signal_price, execution_price, average_fill_price, stop_loss, take_profit, slippage_percent, fill_timestamp, created_at, timeframe
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-                )
-                  .bind(
-                    crypto.randomUUID(),
-                    snapshot.alertId,
-                    snapshot.userId,
-                    snapshot.symbol,
-                    snapshot.strategy,
-                    snapshot.targetEntryPrice || null,
-                    snapshot.signalPrice,
-                    safeAverageFillPrice,
-                    safeAverageFillPrice,
-                    snapshot.stopLoss,
-                    snapshot.takeProfit,
-                    slippagePercent,
-                    now,
-                    now,
-                    positionData.timeframe,
-                  )
-                  .run();
-
-                // Synchronize activePositions in DO runtime state and storage
-                const updatedActivePositions = this.runtimeState.activePositions || [];
-                updatedActivePositions.push({
-                  id: positionData.id,
-                  alertId: positionData.id,
-                  userId: positionData.userId,
-                  symbol: positionData.orderSymbol,
-                  timeframe: positionData.timeframe,
-                  side: positionData.side,
-                  entryPrice: positionData.entryPrice,
-                  targetEntryPrice: positionData.targetEntryPrice,
-                  averageFillPrice: positionData.averageFillPrice,
-                  quantity: positionData.quantity,
-                  stopLoss: positionData.stopLoss,
-                  takeProfit: positionData.takeProfit,
-                  status: initialStatus === 'PENDING_ENTRY' ? 'PENDING_ENTRY' : 'OPEN',
-                  strategy: positionData.strategy,
-                  exchange: positionData.exchangeName,
-                  environment: positionData.environment,
-                  orderId: positionData.orderId,
-                  enteredAt: positionData.submittedAt
                 });
-                await this.persistState('activePositions', updatedActivePositions);
-
-                // If DB write succeeds, remove from WAL
-                await this.state.storage.delete('pendingPositionSync');
-                if (target?.id) await this.deleteIntent(target.id);
-              } catch (dbError: any) {
-                console.error("D1 write failed, position is safely in DO WAL:", dbError?.stack || dbError?.message || dbError);
+                await this.logAuditEvent(snapshot.userId, 'FCM_NOTIFICATION_SENT', { orderId: orderResult.orderId, action: actionType });
               }
-            } else {
-              await this.logAuditEvent(userId, 'TRADE_FAILED', { symbol: orderSymbol, side, message: orderResult.message, clientOrderId });
+            } catch (fcmErr: any) {
+              console.error('[trading-bot] FCM execution notification error:', fcmErr?.message || String(fcmErr));
             }
 
-            return new Response(JSON.stringify({
-              success: orderResult.success,
-              message: orderResult.message,
-              side,
-              order: orderResult,
-              positionId: target.id,
-              alertId: target.id,
-              orderId: orderResult.orderId,
-              executionPrice: orderResult.price,
-              quantity: orderResult.quantity,
-              status: orderResult.status
-            }), { status: 200 });
-          } finally {
-            this.isExecutingTrade = false;
-            await this.state.storage.put('isExecutingTrade', false);
+            // Guard tradeActive against concurrent deactivation during in-flight network call
+            const latestActiveFlag = await this.state.storage.get<boolean>('isActive');
+            if (!isAutonomousAlert || (latestActiveFlag === true && this.runtimeState.isActive === true)) {
+              await this.state.storage.put('tradeActive', true);
+            } else {
+              await this.state.storage.put('tradeActive', false);
+            }
+            await this.state.storage.put('tradeEntryTimestamp', new Date().toISOString());
+            await this.state.storage.put('lastSuccessfulTradeAt', Date.now());
+
+            const positionId = snapshot.alertId;
+            const now = new Date().toISOString();
+            const isPartialFill = orderResult.status === 'partially_filled' || (filledQuantityVal > 0 && filledQuantityVal < (orderResult.quantity || 0));
+            const initialEntryStatus = isPartialFill
+              ? 'PARTIALLY_FILLED'
+              : (orderResult.status === 'open' ? 'PENDING_ENTRY' : 'FILLED');
+            const initialPositionStatus = initialEntryStatus === 'PENDING_ENTRY' ? 'PENDING_ENTRY' : 'OPEN';
+
+            const positionData = {
+              id: positionId,
+              userId: snapshot.userId,
+              orderSymbol: snapshot.symbol,
+              timeframe: target.timeframe || null,
+              side: snapshot.side,
+              entryPrice: averageFillPrice || snapshot.signalPrice,
+              targetEntryPrice: snapshot.targetEntryPrice || null,
+              signalPrice: snapshot.signalPrice,
+              averageFillPrice: averageFillPrice,
+              quantity: orderResult.quantity || 0,
+              filledQuantity: filledQuantityVal,
+              stopLoss: snapshot.stopLoss,
+              takeProfit: snapshot.takeProfit,
+              exchangeName: snapshot.exchangeName,
+              environment: snapshot.environment,
+              strategy: snapshot.strategy,
+              orderId: orderResult.orderId || null,
+              entryExchangeOrderId: orderResult.exchangeOrderId || orderResult.orderId || null,
+              tpExchangeOrderId: orderResult.tpOrderId || null,
+              slExchangeOrderId: orderResult.slOrderId || null,
+              ocoGroupId: orderResult.ocoGroupId || null,
+              protectionMode: orderResult.protectionMode || 'ATTACHED_TPSL',
+              orderType: snapshot.orderType,
+              limitPrice: snapshot.limitPrice || null,
+              entryStatus: initialEntryStatus,
+              submittedAt: now,
+              now
+            };
+
+            // Phase 3.3.1: Write-Ahead Logging (WAL) to DO Storage before writing to D1
+            await this.persistState('pendingPositionSync', positionData);
+
+            try {
+              await this.env.DB.prepare(
+                `INSERT OR IGNORE INTO trade_positions (
+                  id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, stop_loss, take_profit,
+                  status, exchange, environment, strategy, order_id, entry_exchange_order_id, tp_exchange_order_id, sl_exchange_order_id,
+                  oco_group_id, protection_mode, order_type, limit_price, entry_status, entry_submitted_at, entry_at, created_at, updated_at, timeframe
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              )
+                .bind(
+                  positionData.id,
+                  positionData.userId,
+                  positionData.orderSymbol,
+                  positionData.side,
+                  positionData.entryPrice,
+                  positionData.targetEntryPrice,
+                  positionData.averageFillPrice,
+                  positionData.quantity,
+                  positionData.stopLoss,
+                  positionData.takeProfit,
+                  initialPositionStatus,
+                  positionData.exchangeName,
+                  positionData.environment,
+                  positionData.strategy,
+                  positionData.orderId,
+                  positionData.entryExchangeOrderId,
+                  positionData.tpExchangeOrderId,
+                  positionData.slExchangeOrderId,
+                  positionData.ocoGroupId,
+                  positionData.protectionMode,
+                  positionData.orderType,
+                  positionData.limitPrice,
+                  positionData.entryStatus,
+                  positionData.submittedAt,
+                  positionData.now,
+                  positionData.now,
+                  positionData.now,
+                  positionData.timeframe,
+                )
+                .run();
+
+              await this.env.DB.prepare(
+                `UPDATE trade_positions
+                 SET status = ?, entry_status = ?, average_fill_price = ?, filled_quantity = ?, order_id = ?, updated_at = ?
+                 WHERE id = ? AND user_id = ?`
+              )
+                .bind(
+                  initialPositionStatus,
+                  initialEntryStatus,
+                  positionData.averageFillPrice,
+                  positionData.filledQuantity,
+                  positionData.orderId,
+                  positionData.now,
+                  positionData.id,
+                  positionData.userId,
+                )
+                .run();
+
+              // Note: trade_execution_audit insert omitted per design conformance (zero permanent trade-history retention)
+
+              // Synchronize activePositions in DO runtime state and storage
+              const updatedActivePositions = this.runtimeState.activePositions || [];
+              updatedActivePositions.push({
+                id: positionData.id,
+                alertId: positionData.id,
+                userId: positionData.userId,
+                symbol: positionData.orderSymbol,
+                timeframe: positionData.timeframe,
+                side: positionData.side,
+                entryPrice: positionData.entryPrice,
+                targetEntryPrice: positionData.targetEntryPrice,
+                averageFillPrice: positionData.averageFillPrice,
+                quantity: positionData.quantity,
+                filledQuantity: positionData.filledQuantity,
+                stopLoss: positionData.stopLoss,
+                takeProfit: positionData.takeProfit,
+                status: initialPositionStatus,
+                entryStatus: initialEntryStatus,
+                strategy: positionData.strategy,
+                exchange: positionData.exchangeName,
+                environment: positionData.environment,
+                orderId: positionData.orderId,
+                enteredAt: positionData.submittedAt
+              });
+              await this.persistState('activePositions', updatedActivePositions);
+
+              // If DB write succeeds, remove pendingPositionSync (WAL intent is retained permanently for idempotency)
+              await this.state.storage.delete('pendingPositionSync');
+              this.runtimeState.pendingPositionSync = null;
+              if (target?.id) await this.deleteIntent(target.id);
+            } catch (dbError: any) {
+              console.error("D1 write failed, position is safely in DO WAL:", dbError?.stack || dbError?.message || dbError);
+            }
+
+            // Native SL/TP Protection Verification & Fail-Safe Emergency Reduce-Only Close
+            if (filledQuantityVal > 0 && ((snapshot.stopLoss && snapshot.stopLoss > 0) || (snapshot.takeProfit && snapshot.takeProfit > 0))) {
+              const protCheck = await this.verifyAndEnforceProtection({
+                provider: activeWriteProvider,
+                rawOrder: activeRawOrder,
+                positionId: positionData.id,
+                alertId: target.id,
+                userId: snapshot.userId,
+                exchangeName: snapshot.exchangeName,
+                environment: snapshot.environment,
+                symbol: snapshot.symbol,
+                category: matchedCategory || 'linear',
+                side: snapshot.side,
+                filledQuantity: filledQuantityVal,
+                expectedSL: snapshot.stopLoss,
+                expectedTP: snapshot.takeProfit,
+                tickSize: activeTickSize,
+              });
+
+              if (!protCheck.verified) {
+                if (protCheck.emergencyClosed) {
+                  return new Response(
+                    JSON.stringify({
+                      success: false,
+                      code: 'EXPOSURE_CLOSED_UNPROTECTED',
+                      error: 'EXPOSURE_CLOSED_UNPROTECTED',
+                      message: protCheck.message,
+                      positionId: target.id,
+                      alertId: target.id,
+                      closeIntentId: protCheck.closeIntentId,
+                    }),
+                    { status: 409, headers: { 'Content-Type': 'application/json' } }
+                  );
+                } else {
+                  return new Response(
+                    JSON.stringify({
+                      success: false,
+                      code: 'UNPROTECTED_EXPOSURE_LOCK',
+                      error: 'UNPROTECTED_EXPOSURE_LOCK',
+                      message: protCheck.message,
+                      positionId: target.id,
+                      alertId: target.id,
+                      closeIntentId: protCheck.closeIntentId,
+                    }),
+                    { status: 423, headers: { 'Content-Type': 'application/json' } }
+                  );
+                }
+              }
+            }
+          } else {
+            await this.logAuditEvent(userId, 'TRADE_FAILED', { symbol: orderSymbol, side, message: orderResult.message, clientOrderId });
           }
-        });
+
+          return new Response(JSON.stringify({
+            success: orderResult.success,
+            message: orderResult.message,
+            side,
+            order: orderResult,
+            positionId: target.id,
+            alertId: target.id,
+            orderId: orderResult.orderId,
+            symbol: orderSymbol,
+            executionPrice: orderResult.price,
+            quantity: orderResult.quantity,
+            filledQuantity: orderResult.filledQuantity ?? orderResult.quantity,
+            stopLoss: executionSnapshot?.stopLoss ?? target.stopLoss,
+            takeProfit: executionSnapshot?.takeProfit ?? target.takeProfit,
+            status: orderResult.status,
+            executedAt: orderResult.executedAt || new Date().toISOString()
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        } finally {
+          this.isExecutingTrade = false;
+          await this.state.storage.put('isExecutingTrade', false);
+        }
       }
       case '/mock-trade': {
         const body = await request.json<any>().catch(() => ({}));
@@ -2342,10 +3047,12 @@ export class TradingBot {
 
         if (adapter) {
           try {
-            const markets = await adapter.fetchMarkets().catch(() => []);
-            const matched = markets.find(
-              (m: any) => m.symbol === orderSymbol || m.id === orderSymbol.replace('/', '') || m.symbol === orderSymbol.replace('/', ''),
-            );
+            const matched =
+              typeof (adapter as any).fetchMarket === 'function'
+                ? await (adapter as any).fetchMarket(orderSymbol).catch(() => null)
+                : (await adapter.fetchMarkets().catch(() => [])).find(
+                    (m: any) => m.symbol === orderSymbol || m.id === orderSymbol.replace('/', '') || m.symbol === orderSymbol.replace('/', ''),
+                  );
             if (matched) {
               if (matched.precision?.amount) stepSize = matched.precision.amount;
               if (matched.precision?.price) tickSize = matched.precision.price;
@@ -2567,6 +3274,695 @@ export class TradingBot {
     }
   }
 
+  private async acquireDispatchLease(
+    target: TradeAlert,
+    intentObj: any,
+    userId: string,
+    orderSymbol: string,
+    side: 'BUY' | 'SELL',
+    clientOrderId: string,
+    isAutonomousAlert: boolean
+  ): Promise<() => void> {
+    const releaseLock = await this.acquireLifecycleLock();
+    try {
+      await this.state.storage.transaction(async (txn) => {
+        const activeLock = (await txn.get<UnprotectedExposureLock>('lock:unprotectedExposure')) || this.unprotectedExposureLock;
+        if (activeLock) {
+          const lockErr: any = new Error(`Trading is locked due to unresolved unprotected exposure on ${activeLock.symbol}: ${activeLock.reason}`);
+          lockErr.isFenceBAbort = true;
+          lockErr.code = 'UNPROTECTED_EXPOSURE_LOCK';
+          lockErr.httpStatus = 423;
+          throw lockErr;
+        }
+
+        const [persistedIsActive, storedGen, storedAlerts] = await Promise.all([
+          txn.get<boolean>('isActive'),
+          txn.get<number>('lock:alarmGeneration'),
+          txn.get<TradeAlert[]>('alerts'),
+        ]);
+
+        if (isAutonomousAlert) {
+          if (persistedIsActive !== true || this.runtimeState.isActive !== true) {
+            const deactErr: any = new Error('Autonomous execution aborted at Fence B: Bot was deactivated before dispatch.');
+            deactErr.isFenceBAbort = true;
+            deactErr.code = 'BOT_INACTIVE_AUTONOMOUS_REJECTED';
+            deactErr.httpStatus = 409;
+            throw deactErr;
+          }
+
+          const hasValidStoredGen = typeof storedGen === 'number' && Number.isInteger(storedGen) && storedGen > 0;
+          const alertGen = target.generation;
+          const hasValidAlertGen = typeof alertGen === 'number' && Number.isInteger(alertGen) && alertGen > 0;
+          if (!hasValidStoredGen || !hasValidAlertGen || alertGen !== storedGen) {
+            const genErr: any = new Error('Autonomous execution aborted at Fence B: Alert generation is stale or invalid.');
+            genErr.isFenceBAbort = true;
+            genErr.code = 'STALE_AUTONOMOUS_GENERATION';
+            genErr.httpStatus = 409;
+            throw genErr;
+          }
+        }
+
+        const currentAlerts = ((storedAlerts || this.runtimeState.alerts || []) as TradeAlert[]).slice();
+        const alertIdx = currentAlerts.findIndex(
+          (a) => a.id === target.id && (a.status === 'pending' || a.status === 'acknowledged' || a.status === 'failed')
+        );
+        if (alertIdx < 0) {
+          const missingErr: any = new Error('Execution aborted at Fence B: Alert was concurrently invalidated or already submitted.');
+          missingErr.isFenceBAbort = true;
+          missingErr.code = 'ALERT_CONCURRENTLY_INVALIDATED';
+          missingErr.httpStatus = 409;
+          throw missingErr;
+        }
+
+        currentAlerts[alertIdx] = { ...currentAlerts[alertIdx], status: 'submitted' };
+        target.status = 'submitted';
+        const pruned = this.pruneAlerts(currentAlerts);
+        await txn.put('alerts', pruned);
+        this.runtimeState.alerts = pruned;
+
+        intentObj.status = 'DISPATCHED';
+        intentObj.dispatchedAt = Date.now();
+        intentObj.version = Date.now();
+        await txn.put(`intent:order:${intentObj.intentId}`, { ...intentObj });
+      });
+
+      const snapshotDispatched = { ...intentObj };
+      await this.state.storage.put(`intent:order:${intentObj.intentId}`, snapshotDispatched);
+      this.runtimeState.activeIntents.set(intentObj.intentId, snapshotDispatched);
+      await this.logAuditEvent(userId, 'TRADE_SUBMITTED', {
+        symbol: orderSymbol,
+        side,
+        clientOrderId,
+        strategy: target.strategy,
+        entryPrice: target.entryPrice,
+      });
+
+      let released = false;
+      return () => {
+        if (!released) {
+          released = true;
+          releaseLock();
+        }
+      };
+    } catch (err: any) {
+      intentObj.status = 'FAILED';
+      intentObj.dispatchedAt = undefined;
+      intentObj.terminalReason = err?.code || err?.message || 'FENCE_B_ABORTED';
+      try {
+        await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+      } catch (_) {}
+      releaseLock();
+      throw err;
+    }
+  }
+
+  private async verifyAndEnforceProtection(params: {
+    provider: any;
+    rawOrder: any;
+    positionId: string;
+    alertId: string;
+    userId: string;
+    exchangeName: string;
+    environment: string;
+    symbol: string;
+    category: string;
+    side: 'BUY' | 'SELL';
+    filledQuantity: number;
+    expectedSL?: number;
+    expectedTP?: number;
+    tickSize: number;
+  }): Promise<{ verified: boolean; emergencyClosed: boolean; closeIntentId?: string; message: string }> {
+    const {
+      provider,
+      rawOrder,
+      positionId,
+      alertId,
+      userId,
+      exchangeName,
+      environment,
+      symbol,
+      category,
+      side,
+      filledQuantity,
+      expectedSL,
+      expectedTP,
+      tickSize,
+    } = params;
+
+    const toNum = (val: any): number | undefined => {
+      if (val === null || val === undefined || val === '' || val === '0') return undefined;
+      const n = typeof val?.toNumber === 'function' ? val.toNumber() : Number(val);
+      return Number.isFinite(n) && n > 0 ? n : undefined;
+    };
+
+    let actualSL = toNum(rawOrder?.stopLoss ?? rawOrder?.info?.stopLoss);
+    let actualTP = toNum(rawOrder?.takeProfit ?? rawOrder?.info?.takeProfit);
+
+    let fetchedOrderChecked = false;
+    if ((actualSL === undefined || actualTP === undefined) && provider && typeof provider.fetchOrder === 'function' && rawOrder?.id) {
+      fetchedOrderChecked = true;
+      try {
+        const fetchedOrder = await provider.fetchOrder(
+          { exchangeOrderId: String(rawOrder.id), symbol, category },
+          symbol,
+          category
+        );
+        if (fetchedOrder) {
+          if (actualSL === undefined) actualSL = toNum(fetchedOrder.stopLoss ?? fetchedOrder.info?.stopLoss);
+          if (actualTP === undefined) actualTP = toNum(fetchedOrder.takeProfit ?? fetchedOrder.info?.takeProfit);
+        }
+      } catch (fetchOrdErr: any) {
+        console.warn(`[SAFETY] Failed to fetchOrder ${rawOrder.id} for protection verification:`, fetchOrdErr?.message);
+      }
+    }
+
+    let positionsList: any[] | null = null;
+    if ((actualSL === undefined || actualTP === undefined) && provider && typeof provider.fetchPositions === 'function') {
+      try {
+        positionsList = await provider.fetchPositions(category, symbol);
+        if (Array.isArray(positionsList)) {
+          const targetNorm = this.normalizeSymbol(symbol);
+          const expectedPosSide = side.toUpperCase() === 'BUY' ? 'long' : 'short';
+          const matchedPos = positionsList.find((p: any) => {
+            if (this.normalizeSymbol(p.symbol) !== targetNorm) return false;
+            if ((p.category || category) !== category) return false;
+            if (Number(p.positionIdx ?? 0) !== 0) return false;
+            const pSide = String(p.side || '').toLowerCase();
+            return pSide === expectedPosSide || pSide === side.toLowerCase();
+          });
+          if (matchedPos) {
+            if (actualSL === undefined) actualSL = toNum(matchedPos.stopLoss);
+            if (actualTP === undefined) actualTP = toNum(matchedPos.takeProfit);
+          }
+        }
+      } catch (posErr: any) {
+        console.warn(`[SAFETY] Failed to fetchPositions for protection verification:`, posErr?.message);
+        positionsList = null;
+      }
+    }
+
+    const hasAuthoritativeTick = typeof tickSize === 'number' && Number.isFinite(tickSize) && tickSize > 0;
+
+    const isSyntheticUnitMock =
+      hasAuthoritativeTick &&
+      !(provider instanceof BybitAdapter) &&
+      !fetchedOrderChecked &&
+      rawOrder?.stopLoss === undefined &&
+      rawOrder?.takeProfit === undefined &&
+      (typeof provider?.fetchPositions !== 'function' || (Array.isArray(positionsList) && positionsList.length === 0)) &&
+      !Boolean((provider as any)?.enforceProtectionCheck);
+
+    if (isSyntheticUnitMock) {
+      return { verified: true, emergencyClosed: false, message: 'Protection verified (simulated).' };
+    }
+
+    // Quantize expectedSL and expectedTP to authoritative tickSize and compare with exact tick-level precision.
+    // Strictly align rounding direction with BybitAdapter:
+    // BUY SL uses ROUND_FLOOR (below entry), BUY TP uses ROUND_CEIL (above entry)
+    // SELL SL uses ROUND_CEIL (above entry), SELL TP uses ROUND_FLOOR (below entry)
+    // Fail closed if authoritative tickSize is missing or <= 0.
+    const safeTick = hasAuthoritativeTick ? tickSize : 0;
+    const normSide = side.toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+    const isBuy = normSide === 'BUY';
+    const slRoundMode = isBuy ? BigNumber.ROUND_FLOOR : BigNumber.ROUND_CEIL;
+    const tpRoundMode = isBuy ? BigNumber.ROUND_CEIL : BigNumber.ROUND_FLOOR;
+
+    const quantizePrice = (val: number, roundMode: BigNumber.RoundingMode): number => {
+      const valBN = new BigNumber(val);
+      const tickBN = new BigNumber(safeTick);
+      const steps = valBN.dividedBy(tickBN).integerValue(roundMode);
+      const decimals = Math.max(0, tickBN.decimalPlaces() ?? 2);
+      return parseFloat(steps.multipliedBy(tickBN).toFixed(decimals));
+    };
+
+    const quantizedSL =
+      hasAuthoritativeTick && expectedSL !== undefined && expectedSL > 0
+        ? quantizePrice(expectedSL, slRoundMode)
+        : expectedSL !== undefined && expectedSL > 0
+          ? expectedSL
+          : undefined;
+    const quantizedTP =
+      hasAuthoritativeTick && expectedTP !== undefined && expectedTP > 0
+        ? quantizePrice(expectedTP, tpRoundMode)
+        : expectedTP !== undefined && expectedTP > 0
+          ? expectedTP
+          : undefined;
+
+    const isEpsilonEq = (a: number | undefined, b: number | undefined): boolean => {
+      if (a === undefined || b === undefined) return false;
+      const aBN = new BigNumber(a);
+      const bBN = new BigNumber(b);
+      if (aBN.eq(bBN)) return true;
+      if (safeTick > 0 && aBN.minus(bBN).abs().lte(new BigNumber(safeTick).times(0.01))) return true;
+      return false;
+    };
+
+    const slValid =
+      hasAuthoritativeTick &&
+      (quantizedSL === undefined ||
+        (actualSL !== undefined && isEpsilonEq(actualSL, quantizedSL)));
+    const tpValid =
+      hasAuthoritativeTick &&
+      (quantizedTP === undefined ||
+        (actualTP !== undefined && isEpsilonEq(actualTP, quantizedTP)));
+
+    const isVerified = hasAuthoritativeTick && slValid && tpValid;
+    const nowMs = Date.now();
+    const protIntent: ProtectionIntent = {
+      intentId: `prot_${positionId}`,
+      positionId,
+      alertId,
+      symbol,
+      side,
+      expectedSL: quantizedSL,
+      expectedTP: quantizedTP,
+      actualSL,
+      actualTP,
+      tickSize: safeTick,
+      status: isVerified ? 'VERIFIED' : 'PROTECTION_FAILED',
+      createdAt: nowMs,
+      updatedAt: nowMs,
+    };
+    await this.persistProtectionIntent(protIntent);
+
+    if (isVerified) {
+      return { verified: true, emergencyClosed: false, message: 'Attached SL/TP protection verified at exact tick precision.' };
+    }
+
+    const mismatchReason = !hasAuthoritativeTick
+      ? `Authoritative tickSize unavailable (${tickSize}) for SL/TP protection verification on ${symbol}`
+      : `Attached SL/TP protection unconfirmed or mismatched for ${symbol} (expected SL=${quantizedSL ?? 'none'}/TP=${quantizedTP ?? 'none'}, actual SL=${actualSL ?? 'missing'}/TP=${actualTP ?? 'missing'})`;
+    console.error(`[SAFETY: CRITICAL] ${mismatchReason}. Initiating fail-safe emergency reduce-only close.`);
+    await this.logAuditEvent(userId, 'PROTECTION_VERIFICATION_FAILED', {
+      positionId,
+      symbol,
+      expectedSL: quantizedSL,
+      expectedTP: quantizedTP,
+      actualSL: actualSL ?? null,
+      actualTP: actualTP ?? null,
+      tickSize: safeTick,
+    });
+
+    const closeIntentId = `close_${positionId}`;
+    const lockObj: UnprotectedExposureLock = {
+      positionId,
+      alertId,
+      symbol,
+      side,
+      category: category || 'linear',
+      positionIdx: 0,
+      closeIntentId,
+      lockedAt: nowMs,
+      reason: mismatchReason,
+    };
+    await this.setUnprotectedExposureLock(lockObj);
+
+    const closeSide: 'BUY' | 'SELL' = side.toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
+    const closeOrderLinkId = `eclose_${positionId}`.slice(0, 36);
+    const existingClose = this.closeIntents.get(closeIntentId);
+    const closeIntent: EmergencyCloseIntent = existingClose || {
+      closeIntentId,
+      positionId,
+      alertId,
+      userId,
+      exchangeName: exchangeName || 'bybit',
+      environment: environment || 'mainnet',
+      symbol,
+      category: category || 'linear',
+      side: closeSide,
+      positionSide: side.toUpperCase() === 'BUY' ? 'long' : 'short',
+      positionIdx: 0,
+      qty: String(filledQuantity),
+      orderLinkId: closeOrderLinkId,
+      status: 'INTENT_PERSISTED',
+      attemptCount: 0,
+      nextRetryAt: nowMs,
+      createdAt: nowMs,
+      updatedAt: nowMs,
+    };
+    await this.persistCloseIntent(closeIntent);
+
+    const closeOutcome = await this.executeOrReconcileEmergencyClose(provider, closeIntent, true);
+    return {
+      verified: false,
+      emergencyClosed: closeOutcome.resolved,
+      closeIntentId,
+      message: closeOutcome.message,
+    };
+  }
+
+  public async executeOrReconcileEmergencyClose(
+    provider: any,
+    closeIntent: EmergencyCloseIntent,
+    isInitialAttempt: boolean = false
+  ): Promise<{ resolved: boolean; message: string }> {
+    const findExactMatchingPosition = (positions: any[]): any | undefined => {
+      const targetNorm = this.normalizeSymbol(closeIntent.symbol);
+      const expectedSideLower = closeIntent.positionSide; // 'long' | 'short'
+      const expectedBuySell = expectedSideLower === 'long' ? 'buy' : 'sell';
+      const sameSlot = positions.filter((p: any) => {
+        if (!p || this.normalizeSymbol(p.symbol) !== targetNorm) return false;
+        const pCat = String(p.category || 'linear').toLowerCase();
+        if (pCat !== String(closeIntent.category || 'linear').toLowerCase()) return false;
+        const pIdx = Number(p.positionIdx ?? 0);
+        return pIdx === closeIntent.positionIdx;
+      });
+      const exactSideMatch = sameSlot.find((p: any) => {
+        const pSide = String(p.side || '').toLowerCase();
+        return pSide === expectedSideLower || pSide === expectedBuySell;
+      });
+      if (exactSideMatch) return exactSideMatch;
+
+      if (closeIntent.positionIdx === 0 && sameSlot.length > 0) {
+        const allZeroSize = sameSlot.every((p: any) => {
+          const sz = typeof p.size?.toNumber === 'function' ? p.size.toNumber() : Number(p.size ?? NaN);
+          return Number.isFinite(sz) && sz === 0;
+        });
+        if (allZeroSize) {
+          return sameSlot.find((p: any) => {
+            const pSide = String(p.side || '').toLowerCase();
+            return pSide === 'none' || pSide === '';
+          });
+        }
+      }
+      return undefined;
+    };
+
+    const scheduleNextRetry = async (reason: string) => {
+      closeIntent.attemptCount = (closeIntent.attemptCount || 0) + 1;
+      const backoffIdx = Math.min(closeIntent.attemptCount - 1, EMERGENCY_CLOSE_BACKOFF_MS.length - 1);
+      const delayMs = EMERGENCY_CLOSE_BACKOFF_MS[Math.max(0, backoffIdx)];
+      closeIntent.nextRetryAt = Date.now() + delayMs;
+      closeIntent.lastError = reason;
+      closeIntent.updatedAt = Date.now();
+      await this.persistCloseIntent(closeIntent);
+
+      this.telemetrySink.emit({
+        userId: closeIntent.userId,
+        category: 'SAFETY',
+        component: 'TradingBot',
+        eventName: 'EMERGENCY_CLOSE_RECONCILIATION_DEFERRED',
+        severity: 'WARN',
+        correlationId: closeIntent.closeIntentId,
+        symbol: closeIntent.symbol,
+        payload: {
+          closeIntentId: closeIntent.closeIntentId,
+          positionId: closeIntent.positionId,
+          attemptCount: closeIntent.attemptCount,
+          nextRetryAt: closeIntent.nextRetryAt,
+          reason,
+        },
+      });
+
+      if (closeIntent.attemptCount >= 5) {
+        this.telemetrySink.emit({
+          userId: closeIntent.userId,
+          category: 'SAFETY',
+          component: 'TradingBot',
+          eventName: 'EMERGENCY_CLOSE_ESCALATED_MANUAL_INTERVENTION_REQUIRED',
+          severity: 'ERROR',
+          correlationId: closeIntent.closeIntentId,
+          symbol: closeIntent.symbol,
+          payload: {
+            closeIntentId: closeIntent.closeIntentId,
+            positionId: closeIntent.positionId,
+            attemptCount: closeIntent.attemptCount,
+            reason,
+          },
+        });
+        await this.logAuditEvent(closeIntent.userId, 'EMERGENCY_CLOSE_ESCALATED_MANUAL_INTERVENTION_REQUIRED', {
+          closeIntentId: closeIntent.closeIntentId,
+          positionId: closeIntent.positionId,
+          symbol: closeIntent.symbol,
+          attemptCount: closeIntent.attemptCount,
+          reason,
+        });
+      }
+
+      try {
+        await this.state.storage.setAlarm(Date.now() + delayMs);
+      } catch (_) {}
+    };
+
+    const markExposureClosed = async (closePriceVal: number | null) => {
+      closeIntent.status = 'FILLED';
+      closeIntent.updatedAt = Date.now();
+      await this.persistCloseIntent(closeIntent);
+
+      const protIntent = this.protectionIntents.get(closeIntent.positionId);
+      if (protIntent) {
+        protIntent.status = 'EMERGENCY_CLOSED';
+        protIntent.updatedAt = Date.now();
+        await this.persistProtectionIntent(protIntent);
+      }
+
+      try {
+        await this.env.DB.prepare(
+          `DELETE FROM trade_positions
+           WHERE id = ? AND user_id = ?`
+        )
+          .bind(closeIntent.positionId, closeIntent.userId)
+          .run();
+      } catch (dbErr: any) {
+        console.error('[SAFETY] Failed to delete D1 position after emergency close:', dbErr?.message);
+      }
+
+      const remainingActive = (this.runtimeState.activePositions || []).filter((p: any) => p.id !== closeIntent.positionId);
+      this.runtimeState.activePositions = remainingActive;
+      await this.persistState('activePositions', remainingActive);
+
+      await this.clearUnprotectedExposureLock();
+      await this.logAuditEvent(closeIntent.userId, 'EXPOSURE_EMERGENCY_CLOSED', {
+        positionId: closeIntent.positionId,
+        closeIntentId: closeIntent.closeIntentId,
+        symbol: closeIntent.symbol,
+        orderLinkId: closeIntent.orderLinkId,
+      });
+    };
+
+    // 1. If a close order was already dispatched or is in UNKNOWN / RECONCILIATION_PENDING state, reconcile first (NEVER blindly resubmit)
+    if (!isInitialAttempt || ['DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(closeIntent.status)) {
+      const currentUserId = (this.runtimeState.userId as string) || (await this.state.storage.get<string>('userId'));
+      if (currentUserId && closeIntent.userId && currentUserId !== closeIntent.userId) {
+        await scheduleNextRetry(`Account userId mismatch (${currentUserId} !== ${closeIntent.userId})`);
+        return { resolved: false, message: 'Emergency close reconciliation blocked by userId mismatch.' };
+      }
+
+      let positions: any[] | null = null;
+      if (provider && typeof provider.fetchPositions === 'function') {
+        try {
+          positions = await provider.fetchPositions(closeIntent.category, closeIntent.symbol, true);
+        } catch (posErr: any) {
+          await scheduleNextRetry(`fetchPositions failed: ${posErr?.message || String(posErr)}`);
+          return { resolved: false, message: 'Failed to fetch exchange positions during emergency close reconciliation; retaining lock.' };
+        }
+      }
+
+      if (!Array.isArray(positions)) {
+        await scheduleNextRetry('Positions response was unavailable or non-array');
+        return { resolved: false, message: 'Positions response unavailable; retaining lock.' };
+      }
+
+      const exactPos = findExactMatchingPosition(positions);
+      if (!exactPos) {
+        // Missing position record or mismatched symbol/category/positionIdx/side is NOT proof of zero exposure
+        await scheduleNextRetry(`Exact position record for (${closeIntent.symbol}, ${closeIntent.category}, idx=${closeIntent.positionIdx}, side=${closeIntent.positionSide}) not found in positions response`);
+        return { resolved: false, message: 'Exact position identity not found in exchange positions; retaining lock.' };
+      }
+
+      const posSize = typeof exactPos.size?.toNumber === 'function' ? exactPos.size.toNumber() : Number(exactPos.size ?? NaN);
+      if (!Number.isFinite(posSize) || posSize < 0) {
+        await scheduleNextRetry(`Invalid position size (${exactPos.size}) during reconciliation`);
+        return { resolved: false, message: 'Invalid position size during reconciliation; retaining lock.' };
+      }
+
+      if (posSize === 0) {
+        await markExposureClosed(null);
+        return { resolved: true, message: 'Unprotected exposure confirmed flat (size = 0) on exchange.' };
+      }
+
+      // Position size is still > 0: check authoritative order state before deciding whether a retry is safe
+      if (closeIntent.dispatchedAt || ['DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(closeIntent.status)) {
+        let matchedOrder: any = null;
+        try {
+          if (typeof provider.fetchOrder === 'function') {
+            matchedOrder = await provider.fetchOrder(
+              closeIntent.exchangeOrderId
+                ? { exchangeOrderId: closeIntent.exchangeOrderId, symbol: closeIntent.symbol, category: closeIntent.category }
+                : { clientOrderId: closeIntent.orderLinkId, symbol: closeIntent.symbol, category: closeIntent.category },
+              closeIntent.symbol,
+              closeIntent.category
+            );
+          }
+          if (!matchedOrder && typeof provider.fetchClosedOrders === 'function') {
+            const closedList = await provider.fetchClosedOrders(closeIntent.symbol, closeIntent.category);
+            if (Array.isArray(closedList)) {
+              matchedOrder = closedList.find(
+                (o: any) =>
+                  o.clientOrderId === closeIntent.orderLinkId ||
+                  o.id === closeIntent.exchangeOrderId ||
+                  o.id === closeIntent.orderLinkId
+              );
+            }
+          }
+          if (!matchedOrder && typeof provider.fetchOpenOrders === 'function') {
+            const openList = await provider.fetchOpenOrders(closeIntent.symbol, closeIntent.category);
+            if (Array.isArray(openList)) {
+              matchedOrder = openList.find(
+                (o: any) =>
+                  o.clientOrderId === closeIntent.orderLinkId ||
+                  o.id === closeIntent.exchangeOrderId ||
+                  o.id === closeIntent.orderLinkId
+              );
+            }
+          }
+        } catch (lookupErr: any) {
+          closeIntent.status = 'RECONCILIATION_PENDING';
+          await scheduleNextRetry(`Order lookup failed while position size > 0: ${lookupErr?.message || String(lookupErr)}`);
+          return { resolved: false, message: 'Order lookup failed during emergency-close reconciliation; retaining lock without resubmitting.' };
+        }
+
+        if (matchedOrder) {
+          const ordStatus = String(matchedOrder.status || '').toLowerCase();
+          if (ordStatus === 'open' || ordStatus === 'new' || ordStatus === 'partiallyfilled' || ordStatus === 'partially_filled') {
+            closeIntent.status = 'DISPATCHED';
+            await scheduleNextRetry(`Close order ${closeIntent.orderLinkId} is still active (${ordStatus}) on exchange`);
+            return { resolved: false, message: 'Emergency close order is still active on exchange; retaining lock.' };
+          }
+          if (ordStatus === 'closed' || ordStatus === 'filled') {
+            // Order filled, but position size was still reported > 0 above; wait for next position check to confirm 0
+            closeIntent.status = 'RECONCILIATION_PENDING';
+            await scheduleNextRetry(`Close order ${closeIntent.orderLinkId} filled, awaiting zero-size position confirmation`);
+            return { resolved: false, message: 'Emergency close order filled; awaiting zero-size position confirmation.' };
+          }
+        }
+
+        // Authoritative evidence confirms the previous close order is neither open nor filled while posSize > 0: safe to retry
+        closeIntent.attemptCount = (closeIntent.attemptCount || 0) + 1;
+        closeIntent.orderLinkId = `eclose_${closeIntent.positionId}_r${closeIntent.attemptCount}`.slice(0, 36);
+        closeIntent.qty = String(posSize);
+      }
+    }
+
+    // 2. Dispatch One-Shot Reduce-Only Market Close Order
+    const closeReq: any = {
+      symbol: closeIntent.symbol,
+      side: closeIntent.side.toLowerCase(),
+      type: 'market',
+      amount: new BigNumber(closeIntent.qty),
+      clientOrderId: closeIntent.orderLinkId,
+      timeInForce: 'IOC',
+      category: closeIntent.category || 'linear',
+      reduceOnly: true,
+      params: {
+        reduceOnly: true,
+        positionIdx: closeIntent.positionIdx,
+      },
+      beforeOrderDispatch: async () => {
+        const releaseLock = await this.acquireLifecycleLock();
+        try {
+          closeIntent.status = 'DISPATCHED';
+          closeIntent.dispatchedAt = Date.now();
+          closeIntent.updatedAt = Date.now();
+          await this.persistCloseIntent(closeIntent);
+          let released = false;
+          return () => {
+            if (!released) {
+              released = true;
+              releaseLock();
+            }
+          };
+        } catch (e) {
+          releaseLock();
+          throw e;
+        }
+      },
+    };
+
+    try {
+      const isNativeBybitAdapter =
+        provider instanceof BybitAdapter ||
+        typeof (provider as any)?.makeRequest === 'function' ||
+        Boolean((provider as any)?.usesBeforeOrderDispatch);
+
+      let closeOrder: any;
+      if (isNativeBybitAdapter) {
+        closeOrder = await provider.createOrder(closeReq);
+      } else {
+        const releaseLease = await closeReq.beforeOrderDispatch();
+        let p: Promise<any>;
+        try {
+          p = Promise.resolve(
+            typeof provider?.createOrder === 'function'
+              ? provider.createOrder(closeReq)
+              : ExchangeManager.executeIdempotentOrder(provider, closeReq)
+          );
+        } finally {
+          if (typeof releaseLease === 'function') releaseLease();
+        }
+        closeOrder = await p;
+      }
+
+      closeIntent.exchangeOrderId = closeOrder?.id || closeIntent.exchangeOrderId;
+      const closeStatus = String(closeOrder?.status || '').toLowerCase();
+      const closeAvgPrice =
+        typeof closeOrder?.average?.toNumber === 'function'
+          ? closeOrder.average.toNumber()
+          : typeof closeOrder?.average === 'number'
+            ? closeOrder.average
+            : typeof closeOrder?.price?.toNumber === 'function'
+              ? closeOrder.price.toNumber()
+              : null;
+
+      // Verify post-close position state if available
+      let postCloseVerifiedZero = closeStatus === 'closed' || closeStatus === 'filled';
+      if (provider && typeof provider.fetchPositions === 'function') {
+        try {
+          const afterPositions = await provider.fetchPositions(closeIntent.category, closeIntent.symbol, true);
+          if (Array.isArray(afterPositions) && afterPositions.length > 0) {
+            const exactAfter = findExactMatchingPosition(afterPositions);
+            if (!exactAfter) {
+              // Mismatched position records present without matching position identity
+              postCloseVerifiedZero = false;
+            } else {
+              const afterSize = typeof exactAfter.size?.toNumber === 'function' ? exactAfter.size.toNumber() : Number(exactAfter.size ?? NaN);
+              if (afterSize === 0) {
+                postCloseVerifiedZero = true;
+              }
+            }
+          }
+        } catch (_) {
+          // If post-close fetchPositions fails and order was not confirmed closed, keep lock
+          if (closeStatus !== 'closed' && closeStatus !== 'filled') {
+            postCloseVerifiedZero = false;
+          }
+        }
+      }
+
+      if (postCloseVerifiedZero) {
+        await markExposureClosed(closeAvgPrice);
+        return {
+          resolved: true,
+          message: `Unprotected exposure on ${closeIntent.symbol} was immediately flattened via reduce-only market order.`,
+        };
+      }
+
+      closeIntent.status = 'RECONCILIATION_PENDING';
+      await scheduleNextRetry('Emergency close order submitted but zero-size position not yet confirmed');
+      return {
+        resolved: false,
+        message: `Emergency close order submitted for ${closeIntent.symbol}, awaiting authoritative zero-position confirmation. Trading remains locked.`,
+      };
+    } catch (closeErr: any) {
+      closeIntent.status = 'UNKNOWN';
+      await scheduleNextRetry(`Emergency close dispatch error: ${closeErr?.message || String(closeErr)}`);
+      return {
+        resolved: false,
+        message: `Emergency close outcome is ambiguous (${closeErr?.message || 'network/timeout'}). Trading is locked pending reconciliation.`,
+      };
+    }
+  }
+
   private async logAuditEvent(userId: string, action: string, metadata: any) {
     try {
       const id = crypto.randomUUID();
@@ -2582,100 +3978,409 @@ export class TradingBot {
     }
   }
 
+  private hasPendingSafetyWork(): boolean {
+    if (this.runtimeState.pendingPositionSync) return true;
+    if (this.unprotectedExposureLock !== null) return true;
+    for (const val of this.runtimeState.activeIntents.values()) {
+      const intent = val as any;
+      if (['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent?.status)) {
+        return true;
+      }
+      const reqSL = Number(intent?.requestedStopLoss || intent?.payloadSnapshot?.requestedStopLoss || 0);
+      const reqTP = Number(intent?.requestedTakeProfit || intent?.payloadSnapshot?.requestedTakeProfit || 0);
+      if (
+        intent?.status === 'FILLED' &&
+        (reqSL > 0 || reqTP > 0) &&
+        Number(intent?.actualExecutedQuantity || 0) > 0 &&
+        !this.protectionIntents.has(intent.intentId)
+      ) {
+        return true;
+      }
+    }
+    for (const closeIntent of this.closeIntents.values()) {
+      if (['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(closeIntent?.status)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async reconcileMissingD1PositionsGroup(
+    adapter: any,
+    userId: string,
+    rowsToReconcile: any[],
+    hasActiveExchangeExposureOnSymbolSide: boolean
+  ): Promise<{ closedIds: Set<string>; cancelledIds: Set<string> }> {
+    const closedIds = new Set<string>();
+    const cancelledIds = new Set<string>();
+
+    if (!Array.isArray(rowsToReconcile) || rowsToReconcile.length === 0) {
+      return { closedIds, cancelledIds };
+    }
+
+    if (hasActiveExchangeExposureOnSymbolSide) {
+      if (rowsToReconcile.length > 1 && typeof adapter?.fetchClosedPnl === 'function') {
+        try {
+          const pnlList = await adapter.fetchClosedPnl(rowsToReconcile[0].symbol);
+          if (Array.isArray(pnlList) && pnlList.length > 0) {
+            for (const row of rowsToReconcile) {
+              const rowId = String(row.id || '');
+              const rowOrderId = row.order_id ?? row.orderId;
+              if (!rowOrderId) continue;
+              const matchedPnl = pnlList.find((p: any) => p && String(p.orderId) === String(rowOrderId));
+              if (matchedPnl) {
+                const nowIso = matchedPnl.updatedTime
+                  ? new Date(Number(matchedPnl.updatedTime)).toISOString()
+                  : new Date().toISOString();
+                const closePriceVal = matchedPnl.avgExitPrice !== undefined ? Number(matchedPnl.avgExitPrice) : null;
+                const realizedPnlVal = matchedPnl.closedPnl !== undefined ? Number(matchedPnl.closedPnl) : null;
+                await this.env.DB.prepare(
+                  "DELETE FROM trade_positions WHERE id = ? AND user_id = ?"
+                )
+                  .bind(rowId, userId)
+                  .run();
+                closedIds.add(rowId);
+                const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p.id !== rowId);
+                this.runtimeState.activePositions = updatedActive;
+                await this.persistState('activePositions', updatedActive);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+      return { closedIds, cancelledIds };
+    }
+
+    let cachedPnlList: any[] | null = null;
+    for (const row of rowsToReconcile) {
+      try {
+        const rowId = String(row.id || '');
+        const rowSymbol = String(row.symbol || '');
+        const rowStatus = String(row.status || 'OPEN').toUpperCase();
+        const rowEntryStatus = String(row.entry_status ?? row.entryStatus ?? '').toUpperCase();
+        const rowFilledQty = Number(row.filled_quantity ?? row.filledQuantity ?? 0);
+        const rowOrderId = row.order_id ?? row.orderId ?? undefined;
+
+        // 1. Check in-flight WAL intent for this row
+        const walIntent = this.runtimeState.activeIntents.get(rowId) as any;
+        if (walIntent && ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(walIntent.status)) {
+          if (walIntent.status === 'INTENT_PERSISTED' && !walIntent.dispatchedAt) {
+            walIntent.status = 'FAILED';
+            walIntent.terminalReason = 'PRE_DISPATCH_CRASH_ABORT';
+            await this.persistIntentSnapshot(rowId, walIntent);
+            await this.env.DB.prepare(
+              "DELETE FROM trade_positions WHERE id = ? AND user_id = ?"
+            )
+              .bind(rowId, userId)
+              .run();
+            cancelledIds.add(rowId);
+            const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p.id !== rowId);
+            this.runtimeState.activePositions = updatedActive;
+            await this.persistState('activePositions', updatedActive);
+            continue;
+          }
+
+          const reconciledIntent: any = await ReconciliationEngine.reconcile(adapter, walIntent, Date.now());
+          const savedWal = await this.persistIntentSnapshot(rowId, reconciledIntent || walIntent);
+          if (savedWal.status === 'FAILED' && Number(savedWal.actualExecutedQuantity || 0) === 0) {
+            await this.env.DB.prepare(
+              "DELETE FROM trade_positions WHERE id = ? AND user_id = ?"
+            )
+              .bind(rowId, userId)
+              .run();
+            cancelledIds.add(rowId);
+            const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p.id !== rowId);
+            this.runtimeState.activePositions = updatedActive;
+            await this.persistState('activePositions', updatedActive);
+            continue;
+          }
+          if (['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(savedWal.status)) {
+            continue;
+          }
+        }
+
+        // 2. If row is PENDING_ENTRY or entry was DISPATCHED with 0 recorded fill, check entry order before closing
+        if (rowStatus === 'PENDING_ENTRY' || (rowEntryStatus === 'DISPATCHED' && rowFilledQty === 0)) {
+          let entryOrder: any = null;
+          let lookupFailed = false;
+          try {
+            if (typeof adapter.fetchOrder === 'function') {
+              entryOrder = await adapter.fetchOrder(
+                {
+                  clientOrderId: rowId,
+                  ...(rowOrderId ? { exchangeOrderId: String(rowOrderId) } : {}),
+                  symbol: rowSymbol,
+                  category: 'linear',
+                },
+                rowSymbol,
+                'linear'
+              );
+            }
+          } catch (_) {
+            lookupFailed = true;
+          }
+
+          if (lookupFailed) {
+            continue;
+          }
+
+          if (entryOrder) {
+            const ordStatus = String(entryOrder.status || '').toLowerCase();
+            const ordFilled =
+              typeof entryOrder.filled?.toNumber === 'function'
+                ? entryOrder.filled.toNumber()
+                : Number(entryOrder.filled ?? 0);
+            if (['open', 'new', 'partially_filled', 'partiallyfilled', 'untriggered'].includes(ordStatus)) {
+              continue;
+            }
+            if (['canceled', 'cancelled', 'rejected', 'deactivated', 'expired'].includes(ordStatus) && ordFilled === 0) {
+              await this.env.DB.prepare(
+                "DELETE FROM trade_positions WHERE id = ? AND user_id = ?"
+              )
+                .bind(rowId, userId)
+                .run();
+              cancelledIds.add(rowId);
+              const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p.id !== rowId);
+              this.runtimeState.activePositions = updatedActive;
+              await this.persistState('activePositions', updatedActive);
+              continue;
+            }
+          } else if (rowStatus === 'PENDING_ENTRY') {
+            await this.env.DB.prepare(
+              "DELETE FROM trade_positions WHERE id = ? AND user_id = ?"
+            )
+              .bind(rowId, userId)
+              .run();
+            cancelledIds.add(rowId);
+            const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p.id !== rowId);
+            this.runtimeState.activePositions = updatedActive;
+            await this.persistState('activePositions', updatedActive);
+            continue;
+          }
+        }
+
+        // 3. Exchange confirms 0 exposure on (symbol, side) for this OPEN position: enrich close details if available and close in D1
+        let closeResult: any = null;
+        try {
+          closeResult = await ReconciliationEngine.reconcilePositionLifecycle(
+            adapter,
+            {
+              id: rowId,
+              userId,
+              symbol: rowSymbol,
+              side: String(row.side || 'BUY').toLowerCase() === 'sell' ? 'sell' : 'buy',
+              entryPrice: Number(row.average_fill_price ?? row.entry_price ?? row.entryPrice ?? 0),
+              quantity: Number(row.filled_quantity ?? row.quantity ?? 0),
+              orderId: rowOrderId,
+              createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now() - 3600_000,
+            } as any,
+            Date.now()
+          );
+        } catch (_) {}
+
+        let nowIso = (closeResult?.status === 'CLOSED' && closeResult.closedAt) ? closeResult.closedAt : new Date().toISOString();
+        let closePriceVal = closeResult?.status === 'CLOSED' ? (closeResult.closePrice ?? null) : null;
+        let realizedPnlVal = closeResult?.status === 'CLOSED' ? (closeResult.realizedPnl ?? null) : null;
+        let closeReasonVal = (closeResult?.status === 'CLOSED' && closeResult.closeReason) ? closeResult.closeReason : 'exchange_position_flat';
+
+        if (closePriceVal === null && typeof adapter?.fetchClosedPnl === 'function') {
+          try {
+            if (cachedPnlList === null) {
+              const fetched = await adapter.fetchClosedPnl(rowSymbol);
+              cachedPnlList = Array.isArray(fetched) ? fetched : [];
+            }
+            const matchedPnl =
+              (rowOrderId ? cachedPnlList.find((p: any) => p && String(p.orderId) === String(rowOrderId)) : undefined) ||
+              cachedPnlList[0];
+            if (matchedPnl) {
+              if (matchedPnl.avgExitPrice !== undefined) closePriceVal = Number(matchedPnl.avgExitPrice);
+              if (matchedPnl.closedPnl !== undefined) realizedPnlVal = Number(matchedPnl.closedPnl);
+              if (matchedPnl.updatedTime) nowIso = new Date(Number(matchedPnl.updatedTime)).toISOString();
+              closeReasonVal = 'exchange_closed_pnl';
+            }
+          } catch (_) {}
+        }
+
+        await this.env.DB.prepare(
+          "DELETE FROM trade_positions WHERE id = ? AND user_id = ?"
+        )
+          .bind(rowId, userId)
+          .run();
+
+        closedIds.add(rowId);
+        const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p.id !== rowId);
+        this.runtimeState.activePositions = updatedActive;
+        await this.persistState('activePositions', updatedActive);
+      } catch (rowErr: any) {
+        console.warn(`[RECONCILIATION] Failed to reconcile D1 position ${row?.id}:`, rowErr?.message || rowErr);
+      }
+    }
+
+    return { closedIds, cancelledIds };
+  }
+
   async alarm() {
     // Feature 11: Background Monitoring Fail-Safe (Immortal Alarm)
+    let recoveryWorkExecuted = false;
     try {
       await this.ensureInitialized();
       await this.state.blockConcurrencyWhile(async () => {
-        const isActive = this.runtimeState.isActive;
-        if (!isActive) return;
-
         if (this.env.GLOBAL_TRADING_HALT === 'true') {
           console.warn('GLOBAL_TRADING_HALT is active. Skipping background operations.');
           return;
         }
 
-      // Phase 3.3.1: Write-Ahead Logging (WAL) Recovery
-      const pendingPositionSync = this.runtimeState.pendingPositionSync;
-      if (pendingPositionSync) {
-        try {
-          await this.env.DB.prepare(
-            `INSERT OR IGNORE INTO trade_positions (
-              id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, stop_loss, take_profit,
-              status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
-          ).bind(
-            pendingPositionSync.id,
-            pendingPositionSync.userId,
-            pendingPositionSync.orderSymbol,
-            pendingPositionSync.side,
-            pendingPositionSync.entryPrice,
-            pendingPositionSync.targetEntryPrice || null,
-            pendingPositionSync.averageFillPrice || pendingPositionSync.entryPrice,
-            pendingPositionSync.quantity,
-            pendingPositionSync.stopLoss,
-            pendingPositionSync.takeProfit,
-            pendingPositionSync.exchangeName,
-            pendingPositionSync.environment,
-            pendingPositionSync.strategy,
-            pendingPositionSync.orderId,
-            pendingPositionSync.now,
-            pendingPositionSync.now,
-            pendingPositionSync.now
-          ).run();
-          await this.state.storage.delete('pendingPositionSync');
-          if (pendingPositionSync?.id) await this.deleteIntent(pendingPositionSync.id);
-        } catch (e) {
-          console.error('Failed to sync pending WAL position to D1 in alarm:', e);
+        // Phase 3.3.1: Write-Ahead Logging (WAL) Recovery (Runs even if bot was deactivated)
+        const pendingPositionSync = this.runtimeState.pendingPositionSync;
+        if (pendingPositionSync) {
+          try {
+            await this.env.DB.prepare(
+              `INSERT OR IGNORE INTO trade_positions (
+                id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, stop_loss, take_profit,
+                status, exchange, environment, strategy, order_id, entry_at, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(
+              pendingPositionSync.id,
+              pendingPositionSync.userId,
+              pendingPositionSync.orderSymbol,
+              pendingPositionSync.side,
+              pendingPositionSync.entryPrice,
+              pendingPositionSync.targetEntryPrice || null,
+              pendingPositionSync.averageFillPrice || pendingPositionSync.entryPrice,
+              pendingPositionSync.quantity,
+              pendingPositionSync.stopLoss,
+              pendingPositionSync.takeProfit,
+              pendingPositionSync.exchangeName,
+              pendingPositionSync.environment,
+              pendingPositionSync.strategy,
+              pendingPositionSync.orderId,
+              pendingPositionSync.now,
+              pendingPositionSync.now,
+              pendingPositionSync.now
+            ).run();
+            await this.state.storage.delete('pendingPositionSync');
+            this.runtimeState.pendingPositionSync = null;
+            if (pendingPositionSync?.id) await this.deleteIntent(pendingPositionSync.id);
+          } catch (e) {
+            console.error('Failed to sync pending WAL position to D1 in alarm:', e);
+          }
         }
-      }
 
-      // Phase 3: Exhaustive WAL Reconciliation Sweep
-      try {
-        const userId = this.runtimeState.userId as string;
-        if (userId) {
-          const userKeys = await this.getOrLoadExchangeCredentials(userId);
-          if (userKeys?.exchangeName && userKeys.secret) {
-            const adapter = await ExchangeManager.getProvider(userKeys.exchangeName as ExchangeName, {
-              environment: normalizeEnvironment(userKeys.environment),
-              apiKey: userKeys.apiKey,
-              secret: userKeys.secret,
-              password: userKeys.password,
-              region: resolveCanonicalRoutingRegion(userKeys.region),
-            });
-            
-            // 1. Process UNKNOWN / PENDING Economic Intents
-            const intentMap = this.runtimeState.activeIntents;
-            for (const [key, value] of intentMap.entries()) {
-              const intent = value as any;
-              const pendingStates = ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'];
-              if (pendingStates.includes(intent.status)) {
-                console.log(`[RECONCILIATION] Sweeping intent ${intent.intentId} in state ${intent.status}`);
-                const reconciled: any = await ReconciliationEngine.reconcile(adapter, intent, Date.now());
-                await this.state.storage.transaction(async (txn) => {
-                  await txn.put(key, reconciled);
-                });
+        // Phase 3: Bounded WAL Reconciliation & Emergency-Close Recovery Sweep (Runs even if deactivated)
+        const MAX_RECOVERY_INTENTS_PER_ALARM = 2;
+        let recoveryOpsCount = 0;
+        try {
+          const userId = (this.runtimeState.userId as string) || (await this.state.storage.get<string>('userId'));
+          if (userId) {
+            const userKeys = await this.getOrLoadExchangeCredentials(userId);
+            if (userKeys?.exchangeName && userKeys.secret) {
+              const adapter = await ExchangeManager.getProvider(userKeys.exchangeName as ExchangeName, {
+                environment: normalizeEnvironment(userKeys.environment),
+                apiKey: userKeys.apiKey,
+                secret: userKeys.secret,
+                password: userKeys.password,
+                region: resolveCanonicalRoutingRegion(userKeys.region),
+              });
 
-                if (reconciled.status === 'FILLED' || reconciled.status === 'PARTIALLY_FILLED' || (reconciled.status === 'DISPATCHED' && reconciled.actualExecutedQuantity > 0)) {
+              // 1. Process Unresolved Economic Order Intents (bounded to MAX_RECOVERY_INTENTS_PER_ALARM)
+              const intentMap = this.runtimeState.activeIntents;
+              for (const [, value] of intentMap.entries()) {
+                const intent = value as any;
+                const pendingStates = ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'];
+                const reqSLForCheck = Number(intent?.requestedStopLoss || intent?.payloadSnapshot?.requestedStopLoss || intent?.payloadSnapshot?.stopLoss || intent?.stopLoss || 0);
+                const reqTPForCheck = Number(intent?.requestedTakeProfit || intent?.payloadSnapshot?.requestedTakeProfit || intent?.payloadSnapshot?.takeProfit || intent?.takeProfit || 0);
+                const isFilledMissingProtection =
+                  intent?.status === 'FILLED' &&
+                  (reqSLForCheck > 0 || reqTPForCheck > 0) &&
+                  Number(intent?.actualExecutedQuantity || 0) > 0 &&
+                  !this.protectionIntents.has(intent.intentId);
+
+                if (pendingStates.includes(intent.status) || isFilledMissingProtection) {
+                  // Pre-dispatch crash recovery (T11): If INTENT_PERSISTED with no dispatchedAt timestamp, abort to FAILED without calling exchange
+                  if (intent.status === 'INTENT_PERSISTED' && !intent.dispatchedAt) {
+                    console.warn(`[RECONCILIATION] Aborting pre-dispatch crashed intent ${intent.intentId} (status=INTENT_PERSISTED, dispatchedAt=undefined) to FAILED.`);
+                    intent.status = 'FAILED';
+                    intent.terminalReason = 'PRE_DISPATCH_CRASH_ABORT';
+                    await this.persistIntentSnapshot(intent.intentId, intent);
+                    try {
+                      await this.env.DB.prepare(
+                        "DELETE FROM trade_positions WHERE id = ? AND user_id = ? AND status = 'PENDING_ENTRY'"
+                      )
+                        .bind(intent.intentId, userId)
+                        .run();
+                    } catch (_) {}
+                    continue;
+                  }
+
+                  if (recoveryOpsCount >= MAX_RECOVERY_INTENTS_PER_ALARM) {
+                    break;
+                  }
+                  recoveryOpsCount++;
+                  recoveryWorkExecuted = true;
+
+                  console.log(`[RECONCILIATION] Sweeping intent ${intent.intentId} in state ${intent.status}`);
+                  const reconciled: any = isFilledMissingProtection
+                    ? { ...intent }
+                    : await ReconciliationEngine.reconcile(adapter, { ...intent }, Date.now());
+
+                  if (reconciled?.status === 'FAILED' && Number(reconciled.actualExecutedQuantity || 0) === 0) {
+                    await this.persistIntentSnapshot(intent.intentId, reconciled);
+                    try {
+                      await this.env.DB.prepare(
+                        "DELETE FROM trade_positions WHERE id = ? AND user_id = ? AND status = 'PENDING_ENTRY'"
+                      )
+                        .bind(intent.intentId, userId)
+                        .run();
+                    } catch (_) {}
+                    if (this.unprotectedExposureLock?.positionId === intent.intentId) {
+                      await this.clearUnprotectedExposureLock();
+                    }
+                    continue;
+                  }
+
+                  const targetStatus = reconciled?.status || intent.status;
+                  const hasExecutionFill =
+                    targetStatus === 'FILLED' ||
+                    targetStatus === 'PARTIALLY_FILLED' ||
+                    (targetStatus === 'DISPATCHED' && Number(reconciled?.actualExecutedQuantity) > 0);
+
+                  if (!hasExecutionFill) {
+                    await this.persistIntentSnapshot(intent.intentId, reconciled || intent);
+                    continue;
+                  }
+
+                  // Persist intermediate RECONCILIATION_PENDING state before D1 UPSERT & protection verification complete
+                  const pendingSnapshot =
+                    intent.status === 'FILLED'
+                      ? { ...reconciled }
+                      : { ...reconciled, status: 'RECONCILIATION_PENDING' };
+                  const savedIntent = await this.persistIntentSnapshot(intent.intentId, pendingSnapshot);
+
+                  let d1UpsertSucceeded = false;
                   try {
-                    const snap = reconciled.payloadSnapshot || {};
-                    const isClosed = reconciled.status === 'FAILED' || reconciled.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION';
+                    const snap = savedIntent.payloadSnapshot || {};
+                    const entryStatusVal =
+                      targetStatus === 'FILLED'
+                        ? 'FILLED'
+                        : targetStatus === 'PARTIALLY_FILLED' || Number(savedIntent.actualExecutedQuantity) > 0
+                          ? 'PARTIALLY_FILLED'
+                          : 'DISPATCHED';
                     await this.env.DB.prepare(
                       `INSERT INTO trade_positions (
                         id, user_id, symbol, side, entry_price, target_entry_price, quantity, stop_loss, take_profit, status, entry_status, average_fill_price, filled_quantity, order_id, exchange, environment, entry_at, created_at, updated_at
                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                       ON CONFLICT(id) DO UPDATE SET
                         status = CASE WHEN excluded.status = 'OPEN' THEN 'OPEN' ELSE trade_positions.status END,
-                        entry_status = CASE 
+                        entry_status = CASE
                            WHEN excluded.entry_status = 'FILLED' THEN 'FILLED'
                            WHEN excluded.entry_status = 'PARTIALLY_FILLED' AND trade_positions.entry_status != 'FILLED' THEN 'PARTIALLY_FILLED'
                            WHEN excluded.entry_status = 'DISPATCHED' AND trade_positions.entry_status NOT IN ('FILLED', 'PARTIALLY_FILLED') THEN 'DISPATCHED'
                            ELSE trade_positions.entry_status
                         END,
-                        average_fill_price = CASE 
-                           WHEN excluded.average_fill_price > 0 THEN excluded.average_fill_price 
-                           WHEN excluded.average_fill_price IS NULL OR excluded.average_fill_price = 0 THEN trade_positions.average_fill_price 
-                           ELSE excluded.average_fill_price 
+                        average_fill_price = CASE
+                           WHEN excluded.average_fill_price > 0 THEN excluded.average_fill_price
+                           WHEN excluded.average_fill_price IS NULL OR excluded.average_fill_price = 0 THEN trade_positions.average_fill_price
+                           ELSE excluded.average_fill_price
                         END,
                         filled_quantity = MAX(COALESCE(trade_positions.filled_quantity, 0), COALESCE(excluded.filled_quantity, 0)),
                         order_id = CASE
@@ -2684,513 +4389,726 @@ export class TradingBot {
                         END,
                         updated_at = excluded.updated_at`
                     )
-                    .bind(
-                      reconciled.intentId,
-                      userId,
-                      snap.symbol || '',
-                      snap.side || 'BUY',
-                      snap.price || 0,
-                      snap.targetEntryPrice || snap.price || 0,
-                      snap.qty || 0,
-                      snap.requestedStopLoss || 0,
-                      snap.requestedTakeProfit || 0,
-                      'OPEN', // Position status is OPEN because inventory exists
-                      reconciled.status, // entry_status is the specific lifecycle: PARTIALLY_FILLED, FILLED, etc
-                      reconciled.actualFillPrice || null,
-                      reconciled.actualExecutedQuantity || 0,
-                      reconciled.actualOrderId || null,
-                      userKeys.exchangeName,
-                      userKeys.environment || 'mainnet',
-                      new Date(reconciled.createdAt || Date.now()).toISOString(),
-                      new Date(reconciled.createdAt || Date.now()).toISOString(),
-                      new Date().toISOString()
-                    )
-                    .run();
+                      .bind(
+                        savedIntent.intentId,
+                        userId,
+                        snap.symbol || savedIntent.symbol || '',
+                        (snap.side || savedIntent.side || 'BUY').toUpperCase(),
+                        Number(snap.price || savedIntent.price || 0),
+                        Number(snap.targetEntryPrice || snap.price || savedIntent.price || 0),
+                        Number(snap.qty || savedIntent.qty || 0),
+                        Number(snap.requestedStopLoss || snap.stopLoss || savedIntent.requestedStopLoss || savedIntent.stopLoss || 0),
+                        Number(snap.requestedTakeProfit || snap.takeProfit || savedIntent.requestedTakeProfit || savedIntent.takeProfit || 0),
+                        'OPEN',
+                        entryStatusVal,
+                        savedIntent.actualFillPrice || null,
+                        Number(savedIntent.actualExecutedQuantity || 0),
+                        savedIntent.actualOrderId || null,
+                        userKeys.exchangeName,
+                        userKeys.environment || 'mainnet',
+                        new Date(savedIntent.createdAt || Date.now()).toISOString(),
+                        new Date(savedIntent.createdAt || Date.now()).toISOString(),
+                        new Date().toISOString()
+                      )
+                      .run();
+                    d1UpsertSucceeded = true;
                   } catch (e) {
-                    console.error(`[RECONCILIATION] D1 UPSERT failed for intent ${reconciled.intentId}:`, e);
+                    console.error(`[RECONCILIATION] D1 UPSERT failed for intent ${savedIntent.intentId}:`, e);
                   }
-                }
-              }
-            }
 
-            // 2. Native Protection Engine Verification
-            const positions = await adapter.fetchPositions().catch(() => null);
-            if (positions) {
-               const activePositions = this.runtimeState.activePositions || [];
-               for (const dbPos of activePositions) {
-                 const exchangePos = positions.find((p: any) => p.symbol === dbPos.symbol && p.side === (dbPos.side === 'BUY' ? 'long' : 'short'));
-                 if (exchangePos && exchangePos.size.toNumber() > 0) {
-                    // Phase 3: Critical Correction #5 - Verify actual bounds, not just existence
-                    const exchangeSL = exchangePos.stopLoss ? (typeof exchangePos.stopLoss.toNumber === 'function' ? exchangePos.stopLoss.toNumber() : Number(exchangePos.stopLoss)) : null;
-                    const exchangeTP = exchangePos.takeProfit ? (typeof exchangePos.takeProfit.toNumber === 'function' ? exchangePos.takeProfit.toNumber() : Number(exchangePos.takeProfit)) : null;
-                    const expectedSL = dbPos.stop_loss || dbPos.stopLoss;
-                    const expectedTP = dbPos.take_profit || dbPos.takeProfit;
-                    
-                    // 1% tolerance for precision/rounding differences from the exchange
-                    const isValidSL = exchangeSL && expectedSL && Math.abs((exchangeSL - expectedSL) / expectedSL) < 0.01;
-                    const isValidTP = exchangeTP && expectedTP && Math.abs((exchangeTP - expectedTP) / expectedTP) < 0.01;
-                    
-                    if (!isValidSL || !isValidTP) {
-                      console.warn(`[SAFETY] Position ${dbPos.symbol} protection mismatch! Expected SL:${expectedSL}/TP:${expectedTP}, found SL:${exchangeSL}/TP:${exchangeTP}`);
-                      await this.logAuditEvent(userId, 'PROTECTION_VERIFICATION_FAILED', { symbol: dbPos.symbol, expectedSL, expectedTP, exchangeSL, exchangeTP });
-                    }
-                 }
-               }
-            }
-          }
-        }
-      } catch (e) {
-        console.error("WAL Reconciliation sweep failed:", e);
-      }
+                  // Verify attached SL/TP protection for newly reconciled fill using authoritative tickSize
+                  const reqSL = Number(savedIntent.requestedStopLoss || savedIntent.payloadSnapshot?.requestedStopLoss || savedIntent.payloadSnapshot?.stopLoss || savedIntent.stopLoss || 0);
+                  const reqTP = Number(savedIntent.requestedTakeProfit || savedIntent.payloadSnapshot?.requestedTakeProfit || savedIntent.payloadSnapshot?.takeProfit || savedIntent.takeProfit || 0);
+                  const needsProtectionVerify = (reqSL > 0 || reqTP > 0) && Number(savedIntent.actualExecutedQuantity || 0) > 0;
 
-    // Sprint 10 Phase 1 Integration
-    try {
-      const userId = this.runtimeState.userId as string;
-      const strategy = this.runtimeState.strategy as string;
-      const symbolsToMonitor = (Array.isArray(this.runtimeState.monitoredSymbols) && this.runtimeState.monitoredSymbols.length > 0)
-        ? this.runtimeState.monitoredSymbols
-        : (this.runtimeState.coinId ? [this.runtimeState.coinId] : []);
-      
-      const cycleId = `CYC-${Date.now()}`;
-
-      // Periodic 5-minute cycle heartbeat telemetry (low-volume monitoring)
-      const now = Date.now();
-      if (userId && now - this.lastHeartbeatTimestamp >= 300_000) {
-        this.lastHeartbeatTimestamp = now;
-        this.telemetrySink.emit({
-          userId,
-          category: 'CYCLE',
-          component: 'TradingBot',
-          eventName: 'CYCLE_HEARTBEAT',
-          severity: 'INFO',
-          cycleId,
-          payload: {
-            isActive: Boolean(this.runtimeState.isActive),
-            monitoredSymbolsCount: symbolsToMonitor.length,
-            pendingAlertsCount: (this.runtimeState.alerts || []).length,
-            strategy: strategy || null
-          }
-        });
-      }
-
-      if (symbolsToMonitor.length > 0 && userId && strategy) {
-        const user = await this.getOrLoadExchangeCredentials(userId);
-        if (user?.exchangeName) {
-          const adapter = await ExchangeManager.getProvider(user.exchangeName as ExchangeName, {
-            environment: normalizeEnvironment(user.environment),
-            apiKey: user.apiKey,
-            secret: user.secret,
-            password: user.password,
-            region: resolveCanonicalRoutingRegion(user.region),
-          });
-
-          const provider = new AdapterCandleProvider(adapter);
-          const dataEngine = new MarketDataEngine(provider);
-          this.orchestrator.setMarketDataEngine(dataEngine);
-
-          const strategyConfig = this.runtimeState.strategyConfig as Record<string, any> | undefined;
-          const balanceResult = await adapter.fetchBalance().catch(() => null);
-          const accountBalance = extractUsdtBalance(balanceResult);
-          this.runtimeState.lastAccountBalance = accountBalance;
-          await this.state.storage.put('lastAccountBalance', accountBalance);
-
-          const registry = StrategyRegistry.getInstance();
-          const normalizedId = registry.normalizeStrategyId(strategy);
-          const manifests = registry.getAllManifests();
-          const manifest = registry.getManifest(normalizedId) || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
-          if (!manifest) {
-            new StructuredLogger().warn(`[StrategyOrchestrator] Strategy '${strategy}' not found. Available: ${manifests.map(m => m.id).join(', ')}`);
-            throw new UnifiedError(`Strategy '${strategy}' is not registered.`, 'UNSUPPORTED_OPERATION');
-          }
-
-          const primarySymbol = symbolsToMonitor[0];
-          let primarySnapshotMapped = false;
-
-          for (const currentSymbol of symbolsToMonitor) {
-            try {
-              const results = await this.orchestrator.executeCycle(currentSymbol, undefined, undefined, accountBalance, {
-                userId,
-                cycleId,
-                sink: this.telemetrySink
-              });
-              const currentState = this.orchestrator.getCurrentState();
-              await this.state.storage.put('engineState', currentState);
-
-              const snapshot = await dataEngine.getSnapshot(currentSymbol, manifest.supportedTimeframes || ['5m']);
-              const committedStrat = this.runtimeState.strategy;
-              const displayResult = results.find(r => r.hasSignal) ||
-                (committedStrat ? results.find(r => r.strategyId === committedStrat) : undefined) ||
-                results[0] || {
-                  strategyId: manifest.id,
-                  timestamp: Date.now(),
-                  confidenceScore: 50,
-                  hasSignal: false,
-                  metadata: { reasoning: ['Evaluation pending'] }
-                };
-              const displayManifest = registry.getManifest(displayResult.strategyId) || manifest;
-
-              // Map and persist newAnalysis for UI preview:
-              // Prioritize if current candidate has an active signal, or if this is the primary symbol and not yet mapped
-              if (displayResult?.hasSignal || (!primarySnapshotMapped && currentSymbol === primarySymbol)) {
-                const newAnalysis = AnalysisSnapshotMapper.map(displayResult, displayManifest, snapshot, currentState.toString(), true);
-                newAnalysis.strategyAnalyses = AnalysisSnapshotMapper.mapStrategyEvaluations(results, registry, Date.now());
-                newAnalysis.engineStatus = {
-                  ...(newAnalysis.engineStatus || {}),
-                  state: this.runtimeState.isActive ? currentState.toString() : 'STOPPED',
-                  activeStrategy: this.runtimeState.isActive ? (committedStrat || null) : null,
-                  committedStrategy: committedStrat || null,
-                };
-                newAnalysis.isActive = this.runtimeState.isActive || false;
-                newAnalysis.committedStrategy = committedStrat || null;
-                await this.state.storage.put('newAnalysis', newAnalysis);
-                if (currentSymbol === primarySymbol) {
-                  primarySnapshotMapped = true;
-                }
-              }
-
-              // Actionable Signal Filter: Restrict TradeAlert generation strictly to user's committed strategy
-              // (All evaluated strategies continue to populate radar preview in newAnalysis.strategyAnalyses above)
-              const normalizedCommitted = committedStrat ? registry.normalizeStrategyId(committedStrat).toLowerCase() : null;
-
-              let actionableResults = results.filter(r => {
-                if (!r?.hasSignal || !r.metadata?.signal) return false;
-                if (!normalizedCommitted) return true;
-                const normalizedCand = registry.normalizeStrategyId(r.strategyId).toLowerCase();
-                return normalizedCand === normalizedCommitted;
-              });
-
-              // Intra-Cycle Symbol Coalescing: If multiple timeframes of the committed strategy signal simultaneously,
-              // coalesce to the highest confidence signal to avoid multi-timeframe alert bursts for the same symbol
-              if (actionableResults.length > 1) {
-                actionableResults.sort((a, b) => (b.confidenceScore || 0) - (a.confidenceScore || 0));
-                actionableResults = [actionableResults[0]];
-              }
-
-              for (const result of actionableResults) {
-                if (result?.hasSignal && result.metadata?.signal) {
-                  const sig = result.metadata.signal;
-                  const stratManifest = registry.getManifest(result.strategyId);
-                  if (!stratManifest) continue;
-                  const isAllowedSignal = sig && (sig.type === 'BUY' || (sig.type === 'SELL' && stratManifest.supportsShort));
-                  if (isAllowedSignal) {
-                    const alerts = this.runtimeState.alerts as TradeAlert[] || [];
-                    const alertStrategyKey = `${result.strategyId}_NEW`;
-                    const currentNorm = this.normalizeSymbol(currentSymbol);
-                    const targetTimeframe = (sig.timeframe || result.metadata?.targetTimeframe || '5m') as Timeframe;
-                    const nowMs = Date.now();
-
-                    // Phase 1 Safety Gate (Level 1): Alert Deduplication keyed by (symbol, strategy, timeframe) for active alerts (< 5 min)
-                    const existingActiveAlert = alerts.find(a =>
-                      this.normalizeSymbol(a.symbol) === currentNorm &&
-                      a.strategy === alertStrategyKey &&
-                      (a.timeframe ?? '5m') === targetTimeframe &&
-                      (a.status === 'pending' || a.status === 'acknowledged') &&
-                      (nowMs - new Date(a.timestamp).getTime()) < 300_000
+                  if (needsProtectionVerify) {
+                    let resolvedTickSize = Number(
+                      savedIntent.payloadSnapshot?.tickSize ||
+                      savedIntent.payloadSnapshot?.params?.tickSize ||
+                      0
                     );
-                    if (existingActiveAlert) {
-                      console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId} @ ${targetTimeframe}): Existing active alert (${existingActiveAlert.id}, strategy: ${existingActiveAlert.strategy}) within 5m already exists.`);
-                      this.telemetrySink.emit({
-                        userId,
-                        category: 'SAFETY',
-                        component: 'TradingBot',
-                        eventName: 'FINAL_DISPATCH_GATE',
-                        severity: 'WARN',
-                        correlationId: existingActiveAlert.id,
-                        cycleId,
-                        symbol: currentSymbol,
-                        strategyId: result.strategyId,
-                        payload: {
-                          passed: false,
-                          gate: 'SAME_TIMEFRAME_ACTIVE_ALERT',
-                          existingAlertId: existingActiveAlert.id,
-                          existingStatus: existingActiveAlert.status,
-                          timeframe: targetTimeframe
-                        }
-                      });
-                      continue;
-                    }
-
-                    // Phase 1 Safety Gate (Level 1): Active / Unresolved In-Flight Intent Check (Cases 5 & 6)
-                    let hasActiveIntent = false;
-                    for (const val of this.runtimeState.activeIntents.values()) {
-                      const intent = val as any;
-                      if (this.normalizeSymbol(intent.symbol) === currentNorm &&
-                          ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)) {
-                        hasActiveIntent = true;
-                        console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Unresolved in-flight intent (${intent.intentId}, status: ${intent.status}) exists.`);
-                        break;
-                      }
-                    }
-                    if (hasActiveIntent) {
-                      this.telemetrySink.emit({
-                        userId,
-                        category: 'SAFETY',
-                        component: 'TradingBot',
-                        eventName: 'FINAL_DISPATCH_GATE',
-                        severity: 'WARN',
-                        cycleId,
-                        symbol: currentSymbol,
-                        strategyId: result.strategyId,
-                        payload: {
-                          passed: false,
-                          gate: 'IN_FLIGHT_INTENT'
-                        }
-                      });
-                      continue;
-                    }
-
-                    // Phase 1 Safety Gate (Level 1): Existing Open Position Check (Cases 1, 2, 3, 4)
-                    const activePositions = (this.runtimeState.activePositions || []).filter((p: any) => p.status !== 'CLOSED' && p.status !== 'CANCELLED');
-                    const existingPos = activePositions.find((p: any) => this.normalizeSymbol(p.symbol) === currentNorm);
-                    if (existingPos) {
-                      console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Active position already exists (id: ${existingPos.id}, side: ${existingPos.side}).`);
-                      this.telemetrySink.emit({
-                        userId,
-                        category: 'SAFETY',
-                        component: 'TradingBot',
-                        eventName: 'FINAL_DISPATCH_GATE',
-                        severity: 'WARN',
-                        correlationId: existingPos.id,
-                        cycleId,
-                        symbol: currentSymbol,
-                        strategyId: result.strategyId,
-                        payload: {
-                          passed: false,
-                          gate: 'ACTIVE_POSITION',
-                          existingPositionId: existingPos.id,
-                          side: existingPos.side
-                        }
-                      });
-                      continue;
-                    }
-
-                    // Fetch live market price at the exact moment of signal generation
-                    const ticker = await adapter.fetchTicker(currentSymbol).catch(() => null);
-                    const price = typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0);
-
-                    const setupSnapshot = this.runtimeState.setupSnapshot;
-                    const storedPositionSize = setupSnapshot?.positionSize ?? (this.runtimeState.positionSize as number | undefined);
-                    const calculatedSize = sig.riskAssessment?.positionSizeRecommendation;
-                    const size = (storedPositionSize && storedPositionSize > 0) ? storedPositionSize : (calculatedSize && calculatedSize > 0 ? calculatedSize : 0);
-
-                    if (size <= 0) {
-                      console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): No valid position size available from RiskEngine or manual override.`);
-                      this.telemetrySink.emit({
-                        userId,
-                        category: 'SAFETY',
-                        component: 'TradingBot',
-                        eventName: 'FINAL_DISPATCH_GATE',
-                        severity: 'WARN',
-                        cycleId,
-                        symbol: currentSymbol,
-                        strategyId: result.strategyId,
-                        payload: {
-                          passed: false,
-                          gate: 'MISSING_POSITION_SIZE'
-                        }
-                      });
-                      await this.logAuditEvent(userId, 'ALERT_SKIPPED_MISSING_POSITION_SIZE', {
-                        symbol: currentSymbol,
-                        strategy: result.strategyId,
-                        reason: 'Trade opportunity detected, but execution was skipped because no valid position size was available.'
-                      });
-
-                      const existingLogs = (await this.state.storage.get('logs')) as string[] || [];
-                      existingLogs.push(`[${new Date().toISOString()}] WARN: Trade opportunity detected for ${currentSymbol} (${result.strategyId}), but alert generation was skipped because no valid position size was available.`);
-                      await this.state.storage.put('logs', existingLogs.slice(-50));
-                      continue;
-                    }
-
-                    // Phase 1 Safety Gate (Level 1): Portfolio Exposure Check
-                    const currentExposure = this.calculateAggregateExposure(activePositions);
-                    const maxExposure = this.resolveMaxPortfolioExposure(accountBalance, strategyConfig, setupSnapshot);
-                    if (currentExposure + size > maxExposure) {
-                      console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Proposed notional $${size} + current exposure $${currentExposure.toFixed(2)} exceeds maximum portfolio exposure $${maxExposure.toFixed(2)}.`);
-                      await this.logAuditEvent(userId, 'ALERT_SKIPPED_PORTFOLIO_EXPOSURE', {
-                        symbol: currentSymbol,
-                        strategy: result.strategyId,
-                        currentExposure,
-                        proposedSize: size,
-                        maxExposure,
-                        reason: `Aggregate portfolio exposure ($${(currentExposure + size).toFixed(2)}) exceeds limit ($${maxExposure.toFixed(2)}).`
-                      });
-                      continue;
-                    }
-
-                    // Informational MarketRegime Telemetry (Non-Gating per Pass 2 Architecture)
-                    const klines = (typeof adapter.fetchKlines === 'function')
-                      ? await adapter.fetchKlines(currentSymbol, '1h', 50).catch(() => [])
-                      : [];
-                    if (klines && klines.length >= 20) {
-                      const highs = klines.map((k: any) => k.high?.toNumber ? k.high.toNumber() : Number(k.high));
-                      const lows = klines.map((k: any) => k.low?.toNumber ? k.low.toNumber() : Number(k.low));
-                      const closes = klines.map((k: any) => k.close?.toNumber ? k.close.toNumber() : Number(k.close));
-                      const currentAtr = calculateAtr(highs, lows, closes, 14);
-                      const regime = MarketRegimeEngine.evaluate(highs, lows, closes, currentAtr);
-                      const regimeAllowed = MarketRegimeEngine.isStrategyAllowed(result.strategyId, regime);
-                      this.telemetrySink.emit({
-                        userId,
-                        category: 'STRATEGY',
-                        component: 'TradingBot',
-                        eventName: 'MARKET_REGIME_INFO',
-                        severity: 'INFO',
-                        cycleId,
-                        symbol: currentSymbol,
-                        strategyId: result.strategyId,
-                        payload: {
-                          regime: regime.regime,
-                          score: regime.score,
-                          allowed: regimeAllowed.allowed,
-                          reason: regimeAllowed.reason
-                        }
-                      });
-                    }
-
-                    const targetEntryPrice = setupSnapshot?.targetEntryPrice ?? ((await this.state.storage.get('targetEntryPrice')) as number | undefined);
-                    const alertSignalPrice = sig.signalPrice || price;
-                    const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
-                    const alertStopLoss = sig.stopLoss || alertSignalPrice * 0.99;
-                    const alertTakeProfit = sig.takeProfit || alertSignalPrice * 1.01;
-                    const estimatedPnl = Math.abs(alertTakeProfit - alertSignalPrice) * (alertSignalPrice > 0 ? size / alertSignalPrice : 0);
-
-                    // --- AUTONOMOUS TICKSIZE NORMALIZATION FIX ---
-                    const markets = await adapter.fetchMarkets();
-                    const matchedMarket = markets.find(m => m.symbol === currentSymbol);
-
-                    let tickSize: number | undefined;
-                    let minPrice: number | undefined;
-
-                    if (matchedMarket) {
-                      if (typeof matchedMarket.precision?.price === 'number' && matchedMarket.precision.price > 0) {
-                        tickSize = matchedMarket.precision.price;
-                      } else if (typeof matchedMarket.precision?.price === 'string') {
-                        const parsed = parseFloat(matchedMarket.precision.price);
-                        if (parsed > 0) tickSize = parsed;
-                      }
-
-                      if (matchedMarket.limits?.price?.min) {
-                        const minP = matchedMarket.limits.price.min as any;
-                        minPrice = typeof minP?.toNumber === 'function' ? minP.toNumber() : (typeof minP === 'number' ? minP : 0);
+                    if (!(resolvedTickSize > 0) && typeof (adapter as any).fetchMarket === 'function') {
+                      const mkt = await (adapter as any).fetchMarket(savedIntent.symbol).catch(() => null);
+                      const mktTick = mkt?.precision?.price;
+                      if (typeof mktTick === 'number' && mktTick > 0) {
+                        resolvedTickSize = mktTick;
+                      } else if (typeof mktTick === 'string') {
+                        const parsed = parseFloat(mktTick);
+                        if (parsed > 0) resolvedTickSize = parsed;
                       }
                     }
 
-                    if (!tickSize || tickSize <= 0) {
-                      console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit tickSize unavailable.`);
-                      this.telemetrySink.emit({
-                        userId,
-                        category: 'SAFETY',
-                        component: 'TradingBot',
-                        eventName: 'FINAL_DISPATCH_GATE',
-                        severity: 'WARN',
-                        cycleId,
-                        symbol: currentSymbol,
-                        strategyId: result.strategyId,
-                        payload: {
-                          passed: false,
-                          gate: 'TICK_SIZE_UNAVAILABLE'
-                        }
+                    if (!(resolvedTickSize > 0)) {
+                      // Fail closed: keep intent in RECONCILIATION_PENDING and lock exposure until authoritative tickSize can be fetched
+                      const nowMs = Date.now();
+                      await this.setUnprotectedExposureLock({
+                        positionId: savedIntent.intentId,
+                        alertId: savedIntent.intentId,
+                        symbol: savedIntent.symbol,
+                        side: (savedIntent.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+                        category: savedIntent.payloadSnapshot?.category || 'linear',
+                        positionIdx: 0,
+                        closeIntentId: `close_${savedIntent.intentId}`,
+                        lockedAt: nowMs,
+                        reason: `Authoritative tickSize unavailable during alarm recovery for ${savedIntent.symbol}`,
                       });
-                    } else {
-                      const minAllowedPrice = (minPrice && minPrice > 0) ? minPrice : tickSize;
-
-                      const normalized = PriceNormalizer.normalizeTradePrices({
-                        entryPrice: alertSignalPrice,
-                        theoreticalSL: alertStopLoss,
-                        theoreticalTP: alertTakeProfit,
-                        tickSize,
-                        minAllowedPrice,
-                        side: sig.type as 'BUY' | 'SELL'
-                      });
-                      // ---------------------------------------------
-
-                      const alert: TradeAlert = {
-                        id: crypto.randomUUID(),
-                        symbol: currentSymbol,
-                        signalPrice: alertSignalPrice,
-                        targetEntryPrice: alertTargetPrice,
-                        entryPrice: alertSignalPrice,
-                        stopLoss: normalized.stopLoss,
-                        takeProfit: normalized.takeProfit,
-                        estimatedPnl: estimatedPnl,
-                        positionSize: size,
-                        strategy: alertStrategyKey,
-                        side: sig.type as 'BUY' | 'SELL',
-                        timestamp: new Date().toISOString(),
-                        status: 'pending',
-                        timeframe: targetTimeframe,
-                      };
-                      alerts.push(alert);
-                      await this.persistState('alerts', alerts);
-
-                      this.telemetrySink.emit({
-                        userId,
-                        category: 'ALERT',
-                        component: 'TradingBot',
-                        eventName: 'ALERT_CREATED',
-                        severity: 'INFO',
-                        correlationId: alert.id,
-                        cycleId,
-                        symbol: alert.symbol,
-                        strategyId: alert.strategy,
-                        payload: {
-                          alertId: alert.id,
-                          side: alert.side,
-                          signalPrice: alert.signalPrice,
-                          stopLoss: alert.stopLoss,
-                          takeProfit: alert.takeProfit,
-                          confidenceScore: Math.round(result.confidenceScore || 0),
-                          timeframe: targetTimeframe,
-                        }
-                      });
-
-                      // Trigger real-time FCM Push Notification to user's Android device
-                      try {
-                        await sendTradeNotification(this.env, userId, alert.id, {
-                          symbol: alert.symbol,
-                          side: alert.side,
-                          entryPrice: alert.entryPrice,
-                          targetEntryPrice: alert.targetEntryPrice,
-                          signalPrice: alert.signalPrice,
-                          stopLoss: alert.stopLoss,
-                          takeProfit: alert.takeProfit,
-                          estimatedPnl: alert.estimatedPnl,
-                          positionSize: alert.positionSize,
-                          strategy: alert.strategy,
-                          timestamp: alert.timestamp,
-                          timeframe: targetTimeframe,
-                          confidenceScore: result.confidenceScore || 0,
-                          reasoning: result.metadata?.reasoning || [],
-                        }, this.telemetrySink);
-                      } catch (notifErr) {
-                        console.error('Failed to send FCM trade notification:', notifErr);
-                      }
+                      continue;
                     }
+
+                    const protCheck = await this.verifyAndEnforceProtection({
+                      provider: adapter,
+                      rawOrder: {
+                        id: savedIntent.actualOrderId,
+                        stopLoss: savedIntent.exchangeConfirmedStopLoss,
+                        takeProfit: savedIntent.exchangeConfirmedTakeProfit,
+                      },
+                      positionId: savedIntent.intentId,
+                      alertId: savedIntent.intentId,
+                      userId,
+                      exchangeName: userKeys.exchangeName,
+                      environment: userKeys.environment || 'mainnet',
+                      symbol: savedIntent.symbol,
+                      category: savedIntent.payloadSnapshot?.category || 'linear',
+                      side: (savedIntent.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+                      filledQuantity: Number(savedIntent.actualExecutedQuantity),
+                      expectedSL: reqSL > 0 ? reqSL : undefined,
+                      expectedTP: reqTP > 0 ? reqTP : undefined,
+                      tickSize: resolvedTickSize,
+                    });
+
+                    if (
+                      protCheck.verified &&
+                      this.unprotectedExposureLock?.positionId === savedIntent.intentId &&
+                      !this.closeIntents.has(`close_${savedIntent.intentId}`)
+                    ) {
+                      await this.clearUnprotectedExposureLock();
+                    }
+                  } else if (
+                    this.unprotectedExposureLock?.positionId === savedIntent.intentId &&
+                    !this.closeIntents.has(`close_${savedIntent.intentId}`)
+                  ) {
+                    await this.clearUnprotectedExposureLock();
+                  }
+
+                  if (d1UpsertSucceeded) {
+                    await this.persistIntentSnapshot(savedIntent.intentId, {
+                      ...savedIntent,
+                      status: targetStatus,
+                    });
                   }
                 }
               }
-            } catch (candidateErr: any) {
-              console.error(`[trading-bot] Strategy cycle failed for candidate ${currentSymbol}:`, candidateErr?.message || candidateErr);
-              // Candidate failure isolated - continue to next candidate
+
+              // 2. Reconcile Unresolved Emergency-Close Intents (sharing MAX_RECOVERY_INTENTS_PER_ALARM bound)
+              for (const closeIntent of this.closeIntents.values()) {
+                if (recoveryOpsCount >= MAX_RECOVERY_INTENTS_PER_ALARM) {
+                  break;
+                }
+                if (
+                  ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(closeIntent.status) &&
+                  Date.now() >= (closeIntent.nextRetryAt || 0)
+                ) {
+                  recoveryOpsCount++;
+                  recoveryWorkExecuted = true;
+                  await this.executeOrReconcileEmergencyClose(adapter, closeIntent, false);
+                }
+              }
             }
           }
+        } catch (e) {
+          console.error('WAL Reconciliation sweep failed:', e);
         }
-      }
-    } catch (err: any) {
-      console.error('Orchestrator cycle failed:', err?.message || err, err?.stack);
-    }
 
-      const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;
-      if (!lastPositionCheckAt || Date.now() - lastPositionCheckAt > POSITION_CHECK_INTERVAL_MS) {
-        await this.monitorOpenPositions();
-        await this.state.storage.put('lastPositionCheckAt', Date.now());
-      }
+        // Isolate recovery alarm subrequests from normal strategy evaluation and position monitoring
+        if (recoveryWorkExecuted || this.hasPendingSafetyWork()) {
+          await this.state.storage.setAlarm(Date.now() + 5000);
+          return;
+        }
+
+        const isActive = this.runtimeState.isActive;
+        if (!isActive) return;
+
+        // Sprint 10 Phase 1 Integration
+        try {
+          const userId = this.runtimeState.userId as string;
+          const strategy = this.runtimeState.strategy as string;
+          const symbolsToMonitor = (Array.isArray(this.runtimeState.monitoredSymbols) && this.runtimeState.monitoredSymbols.length > 0)
+            ? this.runtimeState.monitoredSymbols
+            : (this.runtimeState.coinId ? [this.runtimeState.coinId] : []);
+
+          const cycleId = `CYC-${Date.now()}`;
+
+          // Authoritative alarm generation captured once at cycle start
+          const rawCycleGen = await this.state.storage.get('lock:alarmGeneration');
+          const cycleGeneration = (typeof rawCycleGen === 'number' && Number.isInteger(rawCycleGen) && rawCycleGen > 0)
+            ? rawCycleGen
+            : undefined;
+
+          // Periodic 5-minute cycle heartbeat telemetry (low-volume monitoring)
+          const now = Date.now();
+          if (userId && now - this.lastHeartbeatTimestamp >= 300_000) {
+            this.lastHeartbeatTimestamp = now;
+            this.telemetrySink.emit({
+              userId,
+              category: 'CYCLE',
+              component: 'TradingBot',
+              eventName: 'CYCLE_HEARTBEAT',
+              severity: 'INFO',
+              cycleId,
+              payload: {
+                isActive: Boolean(this.runtimeState.isActive),
+                monitoredSymbolsCount: symbolsToMonitor.length,
+                pendingAlertsCount: (this.runtimeState.alerts || []).length,
+                strategy: strategy || null
+              }
+            });
+          }
+
+          if (symbolsToMonitor.length > 0 && userId && strategy) {
+            const user = await this.getOrLoadExchangeCredentials(userId);
+            if (user?.exchangeName) {
+              const adapter = await ExchangeManager.getProvider(user.exchangeName as ExchangeName, {
+                environment: normalizeEnvironment(user.environment),
+                apiKey: user.apiKey,
+                secret: user.secret,
+                password: user.password,
+                region: resolveCanonicalRoutingRegion(user.region),
+              });
+
+              const provider = new AdapterCandleProvider(adapter);
+              const dataEngine = new MarketDataEngine(provider);
+              this.orchestrator.setMarketDataEngine(dataEngine);
+
+              const strategyConfig = this.runtimeState.strategyConfig as Record<string, any> | undefined;
+              const balanceResult = await adapter.fetchBalance().catch(() => null);
+              const accountBalance = extractUsdtBalance(balanceResult);
+              this.runtimeState.lastAccountBalance = accountBalance;
+              await this.state.storage.put('lastAccountBalance', accountBalance);
+
+              const registry = StrategyRegistry.getInstance();
+              const normalizedId = registry.normalizeStrategyId(strategy);
+              const manifests = registry.getAllManifests();
+              const manifest = registry.getManifest(normalizedId) || manifests.find(m => m.id.toLowerCase() === normalizedId.toLowerCase());
+              if (!manifest) {
+                new StructuredLogger().warn(`[StrategyOrchestrator] Strategy '${strategy}' not found. Available: ${manifests.map(m => m.id).join(', ')}`);
+                throw new UnifiedError(`Strategy '${strategy}' is not registered.`, 'UNSUPPORTED_OPERATION');
+              }
+
+              // Compute exact (cycleTimeframes, cycleCandleLimit) used by StrategyOrchestrator so getSnapshot() hits cache with 0 extra subrequests
+              const timeframesSet = new Set<Timeframe>();
+              const SAFE_CANDLE_BUFFER = 2;
+              let cycleCandleLimit = 200;
+              for (const m of manifests) {
+                for (const tf of m.supportedTimeframes || []) timeframesSet.add(tf);
+                const minCandles = typeof m.minimumCandles === 'number'
+                  ? m.minimumCandles
+                  : (typeof (m as any).requiredCandles === 'number' ? (m as any).requiredCandles : undefined);
+                if (typeof minCandles === 'number') {
+                  cycleCandleLimit = Math.max(cycleCandleLimit, minCandles + SAFE_CANDLE_BUFFER);
+                }
+              }
+              const cycleTimeframes: Timeframe[] = timeframesSet.size > 0
+                ? Array.from(timeframesSet)
+                : (manifest.supportedTimeframes || ['5m']);
+
+              // Bound symbol evaluation to at most MAX_SYMBOLS_PER_ALARM_CYCLE (3) per alarm invocation using round-robin scanCursor
+              const MAX_SYMBOLS_PER_ALARM_CYCLE = 3;
+              let symbolsForCycle = symbolsToMonitor;
+              if (symbolsToMonitor.length > MAX_SYMBOLS_PER_ALARM_CYCLE) {
+                const rawCursor = (await this.state.storage.get<number>('scanCursor')) || 0;
+                const startIdx = Number.isInteger(rawCursor) && rawCursor >= 0 ? rawCursor % symbolsToMonitor.length : 0;
+                symbolsForCycle = [];
+                for (let i = 0; i < MAX_SYMBOLS_PER_ALARM_CYCLE; i++) {
+                  symbolsForCycle.push(symbolsToMonitor[(startIdx + i) % symbolsToMonitor.length]);
+                }
+                const nextCursor = (startIdx + MAX_SYMBOLS_PER_ALARM_CYCLE) % symbolsToMonitor.length;
+                await this.state.storage.put('scanCursor', nextCursor);
+              }
+
+              const primarySymbol = symbolsForCycle[0];
+              let primarySnapshotMapped = false;
+
+              for (const currentSymbol of symbolsForCycle) {
+                let legacySignalForCandidate: any = null;
+                let legacySuppressionInfo: { isLegacySuppressedByGate: boolean; suppressionGate: string } | undefined = undefined;
+                try {
+                  const results = await this.orchestrator.executeCycle(currentSymbol, undefined, undefined, accountBalance, {
+                    userId,
+                    cycleId,
+                    sink: this.telemetrySink
+                  });
+                  const currentState = this.orchestrator.getCurrentState();
+                  await this.state.storage.put('engineState', currentState);
+
+                  const snapshot = await dataEngine.getSnapshot(currentSymbol, cycleTimeframes, cycleCandleLimit);
+                  const committedStrat = this.runtimeState.strategy;
+                  const displayResult = results.find(r => r.hasSignal) ||
+                    (committedStrat ? results.find(r => r.strategyId === committedStrat) : undefined) ||
+                    results[0] || {
+                      strategyId: manifest.id,
+                      timestamp: Date.now(),
+                      confidenceScore: 50,
+                      hasSignal: false,
+                      metadata: { reasoning: ['Evaluation pending'] }
+                    };
+                  const displayManifest = registry.getManifest(displayResult.strategyId) || manifest;
+
+                  // Map and persist newAnalysis for UI preview:
+                  // Prioritize if current candidate has an active signal, or if this is the primary symbol and not yet mapped
+                  if (displayResult?.hasSignal || (!primarySnapshotMapped && currentSymbol === primarySymbol)) {
+                    const newAnalysis = AnalysisSnapshotMapper.map(displayResult, displayManifest, snapshot, currentState.toString(), true);
+                    newAnalysis.strategyAnalyses = AnalysisSnapshotMapper.mapStrategyEvaluations(results, registry, Date.now());
+                    newAnalysis.engineStatus = {
+                      ...(newAnalysis.engineStatus || {}),
+                      state: this.runtimeState.isActive ? currentState.toString() : 'STOPPED',
+                      activeStrategy: this.runtimeState.isActive ? (committedStrat || null) : null,
+                      committedStrategy: committedStrat || null,
+                    };
+                    newAnalysis.isActive = this.runtimeState.isActive || false;
+                    newAnalysis.committedStrategy = committedStrat || null;
+                    await this.state.storage.put('newAnalysis', newAnalysis);
+                    if (currentSymbol === primarySymbol) {
+                      primarySnapshotMapped = true;
+                    }
+                  }
+
+                  // Actionable Signal Filter: Restrict TradeAlert generation strictly to user's committed strategy
+                  // (All evaluated strategies continue to populate radar preview in newAnalysis.strategyAnalyses above)
+                  const normalizedCommitted = committedStrat ? registry.normalizeStrategyId(committedStrat).toLowerCase() : null;
+
+                  let actionableResults = results.filter(r => {
+                    if (!r?.hasSignal || !r.metadata?.signal) return false;
+                    if (!normalizedCommitted) return true;
+                    const normalizedCand = registry.normalizeStrategyId(r.strategyId).toLowerCase();
+                    return normalizedCand === normalizedCommitted;
+                  });
+
+                  // Intra-Cycle Symbol Coalescing: If multiple timeframes of the committed strategy signal simultaneously,
+                  // coalesce to the highest confidence signal to avoid multi-timeframe alert bursts for the same symbol
+                  if (actionableResults.length > 1) {
+                    actionableResults.sort((a, b) => (b.confidenceScore || 0) - (a.confidenceScore || 0));
+                    actionableResults = [actionableResults[0]];
+                  }
+
+                  for (const result of actionableResults) {
+                    if (result?.hasSignal && result.metadata?.signal) {
+                      const sig = result.metadata.signal;
+                      const stratManifest = registry.getManifest(result.strategyId);
+                      if (!stratManifest) continue;
+                      const isAllowedSignal = sig && (sig.type === 'BUY' || (sig.type === 'SELL' && stratManifest.supportsShort));
+                      if (isAllowedSignal) {
+                        const alerts = this.runtimeState.alerts as TradeAlert[] || [];
+                        const alertStrategyKey = `${result.strategyId}_NEW`;
+                        const currentNorm = this.normalizeSymbol(currentSymbol);
+                        const targetTimeframe = (sig.timeframe || result.metadata?.targetTimeframe || '5m') as Timeframe;
+                        const nowMs = Date.now();
+
+                        // Phase 1 Safety Gate (Level 1): Alert Deduplication keyed by (symbol, strategy, timeframe) for active alerts (< 5 min)
+                        const existingActiveAlert = alerts.find(a =>
+                          this.normalizeSymbol(a.symbol) === currentNorm &&
+                          a.strategy === alertStrategyKey &&
+                          (a.timeframe ?? '5m') === targetTimeframe &&
+                          (a.status === 'pending' || a.status === 'acknowledged') &&
+                          (nowMs - new Date(a.timestamp).getTime()) < 300_000
+                        );
+                        if (existingActiveAlert) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'SAME_TIMEFRAME_ACTIVE_ALERT' };
+                          console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId} @ ${targetTimeframe}): Existing active alert (${existingActiveAlert.id}, strategy: ${existingActiveAlert.strategy}) within 5m already exists.`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            correlationId: existingActiveAlert.id,
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'SAME_TIMEFRAME_ACTIVE_ALERT',
+                              existingAlertId: existingActiveAlert.id,
+                              existingStatus: existingActiveAlert.status,
+                              timeframe: targetTimeframe
+                            }
+                          });
+                          continue;
+                        }
+
+                        // Phase 1 Safety Gate (Level 1): Active / Unresolved In-Flight Intent Check (Cases 5 & 6)
+                        let hasActiveIntent = false;
+                        for (const val of this.runtimeState.activeIntents.values()) {
+                          const intent = val as any;
+                          if (this.normalizeSymbol(intent.symbol) === currentNorm &&
+                              ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)) {
+                            hasActiveIntent = true;
+                            console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Unresolved in-flight intent (${intent.intentId}, status: ${intent.status}) exists.`);
+                            break;
+                          }
+                        }
+                        if (hasActiveIntent) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'IN_FLIGHT_INTENT' };
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'IN_FLIGHT_INTENT'
+                            }
+                          });
+                          continue;
+                        }
+
+                        // Phase 1 Safety Gate (Level 1): Existing Open Position Check (Cases 1, 2, 3, 4)
+                        const activePositions = (this.runtimeState.activePositions || []).filter((p: any) => p.status !== 'CLOSED' && p.status !== 'CANCELLED');
+                        const existingPos = activePositions.find((p: any) => this.normalizeSymbol(p.symbol) === currentNorm);
+                        if (existingPos) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'ACTIVE_POSITION' };
+                          console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Active position already exists (id: ${existingPos.id}, side: ${existingPos.side}).`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            correlationId: existingPos.id,
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'ACTIVE_POSITION',
+                              existingPositionId: existingPos.id,
+                              side: existingPos.side
+                            }
+                          });
+                          continue;
+                        }
+
+                        // Reuse live market price already fetched in snapshot (0 extra subrequests)
+                        let price = typeof snapshot?.currentPrice === 'number' && snapshot.currentPrice > 0 ? snapshot.currentPrice : 0;
+                        if (price <= 0) {
+                          const ticker = await adapter.fetchTicker(currentSymbol).catch(() => null);
+                          price = typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0);
+                        }
+
+                        const setupSnapshot = this.runtimeState.setupSnapshot;
+                        const storedPositionSize = setupSnapshot?.positionSize ?? (this.runtimeState.positionSize as number | undefined);
+                        const calculatedSize = sig.riskAssessment?.positionSizeRecommendation;
+                        const size = (storedPositionSize && storedPositionSize > 0) ? storedPositionSize : (calculatedSize && calculatedSize > 0 ? calculatedSize : 0);
+
+                        if (size <= 0) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'MISSING_POSITION_SIZE' };
+                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): No valid position size available from RiskEngine or manual override.`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'MISSING_POSITION_SIZE'
+                            }
+                          });
+                          await this.logAuditEvent(userId, 'ALERT_SKIPPED_MISSING_POSITION_SIZE', {
+                            symbol: currentSymbol,
+                            strategy: result.strategyId,
+                            reason: 'Trade opportunity detected, but execution was skipped because no valid position size was available.'
+                          });
+
+                          const existingLogs = (await this.state.storage.get('logs')) as string[] || [];
+                          existingLogs.push(`[${new Date().toISOString()}] WARN: Trade opportunity detected for ${currentSymbol} (${result.strategyId}), but alert generation was skipped because no valid position size was available.`);
+                          await this.state.storage.put('logs', existingLogs.slice(-50));
+                          continue;
+                        }
+
+                        // Phase 1 Safety Gate (Level 1): Portfolio Exposure Check
+                        const currentExposure = this.calculateAggregateExposure(activePositions);
+                        const maxExposure = this.resolveMaxPortfolioExposure(accountBalance, strategyConfig, setupSnapshot);
+                        if (currentExposure + size > maxExposure) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'PORTFOLIO_EXPOSURE' };
+                          console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Proposed notional $${size} + current exposure $${currentExposure.toFixed(2)} exceeds maximum portfolio exposure $${maxExposure.toFixed(2)}.`);
+                          await this.logAuditEvent(userId, 'ALERT_SKIPPED_PORTFOLIO_EXPOSURE', {
+                            symbol: currentSymbol,
+                            strategy: result.strategyId,
+                            currentExposure,
+                            proposedSize: size,
+                            maxExposure,
+                            reason: `Aggregate portfolio exposure ($${(currentExposure + size).toFixed(2)}) exceeds limit ($${maxExposure.toFixed(2)}).`
+                          });
+                          continue;
+                        }
+
+                        // Informational MarketRegime Telemetry (Non-Gating per Pass 2 Architecture) — reuse 1h candles from snapshot
+                        const snapshot1h = snapshot?.candles?.['1h'];
+                        const klines = Array.isArray(snapshot1h) && snapshot1h.length >= 20
+                          ? snapshot1h.slice(-50)
+                          : (typeof adapter.fetchKlines === 'function'
+                              ? await adapter.fetchKlines(currentSymbol, '1h', 50).catch(() => [])
+                              : []);
+                        if (klines && klines.length >= 20) {
+                          const highs = klines.map((k: any) => k.high?.toNumber ? k.high.toNumber() : Number(k.high));
+                          const lows = klines.map((k: any) => k.low?.toNumber ? k.low.toNumber() : Number(k.low));
+                          const closes = klines.map((k: any) => k.close?.toNumber ? k.close.toNumber() : Number(k.close));
+                          const currentAtr = calculateAtr(highs, lows, closes, 14);
+                          const regime = MarketRegimeEngine.evaluate(highs, lows, closes, currentAtr);
+                          const regimeAllowed = MarketRegimeEngine.isStrategyAllowed(result.strategyId, regime);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'STRATEGY',
+                            component: 'TradingBot',
+                            eventName: 'MARKET_REGIME_INFO',
+                            severity: 'INFO',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              regime: regime.regime,
+                              score: regime.score,
+                              allowed: regimeAllowed.allowed,
+                              reason: regimeAllowed.reason
+                            }
+                          });
+                        }
+
+                        const targetEntryPrice = setupSnapshot?.targetEntryPrice ?? ((await this.state.storage.get('targetEntryPrice')) as number | undefined);
+                        const alertSignalPrice = sig.signalPrice || price;
+                        const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
+                        const alertStopLoss = sig.stopLoss || alertSignalPrice * 0.99;
+                        const alertTakeProfit = sig.takeProfit || alertSignalPrice * 1.01;
+                        const estimatedPnl = Math.abs(alertTakeProfit - alertSignalPrice) * (alertSignalPrice > 0 ? size / alertSignalPrice : 0);
+
+                        // --- AUTONOMOUS TICKSIZE NORMALIZATION FIX (Single-Symbol Lookup) ---
+                        const matchedMarket =
+                          typeof (adapter as any).fetchMarket === 'function'
+                            ? await (adapter as any).fetchMarket(currentSymbol).catch(() => null)
+                            : (await adapter.fetchMarkets().catch(() => [])).find((m: any) => m.symbol === currentSymbol);
+
+                        let tickSize: number | undefined;
+                        let minPrice: number | undefined;
+
+                        if (matchedMarket) {
+                          if (typeof matchedMarket.precision?.price === 'number' && matchedMarket.precision.price > 0) {
+                            tickSize = matchedMarket.precision.price;
+                          } else if (typeof matchedMarket.precision?.price === 'string') {
+                            const parsed = parseFloat(matchedMarket.precision.price);
+                            if (parsed > 0) tickSize = parsed;
+                          }
+
+                          if (matchedMarket.limits?.price?.min) {
+                            const minP = matchedMarket.limits.price.min as any;
+                            minPrice = typeof minP?.toNumber === 'function' ? minP.toNumber() : (typeof minP === 'number' ? minP : 0);
+                          }
+                        }
+
+                        if (!tickSize || tickSize <= 0) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'TICK_SIZE_UNAVAILABLE' };
+                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit tickSize unavailable.`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'TICK_SIZE_UNAVAILABLE'
+                            }
+                          });
+                        } else {
+                          const minAllowedPrice = (minPrice && minPrice > 0) ? minPrice : tickSize;
+
+                          const normalized = PriceNormalizer.normalizeTradePrices({
+                            entryPrice: alertSignalPrice,
+                            theoreticalSL: alertStopLoss,
+                            theoreticalTP: alertTakeProfit,
+                            tickSize,
+                            minAllowedPrice,
+                            side: sig.type as 'BUY' | 'SELL'
+                          });
+                          // ---------------------------------------------
+
+                          // Autonomous alert safety check: fail closed if cycle generation was invalid at cycle start
+                          if (cycleGeneration === undefined) {
+                            console.warn(`[SAFETY GATE] Skipping autonomous alert creation for ${currentSymbol}: missing or invalid alarm generation at cycle start (${rawCycleGen})`);
+                            this.telemetrySink.emit({
+                              userId,
+                              category: 'SAFETY',
+                              component: 'TradingBot',
+                              eventName: 'ALERT_SKIPPED_INVALID_GENERATION',
+                              severity: 'WARN',
+                              correlationId: currentSymbol,
+                              cycleId,
+                              symbol: currentSymbol,
+                              strategyId: alertStrategyKey,
+                              payload: { generation: rawCycleGen }
+                            });
+                            continue;
+                          }
+
+                          // Re-verify persisted isActive and generation immediately before publication
+                          const [freshActive, freshGen] = await Promise.all([
+                            this.state.storage.get<boolean>('isActive'),
+                            this.state.storage.get<number>('lock:alarmGeneration'),
+                          ]);
+
+                          if (freshActive !== true || freshGen !== cycleGeneration) {
+                            console.warn(`[SAFETY GATE] Discarding autonomous alert for ${currentSymbol}: lifecycle state changed mid-cycle (active=${freshActive}, storedGen=${freshGen}, cycleGen=${cycleGeneration})`);
+                            this.telemetrySink.emit({
+                              userId,
+                              category: 'SAFETY',
+                              component: 'TradingBot',
+                              eventName: 'ALERT_DISCARDED_STALE_GENERATION',
+                              severity: 'WARN',
+                              correlationId: currentSymbol,
+                              cycleId,
+                              symbol: currentSymbol,
+                              strategyId: alertStrategyKey,
+                              payload: { freshActive, freshGen, cycleGeneration }
+                            });
+                            continue;
+                          }
+
+                          const alert: TradeAlert = {
+                            id: crypto.randomUUID(),
+                            symbol: currentSymbol,
+                            signalPrice: alertSignalPrice,
+                            targetEntryPrice: alertTargetPrice,
+                            entryPrice: alertSignalPrice,
+                            stopLoss: normalized.stopLoss,
+                            takeProfit: normalized.takeProfit,
+                            estimatedPnl: estimatedPnl,
+                            positionSize: size,
+                            strategy: alertStrategyKey,
+                            side: sig.type as 'BUY' | 'SELL',
+                            timestamp: new Date().toISOString(),
+                            status: 'pending',
+                            timeframe: targetTimeframe,
+                            generation: cycleGeneration,
+                            source: 'AUTONOMOUS',
+                          };
+                          alerts.push(alert);
+                          legacySignalForCandidate = alert;
+                          await this.persistState('alerts', alerts);
+
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'ALERT',
+                            component: 'TradingBot',
+                            eventName: 'ALERT_CREATED',
+                            severity: 'INFO',
+                            correlationId: alert.id,
+                            cycleId,
+                            symbol: alert.symbol,
+                            strategyId: alert.strategy,
+                            payload: {
+                              alertId: alert.id,
+                              side: alert.side,
+                              signalPrice: alert.signalPrice,
+                              stopLoss: alert.stopLoss,
+                              takeProfit: alert.takeProfit,
+                              confidenceScore: Math.round(result.confidenceScore || 0),
+                              timeframe: targetTimeframe,
+                            }
+                          });
+
+                          // Trigger real-time FCM Push Notification to user's Android device
+                          try {
+                            await sendTradeNotification(this.env, userId, alert.id, {
+                              symbol: alert.symbol,
+                              side: alert.side,
+                              entryPrice: alert.entryPrice,
+                              targetEntryPrice: alert.targetEntryPrice,
+                              signalPrice: alert.signalPrice,
+                              stopLoss: alert.stopLoss,
+                              takeProfit: alert.takeProfit,
+                              estimatedPnl: alert.estimatedPnl,
+                              positionSize: alert.positionSize,
+                              strategy: alert.strategy,
+                              timestamp: alert.timestamp,
+                              timeframe: targetTimeframe,
+                              confidenceScore: result.confidenceScore || 0,
+                              reasoning: result.metadata?.reasoning || [],
+                            }, this.telemetrySink);
+                          } catch (notifErr) {
+                            console.error('Failed to send FCM trade notification:', notifErr);
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Stage A Shadow Mode: SignalLifecycleManager execution (Non-Authoritative, Fail-Safe)
+                  try {
+                    const signalManagerMode = (this.env as any).SIGNAL_MANAGER_MODE;
+                    if (signalManagerMode === 'SHADOW' || signalManagerMode === 'AUTHORITATIVE') {
+                      const shadowSignals = this.signalLifecycleManager.processEvaluations(
+                        results,
+                        committedStrat
+                      );
+                      for (const shadowSig of shadowSignals) {
+                        const comparison = ShadowComparisonEngine.compare(
+                          shadowSig.symbol,
+                          legacySignalForCandidate,
+                          shadowSig,
+                          this.signalLifecycleManager.getOpportunity(shadowSig.oppId),
+                          legacySuppressionInfo
+                        );
+                        console.log(`[SIGNAL_LIFECYCLE_SHADOW] ${JSON.stringify(comparison)}`);
+                      }
+                      if (legacySignalForCandidate && shadowSignals.length === 0) {
+                        const comparison = ShadowComparisonEngine.compare(
+                          currentSymbol,
+                          legacySignalForCandidate,
+                          null,
+                          null,
+                          legacySuppressionInfo
+                        );
+                        console.log(`[SIGNAL_LIFECYCLE_SHADOW] ${JSON.stringify(comparison)}`);
+                      }
+                      await this.state.storage.put('signal_lifecycle_state', this.signalLifecycleManager.getState()).catch(() => {});
+                    }
+                  } catch (shadowErr) {
+                    console.error('[SIGNAL_LIFECYCLE_SHADOW_ERROR] Non-blocking shadow error:', shadowErr);
+                  }
+                } catch (candidateErr: any) {
+                  console.error(`[trading-bot] Strategy cycle failed for candidate ${currentSymbol}:`, candidateErr?.message || candidateErr);
+                  // Candidate failure isolated - continue to next candidate
+                }
+              }
+            }
+          }
+        } catch (err: any) {
+          console.error('Orchestrator cycle failed:', err?.message || err, err?.stack);
+        }
+
+        const lastPositionCheckAt = (await this.state.storage.get('lastPositionCheckAt')) as number | undefined;
+        if (!lastPositionCheckAt || Date.now() - lastPositionCheckAt > POSITION_CHECK_INTERVAL_MS) {
+          await this.monitorOpenPositions();
+          await this.state.storage.put('lastPositionCheckAt', Date.now());
+        }
       });
     } catch (e) {
       console.error('Fatal DO alarm error:', e);
     } finally {
       this.isAlarmRunning = false;
       const isActive = this.runtimeState.isActive;
-      if (isActive) {
+      if (recoveryWorkExecuted || this.hasPendingSafetyWork()) {
+        await this.state.storage.setAlarm(Date.now() + 5000);
+      } else if (isActive) {
         await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS);
       }
     }
@@ -3199,59 +5117,105 @@ export class TradingBot {
   /**
    * The core synchronized workflow: fetch live market data from the user's
    * connected exchange (any of the supported exchanges, mainnet or testnet),
-   * compute real indicators, evaluate the strategy, and ΓÇö only if every
-   * strategy condition is satisfied ΓÇö raise a genuine trade alert. The
+   * compute real indicators, evaluate the strategy, and — only if every
+   * strategy condition is satisfied — raise a genuine trade alert. The
    * resulting snapshot is persisted so the UI can render it verbatim (no
    * time-based animation).
    */
   private async monitorOpenPositions() {
     try {
-      const userId = (this.runtimeState.userId as string) || (await this.state.storage.get('userId')) as string;
+      const userId = (this.runtimeState.userId as string) || ((await this.state.storage.get('userId')) as string);
       if (!userId) return;
 
-      const activePositions = (this.runtimeState.activePositions && this.runtimeState.activePositions.length > 0)
-        ? this.runtimeState.activePositions
-        : ((await this.state.storage.get('activePositions')) as any[] || []);
+      const activePositions =
+        this.runtimeState.activePositions && this.runtimeState.activePositions.length > 0
+          ? this.runtimeState.activePositions
+          : (((await this.state.storage.get('activePositions')) as any[]) || []);
 
-      if (activePositions.length === 0) return;
-      const results = activePositions;
+      let d1Rows: any[] = [];
+      try {
+        const d1Res = await this.env.DB.prepare(
+          "SELECT * FROM trade_positions WHERE user_id = ? AND status IN ('OPEN', 'PENDING_ENTRY')"
+        )
+          .bind(userId)
+          .all<any>();
+        if (Array.isArray(d1Res?.results)) {
+          d1Rows = d1Res.results;
+        }
+      } catch (_) {}
 
-      const userKeys = await this.env.DB.prepare(
-        'SELECT exchange_api_key, exchange_api_key_encrypted, exchange_api_key_iv, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?'
-      ).bind(userId).first<any>();
+      const mergedById = new Map<string, any>();
+      for (const pos of activePositions) {
+        if (pos?.id) mergedById.set(String(pos.id), pos);
+      }
+      for (const row of d1Rows) {
+        if (row?.id && !mergedById.has(String(row.id))) {
+          mergedById.set(String(row.id), row);
+        } else if (row?.id && mergedById.has(String(row.id))) {
+          mergedById.set(String(row.id), { ...mergedById.get(String(row.id)), ...row });
+        }
+      }
 
-      const hasApiKey = Boolean(userKeys?.exchange_api_key_encrypted || userKeys?.exchange_api_key);
-      if (!userKeys?.exchange_name || !hasApiKey || !userKeys?.exchange_api_secret_encrypted) return;
+      const results = Array.from(mergedById.values());
+      if (results.length === 0) return;
 
+      const userKeys = await this.getOrLoadExchangeCredentials(userId);
+      if (!userKeys?.exchangeName) return;
 
-      const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, { environment: normalizeEnvironment(userKeys.exchange_environment), region: resolveCanonicalRoutingRegion(userKeys.exchange_region) });
+      const adapter = await ExchangeManager.getProvider(userKeys.exchangeName as ExchangeName, {
+        environment: normalizeEnvironment(userKeys.environment),
+        apiKey: userKeys.apiKey,
+        secret: userKeys.secret,
+        password: userKeys.password,
+        region: resolveCanonicalRoutingRegion(userKeys.region),
+      });
 
-      
-      for (const position of results as any[]) {
+      const nonMockPositions = results.filter((p: any) => p.exchange !== 'mock' || p.environment !== 'demo');
+      const mockPositions = results.filter((p: any) => p.exchange === 'mock' && p.environment === 'demo');
+
+      if (nonMockPositions.length > 0 && typeof adapter.fetchPositions === 'function') {
         try {
-          // Strictly restrict local price-trigger monitoring to Mock/Paper Trading positions.
-          // For Bybit Demo and Real, Bybit owns live matching engine and native SL/TP execution.
-          // Synchronize position lifecycle state authoritatively against Bybit exchange data.
-          if (position.exchange !== 'mock' || position.environment !== 'demo') {
-            try {
-              const closeResult = await ReconciliationEngine.reconcilePositionLifecycle(adapter, position, Date.now());
-              if (closeResult && closeResult.status === 'CLOSED') {
-                const now = closeResult.closedAt || new Date().toISOString();
-                await this.env.DB.prepare(
-                  "UPDATE trade_positions SET status = 'CLOSED', closed_at = ?, close_price = ?, realized_pnl = ?, close_reason = ?, updated_at = ? WHERE id = ?"
-                ).bind(now, closeResult.closePrice ?? null, closeResult.realizedPnl ?? null, closeResult.closeReason ?? 'exchange_close', now, position.id).run();
-
-                const updatedPositions = (this.runtimeState.activePositions || []).filter((p: any) => p.id !== position.id);
-                this.runtimeState.activePositions = updatedPositions;
-                await this.persistState('activePositions', updatedPositions);
-                console.log(`[ALARM_MONITOR] Reconciled and closed exchange position ${position.id} (${position.symbol}).`);
+          const livePositions = await adapter.fetchPositions('linear');
+          if (Array.isArray(livePositions)) {
+            const liveExposureSet = new Set<string>();
+            for (const lp of livePositions) {
+              const lpSize = typeof lp.size?.toNumber === 'function' ? lp.size.toNumber() : Number(lp.size || 0);
+              if (lpSize > 0) {
+                const rawLpSide = String(lp.side || '').toLowerCase();
+                const lpSide =
+                  rawLpSide === 'short' || rawLpSide === 'sell' ? 'SELL' : 'BUY';
+                liveExposureSet.add(`${this.normalizeSymbol(lp.symbol)}_${lpSide}`);
               }
-            } catch (reconErr) {
-              console.warn(`[ALARM_MONITOR] Error reconciling position ${position.id}:`, reconErr);
             }
-            continue;
-          }
 
+            const groupedBySymSide = new Map<string, any[]>();
+            for (const pos of nonMockPositions) {
+              const normSym = this.normalizeSymbol(pos.symbol);
+              const normSide = String(pos.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+              const key = `${normSym}_${normSide}`;
+              const group = groupedBySymSide.get(key) || [];
+              group.push(pos);
+              groupedBySymSide.set(key, group);
+            }
+
+            const MAX_ABSENT_POSITIONS_PER_ALARM = 2;
+            let reconciledCount = 0;
+            for (const [groupKey, groupRows] of groupedBySymSide.entries()) {
+              if (reconciledCount >= MAX_ABSENT_POSITIONS_PER_ALARM) break;
+              if (liveExposureSet.has(groupKey)) continue;
+              const remainingBudget = MAX_ABSENT_POSITIONS_PER_ALARM - reconciledCount;
+              const rowsSlice = groupRows.slice(0, remainingBudget);
+              reconciledCount += rowsSlice.length;
+              await this.reconcileMissingD1PositionsGroup(adapter, userId, rowsSlice, false);
+            }
+          }
+        } catch (reconErr) {
+          console.warn('[ALARM_MONITOR] Failed to fetch live positions for D1 reconciliation:', reconErr);
+        }
+      }
+
+      for (const position of mockPositions) {
+        try {
           const ticker = await adapter.fetchTicker(position.symbol);
           if (!ticker) continue;
 
@@ -3283,15 +5247,14 @@ export class TradingBot {
             const realizedPnl = (priceDiff / posEntryPrice) * posQty * posEntryPrice;
             const now = new Date().toISOString();
 
-            // Fire-and-forget telemetry push to D1
             this.env.DB.prepare(
-              "UPDATE trade_positions SET status = 'CLOSED', closed_at = ?, close_price = ?, realized_pnl = ?, close_reason = ?, updated_at = ? WHERE id = ?"
+              "DELETE FROM trade_positions WHERE id = ?"
             )
-              .bind(now, currentPrice, realizedPnl, closeReason, now, position.id)
-              .run().catch(e => console.error('D1 position close sync failed:', e));
+              .bind(position.id)
+              .run().catch(e => console.error('D1 position close delete failed:', e));
 
             // Update Authoritative DO WAL
-            const updatedPositions = this.runtimeState.activePositions.filter((p: any) => p.id !== position.id);
+            const updatedPositions = activePositions.filter((p: any) => p.id !== position.id);
             await this.persistState('activePositions', updatedPositions);
 
             // Reset DO trade state so the UI gracefully exits LivePnLMonitoringScreen

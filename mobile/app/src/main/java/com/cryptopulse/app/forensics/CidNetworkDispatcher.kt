@@ -169,8 +169,10 @@ class CidNetworkDispatcher(
                 val json = emergencyCrashFile.readText(Charsets.UTF_8)
                 val crashEvent = gson.fromJson(json, CidEventDto::class.java)
                 if (crashEvent != null) {
-                    Log.i(TAG, "[CID] Recovered emergency crash from previous session. Enqueueing...")
-                    enqueue(crashEvent, immediateFlush = true)
+                    Log.i(TAG, "[CID] Recovered emergency crash from previous session. Enqueueing with active session sequence...")
+                    val freshSeq = CidDiagnosticManager.nextSequenceNumber()
+                    val sequencedCrash = crashEvent.copy(seq = freshSeq)
+                    enqueue(sequencedCrash, immediateFlush = true)
                 }
                 emergencyCrashFile.delete()
             }

@@ -57,10 +57,20 @@ import kotlinx.coroutines.flow.firstOrNull
 import javax.inject.Inject
 
 import androidx.lifecycle.lifecycleScope
+import androidx.navigation.NavController
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
+
+    private fun NavController.getAuthenticatedFlowEntry(fallback: NavBackStackEntry): NavBackStackEntry {
+        return try {
+            getBackStackEntry("authenticated_flow")
+        } catch (_: Exception) {
+            fallback
+        }
+    }
 
     private data class ValidatedAlertData(
         val alertId: String,
@@ -72,7 +82,8 @@ class MainActivity : FragmentActivity() {
         val takeProfit: Double,
         val estimatedPnl: Double,
         val positionSize: Double,
-        val timestamp: Long?
+        val timestamp: Long?,
+        val timeframe: String? = null
     ) {
         val cleanSymbol: String
             get() = symbol.replace("/USDT", "").replace("USDT", "")
@@ -92,6 +103,7 @@ class MainActivity : FragmentActivity() {
             put("takeProfit", takeProfit)
             put("estimatedPnl", estimatedPnl)
             put("positionSize", positionSize)
+            timeframe?.let { put("timeframe", it) }
             put("type", "TRADE_ALERT")
             put("alertType", "TRADE_ALERT")
             timestamp?.let {
@@ -110,9 +122,66 @@ class MainActivity : FragmentActivity() {
         )
     }
 
+    private data class TradeMath(
+        val entryPrice: Double,
+        val stopLossPrice: Double,
+        val takeProfitPrice: Double,
+        val signalPrice: Double,
+        val targetEntryPrice: Double?,
+        val positionSize: Double,
+        val calculatedPnl: Double
+    )
+
     private var currentNavController: NavHostController? = null
     private var pendingValidatedAlert: ValidatedAlertData? = null
     private var lastHandledAlertId: String? = null
+    private var currentActiveAlertId: String? = null
+    private var isLoggingOut = false
+
+    private val sharedExchangeViewModel: ExchangeViewModel by viewModels()
+
+    private fun parseValidatedAlertFromMap(alert: Map<String, Any>): ValidatedAlertData? {
+        val alertId = (alert["id"] ?: alert["alertId"] ?: alert["opportunityId"])?.toString()
+        val symbol = (alert["symbol"] ?: alert["pairName"])?.toString()
+        val side = (alert["side"] ?: alert["tradeSide"])?.toString()
+        val strategy = (alert["strategy"] ?: alert["strategyId"])?.toString()
+        val entryPrice = (alert["entryPrice"] as? Number)?.toDouble() ?: (alert["signalPrice"] as? Number)?.toDouble()
+        val stopLoss = (alert["stopLoss"] as? Number)?.toDouble()
+        val takeProfit = (alert["takeProfit"] as? Number)?.toDouble()
+        val estimatedPnl = (alert["estimatedPnl"] as? Number)?.toDouble() ?: 0.0
+        val positionSize = (alert["positionSize"] as? Number)?.toDouble() ?: 0.0
+        val timestamp = (alert["timestamp"] as? Number)?.toLong() ?: (alert["serverTimestamp"] as? Number)?.toLong()
+        val timeframe = alert["timeframe"]?.toString()
+
+        if (alertId.isNullOrBlank() ||
+            symbol.isNullOrBlank() ||
+            side.isNullOrBlank() || (!side.equals("BUY", ignoreCase = true) && !side.equals("SELL", ignoreCase = true)) ||
+            strategy.isNullOrBlank() ||
+            entryPrice == null || entryPrice <= 0.0 ||
+            stopLoss == null || stopLoss <= 0.0 ||
+            takeProfit == null || takeProfit <= 0.0
+        ) {
+            return null
+        }
+
+        if (timestamp != null && timestamp > 0L && (System.currentTimeMillis() - timestamp) > 300_000L) {
+            return null
+        }
+
+        return ValidatedAlertData(
+            alertId = alertId,
+            symbol = symbol,
+            side = side,
+            strategy = strategy,
+            entryPrice = entryPrice,
+            stopLoss = stopLoss,
+            takeProfit = takeProfit,
+            estimatedPnl = estimatedPnl,
+            positionSize = positionSize,
+            timestamp = timestamp,
+            timeframe = timeframe
+        )
+    }
 
     @Inject
     lateinit var tokenManager: TokenManager
@@ -161,27 +230,31 @@ class MainActivity : FragmentActivity() {
                     val hasCachedToken = tokenManager.hasCachedTokenSync()
 
                     val startDestination = when {
-                        initialAlert != null || pendingValidatedAlert != null -> "authenticated_flow"
                         !isRegistered -> "onboarding"
-                        hasCachedToken -> "authenticated_flow"
-                        else -> "auth"
+                        !hasCachedToken -> "auth"
+                        else -> "authenticated_flow"
                     }
                     val coroutineScope = rememberCoroutineScope()
 
                     val performLogout: () -> Unit = {
-                        try {
-                            val entry = navController.getBackStackEntry("authenticated_flow")
-                            val viewModel = androidx.lifecycle.ViewModelProvider(entry)[ExchangeViewModel::class.java]
-                            viewModel.resetState()
-                        } catch (e: Exception) {
-                            // If authenticated_flow is not on backstack, state is already destroyed
-                        }
+                        isLoggingOut = true
+                        currentActiveAlertId = null
+                        pendingValidatedAlert = null
+                        sharedExchangeViewModel.resetState()
+                        tradeAlertManager.clearStaleStartupAlert()
                         coroutineScope.launch {
-                            sessionManager.performLogout(this@MainActivity)
-                        }
-                        navController.navigate("auth") {
-                            popUpTo("authenticated_flow") {
-                                inclusive = true
+                            try {
+                                tradeAlertManager.dataStore.saveActiveAlert(null)
+                                sessionManager.performLogout(this@MainActivity)
+                            } finally {
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    isLoggingOut = false
+                                    navController.navigate("auth") {
+                                        popUpTo(navController.graph.id) {
+                                            inclusive = true
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -195,19 +268,23 @@ class MainActivity : FragmentActivity() {
                                 toRoute = destination.route ?: "unknown",
                                 trigger = "NAV_CONTROLLER"
                             )
-                            pendingValidatedAlert?.let { alert ->
-                                try {
-                                    val parentEntry = navController.getBackStackEntry("authenticated_flow")
-                                    val vm = androidx.lifecycle.ViewModelProvider(parentEntry)[ExchangeViewModel::class.java]
-                                    vm.selectCandidate(alert.toMarketCandidate())
-                                    vm.setPendingAlert(alert.toAlertMap())
-                                    if (destination.route != "technical_analysis") {
-                                        navController.navigate("technical_analysis") {
-                                            popUpTo("connect_exchange") { inclusive = true }
+                            val currentRoute = destination.route
+                            val isInsideAuthFlow = currentRoute in setOf(
+                                "connect_exchange", "market_candidates", "trade_setup",
+                                "risk_management", "technical_analysis", "change_api_keys"
+                            )
+                            if (isInsideAuthFlow) {
+                                pendingValidatedAlert?.let { alert ->
+                                    val isFresh = alert.timestamp?.let { (System.currentTimeMillis() - it) < 300_000L } ?: false
+                                    if (isFresh) {
+                                        sharedExchangeViewModel.selectCandidate(alert.toMarketCandidate())
+                                        sharedExchangeViewModel.setPendingAlert(alert.toAlertMap())
+                                        navController.navigate("trade_alert") {
+                                            launchSingleTop = true
                                         }
                                     }
                                     pendingValidatedAlert = null
-                                } catch (_: Exception) {}
+                                }
                             }
                         }
                     }
@@ -215,13 +292,32 @@ class MainActivity : FragmentActivity() {
                     LaunchedEffect(token) {
                         if (token != null) {
                             AlertBus.alerts.collect { alert ->
+                                if (isLoggingOut) return@collect
                                 try {
-                                    val parentEntry = navController.getBackStackEntry("authenticated_flow")
-                                    val exchangeVm = androidx.lifecycle.ViewModelProvider(parentEntry)[ExchangeViewModel::class.java]
-                                    exchangeVm.setPendingAlert(alert)
+                                    val alertId = (alert["id"] ?: alert["alertId"] ?: alert["opportunityId"])?.toString()
+                                    if (alertId != null && tradeAlertManager.isAlertHandled(alertId)) {
+                                        return@collect
+                                    }
+                                    if (alertId != null && alertId == currentActiveAlertId) {
+                                        sharedExchangeViewModel.setPendingAlert(alert)
+                                        return@collect
+                                    }
+                                    currentActiveAlertId = alertId
+                                    sharedExchangeViewModel.setPendingAlert(alert)
+
                                     val currentRoute = navController.currentDestination?.route
-                                    if (currentRoute != "trade_alert") {
-                                        navController.navigate("trade_alert")
+                                    val isInsideAuthFlow = currentRoute in setOf(
+                                        "connect_exchange", "market_candidates", "trade_setup",
+                                        "risk_management", "technical_analysis", "change_api_keys", "trade_alert"
+                                    )
+                                    if (isInsideAuthFlow) {
+                                        if (currentRoute != "trade_alert") {
+                                            navController.navigate("trade_alert") {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                    } else {
+                                        pendingValidatedAlert = parseValidatedAlertFromMap(alert)
                                     }
                                 } catch (e: Exception) {
                                     android.util.Log.w("MainActivity", "[ALERT_BUS] Error routing alert to trade_alert: ${e.message}")
@@ -263,26 +359,30 @@ class MainActivity : FragmentActivity() {
                                             inclusive = true
                                         }
                                     }
+                                    pendingValidatedAlert?.let { alert ->
+                                        val isFresh = alert.timestamp?.let { (System.currentTimeMillis() - it) < 300_000L } ?: false
+                                        if (isFresh) {
+                                            sharedExchangeViewModel.selectCandidate(alert.toMarketCandidate())
+                                            sharedExchangeViewModel.setPendingAlert(alert.toAlertMap())
+                                            navController.navigate("trade_alert") {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                        pendingValidatedAlert = null
+                                    }
                                 }
                             )
                         }
                         val authStartDest = if (initialAlert != null || pendingValidatedAlert != null) "technical_analysis" else "connect_exchange"
                         navigation(startDestination = authStartDest, route = "authenticated_flow") {
-                            composable("connect_exchange") { backStackEntry ->
-                                val parentEntry = remember(backStackEntry) {
-                                    navController.getBackStackEntry("authenticated_flow")
-                                }
-                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                            composable("connect_exchange") {
                                 ConnectExchangeScreen(
                                     navController = navController,
-                                    viewModel = viewModel
+                                    viewModel = sharedExchangeViewModel
                                 )
                             }
-                            composable("market_candidates") { backStackEntry ->
-                                val parentEntry = remember(backStackEntry) {
-                                    navController.getBackStackEntry("authenticated_flow")
-                                }
-                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                            composable("market_candidates") {
+                                val viewModel = sharedExchangeViewModel
                                 val sessionConfig by tradeSessionRepository.tradeSetupConfig.collectAsState()
                                 val selectedBudget = sessionConfig?.tradeValueUsdt?.takeIf { it > 0.0 }
                                 
@@ -322,23 +422,19 @@ class MainActivity : FragmentActivity() {
                                     )
                                 }
                             }
-                            composable("change_api_keys") { backStackEntry ->
-                                val parentEntry = remember(backStackEntry) {
-                                    navController.getBackStackEntry("authenticated_flow")
-                                }
-                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                            composable("change_api_keys") {
                                 ConnectExchangeScreen(
                                     navController = navController,
-                                    viewModel = viewModel,
+                                    viewModel = sharedExchangeViewModel,
                                     isChangingApiKeys = true
                                 )
                             }
 
                             composable("trade_setup") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
-                                    navController.getBackStackEntry("authenticated_flow")
+                                    navController.getAuthenticatedFlowEntry(backStackEntry)
                                 }
-                                val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val exchangeViewModel = sharedExchangeViewModel
                                 val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>(parentEntry)
                                 val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
@@ -373,7 +469,14 @@ class MainActivity : FragmentActivity() {
                                     asset = quoteAsset,
                                     exchangeName = formState.selectedExchange.replaceFirstChar { it.uppercase() },
                                     environmentName = formState.environment.replaceFirstChar { it.uppercase() },
-                                    onBack = { navController.popBackStack() },
+                                    onBack = {
+                                        val prevRoute = navController.previousBackStackEntry?.destination?.route
+                                        if (prevRoute == "connect_exchange" || prevRoute == "authenticated_flow") {
+                                            moveTaskToBack(true)
+                                        } else {
+                                            navController.popBackStack()
+                                        }
+                                    },
                                     onProceedToAnalysis = {
                                         navController.navigate("market_candidates")
                                     },
@@ -385,16 +488,16 @@ class MainActivity : FragmentActivity() {
                                         }
                                     },
                                     isRefreshing = isRefreshingBalance,
-                                )
+                                 )
                             }
 
                             composable("risk_management") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
-                                    navController.getBackStackEntry("authenticated_flow")
+                                    navController.getAuthenticatedFlowEntry(backStackEntry)
                                 }
                                 val riskViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.RiskManagementViewModel>()
                                 val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
-                                val exchangeViewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val exchangeViewModel = sharedExchangeViewModel
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
                                 val candidate = selectedCandidate ?: exchangeViewModel.candidates.collectAsState(initial = emptyList()).value.firstOrNull()
 
@@ -421,9 +524,9 @@ class MainActivity : FragmentActivity() {
 
                             composable("technical_analysis") { backStackEntry ->
                                 val parentEntry = remember(backStackEntry) {
-                                    navController.getBackStackEntry("authenticated_flow")
+                                    navController.getAuthenticatedFlowEntry(backStackEntry)
                                 }
-                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                                val viewModel = sharedExchangeViewModel
                                 val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
 
                                 val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
@@ -555,10 +658,10 @@ class MainActivity : FragmentActivity() {
                                         }
                                     },
                                     onExecuteTrade = {
-                                        val parentEntry = try { navController.getBackStackEntry("authenticated_flow") } catch (_: Exception) { null }
-                                        val exchangeVm = parentEntry?.let { androidx.lifecycle.ViewModelProvider(it)[ExchangeViewModel::class.java] }
-                                        if (exchangeVm?.pendingAlert?.value != null) {
-                                            navController.navigate("trade_alert")
+                                        if (sharedExchangeViewModel.pendingAlert.value != null) {
+                                            navController.navigate("trade_alert") {
+                                                launchSingleTop = true
+                                            }
                                         } else {
                                             technicalAnalysisViewModel.triggerTradeAlert(analysisState?.symbol, applicationContext)
                                         }
@@ -570,23 +673,10 @@ class MainActivity : FragmentActivity() {
                                 )
                             }
 
-                            composable("trade_alert") { backStackEntry ->
-                                val parentEntry = remember(backStackEntry) {
-                                    navController.getBackStackEntry("authenticated_flow")
-                                }
-                                val viewModel = hiltViewModel<ExchangeViewModel>(parentEntry)
+                            composable("trade_alert") {
+                                val viewModel = sharedExchangeViewModel
                                 val alert by viewModel.pendingAlert.collectAsState(initial = null)
                                 val candidate by viewModel.selectedCandidate.collectAsState(initial = null)
-
-                                data class TradeMath(
-                                    val entryPrice: Double,
-                                    val stopLossPrice: Double,
-                                    val takeProfitPrice: Double,
-                                    val signalPrice: Double,
-                                    val targetEntryPrice: Double?,
-                                    val positionSize: Double,
-                                    val calculatedPnl: Double
-                                )
                                 
                                 val math = remember(alert, candidate) {
                                     val ep = (alert?.get("entryPrice") as? Double) ?: (alert?.get("signalPrice") as? Double) ?: candidate?.currentMarketPrice ?: 0.0
@@ -630,6 +720,8 @@ class MainActivity : FragmentActivity() {
                                     }
                                     return@composable
                                 }
+                                val strategy = alert?.get("strategy") as? String
+                                val timeframe = alert?.get("timeframe") as? String
                                 TradeAlertScreen(
                                     onBack = { navController.popBackStack() },
                                     onTradeExecuted = {
@@ -645,6 +737,8 @@ class MainActivity : FragmentActivity() {
                                     signalPrice = math.signalPrice,
                                     targetEntryPrice = math.targetEntryPrice,
                                     tradeAmountUsdt = math.positionSize,
+                                    strategy = strategy,
+                                    timeframe = timeframe,
                                     viewModel = viewModel
                                 )
                             }
@@ -740,6 +834,9 @@ class MainActivity : FragmentActivity() {
             ?: intent.getStringExtra("timestamp")?.toLongOrNull()
             ?: intent.getLongExtra("alert_timestamp", 0L).takeIf { it > 0L }
 
+        val timeframe = intent.getStringExtra("timeframe")
+            ?: intent.getStringExtra("alert_timeframe")
+
         // MANDATORY SAFETY REQUIREMENT: Never silently substitute 0.0 for execution-critical fields
         if (alertId.isNullOrBlank() ||
             symbol.isNullOrBlank() ||
@@ -775,7 +872,8 @@ class MainActivity : FragmentActivity() {
             takeProfit = takeProfit,
             estimatedPnl = estimatedPnl,
             positionSize = positionSize,
-            timestamp = timestamp
+            timestamp = timestamp,
+            timeframe = timeframe
         )
     }
 
@@ -799,6 +897,8 @@ class MainActivity : FragmentActivity() {
         intent.removeExtra("alertId")
         intent.removeExtra("alert_opportunity_id")
         intent.removeExtra("opportunityId")
+        intent.removeExtra("timeframe")
+        intent.removeExtra("alert_timeframe")
 
         val alertMap = alert.toAlertMap()
         val candidate = alert.toMarketCandidate()
@@ -815,21 +915,24 @@ class MainActivity : FragmentActivity() {
         )
 
         val nav = currentNavController
-        try {
-            if (nav != null) {
-                val parentEntry = nav.getBackStackEntry("authenticated_flow")
-                val vm = androidx.lifecycle.ViewModelProvider(parentEntry)[ExchangeViewModel::class.java]
-                vm.selectCandidate(candidate)
-                vm.setPendingAlert(alertMap)
-                if (nav.currentDestination?.route != "technical_analysis") {
-                    nav.navigate("technical_analysis") {
-                        popUpTo("connect_exchange") { inclusive = true }
+        sharedExchangeViewModel.selectCandidate(candidate)
+        sharedExchangeViewModel.setPendingAlert(alertMap)
+        if (nav != null) {
+            val currentRoute = nav.currentDestination?.route
+            val isInsideAuthFlow = currentRoute in setOf(
+                "connect_exchange", "market_candidates", "trade_setup",
+                "risk_management", "technical_analysis", "change_api_keys", "trade_alert"
+            )
+            if (isInsideAuthFlow) {
+                if (currentRoute != "trade_alert") {
+                    nav.navigate("trade_alert") {
+                        launchSingleTop = true
                     }
                 }
             } else {
                 pendingValidatedAlert = alert
             }
-        } catch (_: Exception) {
+        } else {
             pendingValidatedAlert = alert
         }
     }

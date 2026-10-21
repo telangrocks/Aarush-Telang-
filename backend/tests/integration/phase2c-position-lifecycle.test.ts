@@ -67,17 +67,9 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
         prepare: vi.fn().mockImplementation((query: string) => ({
           bind: vi.fn().mockImplementation((...args: any[]) => ({
             run: vi.fn().mockImplementation(async () => {
-              if (query.includes('UPDATE trade_positions') && query.includes("SET status = 'CLOSED'")) {
-                const id = args[5] || args[6];
-                const pos = d1Positions.get(id);
-                if (pos && pos.status === 'OPEN') {
-                  pos.status = 'CLOSED';
-                  pos.closed_at = args[0];
-                  pos.close_price = args[1];
-                  pos.realized_pnl = args[2];
-                  pos.close_reason = args[3];
-                  d1Positions.set(id, pos);
-                }
+              if (query.includes('DELETE FROM trade_positions')) {
+                const id = args[0];
+                d1Positions.delete(id);
               }
               return { success: true };
             }),
@@ -164,12 +156,11 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
     const res = await bot.fetch(req);
     expect(res.status).toBe(200);
 
-    // Verify D1 record updated to CLOSED with exact Bybit data
+    // Verify D1 record deleted from active position ledger per zero permanent history design
     const updatedPos = d1Positions.get(alertId);
-    expect(updatedPos.status).toBe("CLOSED");
-    expect(updatedPos.close_price).toBe(1.20242);
-    expect(updatedPos.realized_pnl).toBe(3.00);
-    expect(updatedPos.close_reason).toBe("take_profit");
+    expect(updatedPos).toBeUndefined();
+    const data: any = await res.json();
+    expect(data.status).toBe("CLOSED");
   });
 
   it("reconciles Bybit SL-triggered exit to CLOSED with authoritative realized P&L", async () => {
@@ -217,10 +208,9 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
     expect(res.status).toBe(200);
 
     const updatedPos = d1Positions.get(alertId);
-    expect(updatedPos.status).toBe("CLOSED");
-    expect(updatedPos.close_price).toBe(1.14989);
-    expect(updatedPos.realized_pnl).toBe(-1.50);
-    expect(updatedPos.close_reason).toBe("stop_loss");
+    expect(updatedPos).toBeUndefined();
+    const data: any = await res.json();
+    expect(data.status).toBe("CLOSED");
   });
 
   it("reconciles manual closure on Bybit app as close_reason = 'manual'", async () => {
@@ -267,10 +257,9 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
     expect(res.status).toBe(200);
 
     const updatedPos = d1Positions.get(alertId);
-    expect(updatedPos.status).toBe("CLOSED");
-    expect(updatedPos.close_price).toBe(1.1770);
-    expect(updatedPos.realized_pnl).toBe(0.85);
-    expect(updatedPos.close_reason).toBe("manual");
+    expect(updatedPos).toBeUndefined();
+    const data: any = await res.json();
+    expect(data.status).toBe("CLOSED");
   });
 
   it("CRITICAL INVARIANT PROOF: monitorOpenPositions strictly ignores Bybit positions even if ticker breaches SL", async () => {

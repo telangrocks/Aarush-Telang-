@@ -193,6 +193,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     mockStorage.set('userId', 'user-123');
     mockStorage.set('strategy', 'scalper-v2');
     mockStorage.set('positionSize', 100);
+    mockStorage.set('lock:alarmGeneration', 1);
 
     // Trigger the alarm
     await bot.alarm();

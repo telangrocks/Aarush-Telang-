@@ -13,5 +13,6 @@ data class BotAlertDto(
     val signalPrice: Double?,
     val targetEntryPrice: Double?,
     val positionSize: Double? = null,
-    val entryIntent: String? = null
+    val entryIntent: String? = null,
+    val timeframe: String? = null
 )

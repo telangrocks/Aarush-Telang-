@@ -16,7 +16,8 @@ fun BotAlertDto.toDomain(): BotAlert = BotAlert(
     signalPrice = signalPrice,
     targetEntryPrice = targetEntryPrice,
     positionSize = positionSize,
-    entryIntent = entryIntent
+    entryIntent = entryIntent,
+    timeframe = timeframe
 )
 
 fun StrategyMetadataDto.toDomain(): StrategyMetadata = StrategyMetadata(

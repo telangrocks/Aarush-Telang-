@@ -44,3 +44,4 @@ crons = []
 # Plain-text environment variables
 [vars]
 ENVIRONMENT = "production"
+SIGNAL_MANAGER_MODE = "SHADOW"

@@ -338,6 +338,7 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("strategy", "scalper-v2");
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["SOL/USDT", "ETH/USDT", "BTC/USDT"]);
+    mockStorage.set("lock:alarmGeneration", 1);
 
     await bot.alarm();
 
@@ -362,6 +363,7 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("strategy", "scalper-v2");
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["FAIL/USDT", "PASS/USDT"]);
+    mockStorage.set("lock:alarmGeneration", 1);
 
     mockExecuteCycle.mockImplementation((symbol: string) => {
       if (symbol === "FAIL/USDT") {
@@ -414,6 +416,7 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("strategy", "scalper-v2");
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["REGIME_REJECT/USDT", "REGIME_ACCEPT/USDT"]);
+    mockStorage.set("lock:alarmGeneration", 1);
 
     vi.spyOn(MarketRegimeEngine, "evaluate").mockImplementation((highs: number[], lows: number[], closes: number[], currentPrice: number) => {
       // Simulate evaluate
@@ -475,6 +478,7 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("strategy", "scalper-v2");
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["SOL/USDT", "ETH/USDT"]);
+    mockStorage.set("lock:alarmGeneration", 1);
     mockStorage.set("alerts", [existingAlert]);
 
     await bot.alarm();
@@ -645,6 +649,7 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("strategy", "scalper-v2");
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["BTC/USDT", "ETH/USDT"]);
+    mockStorage.set("lock:alarmGeneration", 1);
 
     mockExecuteCycle.mockImplementation((symbol: string) => {
       if (symbol === "BTC/USDT") {

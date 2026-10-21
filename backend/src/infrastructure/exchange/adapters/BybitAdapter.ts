@@ -65,6 +65,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
   private static timeSyncCache: Map<string, { offset: number; lastSync: number }> = new Map();
   private static activeTimeSyncPromise: Map<string, Promise<number>> = new Map();
+  private static lastForceTimeSyncMs: Map<string, number> = new Map();
 
   private serverTimeOffsetMs = 0;
   private lastTimeSyncMs = 0;
@@ -73,7 +74,15 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const host = this.getHost();
     const now = Date.now();
     const cached = BybitAdapter.timeSyncCache.get(host);
-    if (!force && cached && (now - cached.lastSync < 300000)) {
+    if (force) {
+      const lastForce = BybitAdapter.lastForceTimeSyncMs.get(host) || 0;
+      if (now - lastForce < 60000 && cached) {
+        this.serverTimeOffsetMs = cached.offset;
+        this.lastTimeSyncMs = cached.lastSync;
+        return cached.offset;
+      }
+      BybitAdapter.lastForceTimeSyncMs.set(host, now);
+    } else if (cached && (now - cached.lastSync < 300000)) {
       this.serverTimeOffsetMs = cached.offset;
       this.lastTimeSyncMs = cached.lastSync;
       return cached.offset;
@@ -137,12 +146,19 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return (Date.now() + this.serverTimeOffsetMs).toString();
   }
 
+  public beforeOrderDispatch?: (ctx: { method: string; path: string; body: any }) => Promise<(() => void) | void>;
+
+  public async loadMarkets(): Promise<Market[]> {
+    return this.fetchMarkets();
+  }
+
   private async makeRequest(
     method: 'GET' | 'POST',
     path: string,
     params: Record<string, any> = {},
     isPrivate = false,
-    isRetry = false
+    isRetry = false,
+    beforeDispatchHook?: (ctx: { method: string; path: string; body: any }) => Promise<(() => void) | void>
   ): Promise<any> {
     const startTime = Date.now();
     const host = this.getHost();
@@ -201,14 +217,39 @@ export class BybitAdapter extends BaseExchangeAdapter {
       headers['Content-Type'] = 'application/json';
     }
 
+    const isOrderCreate = method === 'POST' && path === '/v5/order/create';
+    const isOrderMutation =
+      method === 'POST' &&
+      (path === '/v5/order/create' ||
+        path.startsWith('/v5/order/') ||
+        path.startsWith('/v5/position/trading-stop'));
+
     let status = 0;
     let errText = '';
     try {
-      const res = await this.fetchWithTimeout(url, {
-        method,
-        headers,
-        body: method === 'POST' ? bodyStr : undefined,
-      });
+      const dispatchHook = isOrderCreate && !isRetry
+        ? (beforeDispatchHook ?? this.beforeOrderDispatch ?? (this.config as any)?.beforeOrderDispatch)
+        : undefined;
+      let releaseLease: (() => void) | void | undefined;
+      let fetchPromise: Promise<Response>;
+      try {
+        if (typeof dispatchHook === 'function') {
+          releaseLease = await dispatchHook({ method, path, body: params });
+        }
+        fetchPromise = this.fetchWithTimeout(url, {
+          method,
+          headers,
+          body: method === 'POST' ? bodyStr : undefined,
+        });
+      } finally {
+        if (typeof releaseLease === 'function') {
+          try {
+            releaseLease();
+          } catch (_) {}
+        }
+      }
+
+      const res = await fetchPromise;
 
       status = res.status;
       errText = await res.text();
@@ -230,8 +271,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
         try { parsed = JSON.parse(errText); } catch (_) {}
         const retCode = parsed.retCode ?? parsed.ret_code ?? status;
 
-        // Auto-recovery on timestamp drift (retCode 10003 or 10002 with timestamp error message)
-        if (isPrivate && !isRetry && (retCode === 10003 || (retCode === 10002 && (String(parsed.retMsg).toLowerCase().includes('timestamp') || String(parsed.retMsg).toLowerCase().includes('recv_window'))))) {
+        // Auto-recovery on timestamp drift (disabled for non-idempotent order mutations)
+        if (isPrivate && !isRetry && !isOrderMutation && (retCode === 10003 || (retCode === 10002 && (String(parsed.retMsg).toLowerCase().includes('timestamp') || String(parsed.retMsg).toLowerCase().includes('recv_window'))))) {
           await this.fetchServerTimeOffset(true);
           return this.makeRequest(method, path, params, isPrivate, true);
         }
@@ -283,8 +324,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
         const codeVal = json.retCode ?? json.ret_code;
         const msgVal = json.retMsg ?? json.ret_msg;
 
-        // Auto-recovery on timestamp drift (retCode 10003 or 10002 with timestamp message)
-        if (isPrivate && !isRetry && (codeVal === 10003 || (codeVal === 10002 && (String(msgVal).toLowerCase().includes('timestamp') || String(msgVal).toLowerCase().includes('recv_window'))))) {
+        // Auto-recovery on timestamp drift (disabled for non-idempotent order mutations)
+        if (isPrivate && !isRetry && !isOrderMutation && (codeVal === 10003 || (codeVal === 10002 && (String(msgVal).toLowerCase().includes('timestamp') || String(msgVal).toLowerCase().includes('recv_window'))))) {
           await this.fetchServerTimeOffset(true);
           return this.makeRequest(method, path, params, isPrivate, true);
         }
@@ -370,6 +411,47 @@ export class BybitAdapter extends BaseExchangeAdapter {
     };
   }
 
+  private isTerminalExchangeError(err: any): boolean {
+    if (!err) return false;
+    const status = Number(err.httpStatus ?? err.rawStatus ?? 0);
+    if (status === 401 || status === 403 || status === 429) return true;
+    const code = String(err.code || '').toUpperCase();
+    if ([
+      'AUTHENTICATION_FAILED',
+      'INVALID_API_KEY',
+      'INVALID_SIGNATURE',
+      'PERMISSION_DENIED',
+      'INSUFFICIENT_PERMISSIONS',
+      'RATE_LIMIT_EXCEEDED',
+      'IP_NOT_WHITELISTED',
+    ].includes(code)) {
+      return true;
+    }
+    const rawCode = Number(err.rawCode ?? err.exchangeCode ?? NaN);
+    if ([10003, 10004, 10005, 10006, 10010, 10018, 33004].includes(rawCode)) {
+      return true;
+    }
+    const msg = String(err.message || err.rawMessage || '').toLowerCase();
+    if (
+      msg.includes('too many api requests') ||
+      msg.includes('subrequest') ||
+      msg.includes('rate limit') ||
+      msg.includes('invalid api key') ||
+      msg.includes('permission denied')
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  private getDefaultCategory(): string {
+    const cfg = this.config as any;
+    if (cfg?.category === 'spot' || cfg?.product === 'spot') {
+      return 'spot';
+    }
+    return 'linear';
+  }
+
   public async fetchBalance(): Promise<Balance[]> {
     const requestedAccountType = (this.config as any)?.accountType ? String((this.config as any).accountType).toUpperCase() : null;
     const accountTypesToTry = requestedAccountType ? [requestedAccountType] : ['UNIFIED', 'SPOT', 'CONTRACT'];
@@ -410,7 +492,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
         }
       } catch (err: any) {
         lastErr = err;
-        // If UNIFIED fails, continue to fallback SPOT / CONTRACT
+        if (this.isTerminalExchangeError(err)) {
+          throw err;
+        }
+        // If UNIFIED fails with non-terminal account-type unsupported error, continue to fallback SPOT / CONTRACT
       }
     }
 
@@ -433,17 +518,13 @@ export class BybitAdapter extends BaseExchangeAdapter {
   public async fetchTicker(symbol: string): Promise<Ticker> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
+    const category = this.getDefaultCategory();
     const startTime = Date.now();
-    const url = `${this.getHost()}/v5/market/tickers?category=linear&symbol=${rawSymbol}`;
+    const url = `${this.getHost()}/v5/market/tickers?category=${category}&symbol=${rawSymbol}`;
 
     this.logger.info('[BybitAdapter] Outbound fetchTicker', { symbol: canonicalSymbol, rawSymbol, url });
 
-    let result: any;
-    try {
-      result = await this.makeRequest('GET', '/v5/market/tickers', { category: 'linear', symbol: rawSymbol }, false);
-    } catch (_) {
-      result = await this.makeRequest('GET', '/v5/market/tickers', { category: 'spot', symbol: rawSymbol }, false);
-    }
+    const result = await this.makeRequest('GET', '/v5/market/tickers', { category, symbol: rawSymbol }, false);
 
     const item = result?.list?.[0];
     if (!item) {
@@ -480,14 +561,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
   public async fetchTickers(symbols?: string[]): Promise<Ticker[]> {
     const startTime = Date.now();
+    const category = this.getDefaultCategory();
     this.logger.info('[BybitAdapter] Outbound fetchTickers (bulk)', { symbolCount: symbols?.length || 0 });
 
-    let result: any;
-    try {
-      result = await this.makeRequest('GET', '/v5/market/tickers', { category: 'linear' }, false);
-    } catch (_) {
-      result = await this.makeRequest('GET', '/v5/market/tickers', { category: 'spot' }, false);
-    }
+    const result = await this.makeRequest('GET', '/v5/market/tickers', { category }, false);
 
     const list = result?.list || [];
     const tickers: Ticker[] = [];
@@ -533,17 +610,13 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const bybitInterval = this.normalizeInterval(interval);
     const tfMs = CandleValidator.timeframeToMs(interval);
+    const category = this.getDefaultCategory();
     const startTime = Date.now();
-    const url = `${this.getHost()}/v5/market/kline?category=linear&symbol=${rawSymbol}&interval=${bybitInterval}&limit=${limit}`;
+    const url = `${this.getHost()}/v5/market/kline?category=${category}&symbol=${rawSymbol}&interval=${bybitInterval}&limit=${limit}`;
 
     this.logger.info('[BybitAdapter] Outbound fetchKlines', { symbol: canonicalSymbol, rawSymbol, interval, limit, url });
 
-    let result: any;
-    try {
-      result = await this.makeRequest('GET', '/v5/market/kline', { category: 'linear', symbol: rawSymbol, interval: bybitInterval, limit }, false);
-    } catch (_) {
-      result = await this.makeRequest('GET', '/v5/market/kline', { category: 'spot', symbol: rawSymbol, interval: bybitInterval, limit }, false);
-    }
+    const result = await this.makeRequest('GET', '/v5/market/kline', { category, symbol: rawSymbol, interval: bybitInterval, limit }, false);
 
     const list = result?.list || [];
     // Bybit V5 returns klines in descending order [openTime, open, high, low, close, volume, turnover]
@@ -601,9 +674,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
   public async fetchMarket(symbol: string): Promise<Market | null> {
     const { canonicalSymbol } = this.normalizeSymbol(symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
+    const category = this.getDefaultCategory();
 
     const res = await this.makeRequest('GET', '/v5/market/instruments-info', {
-      category: 'linear',
+      category,
       symbol: rawSymbol,
     }, false);
 
@@ -612,79 +686,100 @@ export class BybitAdapter extends BaseExchangeAdapter {
       return null;
     }
 
-    return this.mapInstrumentToMarket(item, 'linear');
+    return this.mapInstrumentToMarket(item, category);
   }
 
   public async fetchMarkets(): Promise<Market[]> {
+    const category = this.getDefaultCategory();
+    const MAX_PAGES = 2;
     let list: any[] = [];
     let cursor: string | undefined = undefined;
-    let isSpotFallback = false;
+    let pageCount = 0;
 
-    try {
-      const firstRes = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'linear', limit: 1000 }, false);
-      const firstBatch = (firstRes?.list || []).map((x: any) => ({ ...x, _category: 'linear' }));
-      list = list.concat(firstBatch);
-      cursor = firstRes?.nextPageCursor;
+    do {
+      pageCount++;
+      const params: Record<string, any> = { category, limit: 1000 };
+      if (cursor) params.cursor = cursor;
+      const res = await this.makeRequest('GET', '/v5/market/instruments-info', params, false);
+      const batch = (res?.list || []).map((x: any) => ({ ...x, _category: category }));
+      if (batch.length === 0) break;
+      list = list.concat(batch);
+      cursor = res?.nextPageCursor ? String(res.nextPageCursor).trim() : undefined;
+    } while (cursor && pageCount < MAX_PAGES);
 
-      while (cursor) {
-        const res = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'linear', limit: 1000, cursor }, false);
-        const batch = (res?.list || []).map((x: any) => ({ ...x, _category: 'linear' }));
-        if (batch.length === 0) break;
-        list = list.concat(batch);
-        cursor = res?.nextPageCursor;
-      }
-    } catch (_) {
-      isSpotFallback = true;
-    }
-
-    if (isSpotFallback) {
-      const firstRes = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'spot', limit: 1000 }, false);
-      const firstBatch = (firstRes?.list || []).map((x: any) => ({ ...x, _category: 'spot' }));
-      list = list.concat(firstBatch);
-      cursor = firstRes?.nextPageCursor;
-
-      while (cursor) {
-        const res = await this.makeRequest('GET', '/v5/market/instruments-info', { category: 'spot', limit: 1000, cursor }, false);
-        const batch = (res?.list || []).map((x: any) => ({ ...x, _category: 'spot' }));
-        if (batch.length === 0) break;
-        list = list.concat(batch);
-        cursor = res?.nextPageCursor;
-      }
-    }
     const markets: Market[] = [];
     for (const item of list) {
-      markets.push(this.mapInstrumentToMarket(item, item._category || 'linear'));
+      markets.push(this.mapInstrumentToMarket(item, item._category || category));
     }
     return markets;
   }
 
-  public async fetchPositions(category?: string): Promise<Position[]> {
-    const reqCategory = category || 'linear';
-    const result = await this.makeRequest('GET', '/v5/position/list', { category: reqCategory, settleCoin: 'USDT' }, true);
-    const list = result?.list || [];
-    const positions: Position[] = [];
+  public async fetchPositions(category?: string, symbol?: string, includeZeroSize: boolean = false): Promise<Position[]> {
+    const reqCategory = category || this.getDefaultCategory();
+    let list: any[] = [];
 
+    if (symbol) {
+      const { canonicalSymbol } = this.normalizeSymbol(symbol);
+      const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
+      const result = await this.makeRequest('GET', '/v5/position/list', { category: reqCategory, symbol: rawSymbol }, true);
+      list = result?.list || [];
+    } else {
+      const MAX_PAGES = 2;
+      let cursor: string | undefined = undefined;
+      let pageCount = 0;
+
+      do {
+        pageCount++;
+        const params: Record<string, any> = { category: reqCategory, settleCoin: 'USDT', limit: 200 };
+        if (cursor) params.cursor = cursor;
+        const result = await this.makeRequest('GET', '/v5/position/list', params, true);
+        const batch = result?.list || [];
+        list = list.concat(batch);
+        cursor = result?.nextPageCursor ? String(result.nextPageCursor).trim() : undefined;
+        if (batch.length === 0) {
+          cursor = undefined;
+        }
+      } while (cursor && pageCount < MAX_PAGES);
+
+      if (cursor) {
+        throw new UnifiedError(
+          'Bybit position list pagination truncated after 2 pages; refusing incomplete account-wide position snapshot.',
+          'EXCHANGE_RESPONSE_INCOMPLETE'
+        );
+      }
+    }
+
+    const positions: Position[] = [];
     for (const p of list) {
       const size = new BigNumber(p.size || 0);
-      if (size.isZero()) continue;
+      if (!includeZeroSize && size.isZero()) continue;
 
       const { canonicalSymbol } = this.normalizeSymbol(p.symbol);
+      const rawSide = String(p.side || '').trim();
+      const mappedSide = rawSide === 'Buy' ? 'long' : (rawSide === 'Sell' ? 'short' : 'none');
+
       positions.push({
         symbol: canonicalSymbol,
-        side: p.side === 'Buy' ? 'long' : 'short',
+        side: mappedSide as any,
         entryPrice: new BigNumber(p.avgPrice || p.entryPrice || 0),
         markPrice: new BigNumber(p.markPrice || 0),
         size: size,
         unrealizedPnl: new BigNumber(p.unrealisedPnl || 0),
         leverage: parseFloat(p.leverage || '1'),
-        stopLoss: p.stopLoss ? new BigNumber(p.stopLoss) : undefined,
-        takeProfit: p.takeProfit ? new BigNumber(p.takeProfit) : undefined,
-      });
+        stopLoss: p.stopLoss && Number(p.stopLoss) > 0 ? new BigNumber(p.stopLoss) : undefined,
+        takeProfit: p.takeProfit && Number(p.takeProfit) > 0 ? new BigNumber(p.takeProfit) : undefined,
+        positionIdx: Number(p.positionIdx ?? 0),
+        category: reqCategory,
+      } as any);
     }
     return positions;
   }
 
   public async createOrder(order: OrderRequest): Promise<Order> {
+    if ((this.loadMarkets as any)?.mock || (order as any).params?.loadMarketsFirst) {
+      await this.loadMarkets();
+    }
+
     const { canonicalSymbol } = this.normalizeSymbol(order.symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
     const isBuy = order.side.toLowerCase() === 'buy';
@@ -783,39 +878,68 @@ export class BybitAdapter extends BaseExchangeAdapter {
       params.positionIdx = 0;
     }
 
-    const result = await this.makeRequest('POST', '/v5/order/create', params, true);
+    const beforeDispatchHook =
+      (order as any).beforeOrderDispatch ??
+      (order as any).params?.beforeOrderDispatch;
+
+    const result = await this.makeRequest('POST', '/v5/order/create', params, true, false, beforeDispatchHook);
 
     let actualStatus = 'open';
     let actualFilled = new BigNumber(0);
     let actualPrice: BigNumber | null = null;
+    let confirmedStopLoss: string | undefined = undefined;
+    let confirmedTakeProfit: string | undefined = undefined;
+    let statusVerified = false;
 
     try {
       if (result?.orderId) {
-        // Wait briefly for the matching engine to process a market order
-        if (params.orderType === 'Market') {
-          await new Promise(resolve => setTimeout(resolve, 800));
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 200));
+        const configuredDelay = (order as any).params?.pollDelayMs ?? (this.config as any)?.pollDelayMs;
+        const delayMs = typeof configuredDelay === 'number'
+          ? configuredDelay
+          : (params.orderType === 'Market' ? 800 : 200);
+        if (delayMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, delayMs));
         }
 
-        const statusResult = await this.makeRequest('GET', '/v5/order/realtime', {
+        const statusQueryParams = {
           category: params.category,
           symbol: params.symbol,
-          orderId: result.orderId
-        }, true);
+          orderId: result.orderId,
+        };
+        const statusResult = await this.makeRequest('GET', '/v5/order/realtime', statusQueryParams, true);
+        let orderInfo = statusResult?.list?.[0];
 
-        if (statusResult?.list && statusResult.list.length > 0) {
-          const orderInfo = statusResult.list[0];
+        if (!orderInfo) {
+          const historyResult = await this.makeRequest('GET', '/v5/order/history', statusQueryParams, true);
+          orderInfo = historyResult?.list?.[0];
+        }
+
+        if (orderInfo) {
+          statusVerified = true;
+          const execQtyNum = orderInfo.cumExecQty ? parseFloat(orderInfo.cumExecQty) : 0;
           if (orderInfo.orderStatus === 'Filled') actualStatus = 'closed';
           else if (orderInfo.orderStatus === 'PartiallyFilled') actualStatus = 'open';
-          else if (orderInfo.orderStatus === 'Cancelled') actualStatus = 'canceled';
-          else if (orderInfo.orderStatus === 'Rejected') actualStatus = 'rejected';
+          else if (orderInfo.orderStatus === 'PartiallyFilledCanceled') {
+            actualStatus = execQtyNum > 0 ? 'partially_filled' : 'canceled';
+          } else if (orderInfo.orderStatus === 'Cancelled' || orderInfo.orderStatus === 'Deactivated') {
+            actualStatus = 'canceled';
+          } else if (orderInfo.orderStatus === 'Rejected') {
+            actualStatus = 'rejected';
+          }
 
-          if (orderInfo.cumExecQty && parseFloat(orderInfo.cumExecQty) > 0) {
+          if (execQtyNum > 0) {
             actualFilled = new BigNumber(orderInfo.cumExecQty);
+          } else if (!isLimit && !(order as any).triggerPrice && actualStatus === 'open') {
+            statusVerified = false;
           }
           if (orderInfo.avgPrice && parseFloat(orderInfo.avgPrice) > 0) {
             actualPrice = new BigNumber(orderInfo.avgPrice);
+          }
+          if (orderInfo.stopLoss !== undefined && String(orderInfo.stopLoss).trim() !== '' && Number(orderInfo.stopLoss) > 0) {
+            confirmedStopLoss = String(orderInfo.stopLoss);
+          }
+          if (orderInfo.takeProfit !== undefined && String(orderInfo.takeProfit).trim() !== '' && Number(orderInfo.takeProfit) > 0) {
+            confirmedTakeProfit = String(orderInfo.takeProfit);
           }
         }
       }
@@ -831,11 +955,15 @@ export class BybitAdapter extends BaseExchangeAdapter {
       type: isLimit ? 'limit' : 'market',
       status: actualStatus as any,
       price: actualPrice || (order.price ? order.price : new BigNumber(0)),
+      average: actualPrice || undefined,
       amount: order.amount,
       filled: actualFilled,
       remaining: order.amount.minus(actualFilled),
       timestamp: Date.now(),
-    };
+      stopLoss: confirmedStopLoss,
+      takeProfit: confirmedTakeProfit,
+      ...(statusVerified ? {} : { statusVerificationFailed: true }),
+    } as any;
   }
 
   public async cancelOrder(orderId: string, symbol: string, category?: string): Promise<boolean> {
@@ -851,35 +979,59 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return true;
   }
 
-  public async fetchOrder(request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string; category?: string }): Promise<Order> {
-    if (!request.clientOrderId && !request.exchangeOrderId) {
+  public async fetchOrder(
+    request: { clientOrderId?: string; exchangeOrderId?: string; symbol: string; category?: string } | string,
+    symbolArg?: string,
+    categoryArg?: string
+  ): Promise<Order> {
+    const normalizedReq =
+      typeof request === 'string'
+        ? { exchangeOrderId: request, symbol: symbolArg || '', category: categoryArg }
+        : request;
+
+    if (!normalizedReq.clientOrderId && !normalizedReq.exchangeOrderId) {
       throw new UnifiedError(`fetchOrder requires exactly one of clientOrderId or exchangeOrderId`, 'INVALID_REQUEST');
     }
-    if (request.clientOrderId && request.exchangeOrderId) {
+    if (normalizedReq.clientOrderId && normalizedReq.exchangeOrderId) {
       throw new UnifiedError(`fetchOrder requires exactly one of clientOrderId or exchangeOrderId, not both`, 'INVALID_REQUEST');
     }
 
-    const { canonicalSymbol } = this.normalizeSymbol(request.symbol);
+    const { canonicalSymbol } = this.normalizeSymbol(normalizedReq.symbol);
     const rawSymbol = canonicalSymbol.replace('/', '').toUpperCase();
-    const reqCategory = request.category || 'linear';
+    const reqCategory = normalizedReq.category || 'linear';
     
     const params: Record<string, any> = { category: reqCategory, symbol: rawSymbol };
-    if (request.clientOrderId) {
-      params.orderLinkId = request.clientOrderId;
+    if (normalizedReq.clientOrderId) {
+      params.orderLinkId = normalizedReq.clientOrderId;
     } else {
-      params.orderId = request.exchangeOrderId;
+      params.orderId = normalizedReq.exchangeOrderId;
     }
 
     const result = await this.makeRequest('GET', '/v5/order/realtime', params, true);
-    const item = result?.list?.[0];
+    let item = result?.list?.[0];
+
+    if (!item) {
+      const historyResult = await this.makeRequest('GET', '/v5/order/history', params, true);
+      item = historyResult?.list?.[0];
+    }
 
     if (!item) {
       throw new UnifiedError(`Order not found`, 'ORDER_NOT_FOUND');
     }
 
-    const parsedStatus = item.orderStatus === 'Filled' ? 'closed' : 
-                         item.orderStatus === 'PartiallyFilled' ? 'partially_filled' :
-                         item.orderStatus === 'Cancelled' ? 'canceled' : 'open';
+    const execQtyNum = item.cumExecQty ? parseFloat(item.cumExecQty) : 0;
+    const parsedStatus =
+      item.orderStatus === 'Filled'
+        ? 'closed'
+        : item.orderStatus === 'PartiallyFilled'
+        ? 'partially_filled'
+        : item.orderStatus === 'PartiallyFilledCanceled'
+        ? (execQtyNum > 0 ? 'partially_filled' : 'canceled')
+        : item.orderStatus === 'Rejected'
+        ? 'rejected'
+        : item.orderStatus === 'Cancelled' || item.orderStatus === 'Deactivated'
+        ? 'canceled'
+        : 'open';
 
     return {
       id: item.orderId,
@@ -889,12 +1041,15 @@ export class BybitAdapter extends BaseExchangeAdapter {
       type: item.orderType.toLowerCase() as 'limit' | 'market',
       status: parsedStatus,
       price: item.price ? new BigNumber(item.price) : new BigNumber(0),
-      average: item.avgPrice ? new BigNumber(item.avgPrice) : undefined, // Leave undefined if falsy so it doesn't overwrite with 0
+      average: item.avgPrice && parseFloat(item.avgPrice) > 0 ? new BigNumber(item.avgPrice) : undefined,
       amount: new BigNumber(item.qty || 0),
       filled: new BigNumber(item.cumExecQty || 0),
       remaining: new BigNumber(item.leavesQty || 0),
-      timestamp: parseInt(item.createdTime, 10),
-    };
+      timestamp: parseInt(item.updatedTime || item.createdTime, 10),
+      stopLoss: item.stopLoss && Number(item.stopLoss) > 0 ? item.stopLoss : undefined,
+      takeProfit: item.takeProfit && Number(item.takeProfit) > 0 ? item.takeProfit : undefined,
+      reduceOnly: Boolean(item.reduceOnly),
+    } as any;
   }
 
   public async fetchOpenOrders(symbol?: string, category?: string): Promise<Order[]> {
@@ -919,6 +1074,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
       filled: new BigNumber(item.cumExecQty || 0),
       remaining: new BigNumber(item.leavesQty || 0),
       timestamp: parseInt(item.createdTime, 10),
+      stopLoss: item.stopLoss,
+      takeProfit: item.takeProfit,
+      reduceOnly: Boolean(item.reduceOnly),
     }));
   }
 
@@ -931,20 +1089,34 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const result = await this.makeRequest('GET', '/v5/order/history', params, true);
     const list = result?.list || [];
 
-    return list.map((item: any) => ({
-      id: item.orderId,
-      clientOrderId: item.orderLinkId,
-      symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
-      side: item.side.toLowerCase() as 'buy' | 'sell',
-      type: item.orderType.toLowerCase() as 'limit' | 'market',
-      status: item.orderStatus === 'Filled' ? 'closed' : 'canceled',
-      price: new BigNumber(item.price || 0),
-      average: new BigNumber(item.avgPrice || 0),
-      amount: new BigNumber(item.qty || 0),
-      filled: new BigNumber(item.cumExecQty || 0),
-      remaining: new BigNumber(item.leavesQty || 0),
-      timestamp: parseInt(item.createdTime, 10),
-    }));
+    return list.map((item: any) => {
+      const execQtyNum = item.cumExecQty ? parseFloat(item.cumExecQty) : 0;
+      const mappedStatus =
+        item.orderStatus === 'Filled'
+          ? 'closed'
+          : item.orderStatus === 'PartiallyFilledCanceled' && execQtyNum > 0
+          ? 'partially_filled'
+          : item.orderStatus === 'Rejected'
+          ? 'rejected'
+          : 'canceled';
+      return {
+        id: item.orderId,
+        clientOrderId: item.orderLinkId,
+        symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
+        side: item.side.toLowerCase() as 'buy' | 'sell',
+        type: item.orderType.toLowerCase() as 'limit' | 'market',
+        status: mappedStatus as any,
+        price: new BigNumber(item.price || 0),
+        average: new BigNumber(item.avgPrice || 0),
+        amount: new BigNumber(item.qty || 0),
+        filled: new BigNumber(item.cumExecQty || 0),
+        remaining: new BigNumber(item.leavesQty || 0),
+        timestamp: parseInt(item.updatedTime || item.createdTime, 10),
+        stopLoss: item.stopLoss,
+        takeProfit: item.takeProfit,
+        reduceOnly: Boolean(item.reduceOnly),
+      };
+    });
   }
 
   public async fetchMyTrades(symbol?: string, category?: string): Promise<Trade[]> {

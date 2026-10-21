@@ -161,7 +161,7 @@ fun SplashScreen(
                 if (token.isNullOrEmpty()) {
                     destination = "onboarding"
                 } else if (!isExchangeConnected) {
-                    destination = "connect_exchange"
+                    destination = "authenticated_flow"
                 } else {
                     val alertsResult = kotlinx.coroutines.withTimeoutOrNull(2000) {
                         botRepository.getAlerts()
@@ -170,9 +170,9 @@ fun SplashScreen(
                     val currentTime = System.currentTimeMillis()
                     val validPendingAlerts = allAlerts.filter { alert ->
                         alert.timestamp?.let { ts ->
-                            val ms = try { java.time.Instant.parse(ts).toEpochMilli() } catch (_: Exception) { ts.toLongOrNull() ?: currentTime }
-                            (currentTime - ms) <= 300_000L
-                        } ?: true
+                            val ms = try { java.time.Instant.parse(ts).toEpochMilli() } catch (_: Exception) { ts.toLongOrNull() ?: 0L }
+                            (currentTime - ms) in 0L..300_000L
+                        } ?: false
                     }
 
                     val persistedAlert = tradeAlertManager?.getActiveAlert()
@@ -241,7 +241,7 @@ fun SplashScreen(
             }
         } catch (e: Exception) {
             // Fallback navigation in case of unexpected route failure
-            val fallback = if (!token.isNullOrEmpty() || tokenManager.hasCachedTokenSync()) "connect_exchange" else "onboarding"
+            val fallback = if (!token.isNullOrEmpty() || tokenManager.hasCachedTokenSync()) "authenticated_flow" else "onboarding"
             navController.navigate(fallback) {
                 popUpTo("splash") { inclusive = true }
             }

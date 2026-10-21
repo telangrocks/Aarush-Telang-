@@ -338,6 +338,7 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     mockStorage.set('strategy', 'scalper-v2');
     mockStorage.set('positionSize', 100);
     mockStorage.set('monitoredSymbols', ['BTC/USDT']);
+    mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('alerts', [existing5mAlert]);
 
     // Mock executeCycle to emit both 5m and 15m BUY signals
@@ -402,6 +403,7 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     mockStorage.set('strategy', 'momentum');
     mockStorage.set('positionSize', 100);
     mockStorage.set('monitoredSymbols', ['BTC/USDT']);
+    mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('alerts', []);
 
     const { StrategyOrchestrator: MockOrchestrator } = await import('../../src/engine/orchestrator/StrategyOrchestrator');
@@ -530,9 +532,9 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
   });
 
   // =========================================================================
-  // Test 6: /execute-trade Persists Timeframe into D1 trade_execution_audit
+  // Test 6: /execute-trade Omits D1 trade_execution_audit Insert per Zero Permanent History Design
   // =========================================================================
-  it('6. /execute-trade persists timeframe column and value into D1 trade_execution_audit', async () => {
+  it('6. /execute-trade omits D1 trade_execution_audit insert per zero permanent history design', async () => {
     const bot = new TradingBot(mockState, mockEnv);
     const alertId = 'alert-d1-audit-test';
 
@@ -565,13 +567,9 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     const execRes = await bot.fetch(execReq);
     expect(execRes.status).toBe(200);
 
-    // Find INSERT query for trade_execution_audit
+    // Verify zero INSERT query for trade_execution_audit
     const auditQuery = dbQueries.find((q) => q.query.includes('INSERT INTO trade_execution_audit'));
-    expect(auditQuery).toBeDefined();
-    expect(auditQuery!.query).toContain('timeframe');
-    // Parameter 15 is positionData.timeframe
-    const boundTimeframe = auditQuery!.params[auditQuery!.params.length - 1];
-    expect(boundTimeframe).toBe('4h');
+    expect(auditQuery).toBeUndefined();
   });
 
   // =========================================================================
@@ -629,6 +627,7 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     mockStorage.set('strategy', 'scalper-v2');
     mockStorage.set('positionSize', 100);
     mockStorage.set('monitoredSymbols', ['BTC/USDT']);
+    mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('alerts', []);
 
     // Simulate unfavorable market regime and strategy not allowed

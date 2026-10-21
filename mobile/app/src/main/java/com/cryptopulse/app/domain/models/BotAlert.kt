@@ -14,6 +14,7 @@ data class BotAlert(
     val targetEntryPrice: Double? = null,
     val positionSize: Double? = null,
     val entryIntent: String? = null,
+    val timeframe: String? = null,
 ) {
     fun toMap(): Map<String, Any> = buildMap {
         put("id", id)
@@ -33,6 +34,7 @@ data class BotAlert(
         targetEntryPrice?.let { put("targetEntryPrice", it) }
         positionSize?.let { put("positionSize", it) }
         entryIntent?.let { put("entryIntent", it) }
+        timeframe?.let { put("timeframe", it) }
         put("type", "TRADE_ALERT")
         put("alertType", "TRADE_ALERT")
     }
@@ -52,6 +54,7 @@ data class BotAlert(
             targetEntryPrice = (map["targetEntryPrice"] as? Number)?.toDouble(),
             positionSize = (map["positionSize"] as? Number)?.toDouble(),
             entryIntent = map["entryIntent"] as? String,
+            timeframe = map["timeframe"] as? String,
         )
     }
 }

@@ -18,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.runBlocking
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -166,6 +167,11 @@ object CidDiagnosticManager {
         Log.i(TAG, "[CID] Continuous Investigation & Diagnostics initialized.")
     }
 
+    fun isUserAuthenticated(): Boolean {
+        val tm = tokenManager ?: return true
+        return tm.tokenFlow.value is TokenState.Authenticated
+    }
+
     private fun observeTokenManager(tm: TokenManager) {
         scope.launch {
             tm.tokenFlow.collect { tokenState ->
@@ -175,7 +181,7 @@ object CidDiagnosticManager {
                         val expired = isSessionExpired()
                         if (session.isNullOrEmpty() || expired || !isSessionActive.get()) {
                             Log.i(TAG, "[CID] User authenticated. Starting authorized session with remote D1...")
-                            resumeSession()
+                            startAuthorizedSession(forceRestart = true)
                         } else {
                             resumeSession()
                         }
@@ -199,7 +205,9 @@ object CidDiagnosticManager {
             this.tokenManager = tm
             observeTokenManager(tm)
         } else if (isSessionExpired() || !isSessionActive.get()) {
-            startAuthorizedSession()
+            if (isUserAuthenticated()) {
+                startAuthorizedSession()
+            }
         }
     }
 
@@ -213,7 +221,9 @@ object CidDiagnosticManager {
         isSessionActive.set(false)
         sessionState.set(SessionState.NO_SESSION)
         currentSessionId.set(null)
-        startAuthorizedSession()
+        if (isUserAuthenticated()) {
+            startAuthorizedSession()
+        }
     }
 
     /**
@@ -268,9 +278,9 @@ object CidDiagnosticManager {
         if (currentSessionId.get() != null && !isSessionExpired()) {
             sessionState.set(SessionState.ACTIVE)
             Log.i(TAG, "[CID] Session resumed.")
-        } else {
+        } else if (isUserAuthenticated()) {
             sessionState.set(SessionState.NO_SESSION)
-            startAuthorizedSession()
+            startAuthorizedSession(forceRestart = true)
         }
     }
 
@@ -288,6 +298,7 @@ object CidDiagnosticManager {
 
     fun isSessionActive(): Boolean = isSessionActive.get()
     fun getSessionId(): String? = currentSessionId.get()
+    fun nextSequenceNumber(): Long = sequenceNumber.incrementAndGet()
     fun getSessionState(): SessionState = sessionState.get()
 
     /**
@@ -298,6 +309,7 @@ object CidDiagnosticManager {
         appVersion: String = BuildConfig.VERSION_NAME,
         deviceModel: String = "${Build.MANUFACTURER} ${Build.MODEL}",
         environment: String = "demo",
+        forceRestart: Boolean = false,
         onResult: ((Boolean, String?) -> Unit)? = null
     ) {
         val service = cidService ?: this.cidService
@@ -306,10 +318,19 @@ object CidDiagnosticManager {
             onResult?.invoke(false, "CidService is null")
             return
         }
-        if (!sessionState.compareAndSet(SessionState.NO_SESSION, SessionState.SESSION_STARTING) &&
-            !sessionState.compareAndSet(SessionState.PAUSED, SessionState.SESSION_STARTING)) {
-            Log.d(TAG, "[CID] Session authorization already in progress or session active.")
+        if (!isUserAuthenticated()) {
+            Log.d(TAG, "[CID] Postponing authorized session start: user not authenticated yet.")
+            onResult?.invoke(false, "User not authenticated")
             return
+        }
+        if (!forceRestart) {
+            if (!sessionState.compareAndSet(SessionState.NO_SESSION, SessionState.SESSION_STARTING) &&
+                !sessionState.compareAndSet(SessionState.PAUSED, SessionState.SESSION_STARTING)) {
+                Log.d(TAG, "[CID] Session authorization already in progress or session active.")
+                return
+            }
+        } else {
+            sessionState.set(SessionState.SESSION_STARTING)
         }
         currentActivationJob?.cancel()
         currentActivationJob = scope.launch {
@@ -335,7 +356,13 @@ object CidDiagnosticManager {
                     }
                 }
                 val code = response.code()
-                val errorMsg = response.body()?.error ?: "HTTP $code"
+                val errorMsg = try {
+                    response.errorBody()?.string()?.takeIf { it.isNotBlank() }
+                        ?: response.body()?.error
+                        ?: "HTTP $code"
+                } catch (_: Throwable) {
+                    response.body()?.error ?: "HTTP $code"
+                }
                 Log.w(TAG, "[CID] Failed to start authorized session: $errorMsg")
                 sessionState.set(SessionState.NO_SESSION)
                 onResult?.invoke(false, errorMsg)
@@ -723,7 +750,7 @@ object CidDiagnosticManager {
                     }
                     preSessionBuffer.add(unsequencedEvent)
                 }
-                if (state == SessionState.NO_SESSION) {
+                if (state == SessionState.NO_SESSION && isUserAuthenticated()) {
                     startAuthorizedSession()
                 }
             }
@@ -755,10 +782,21 @@ object CidDiagnosticManager {
     }
 
     private fun createFallbackCidService(context: Context): CidService {
-        val okHttpClient = okhttp3.OkHttpClient.Builder().build()
+        val clientBuilder = okhttp3.OkHttpClient.Builder()
+        tokenManager?.let { tm ->
+            clientBuilder.addInterceptor { chain ->
+                val request = chain.request()
+                val token = runBlocking { tm.getToken() }
+                if (!token.isNullOrEmpty()) {
+                    chain.proceed(request.newBuilder().header("Authorization", "Bearer $token").build())
+                } else {
+                    chain.proceed(request)
+                }
+            }
+        }
         val retrofit = retrofit2.Retrofit.Builder()
             .baseUrl("https://crypto-pulse-backend.telangrocks.workers.dev/")
-            .client(okHttpClient)
+            .client(clientBuilder.build())
             .addConverterFactory(retrofit2.converter.gson.GsonConverterFactory.create())
             .build()
         return retrofit.create(CidService::class.java)

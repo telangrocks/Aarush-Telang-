@@ -381,6 +381,7 @@ open class TradeAlertManager @Inject constructor(
             val alertId = (alertData["id"] as? String) ?: (alertData["alertId"] as? String) ?: ""
 
             val strategy = (alertData["strategy"] as? String) ?: (alertData["strategyId"] as? String) ?: "ScalperV2"
+            val timeframe = alertData["timeframe"] as? String
             val positionSize = (alertData["positionSize"] as? Double) ?: 0.0
             val timestamp = (alertData["serverTimestamp"] as? String)?.toLongOrNull()
                 ?: (alertData["timestamp"] as? String)?.toLongOrNull()
@@ -395,6 +396,10 @@ open class TradeAlertManager @Inject constructor(
                 putExtra("alert_side", side)
                 putExtra("strategy", strategy)
                 putExtra("alert_strategy", strategy)
+                timeframe?.let {
+                    putExtra("timeframe", it)
+                    putExtra("alert_timeframe", it)
+                }
                 putExtra("alert_entry_price", entryPrice)
                 putExtra("entryPrice", entryPrice.toString())
                 putExtra("alert_stop_loss", stopLoss)

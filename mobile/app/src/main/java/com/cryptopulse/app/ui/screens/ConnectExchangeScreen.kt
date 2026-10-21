@@ -89,9 +89,14 @@ fun ConnectExchangeScreen(
         }
         if (shouldNavigate) {
             Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] NAVIGATING -> trade_setup")
-            val popRoute = if (isChangingApiKeys) "change_api_keys" else "connect_exchange"
-            navController.navigate("trade_setup") {
-                popUpTo(popRoute) { inclusive = true }
+            if (isChangingApiKeys) {
+                navController.navigate("trade_setup") {
+                    popUpTo("change_api_keys") { inclusive = true }
+                }
+            } else {
+                navController.navigate("trade_setup") {
+                    popUpTo("connect_exchange") { inclusive = false }
+                }
             }
         }
     }
@@ -110,7 +115,7 @@ fun ConnectExchangeScreen(
             if (navController.currentDestination?.route == "connect_exchange") {
                 Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] navigation call (existing connection): navController.navigate('trade_setup')")
                 navController.navigate("trade_setup") {
-                    popUpTo("connect_exchange") { inclusive = true }
+                    popUpTo("connect_exchange") { inclusive = false }
                 }
             }
         } else {
