@@ -11,6 +11,7 @@ export default defineConfig({
       "tests/durable-object/trading-bot.test.ts",
       "tests/durable-object/phase3-multi-symbol.test.ts",
       "tests/durable-object/phase1-safety-gates.test.ts",
+      "tests/durable-object/multi-strategy-alert-qualification.test.ts",
       "tests/stress/**/*.test.ts",
       "tests/reliability/**/*.test.ts"
     ],

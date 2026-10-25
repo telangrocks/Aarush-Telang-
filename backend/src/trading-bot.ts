@@ -1069,15 +1069,9 @@ export class TradingBot {
           let updatedAlertsOnActivate: TradeAlert[] = [];
           await this.state.storage.transaction(async (txn) => {
             const prevGen = await txn.get<number>('lock:alarmGeneration');
-            const existingAlerts = ((await txn.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
-            updatedAlertsOnActivate = existingAlerts.map((a) => {
-              const isAuto = a.source === 'AUTONOMOUS' || (typeof a.strategy === 'string' && a.strategy.endsWith('_NEW'));
-              if (isAuto && (a.status === 'pending' || a.status === 'acknowledged')) {
-                return { ...a, status: 'expired' as const };
-              }
-              return a;
-            });
             committedGen = (typeof prevGen === 'number' && Number.isInteger(prevGen) && prevGen >= 0) ? prevGen + 1 : 1;
+            const existingAlerts = ((await txn.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+            updatedAlertsOnActivate = this.expireStaleAlertsOnLifecycleTransition(existingAlerts, committedGen);
             await txn.put('lock:alarmGeneration', committedGen);
             await txn.put('isActive', true);
             await txn.put('coinId', primaryCoinId);
@@ -1187,15 +1181,9 @@ export class TradingBot {
           let updatedAlertsOnDeactivate: TradeAlert[] = [];
           await this.state.storage.transaction(async (txn) => {
             const prevGen = await txn.get<number>('lock:alarmGeneration');
-            const existingAlerts = ((await txn.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
-            updatedAlertsOnDeactivate = existingAlerts.map((a) => {
-              const isAuto = a.source === 'AUTONOMOUS' || (typeof a.strategy === 'string' && a.strategy.endsWith('_NEW'));
-              if (isAuto && (a.status === 'pending' || a.status === 'acknowledged')) {
-                return { ...a, status: 'expired' as const };
-              }
-              return a;
-            });
             committedGen = (typeof prevGen === 'number' && Number.isInteger(prevGen) && prevGen >= 0) ? prevGen + 1 : 1;
+            const existingAlerts = ((await txn.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+            updatedAlertsOnDeactivate = this.expireStaleAlertsOnLifecycleTransition(existingAlerts, committedGen);
             await txn.put('lock:alarmGeneration', committedGen);
             await txn.put('isActive', false);
             await txn.put('coinId', null);
@@ -4672,23 +4660,21 @@ export class TradingBot {
                     }
                   }
 
-                  // Actionable Signal Filter: Restrict TradeAlert generation strictly to user's committed strategy
-                  // (All evaluated strategies continue to populate radar preview in newAnalysis.strategyAnalyses above)
-                  const normalizedCommitted = committedStrat ? registry.normalizeStrategyId(committedStrat).toLowerCase() : null;
-
-                  let actionableResults = results.filter(r => {
-                    if (!r?.hasSignal || !r.metadata?.signal) return false;
-                    if (!normalizedCommitted) return true;
-                    const normalizedCand = registry.normalizeStrategyId(r.strategyId).toLowerCase();
-                    return normalizedCand === normalizedCommitted;
-                  });
-
-                  // Intra-Cycle Symbol Coalescing: If multiple timeframes of the committed strategy signal simultaneously,
-                  // coalesce to the highest confidence signal to avoid multi-timeframe alert bursts for the same symbol
-                  if (actionableResults.length > 1) {
-                    actionableResults.sort((a, b) => (b.confidenceScore || 0) - (a.confidenceScore || 0));
-                    actionableResults = [actionableResults[0]];
+                  // Independent Strategy Alert Evaluation:
+                  // All 5 strategies (ScalperV2, Momentum, Breakout, MeanReversion, VWAP) evaluate independently.
+                  // If a single strategy returns multiple timeframe evaluations in the same cycle, coalesce per-strategy
+                  // to its highest-confidence timeframe to prevent same-strategy multi-timeframe bursts.
+                  const candidatesByStrategy = new Map<string, any>();
+                  for (const r of results) {
+                    if (!r?.hasSignal || !r.metadata?.signal) continue;
+                    const normStrat = registry.normalizeStrategyId(r.strategyId).toLowerCase();
+                    const existing = candidatesByStrategy.get(normStrat);
+                    if (!existing || (r.confidenceScore || 0) > (existing.confidenceScore || 0)) {
+                      candidatesByStrategy.set(normStrat, r);
+                    }
                   }
+
+                  const actionableResults = Array.from(candidatesByStrategy.values());
 
                   for (const result of actionableResults) {
                     if (result?.hasSignal && result.metadata?.signal) {
@@ -5272,6 +5258,56 @@ export class TradingBot {
     } catch (e) {
       console.error('Open positions monitoring error:', e);
     }
+  }
+
+  private expireStaleAlertsOnLifecycleTransition(alerts: TradeAlert[], committedGen: number): TradeAlert[] {
+    const isIntentUnresolved = (intent: any): boolean => {
+      if (!intent) return false;
+      return ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status);
+    };
+
+    const hasUnresolvedIntent = (alertId: string): boolean => {
+      if (!alertId) return false;
+      const direct = this.runtimeState.activeIntents?.get(alertId);
+      if (isIntentUnresolved(direct)) return true;
+      if (this.runtimeState.activeIntents) {
+        for (const intent of this.runtimeState.activeIntents.values()) {
+          if (intent && (intent.intentId === alertId || intent.payloadSnapshot?.alertId === alertId) && isIntentUnresolved(intent)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    const now = Date.now();
+    return alerts.map((a) => {
+      if (a.status !== 'pending' && a.status !== 'acknowledged') {
+        return a;
+      }
+      if (hasUnresolvedIntent(a.id)) {
+        return a;
+      }
+
+      const isAutonomous =
+        a.source === 'AUTONOMOUS' ||
+        (typeof a.strategy === 'string' && a.strategy.endsWith('_NEW')) ||
+        typeof a.generation === 'number';
+
+      if (isAutonomous) {
+        if (typeof a.generation !== 'number' || a.generation < committedGen) {
+          return { ...a, status: 'expired' as const };
+        }
+      }
+
+      const alertTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const isStale = isNaN(alertTime) || alertTime === 0 || (now - alertTime > 300_000);
+      if (isStale) {
+        return { ...a, status: 'expired' as const };
+      }
+
+      return a;
+    });
   }
 
   private pruneAlerts(alerts: TradeAlert[]): TradeAlert[] {
