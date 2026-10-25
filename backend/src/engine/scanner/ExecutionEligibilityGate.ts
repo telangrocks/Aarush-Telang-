@@ -65,9 +65,22 @@ export class ExecutionEligibilityGate {
       };
     }
 
+    if (!params.qtyStep || !Number.isFinite(params.qtyStep) || params.qtyStep <= 0) {
+      return {
+        isExecutable: false,
+        rawQty: 0,
+        quantizedQty: 0,
+        postRoundingNotional: 0,
+        minNotional: params.minNotional || 5,
+        minOrderQty: params.minOrderQty || 0,
+        qtyStep: params.qtyStep || 0,
+        rejectionReason: 'Invalid exchange quantity step size (must be positive and finite)',
+      };
+    }
+
     const minNotional = params.minNotional > 0 ? params.minNotional : 5.0;
     const minOrderQty = params.minOrderQty > 0 ? params.minOrderQty : 0.00001;
-    const qtyStep = params.qtyStep > 0 ? params.qtyStep : 0.00001;
+    const qtyStep = params.qtyStep;
 
     const tradeAmountBN = new BigNumber(tradeAmount);
     const priceBN = new BigNumber(price);
@@ -122,6 +135,9 @@ export class ExecutionEligibilityGate {
 
     // Check postRoundingNotional >= minNotional
     if (postRoundingNotionalBN.isLessThan(minNotionalBN)) {
+      const postRoundingDisplay = postRoundingNotional.toFixed(2) === minNotional.toFixed(2) && postRoundingNotional < minNotional
+        ? postRoundingNotional.toFixed(4)
+        : postRoundingNotional.toFixed(2);
       return {
         isExecutable: false,
         rawQty,
@@ -130,7 +146,7 @@ export class ExecutionEligibilityGate {
         minNotional,
         minOrderQty,
         qtyStep,
-        rejectionReason: `Post-rounding notional ($${postRoundingNotional.toFixed(2)} USDT) < minNotional ($${minNotional.toFixed(2)} USDT)`,
+        rejectionReason: `Post-rounding notional ($${postRoundingDisplay} USDT) < minNotional ($${minNotional.toFixed(2)} USDT)`,
       };
     }
 

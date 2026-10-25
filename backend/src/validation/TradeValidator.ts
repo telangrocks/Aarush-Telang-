@@ -191,7 +191,7 @@ export class TradeValidator {
       return {
         isValid: false,
         errorCode: ValidationErrorReason.MIN_NOTIONAL_FAILED,
-        errorMessage: `Order value ($${postRoundingNotionalBN.toFixed(2)} USDT) is below exchange minimum notional requirement of $${minNotionalBN.toFixed(2)} USDT.`,
+        errorMessage: `Order value ($${postRoundingNotionalBN.toFixed(4)} USDT) is below exchange minimum notional requirement of $${minNotionalBN.toFixed(2)} USDT.`,
         quantizedQuantity: roundedQtyBN.toNumber(),
         postRoundingNotional: postRoundingNotionalBN.toNumber(),
         metrics: { durationMs: performance.now() - startTime, stepReached: 7 },

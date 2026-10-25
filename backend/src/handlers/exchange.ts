@@ -821,7 +821,7 @@ export function mapScanResultToCandidates(scanResult: any): any[] {
       priceChangePercent24h: cleanPct,
       minNotional: opp.marketQuality?.minNotionalUsdt ?? 5,
       minOrderQty: opp.marketQuality?.minOrderQty ?? 0.001,
-      qtyStep: opp.marketQuality?.minOrderQty ?? 0.001,
+      qtyStep: typeof opp.marketQuality?.qtyStep === 'number' && opp.marketQuality.qtyStep > 0 ? opp.marketQuality.qtyStep : null,
       tickSize: opp.marketQuality?.tickSize ?? 0.01,
       minPrice: null,
       maxPrice: null,
