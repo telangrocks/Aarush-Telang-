@@ -144,16 +144,77 @@ export class ReconciliationEngine {
         return intent;
       }
 
+      // If previous fill exists, an order cannot be "not found"
+      if (previousExecutedQty > 0) {
+        intent.status = 'PARTIALLY_FILLED';
+        return intent;
+      }
+
       // 3. Not Found (Exhaustive)
       const elapsedMs = currentTimeMs - intent.createdAt;
       
       if (elapsedMs >= this.RECON_WINDOW_MS && intent.reconciliationAttemptCount >= this.MAX_ATTEMPTS) {
-        intent.status = 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION';
+        // Mandatory affirmative exchange evidence verification before declaring terminal release:
+        // 1. Position on exchange MUST be verified flat (size == 0)
+        // 2. No executable open orders exist on exchange for this symbol
+        let isPositionFlat = false;
+        let hasNoOpenOrders = false;
+
+        try {
+          if (typeof (adapter as any).fetchPositions === 'function') {
+            const positions = await (adapter as any).fetchPositions(intent.payloadSnapshot?.category || 'linear');
+            const { canonicalSymbol } = typeof (adapter as any).normalizeSymbol === 'function'
+              ? (adapter as any).normalizeSymbol(intent.symbol)
+              : { canonicalSymbol: intent.symbol };
+            const normIntentSym = intent.symbol.replace(/[\/_-]/g, '').toUpperCase();
+            const matchedPos = positions?.find((p: any) => {
+              const normP = p.symbol ? p.symbol.replace(/[\/_-]/g, '').toUpperCase() : '';
+              return normP === normIntentSym || p.symbol === canonicalSymbol || p.symbol === intent.symbol;
+            });
+
+            if (!matchedPos) {
+              isPositionFlat = true;
+            } else {
+              const posSize = typeof matchedPos.size?.toNumber === 'function'
+                ? matchedPos.size.toNumber()
+                : Math.abs(Number(matchedPos.size || matchedPos.quantity || 0));
+              isPositionFlat = posSize === 0;
+            }
+          } else {
+            isPositionFlat = false; // Cannot verify -> fail closed
+          }
+
+          if (typeof (adapter as any).fetchOpenOrders === 'function') {
+            const openOrders = await (adapter as any).fetchOpenOrders(intent.symbol);
+            const normIntentSym = intent.symbol.replace(/[\/_-]/g, '').toUpperCase();
+            const matchingOpen = openOrders?.find((o: any) =>
+              o.clientOrderId === intent.intentId ||
+              (o.symbol && o.symbol.replace(/[\/_-]/g, '').toUpperCase() === normIntentSym)
+            );
+            hasNoOpenOrders = !matchingOpen;
+          } else {
+            hasNoOpenOrders = true; // safeFetchOrder already checked open orders
+          }
+
+          if (isPositionFlat && hasNoOpenOrders) {
+            intent.status = 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION';
+            (intent as any).flatnessAffirmativelyVerified = true;
+          } else {
+            console.warn(`[RECONCILIATION] Retaining protection on ${intent.symbol}: affirmative flatness not proven (flat=${isPositionFlat}, noOpenOrders=${hasNoOpenOrders})`);
+            intent.status = isPositionFlat ? 'UNKNOWN' : 'PARTIALLY_FILLED';
+          }
+        } catch (evidenceErr: any) {
+          console.warn(`[RECONCILIATION] Evidence query failed for ${intent.symbol}, failing closed:`, evidenceErr?.message || evidenceErr);
+          intent.status = 'UNKNOWN';
+        }
       } else {
         intent.status = previousStatus === 'RECONCILIATION_PENDING' || previousStatus === 'UNKNOWN' ? 'UNKNOWN' : previousStatus;
       }
 
     } catch (err: any) {
+      if (err instanceof UnifiedError && err.code === 'EXCHANGE_NOT_REACHABLE') {
+        intent.reconciliationAttemptCount = Math.max(0, (intent.reconciliationAttemptCount || 1) - 1);
+      }
       console.warn(`[RECONCILIATION] Exchange error for intent ${intent.intentId}:`, err.message);
       intent.status = previousStatus === 'RECONCILIATION_PENDING' || previousStatus === 'UNKNOWN' ? 'UNKNOWN' : previousStatus;
     }
@@ -161,11 +222,60 @@ export class ReconciliationEngine {
     return intent;
   }
 
+  private static isConnectivityError(err: any): boolean {
+    if (!err) return false;
+    if (err instanceof UnifiedError && (err.code === 'EXCHANGE_NOT_REACHABLE' || err.code === 'EXCHANGE_TIMEOUT' || err.code === 'NETWORK_ERROR')) {
+      return true;
+    }
+    const msg = String(err.message || '').toLowerCase();
+    const code = String(err.code || '').toUpperCase();
+    return (
+      code === 'EXCHANGE_NOT_REACHABLE' ||
+      code === 'EXCHANGE_TIMEOUT' ||
+      code === 'NETWORK_ERROR' ||
+      code === 'ECONNRESET' ||
+      code === 'ECONNREFUSED' ||
+      code === 'ETIMEDOUT' ||
+      msg.includes('exchange_not_reachable') ||
+      msg.includes('network') ||
+      msg.includes('timeout') ||
+      msg.includes('timed out') ||
+      msg.includes('fetch failed') ||
+      msg.includes('econnreset') ||
+      msg.includes('econnrefused') ||
+      msg.includes('socket hang up')
+    );
+  }
+
+  private static isOrderNotFoundError(err: any): boolean {
+    if (!err) return false;
+    if (err instanceof UnifiedError && err.code === 'ORDER_NOT_FOUND') {
+      return true;
+    }
+    const msg = String(err.message || '').toLowerCase();
+    const code = String(err.code || '').toUpperCase();
+    return (
+      code === 'ORDER_NOT_FOUND' ||
+      err.httpStatus === 404 ||
+      msg.includes('order not found') ||
+      msg.includes('not found') ||
+      msg.includes('does not exist') ||
+      msg.includes('order not exists') ||
+      msg.includes('too late to cancel')
+    );
+  }
+
   private static async safeFetchOrder(adapter: IExchangeProvider, intentId: string, symbol: string): Promise<any> {
     try {
+      if (typeof adapter.fetchOrder !== 'function') {
+        return null;
+      }
       return await adapter.fetchOrder({ clientOrderId: intentId, symbol });
     } catch (err: any) {
-      if (err instanceof UnifiedError && (err.code === 'EXCHANGE_NOT_REACHABLE' || err.code === 'ORDER_NOT_FOUND' || err.message.includes('not found') || err.message.toLowerCase().includes('does not exist'))) {
+      if (this.isConnectivityError(err)) {
+        throw err;
+      }
+      if (this.isOrderNotFoundError(err)) {
         return null;
       }
       throw err;
@@ -174,10 +284,16 @@ export class ReconciliationEngine {
 
   private static async safeFetchHistory(adapter: IExchangeProvider, intentId: string, symbol: string): Promise<any> {
     try {
-       const closed = await adapter.fetchClosedOrders(symbol);
-       return closed.find((o: any) => o.clientOrderId === intentId) || null;
+      if (typeof adapter.fetchClosedOrders !== 'function') {
+        return null;
+      }
+      const closed = await adapter.fetchClosedOrders(symbol);
+      return closed?.find((o: any) => o.clientOrderId === intentId) || null;
     } catch (err: any) {
-      if (err instanceof UnifiedError && (err.code === 'EXCHANGE_NOT_REACHABLE' || err.code === 'ORDER_NOT_FOUND' || err.message.includes('not found'))) {
+      if (this.isConnectivityError(err)) {
+        throw err;
+      }
+      if (this.isOrderNotFoundError(err)) {
         return null;
       }
       throw err;

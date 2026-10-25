@@ -659,4 +659,361 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
     // No longer blocked with 409!
     expect(resAfterClose.status).not.toBe(409);
   });
+
+  // --------------------------------------------------------------------------
+  // Test 7 (R-1): Connectivity error during reconciliation does not increment missing attempts or release ticker
+  // --------------------------------------------------------------------------
+  it("Test 7 (R-1): Connectivity errors (EXCHANGE_NOT_REACHABLE) during reconciliation retain UNKNOWN status without releasing ticker", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+
+    mockStorage.set("isActive", true);
+    mockStorage.set("userId", "user-dup-test");
+    mockStorage.set("lock:alarmGeneration", 1);
+
+    const nowIso = new Date().toISOString();
+    // Pre-existing post-dispatch intent in UNKNOWN state from 20 minutes ago
+    const oldTimestamp = Date.now() - 20 * 60 * 1000;
+    mockStorage.set("intent:order:alert-btc-unreachable", {
+      intentId: "alert-btc-unreachable",
+      symbol: "BTC/USDT",
+      side: "buy",
+      orderType: "limit",
+      qty: "0.002",
+      price: "50000",
+      status: "UNKNOWN",
+      exchangeName: "bybit",
+      createdAt: oldTimestamp,
+      reconciliationAttemptCount: 3, // Already 3 attempts
+      dispatchedAt: oldTimestamp + 100,
+    });
+
+    // Exchange adapter throws connectivity error UnifiedError(EXCHANGE_NOT_REACHABLE)
+    const { UnifiedError } = await import("../../src/exchanges/models/UnifiedError");
+    mockAdapterInstance.fetchOrder = vi.fn().mockRejectedValue(new UnifiedError("Exchange unreachable", "EXCHANGE_NOT_REACHABLE"));
+    mockAdapterInstance.fetchClosedOrders = vi.fn().mockRejectedValue(new UnifiedError("Exchange unreachable", "EXCHANGE_NOT_REACHABLE"));
+
+    // Trigger reconciliation via /execution-status
+    const reqStatus = new Request("http://bot/execution-status?positionId=alert-btc-unreachable");
+    const resStatus = await bot.fetch(reqStatus);
+    expect(resStatus.status).toBe(200);
+
+    // Intent must NOT have transitioned to ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION
+    const walIntent = mockStorage.get("intent:order:alert-btc-unreachable");
+    expect(walIntent).toBeDefined();
+    expect(walIntent.status).toBe("UNKNOWN");
+    // Attempt count must NOT have incremented on connectivity error
+    expect(walIntent.reconciliationAttemptCount).toBe(3);
+
+    // Competing execution attempt on BTC/USDT must still be blocked with 423
+    mockStorage.set("alerts", [
+      {
+        id: "alert-btc-competing-unreachable",
+        symbol: "BTC/USDT",
+        strategy: "Momentum_NEW",
+        side: "BUY",
+        status: "pending",
+        timeframe: "15m",
+        generation: 1,
+        source: "AUTONOMOUS",
+        positionSize: 100,
+        signalPrice: 50000,
+        targetEntryPrice: 50000,
+        timestamp: nowIso,
+      }
+    ]);
+
+    const reqComp = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alertId: "alert-btc-competing-unreachable" })
+    });
+
+    const resComp = await bot.fetch(reqComp);
+    expect(resComp.status).toBe(423);
+  });
+
+  // --------------------------------------------------------------------------
+  // Test 8 (R-1): 4 missing lookups with non-zero exchange position does not release ticker
+  // --------------------------------------------------------------------------
+  it("Test 8 (R-1): Missing order lookups when exchange position exposure is non-zero fails closed and retains ticker lock", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+
+    mockStorage.set("isActive", true);
+    mockStorage.set("userId", "user-dup-test");
+    mockStorage.set("lock:alarmGeneration", 1);
+
+    const oldTimestamp = Date.now() - 20 * 60 * 1000;
+    mockStorage.set("intent:order:alert-btc-pos-active", {
+      intentId: "alert-btc-pos-active",
+      symbol: "BTC/USDT",
+      side: "buy",
+      orderType: "limit",
+      qty: "0.002",
+      price: "50000",
+      status: "UNKNOWN",
+      exchangeName: "bybit",
+      createdAt: oldTimestamp,
+      reconciliationAttemptCount: 3,
+      dispatchedAt: oldTimestamp + 100,
+    });
+
+    // Exchange order queries return 404 / order not found
+    const { UnifiedError } = await import("../../src/exchanges/models/UnifiedError");
+    mockAdapterInstance.fetchOrder = vi.fn().mockRejectedValue(new UnifiedError("Order not found", "ORDER_NOT_FOUND"));
+    mockAdapterInstance.fetchClosedOrders = vi.fn().mockResolvedValue([]);
+
+    // Exchange fetchPositions returns active position with non-zero size!
+    mockAdapterInstance.fetchPositions = vi.fn().mockResolvedValue([
+      {
+        symbol: "BTCUSDT",
+        size: new BigNumber(0.002),
+        side: "Buy",
+      }
+    ]);
+
+    const reqStatus = new Request("http://bot/execution-status?positionId=alert-btc-pos-active");
+    await bot.fetch(reqStatus);
+
+    // Intent must NOT be marked ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION
+    const walIntent = mockStorage.get("intent:order:alert-btc-pos-active");
+    expect(walIntent.status).not.toBe("ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION");
+    expect(walIntent.flatnessAffirmativelyVerified).toBeFalsy();
+
+    // Competing trade on BTC/USDT must still be rejected
+    mockStorage.set("alerts", [
+      {
+        id: "alert-btc-comp-pos",
+        symbol: "BTC/USDT",
+        strategy: "Momentum_NEW",
+        side: "BUY",
+        status: "pending",
+        timeframe: "15m",
+        generation: 1,
+        source: "AUTONOMOUS",
+        positionSize: 100,
+        signalPrice: 50000,
+        targetEntryPrice: 50000,
+        timestamp: new Date().toISOString(),
+      }
+    ]);
+
+    const reqComp = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alertId: "alert-btc-comp-pos" })
+    });
+
+    const resComp = await bot.fetch(reqComp);
+    expect(resComp.status).toBe(423);
+  });
+
+  // --------------------------------------------------------------------------
+  // Test 9 (R-1): Affirmative exchange proof of zero position and no open orders releases ticker
+  // --------------------------------------------------------------------------
+  it("Test 9 (R-1): Affirmative exchange proof of zero position and no open orders safely transitions to terminal release", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+
+    mockStorage.set("isActive", true);
+    mockStorage.set("userId", "user-dup-test");
+    mockStorage.set("lock:alarmGeneration", 1);
+
+    const oldTimestamp = Date.now() - 20 * 60 * 1000;
+    mockStorage.set("intent:order:alert-btc-flat", {
+      intentId: "alert-btc-flat",
+      symbol: "BTC/USDT",
+      side: "buy",
+      orderType: "limit",
+      qty: "0.002",
+      price: "50000",
+      status: "UNKNOWN",
+      exchangeName: "bybit",
+      createdAt: oldTimestamp,
+      reconciliationAttemptCount: 3,
+      dispatchedAt: oldTimestamp + 100,
+    });
+
+    const { UnifiedError } = await import("../../src/exchanges/models/UnifiedError");
+    mockAdapterInstance.fetchOrder = vi.fn().mockRejectedValue(new UnifiedError("Order not found", "ORDER_NOT_FOUND"));
+    mockAdapterInstance.fetchClosedOrders = vi.fn().mockResolvedValue([]);
+    mockAdapterInstance.fetchPositions = vi.fn().mockResolvedValue([]); // Flat!
+    mockAdapterInstance.fetchOpenOrders = vi.fn().mockResolvedValue([]); // No open orders!
+
+    const reqStatus = new Request("http://bot/execution-status?positionId=alert-btc-flat");
+    await bot.fetch(reqStatus);
+
+    const walIntent = mockStorage.get("intent:order:alert-btc-flat");
+    expect(walIntent.status).toBe("ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION");
+    expect(walIntent.flatnessAffirmativelyVerified).toBe(true);
+
+    // Subsequent alert on BTC/USDT can now execute without 423
+    mockStorage.set("alerts", [
+      {
+        id: "alert-btc-new-opportunity",
+        symbol: "BTC/USDT",
+        strategy: "ScalperV2_NEW",
+        side: "BUY",
+        status: "pending",
+        timeframe: "5m",
+        generation: 1,
+        source: "AUTONOMOUS",
+        positionSize: 100,
+        signalPrice: 50000,
+        targetEntryPrice: 50000,
+        timestamp: new Date().toISOString(),
+      }
+    ]);
+
+    const reqNew = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alertId: "alert-btc-new-opportunity" })
+    });
+
+    const resNew = await bot.fetch(reqNew);
+    expect(resNew.status).not.toBe(423);
+  });
+
+  // --------------------------------------------------------------------------
+  // Test 10 (R-2): PARTIALLY_FILLED intent blocks competing execution on same normalized ticker
+  // --------------------------------------------------------------------------
+  it("Test 10 (R-2): PARTIALLY_FILLED intent blocks competing execution requests with HTTP 423 CONCURRENT_EXECUTION_BLOCKED", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+
+    mockStorage.set("isActive", true);
+    mockStorage.set("userId", "user-dup-test");
+    mockStorage.set("lock:alarmGeneration", 1);
+
+    // Intent in WAL is in state PARTIALLY_FILLED
+    mockStorage.set("intent:order:alert-btc-partial", {
+      intentId: "alert-btc-partial",
+      symbol: "BTC/USDT",
+      side: "buy",
+      orderType: "limit",
+      qty: "0.002",
+      price: "50000",
+      status: "PARTIALLY_FILLED",
+      actualExecutedQuantity: "0.001",
+      actualFillPrice: "50000",
+      createdAt: Date.now() - 60000,
+      dispatchedAt: Date.now() - 59000,
+    });
+
+    // Competing trade attempt on normalized ticker BTCUSDT
+    mockStorage.set("alerts", [
+      {
+        id: "alert-btc-competing-partial",
+        symbol: "BTCUSDT",
+        strategy: "Momentum_NEW",
+        side: "BUY",
+        status: "pending",
+        timeframe: "15m",
+        generation: 1,
+        source: "AUTONOMOUS",
+        positionSize: 100,
+        signalPrice: 50000,
+        targetEntryPrice: 50000,
+        timestamp: new Date().toISOString(),
+      }
+    ]);
+
+    const reqComp = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alertId: "alert-btc-competing-partial" })
+    });
+
+    const resComp = await bot.fetch(reqComp);
+    expect(resComp.status).toBe(423);
+    const bodyComp = await resComp.json<any>();
+    expect(bodyComp.code).toBe("CONCURRENT_EXECUTION_BLOCKED");
+    expect(bodyComp.error).toContain("alert-btc-partial");
+    expect(bodyComp.error).toContain("PARTIALLY_FILLED");
+  });
+
+  // --------------------------------------------------------------------------
+  // Test 11 (R-2): Asynchronous reconciliation durably synchronizes DO activePositions
+  // --------------------------------------------------------------------------
+  it("Test 11 (R-2): Asynchronous reconciliation of timeout order to PARTIALLY_FILLED durably populates DO activePositions", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+
+    mockStorage.set("isActive", true);
+    mockStorage.set("userId", "user-dup-test");
+    mockStorage.set("lock:alarmGeneration", 1);
+    mockStorage.set("activePositions", []); // Initially empty in DO storage!
+
+    // Intent in UNKNOWN state from timeout
+    mockStorage.set("intent:order:alert-btc-sync", {
+      intentId: "alert-btc-sync",
+      symbol: "BTC/USDT",
+      side: "buy",
+      orderType: "limit",
+      qty: "0.002",
+      price: "50000",
+      status: "UNKNOWN",
+      exchangeName: "bybit",
+      createdAt: Date.now() - 10000,
+      dispatchedAt: Date.now() - 9000,
+      reconciliationAttemptCount: 0,
+      payloadSnapshot: {
+        symbol: "BTC/USDT",
+        side: "BUY",
+        orderType: "LIMIT",
+        price: 50000,
+        qty: 0.002,
+        strategy: "ScalperV2_NEW"
+      }
+    });
+
+    // Exchange reports partially filled order
+    mockAdapterInstance.fetchOrder = vi.fn().mockResolvedValue({
+      id: "ord-bybit-partial-123",
+      status: "partially_filled",
+      filled: new BigNumber(0.001),
+      amount: new BigNumber(0.002),
+      average: new BigNumber(50000.0),
+      price: new BigNumber(50000.0),
+    });
+
+    // Run reconciliation via execution status
+    const reqStatus = new Request("http://bot/execution-status?positionId=alert-btc-sync");
+    await bot.fetch(reqStatus);
+
+    // Verify DO storage activePositions is durably synchronized!
+    const activePositions = mockStorage.get("activePositions");
+    expect(activePositions).toBeDefined();
+    expect(activePositions.length).toBe(1);
+    expect(activePositions[0].id).toBe("alert-btc-sync");
+    expect(activePositions[0].symbol).toBe("BTC/USDT");
+    expect(activePositions[0].entryStatus).toBe("PARTIALLY_FILLED");
+    expect(activePositions[0].status).toBe("OPEN");
+    expect(activePositions[0].filledQuantity).toBe(0.001);
+
+    // Even if WAL intent is cleared or different alert arrives, DO activePositions check blocks competing order with 409
+    mockStorage.set("alerts", [
+      {
+        id: "alert-btc-comp-synced",
+        symbol: "BTC/USDT",
+        strategy: "Momentum_NEW",
+        side: "BUY",
+        status: "pending",
+        timeframe: "15m",
+        generation: 1,
+        source: "AUTONOMOUS",
+        positionSize: 100,
+        signalPrice: 50000,
+        targetEntryPrice: 50000,
+        timestamp: new Date().toISOString(),
+      }
+    ]);
+
+    const reqComp = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alertId: "alert-btc-comp-synced" })
+    });
+
+    const resComp = await bot.fetch(reqComp);
+    // Blocked by either 409 SYMBOL_POSITION_CONFLICT or 423
+    expect([409, 423]).toContain(resComp.status);
+  });
 });

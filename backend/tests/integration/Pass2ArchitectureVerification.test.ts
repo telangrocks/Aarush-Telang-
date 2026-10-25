@@ -311,10 +311,45 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
   });
 
   // =========================================================================
-  // Test 2: Deduplication Independence Across Timeframes
+  // Test 2: Single-Normalized-Ticker Active Alert Gate & Multi-Symbol Independence
   // =========================================================================
-  it('2. Deduplication keys on (symbol, strategy, timeframe): 5m and 15m alerts do not collide', async () => {
+  it('2. Single active alert gate suppresses same-ticker candidate across timeframes while distinct symbol qualifies', async () => {
     const bot = new TradingBot(mockState, mockEnv);
+
+    // Mock fetchMarket to support both BTC/USDT and ETH/USDT
+    const provider = await ExchangeManager.getProvider('bybit');
+    vi.spyOn(provider, 'fetchMarket').mockImplementation(async (sym: string) => {
+      if (sym.includes('ETH')) {
+        return {
+          id: 'ETHUSDT',
+          symbol: 'ETH/USDT',
+          base: 'ETH',
+          quote: 'USDT',
+          category: 'linear',
+          contractType: 'LinearPerpetual',
+          precision: { price: 0.01, amount: 0.01 },
+          limits: {
+            price: { min: new BigNumber(0.01), max: new BigNumber(100000) },
+            amount: { min: new BigNumber(0.01), max: new BigNumber(1000) },
+            cost: { min: new BigNumber(5) },
+          },
+        };
+      }
+      return {
+        id: 'BTCUSDT',
+        symbol: 'BTC/USDT',
+        base: 'BTC',
+        quote: 'USDT',
+        category: 'linear',
+        contractType: 'LinearPerpetual',
+        precision: { price: 0.1, amount: 0.001 },
+        limits: {
+          price: { min: new BigNumber(0.1), max: new BigNumber(1000000) },
+          amount: { min: new BigNumber(0.001), max: new BigNumber(100) },
+          cost: { min: new BigNumber(5) },
+        },
+      };
+    });
 
     // Seed existing active 5m alert
     const existing5mAlert = {
@@ -337,57 +372,86 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     mockStorage.set('userId', 'user-test-dedup');
     mockStorage.set('strategy', 'scalper-v2');
     mockStorage.set('positionSize', 100);
-    mockStorage.set('monitoredSymbols', ['BTC/USDT']);
+    mockStorage.set('monitoredSymbols', ['BTC/USDT', 'ETH/USDT']);
     mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('alerts', [existing5mAlert]);
 
-    // Mock executeCycle to emit both 5m and 15m BUY signals
+    // Mock executeCycle:
+    // - For BTC/USDT: emit both 5m and 15m signals (both suppressed by single active alert gate)
+    // - For ETH/USDT: emit 15m signal (qualifies independently and generates an alert)
     const { StrategyOrchestrator: MockOrchestrator } = await import('../../src/engine/orchestrator/StrategyOrchestrator');
-    vi.spyOn(MockOrchestrator.prototype, 'executeCycle').mockResolvedValue([
-      {
-        strategyId: 'scalper-v2',
-        confidenceScore: 85,
-        hasSignal: true,
-        metadata: {
-          targetTimeframe: '5m',
-          signal: {
-            type: 'BUY',
-            signalPrice: 50000,
-            stopLoss: 49000,
-            takeProfit: 52000,
-            timeframe: '5m',
-            riskAssessment: { positionSizeRecommendation: 100 },
+    vi.spyOn(MockOrchestrator.prototype, 'executeCycle').mockImplementation(async (symbol: string) => {
+      if (symbol === 'BTC/USDT') {
+        return [
+          {
+            strategyId: 'scalper-v2',
+            confidenceScore: 85,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '5m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 50000,
+                stopLoss: 49000,
+                takeProfit: 52000,
+                timeframe: '5m',
+                riskAssessment: { positionSizeRecommendation: 100 },
+              },
+            },
           },
-        },
-      },
-      {
-        strategyId: 'scalper-v2',
-        confidenceScore: 90,
-        hasSignal: true,
-        metadata: {
-          targetTimeframe: '15m',
-          signal: {
-            type: 'BUY',
-            signalPrice: 50200,
-            stopLoss: 49200,
-            takeProfit: 52500,
-            timeframe: '15m',
-            riskAssessment: { positionSizeRecommendation: 100 },
+          {
+            strategyId: 'scalper-v2',
+            confidenceScore: 90,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '15m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 50200,
+                stopLoss: 49200,
+                takeProfit: 52500,
+                timeframe: '15m',
+                riskAssessment: { positionSizeRecommendation: 100 },
+              },
+            },
           },
-        },
-      },
-    ]);
+        ];
+      }
+      if (symbol === 'ETH/USDT') {
+        return [
+          {
+            strategyId: 'scalper-v2',
+            confidenceScore: 92,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '15m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 3000,
+                stopLoss: 2900,
+                takeProfit: 3200,
+                timeframe: '15m',
+                riskAssessment: { positionSizeRecommendation: 100 },
+              },
+            },
+          },
+        ];
+      }
+      return [];
+    });
 
     await bot.alarm();
 
     const alerts = mockStorage.get('alerts');
     expect(alerts).toBeDefined();
-    // 5m signal was deduplicated against existing-btc-5m-alert, but 15m signal generated a new alert!
+    // 5m and 15m BTC signals were suppressed against existing-btc-5m-alert,
+    // but independent ticker ETH/USDT generated a new alert!
     expect(alerts.length).toBe(2);
     expect(alerts[0].id).toBe('existing-btc-5m-alert');
+    expect(alerts[0].symbol).toBe('BTC/USDT');
     expect(alerts[0].timeframe).toBe('5m');
 
-    expect(alerts[1].symbol).toBe('BTC/USDT');
+    expect(alerts[1].symbol).toBe('ETH/USDT');
     expect(alerts[1].timeframe).toBe('15m');
     expect(alerts[1].status).toBe('pending');
   });

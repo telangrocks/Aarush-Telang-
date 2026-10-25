@@ -793,7 +793,7 @@ export class TradingBot {
     const cleanId = intentId.startsWith('intent:order:') ? intentId.slice('intent:order:'.length) : intentId;
     const key = 'intent:order:' + cleanId;
     let committed: any = nextIntent;
-    await this.state.storage.transaction(async (txn) => {
+    const runInTxn = async (txn: any) => {
       const existing = ((await txn.get(key)) ?? this.runtimeState.activeIntents.get(cleanId) ?? this.runtimeState.activeIntents.get(key)) as any;
       if (!existing) {
         committed = { ...nextIntent, intentId: nextIntent.intentId || cleanId };
@@ -830,7 +830,13 @@ export class TradingBot {
         };
       }
       await txn.put(key, committed);
-    });
+    };
+
+    if (typeof (this.state.storage as any).transaction === 'function') {
+      await (this.state.storage as any).transaction(runInTxn);
+    } else {
+      await runInTxn(this.state.storage);
+    }
     this.runtimeState.activeIntents.set(cleanId, committed);
     await this.state.storage.put(key, committed);
     return committed;
@@ -888,6 +894,19 @@ export class TradingBot {
     await this.state.storage.delete('lock:unprotectedExposure');
   }
 
+  public async syncPositionToActivePositions(positionData: any): Promise<void> {
+    if (!positionData || !positionData.id) return;
+    const currentActive: any[] = [...(this.runtimeState.activePositions || [])];
+    const existingIndex = currentActive.findIndex((p: any) => p && p.id === positionData.id);
+    if (existingIndex >= 0) {
+      currentActive[existingIndex] = { ...currentActive[existingIndex], ...positionData };
+    } else {
+      currentActive.push(positionData);
+    }
+    this.runtimeState.activePositions = currentActive;
+    await this.persistState('activePositions', currentActive);
+  }
+
   public normalizeSymbol(s: string | undefined | null): string {
     if (!s) return '';
     return s.replace(/[\/_-]/g, '').toUpperCase().trim();
@@ -922,7 +941,10 @@ export class TradingBot {
     }
     for (const val of this.runtimeState.activeIntents.values()) {
       const intent = val as any;
-      if (['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)) {
+      const isUnresolvedIntent =
+        ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent.status) ||
+        (intent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent.flatnessAffirmativelyVerified);
+      if (isUnresolvedIntent) {
         totalExposure += this.getIntentNotional(intent);
       }
     }
@@ -1436,7 +1458,7 @@ export class TradingBot {
 
               if (intentObj) {
                 await ReconciliationEngine.reconcile(provider, intentObj, Date.now());
-                await this.state.storage.put(`intent:order:${positionId}`, intentObj);
+                await this.persistIntentSnapshot(positionId, intentObj);
 
                 if (intentObj.status === 'FILLED' || intentObj.status === 'PARTIALLY_FILLED') {
                   const avgPrice = parseFloat(intentObj.actualFillPrice || '0');
@@ -1453,12 +1475,46 @@ export class TradingBot {
                     `SELECT id, user_id, symbol, side, entry_price, target_entry_price, average_fill_price, quantity, filled_quantity, stop_loss, take_profit, status, entry_status, exchange, environment, strategy, order_id, entry_exchange_order_id, order_type, limit_price, entry_submitted_at, entry_at, created_at, updated_at
                      FROM trade_positions WHERE id = ? AND user_id = ?`
                   ).bind(positionId, userId).first<any>();
-                } else if (intentObj.status === 'FAILED' || intentObj.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION') {
+
+                  // R-2: Durably synchronize activePositions in DO runtime state and storage
+                  await this.syncPositionToActivePositions({
+                    id: positionId,
+                    alertId: positionId,
+                    userId,
+                    symbol: dbPos?.symbol || intentObj.symbol,
+                    side: dbPos?.side || intentObj.side,
+                    entryPrice: dbPos?.entry_price || (intentObj.price ? parseFloat(intentObj.price) : 0),
+                    targetEntryPrice: dbPos?.target_entry_price || dbPos?.entry_price || (intentObj.price ? parseFloat(intentObj.price) : 0),
+                    averageFillPrice: avgPrice > 0 ? avgPrice : (dbPos?.average_fill_price || null),
+                    quantity: dbPos?.quantity || (intentObj.qty ? parseFloat(intentObj.qty) : 0),
+                    filledQuantity: filledQty,
+                    stopLoss: dbPos?.stop_loss || (intentObj.requestedStopLoss ? parseFloat(intentObj.requestedStopLoss) : null),
+                    takeProfit: dbPos?.take_profit || (intentObj.requestedTakeProfit ? parseFloat(intentObj.requestedTakeProfit) : null),
+                    status: 'OPEN',
+                    entryStatus: intentObj.status,
+                    strategy: dbPos?.strategy || intentObj.payloadSnapshot?.strategy || 'manual',
+                    exchange: dbPos?.exchange || intentObj.exchangeName || 'bybit',
+                    environment: dbPos?.environment || intentObj.environment || 'mainnet',
+                    orderId: dbPos?.order_id || intentObj.actualOrderId,
+                    enteredAt: dbPos?.entry_at || now,
+                  });
+                } else if (intentObj.status === 'FAILED') {
                   await this.env.DB.prepare(
                     `DELETE FROM trade_positions WHERE id = ? AND user_id = ?`
                   ).bind(positionId, userId).run();
 
                   dbPos = null;
+                } else if (intentObj.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION') {
+                  // R-1: Only delete if flatness was affirmatively verified on exchange
+                  if (intentObj.flatnessAffirmativelyVerified) {
+                    await this.env.DB.prepare(
+                      `DELETE FROM trade_positions WHERE id = ? AND user_id = ?`
+                    ).bind(positionId, userId).run();
+
+                    dbPos = null;
+                  } else {
+                    console.warn(`[trading-bot] Preserving D1 position ${positionId}: flatness was not affirmatively verified.`);
+                  }
                 }
               }
             }
@@ -1501,6 +1557,9 @@ export class TradingBot {
                 ).bind(positionId, userId).run();
 
                 dbPos = null;
+                const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p && p.id !== positionId);
+                this.runtimeState.activePositions = updatedActive;
+                await this.persistState('activePositions', updatedActive);
               }
             }
           } catch (posReconErr: any) {
@@ -1823,10 +1882,14 @@ export class TradingBot {
             }
 
             for (const intent of intentsToCheck) {
+              const isUnresolvedIntent =
+                ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent.status) ||
+                (intent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent.flatnessAffirmativelyVerified);
+
               if (
                 intent.intentId !== target.id &&
                 this.normalizeSymbol(intent.symbol) === normalizedOrderSymbol &&
-                ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)
+                isUnresolvedIntent
               ) {
                 preReservationConflict = {
                   status: 423,
@@ -1972,7 +2035,11 @@ export class TradingBot {
             const existingIntents = this.runtimeState.activeIntents;
             for (const val of existingIntents.values()) {
               const intent = val as any;
-              if (intent.intentId !== target.id && this.normalizeSymbol(intent.symbol) === normalizedOrderSymbol && ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)) {
+              const isUnresolvedIntent =
+                ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent.status) ||
+                (intent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent.flatnessAffirmativelyVerified);
+
+              if (intent.intentId !== target.id && this.normalizeSymbol(intent.symbol) === normalizedOrderSymbol && isUnresolvedIntent) {
                   console.error(`[SAFETY_GATE: LEVEL_2] Rejected concurrent entry: Intent ${intent.intentId} is unresolved (${intent.status}) for ${orderSymbol}.`);
                   await releasePreReservation('CONCURRENT_EXECUTION_BLOCKED');
                   return new Response(JSON.stringify({
@@ -2624,7 +2691,9 @@ export class TradingBot {
                       takeProfit: latestIntent.exchangeConfirmedTakeProfit,
                     };
                     activeRawOrder = rawOrder;
-                  } else if (latestIntent.status === 'FAILED' || latestIntent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION') {
+                  } else if (latestIntent.status === 'FAILED') {
+                    throw e;
+                  } else if (latestIntent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && latestIntent.flatnessAffirmativelyVerified) {
                     throw e;
                   } else {
                     await this.setUnprotectedExposureLock({
@@ -4104,7 +4173,10 @@ export class TradingBot {
     if (this.unprotectedExposureLock !== null) return true;
     for (const val of this.runtimeState.activeIntents.values()) {
       const intent = val as any;
-      if (['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent?.status)) {
+      const isUnresolved =
+        ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent?.status) ||
+        (intent?.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent?.flatnessAffirmativelyVerified);
+      if (isUnresolved) {
         return true;
       }
       const reqSL = Number(intent?.requestedStopLoss || intent?.payloadSnapshot?.requestedStopLoss || 0);
@@ -4215,7 +4287,10 @@ export class TradingBot {
             await this.persistState('activePositions', updatedActive);
             continue;
           }
-          if (['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(savedWal.status)) {
+          const isWalStillUnresolved =
+            ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(savedWal.status) ||
+            (savedWal.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !savedWal.flatnessAffirmativelyVerified);
+          if (isWalStillUnresolved) {
             continue;
           }
         }
@@ -4444,7 +4519,11 @@ export class TradingBot {
                     ? { ...intent }
                     : await ReconciliationEngine.reconcile(adapter, { ...intent }, Date.now());
 
-                  if (reconciled?.status === 'FAILED' && Number(reconciled.actualExecutedQuantity || 0) === 0) {
+                  const isCleanTermination =
+                    (reconciled?.status === 'FAILED' && Number(reconciled.actualExecutedQuantity || 0) === 0) ||
+                    (reconciled?.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && reconciled?.flatnessAffirmativelyVerified && Number(reconciled.actualExecutedQuantity || 0) === 0);
+
+                  if (isCleanTermination) {
                     await this.persistIntentSnapshot(intent.intentId, reconciled);
                     try {
                       await this.env.DB.prepare(
@@ -4616,6 +4695,32 @@ export class TradingBot {
                       ...savedIntent,
                       status: targetStatus,
                     });
+
+                    // R-2 Fix: Durably synchronize activePositions in DO runtime state and storage
+                    if (targetStatus === 'FILLED' || targetStatus === 'PARTIALLY_FILLED') {
+                      const snap = savedIntent.payloadSnapshot || {};
+                      await this.syncPositionToActivePositions({
+                        id: savedIntent.intentId,
+                        alertId: savedIntent.intentId,
+                        userId,
+                        symbol: snap.symbol || savedIntent.symbol || '',
+                        side: (snap.side || savedIntent.side || 'BUY').toUpperCase(),
+                        entryPrice: Number(snap.price || savedIntent.price || 0),
+                        targetEntryPrice: Number(snap.targetEntryPrice || snap.price || savedIntent.price || 0),
+                        averageFillPrice: savedIntent.actualFillPrice ? Number(savedIntent.actualFillPrice) : null,
+                        quantity: Number(snap.qty || savedIntent.qty || 0),
+                        filledQuantity: Number(savedIntent.actualExecutedQuantity || 0),
+                        stopLoss: Number(snap.requestedStopLoss || snap.stopLoss || savedIntent.requestedStopLoss || savedIntent.stopLoss || 0),
+                        takeProfit: Number(snap.requestedTakeProfit || snap.takeProfit || savedIntent.requestedTakeProfit || savedIntent.takeProfit || 0),
+                        status: 'OPEN',
+                        entryStatus: targetStatus,
+                        strategy: snap.strategy || (this.runtimeState.strategy as string) || 'autonomous',
+                        exchange: userKeys?.exchangeName || 'bybit',
+                        environment: userKeys?.environment || 'mainnet',
+                        orderId: savedIntent.actualOrderId || null,
+                        enteredAt: new Date(savedIntent.createdAt || Date.now()).toISOString(),
+                      });
+                    }
                   }
                 }
               }
@@ -4858,8 +4963,11 @@ export class TradingBot {
                         let hasActiveIntent = false;
                         for (const val of this.runtimeState.activeIntents.values()) {
                           const intent = val as any;
-                          if (this.normalizeSymbol(intent.symbol) === currentNorm &&
-                              ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)) {
+                          const isUnresolvedIntent =
+                            ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent.status) ||
+                            (intent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent.flatnessAffirmativelyVerified);
+
+                          if (this.normalizeSymbol(intent.symbol) === currentNorm && isUnresolvedIntent) {
                             hasActiveIntent = true;
                             console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Unresolved in-flight intent (${intent.intentId}, status: ${intent.status}) exists.`);
                             break;
@@ -5480,7 +5588,10 @@ export class TradingBot {
   private expireStaleAlertsOnLifecycleTransition(alerts: TradeAlert[], committedGen: number): TradeAlert[] {
     const isIntentUnresolved = (intent: any): boolean => {
       if (!intent) return false;
-      return ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status);
+      return (
+        ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent.status) ||
+        (intent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent.flatnessAffirmativelyVerified)
+      );
     };
 
     const hasUnresolvedIntent = (alertId: string): boolean => {
