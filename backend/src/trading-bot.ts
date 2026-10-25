@@ -18,6 +18,7 @@ import { resolveCanonicalRoutingRegion } from './utils/region';
 import { ReconciliationEngine } from './engine/reconciliation/ReconciliationEngine';
 import { FinalDispatchSafetyGate } from './engine/safety/FinalDispatchSafetyGate';
 import { BybitAdapter } from './infrastructure/exchange/adapters/BybitAdapter';
+import { ExecutionEligibilityGate } from './engine/scanner/ExecutionEligibilityGate';
 import type { EconomicIntent } from './engine/wal/WalTypes';
 import { Timeframe } from './engine/market-data/Timeframe';
 import { BackendDiagnosticSink } from './telemetry/BackendDiagnosticSink';
@@ -1792,6 +1793,121 @@ export class TradingBot {
             return new Response(JSON.stringify({ error: `Cannot execute SELL order: Strategy '${normalizedStrategyId}' does not support short positions.` }), { status: 400 });
           }
 
+          const rawSymbol = target.symbol || coinId || 'BTC/USDT';
+          const orderSymbol = rawSymbol.includes('/')
+            ? rawSymbol
+            : (rawSymbol.toUpperCase().endsWith('USDT')
+                ? `${rawSymbol.slice(0, -4)}/USDT`
+                : `${rawSymbol}/USDT`);
+          const normalizedOrderSymbol = this.normalizeSymbol(orderSymbol);
+          const clientOrderId = target.id;
+
+          // Normalized-Ticker Atomic WAL Pre-Reservation Gate (Single Active Trade/Intent Invariant)
+          let preReservationConflict: { status: number; body: any } | null = null;
+          let reservationIntent: any = null;
+
+          await this.state.storage.transaction(async (txn) => {
+            // 1. Authoritative check on active WAL intents
+            const storedIntents = typeof (txn as any).list === 'function'
+              ? await (txn as any).list({ prefix: 'intent:order:' })
+              : await this.state.storage.list({ prefix: 'intent:order:' });
+            const intentsToCheck: any[] = [];
+            if (storedIntents && storedIntents.size > 0) {
+              for (const [, intent] of storedIntents) {
+                intentsToCheck.push(intent);
+              }
+            } else if (this.runtimeState.activeIntents) {
+              for (const intent of this.runtimeState.activeIntents.values()) {
+                intentsToCheck.push(intent);
+              }
+            }
+
+            for (const intent of intentsToCheck) {
+              if (
+                intent.intentId !== target.id &&
+                this.normalizeSymbol(intent.symbol) === normalizedOrderSymbol &&
+                ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)
+              ) {
+                preReservationConflict = {
+                  status: 423,
+                  body: {
+                    success: false,
+                    code: 'CONCURRENT_EXECUTION_BLOCKED',
+                    error: `Concurrent execution blocked. Unresolved intent ${intent.intentId} in state ${intent.status} exists for ${orderSymbol}.`
+                  }
+                };
+                return;
+              }
+            }
+
+            // 2. Authoritative check on active positions
+            const persistedPositions = await txn.get<any[]>('activePositions');
+            const allPositions = persistedPositions !== undefined
+              ? persistedPositions
+              : (this.runtimeState.activePositions || []);
+            const conflictingPos = allPositions.find(
+              (p: any) =>
+                p &&
+                p.status !== 'CLOSED' &&
+                p.status !== 'CANCELLED' &&
+                this.normalizeSymbol(p.symbol) === normalizedOrderSymbol
+            );
+            if (conflictingPos) {
+              const posSide = (conflictingPos.side || '').toUpperCase();
+              preReservationConflict = {
+                status: 409,
+                body: {
+                  success: false,
+                  error: 'SYMBOL_POSITION_CONFLICT',
+                  message: `Execution blocked. An active ${posSide} position already exists on ${conflictingPos.symbol}. Bybit One-Way Mode forbids concurrent or conflicting positions on the same symbol.`
+                }
+              };
+              return;
+            }
+
+            // 3. Atomically persist initial reservation intent
+            reservationIntent = {
+              intentId: target.id,
+              version: Date.now(),
+              symbol: orderSymbol,
+              timeframe: target.timeframe,
+              side: side.toLowerCase(),
+              status: 'INTENT_PERSISTED',
+              dispatchedAt: undefined,
+              createdAt: Date.now(),
+              reconciliationAttemptCount: 0,
+              requestedStopLoss: target.stopLoss,
+              requestedTakeProfit: target.takeProfit,
+              positionSizeUsdt: target.positionSize,
+              isPreReservation: true
+            };
+
+            await txn.put(`intent:order:${target.id}`, reservationIntent);
+            this.runtimeState.activeIntents.set(target.id, reservationIntent);
+          });
+
+          if (preReservationConflict) {
+            return new Response(JSON.stringify((preReservationConflict as any).body), {
+              status: (preReservationConflict as any).status,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+
+          const releasePreReservation = async (reason: string) => {
+            if (reservationIntent && !reservationIntent.dispatchedAt) {
+              reservationIntent.status = 'FAILED';
+              reservationIntent.terminalReason = reason;
+              await this.persistIntentSnapshot(target.id, reservationIntent);
+              target.status = 'failed';
+              const currentAlerts = ((await this.state.storage.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+              const idx = currentAlerts.findIndex(a => a.id === target.id);
+              if (idx >= 0) {
+                currentAlerts[idx] = { ...currentAlerts[idx], status: 'failed' };
+                await this.persistState('alerts', this.pruneAlerts(currentAlerts));
+              }
+            }
+          };
+
             // [SAFETY GATE: STRICT SCHEMA READINESS CHECK]
             try {
               const tableInfo = await this.env.DB.prepare("PRAGMA table_info('trade_positions')").all();
@@ -1799,10 +1915,12 @@ export class TradingBot {
               const hasEntryStatus = tableInfo.results.some((r: any) => r.name === 'entry_status');
               if (!hasTargetEntryPrice || !hasEntryStatus) {
                 console.error(`[SAFETY GATE: FATAL] Database schema is incomplete. Migration 0016 or 0024 missing. Missing required columns. Execution HALTED.`);
+                await releasePreReservation('D1_SCHEMA_INCOMPLETE');
                 return new Response(JSON.stringify({ error: 'System deployment incomplete. Missing required D1 database migrations. Execution halted to prevent un-trackable exchange inventory.' }), { status: 503 });
               }
             } catch (schemaErr: any) {
               console.error(`[SAFETY GATE: FATAL] Failed to verify D1 schema readiness: ${schemaErr.message}`);
+              await releasePreReservation('D1_SCHEMA_VERIFICATION_FAILED');
               return new Response(JSON.stringify({ error: 'Failed to verify persistence readiness. Execution halted.' }), { status: 500 });
             }
 
@@ -1812,6 +1930,7 @@ export class TradingBot {
 
             const hasApiKey = Boolean(userKeys?.exchange_api_key_encrypted || userKeys?.exchange_api_key);
             if (!userKeys?.exchange_name || !hasApiKey || !userKeys?.exchange_api_secret_encrypted) {
+              await releasePreReservation('EXCHANGE_KEYS_NOT_CONFIGURED');
               return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
             }
 
@@ -1845,21 +1964,17 @@ export class TradingBot {
               password: decryptedPassphrase,
               region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
             });
-            const rawSymbol = target.symbol || coinId || 'BTC/USDT';
-            const orderSymbol = rawSymbol.includes('/') ? rawSymbol : `${rawSymbol}/USDT`;
-            const clientOrderId = target.id;
 
             console.log(`[DIAGNOSTIC] [STAGE: PENDING_ALERT_FOUND] targetAlertId=${target.id} symbol=${orderSymbol} side=${side} positionSize=${target.positionSize}`);
-
-            const normalizedOrderSymbol = this.normalizeSymbol(orderSymbol);
 
             // Phase 3: Strict Concurrency Check (Cases 5 & 6)
             // Mathematically prevents executing a new intent for a symbol if an unresolved intent already exists for it.
             const existingIntents = this.runtimeState.activeIntents;
             for (const val of existingIntents.values()) {
               const intent = val as any;
-              if (this.normalizeSymbol(intent.symbol) === normalizedOrderSymbol && ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)) {
+              if (intent.intentId !== target.id && this.normalizeSymbol(intent.symbol) === normalizedOrderSymbol && ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(intent.status)) {
                   console.error(`[SAFETY_GATE: LEVEL_2] Rejected concurrent entry: Intent ${intent.intentId} is unresolved (${intent.status}) for ${orderSymbol}.`);
+                  await releasePreReservation('CONCURRENT_EXECUTION_BLOCKED');
                   return new Response(JSON.stringify({
                     success: false,
                     error: `Concurrent execution blocked. Unresolved intent ${intent.intentId} in state ${intent.status} exists for ${orderSymbol}.`
@@ -1989,6 +2104,7 @@ export class TradingBot {
                 existingPositionSide: posSide,
                 reason: `Active ${posSide} position already exists on ${conflictingPosition.symbol}. In Bybit One-Way Mode, opposing or duplicate orders cannot be safely executed.`
               });
+              await releasePreReservation('SYMBOL_POSITION_CONFLICT');
               return new Response(JSON.stringify({
                 success: false,
                 error: 'SYMBOL_POSITION_CONFLICT',
@@ -2000,6 +2116,7 @@ export class TradingBot {
             const proposedNotional = Number(target.positionSize);
             if (!target.positionSize || typeof proposedNotional !== 'number' || isNaN(proposedNotional) || proposedNotional <= 0) {
               console.error(`[SAFETY_GATE: LEVEL_2] Rejected trade execution for ${orderSymbol}: Alert position size (${target.positionSize}) is invalid or missing.`);
+              await releasePreReservation('INVALID_ALERT_POSITION_SIZE');
               return new Response(JSON.stringify({
                 success: false,
                 error: 'INVALID_ALERT_POSITION_SIZE',
@@ -2034,18 +2151,19 @@ export class TradingBot {
             const maxPortfolioExposure = this.resolveMaxPortfolioExposure(cachedBal, this.runtimeState.strategyConfig, this.runtimeState.setupSnapshot);
 
             if (currentExposure + proposedNotional > maxPortfolioExposure) {
-              console.error(`[SAFETY_GATE: LEVEL_2] Rejected trade execution for ${orderSymbol}: Aggregate portfolio exposure ($${(currentExposure + proposedNotional).toFixed(2)}) exceeds maximum allowed ($${maxPortfolioExposure.toFixed(2)}). Current: $${currentExposure.toFixed(2)}, Proposed: $${proposedNotional.toFixed(2)}.`);
+              console.error(`[SAFETY_GATE: LEVEL_2] Rejected trade execution for ${orderSymbol}: Aggregate portfolio exposure (${(currentExposure + proposedNotional).toFixed(2)}) exceeds maximum allowed (${maxPortfolioExposure.toFixed(2)}). Current: ${currentExposure.toFixed(2)}, Proposed: ${proposedNotional.toFixed(2)}.`);
               await this.logAuditEvent(userId, 'TRADE_REJECTED_PORTFOLIO_EXPOSURE', {
                 symbol: orderSymbol,
                 currentExposure,
                 proposedNotional,
                 maxExposure: maxPortfolioExposure,
-                reason: `Aggregate portfolio exposure ($${(currentExposure + proposedNotional).toFixed(2)}) exceeds limit ($${maxPortfolioExposure.toFixed(2)}).`
+                reason: `Aggregate portfolio exposure (${(currentExposure + proposedNotional).toFixed(2)}) exceeds limit (${maxPortfolioExposure.toFixed(2)}).`
               });
+              await releasePreReservation('PORTFOLIO_EXPOSURE_EXCEEDED');
               return new Response(JSON.stringify({
                 success: false,
                 error: 'PORTFOLIO_EXPOSURE_EXCEEDED',
-                message: `Execution blocked. Aggregate portfolio exposure ($${(currentExposure + proposedNotional).toFixed(2)}) would exceed maximum allowed ($${maxPortfolioExposure.toFixed(2)}).`
+                message: `Execution blocked. Aggregate portfolio exposure (${(currentExposure + proposedNotional).toFixed(2)}) would exceed maximum allowed (${maxPortfolioExposure.toFixed(2)}).`
               }), { status: 409 });
             }
 
@@ -2262,6 +2380,7 @@ export class TradingBot {
               };
 
               const intentObj: any = {
+                ...reservationIntent,
                 intentId: executionSnapshot.clientOrderId,
                 version: Date.now(),
                 symbol: req.symbol,
@@ -2274,12 +2393,13 @@ export class TradingBot {
                 dispatchedAt: undefined,
                 requestedStopLoss: req.stopLoss,
                 requestedTakeProfit: req.takeProfit,
-                createdAt: Date.now(),
+                createdAt: reservationIntent?.createdAt || Date.now(),
                 reconciliationAttemptCount: 0,
                 payloadSnapshot: payloadSnapshotClone
               };
 
               await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+              reservationIntent = intentObj;
 
               const safeEntryIntent: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER' | 'UNKNOWN' =
                 entryIntent === 'WAIT_FOR_PRICE' || entryIntent === 'IMMEDIATE' || entryIntent === 'TRIGGER'
@@ -2310,7 +2430,7 @@ export class TradingBot {
               req.beforeOrderDispatch = async () => {
                 if (leaseInvokedByAdapter) return () => {};
                 leaseInvokedByAdapter = true;
-                return await this.acquireDispatchLease(
+                const releaseLease = await this.acquireDispatchLease(
                   target,
                   intentObj,
                   userId,
@@ -2319,6 +2439,11 @@ export class TradingBot {
                   clientOrderId,
                   isAutonomousAlert
                 );
+                if (reservationIntent) {
+                  reservationIntent.dispatchedAt = intentObj.dispatchedAt;
+                  reservationIntent.status = intentObj.status;
+                }
+                return releaseLease;
               };
 
               try {
@@ -2447,11 +2572,14 @@ export class TradingBot {
                 }
 
                 // If the error occurred before the adapter reached Fence B / network dispatch, it is a pre-dispatch failure
-                if (!intentObj.dispatchedAt) {
-                  intentObj.status = 'FAILED';
-                  intentObj.dispatchedAt = undefined;
-                  intentObj.terminalReason = e?.message || 'PRE_DISPATCH_FAILURE';
-                  await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                const isDispatched = Boolean(intentObj?.dispatchedAt || reservationIntent?.dispatchedAt);
+                if (!isDispatched) {
+                  if (reservationIntent) {
+                    reservationIntent.status = 'FAILED';
+                    reservationIntent.dispatchedAt = undefined;
+                    reservationIntent.terminalReason = e?.message || 'PRE_DISPATCH_FAILURE';
+                    await this.persistIntentSnapshot(target.id, reservationIntent);
+                  }
                   throw e;
                 }
 
@@ -2592,6 +2720,11 @@ export class TradingBot {
                 }),
                 { status: 502, headers: { 'Content-Type': 'application/json' } }
               );
+            }
+            if (reservationIntent && !reservationIntent.dispatchedAt && reservationIntent.status !== 'FAILED') {
+              reservationIntent.status = 'FAILED';
+              reservationIntent.terminalReason = e?.message || 'PRE_DISPATCH_FAILURE';
+              await this.persistIntentSnapshot(target.id, reservationIntent);
             }
             console.error(`[DIAGNOSTIC] [STAGE: ORDER_FAILED] exceptionMessage=${e.message}`);
             orderResult = {
@@ -4689,11 +4822,11 @@ export class TradingBot {
                         const targetTimeframe = (sig.timeframe || result.metadata?.targetTimeframe || '5m') as Timeframe;
                         const nowMs = Date.now();
 
-                        // Phase 1 Safety Gate (Level 1): Alert Deduplication keyed by (symbol, strategy, timeframe) for active alerts (< 5 min)
+                        // Normalized-Ticker Single Active Alert Gate:
+                        // Suppress if ANY active pending/acknowledged alert exists on this normalized ticker (< 5 min),
+                        // across ALL strategies and timeframes (ONE NORMALIZED TICKER = AT MOST ONE ACTIVE TRADE OR ALERT).
                         const existingActiveAlert = alerts.find(a =>
                           this.normalizeSymbol(a.symbol) === currentNorm &&
-                          a.strategy === alertStrategyKey &&
-                          (a.timeframe ?? '5m') === targetTimeframe &&
                           (a.status === 'pending' || a.status === 'acknowledged') &&
                           (nowMs - new Date(a.timestamp).getTime()) < 300_000
                         );
@@ -4926,6 +5059,90 @@ export class TradingBot {
                             side: sig.type as 'BUY' | 'SELL'
                           });
                           // ---------------------------------------------
+
+                          // --- AUTONOMOUS EXECUTION ELIGIBILITY EVALUATION ---
+                          let stepSize: number | undefined;
+                          let minOrderQty: number | undefined;
+                          let minNotional: number | undefined;
+
+                          if (matchedMarket) {
+                            if (typeof matchedMarket.precision?.amount === 'number' && matchedMarket.precision.amount > 0) {
+                              stepSize = matchedMarket.precision.amount;
+                            } else if (typeof matchedMarket.precision?.amount === 'string') {
+                              const parsed = parseFloat(matchedMarket.precision.amount);
+                              if (parsed > 0) stepSize = parsed;
+                            }
+
+                            if (matchedMarket.limits?.amount?.min !== undefined && matchedMarket.limits?.amount?.min !== null) {
+                              const minA = matchedMarket.limits.amount.min as any;
+                              const val = typeof minA?.toNumber === 'function' ? minA.toNumber() : (typeof minA === 'number' ? minA : parseFloat(String(minA)));
+                              if (Number.isFinite(val) && val >= 0) minOrderQty = val;
+                            }
+
+                            if (matchedMarket.limits?.cost?.min !== undefined && matchedMarket.limits?.cost?.min !== null) {
+                              const minC = matchedMarket.limits.cost.min as any;
+                              const val = typeof minC?.toNumber === 'function' ? minC.toNumber() : (typeof minC === 'number' ? minC : parseFloat(String(minC)));
+                              if (Number.isFinite(val) && val > 0) minNotional = val;
+                            }
+                          }
+
+                          if (!stepSize || stepSize <= 0) {
+                            legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'METADATA_UNAVAILABLE' };
+                            console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit qtyStep/stepSize unavailable.`);
+                            this.telemetrySink.emit({
+                              userId,
+                              category: 'SAFETY',
+                              component: 'TradingBot',
+                              eventName: 'FINAL_DISPATCH_GATE',
+                              severity: 'WARN',
+                              cycleId,
+                              symbol: currentSymbol,
+                              strategyId: result.strategyId,
+                              payload: {
+                                passed: false,
+                                gate: 'METADATA_UNAVAILABLE'
+                              }
+                            });
+                            continue;
+                          }
+
+                          const resolvedMinOrderQty = (minOrderQty !== undefined && minOrderQty > 0) ? minOrderQty : stepSize;
+                          const resolvedMinNotional = (minNotional !== undefined && minNotional > 0) ? minNotional : 5.0;
+
+                          const eligibility = ExecutionEligibilityGate.evaluate({
+                            tradeAmountUsdt: size,
+                            currentPrice: alertSignalPrice,
+                            qtyStep: stepSize,
+                            minOrderQty: resolvedMinOrderQty,
+                            minNotional: resolvedMinNotional,
+                          });
+
+                          if (!eligibility.isExecutable) {
+                            legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'EXECUTION_INELIGIBLE' };
+                            console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): ${eligibility.rejectionReason}`);
+                            this.telemetrySink.emit({
+                              userId,
+                              category: 'SAFETY',
+                              component: 'TradingBot',
+                              eventName: 'FINAL_DISPATCH_GATE',
+                              severity: 'WARN',
+                              cycleId,
+                              symbol: currentSymbol,
+                              strategyId: result.strategyId,
+                              payload: {
+                                passed: false,
+                                gate: 'EXECUTION_INELIGIBLE',
+                                budget: size,
+                                currentPrice: alertSignalPrice,
+                                qtyStep: stepSize,
+                                minOrderQty: resolvedMinOrderQty,
+                                minNotional: resolvedMinNotional,
+                                postRoundingNotional: eligibility.postRoundingNotional,
+                                rejectionReason: eligibility.rejectionReason,
+                              }
+                            });
+                            continue;
+                          }
 
                           // Autonomous alert safety check: fail closed if cycle generation was invalid at cycle start
                           if (cycleGeneration === undefined) {

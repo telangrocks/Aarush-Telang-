@@ -176,9 +176,9 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
   });
 
   // --------------------------------------------------------------------------
-  // 1. Simultaneous Qualifying Strategies
+  // 1. Single Active Alert per Normalized Ticker Gate
   // --------------------------------------------------------------------------
-  it("allows multiple qualifying strategies to independently generate alerts without committed-strategy suppression", async () => {
+  it("enforces single active alert per normalized ticker: first qualifying strategy alerts and suppresses subsequent same-ticker candidates", async () => {
     const bot = new TradingBot(mockState, mockEnv);
 
     // Set committed strategy in DO to 'scalper-v2'
@@ -189,7 +189,7 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
     mockStorage.set("monitoredSymbols", ["BTC/USDT"]);
     mockStorage.set("lock:alarmGeneration", 1);
 
-    // Return 3 qualifying strategies in the same cycle: scalper-v2, momentum, and breakout
+    // Return 3 qualifying strategies in the same cycle for BTC/USDT: scalper-v2, momentum, and breakout
     mockExecuteCycle.mockResolvedValue([
       {
         strategyId: 'scalper-v2',
@@ -209,7 +209,7 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
       },
       {
         strategyId: 'momentum',
-        confidenceScore: 92, // Higher confidence than committed strategy
+        confidenceScore: 92,
         hasSignal: true,
         metadata: {
           targetTimeframe: '15m',
@@ -245,10 +245,97 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
 
     const alerts = mockStorage.get("alerts") || [];
 
-    // All three strategies must have independently generated alerts
+    // Under single active alert per ticker invariant, only 1 alert is created for BTC/USDT;
+    // subsequent candidates are suppressed by the SAME_TIMEFRAME_ACTIVE_ALERT gate
+    expect(alerts.length).toBe(1);
     const scalperAlert = alerts.find((a: any) => a.strategy === 'scalper-v2_NEW');
-    const momentumAlert = alerts.find((a: any) => a.strategy === 'momentum_NEW');
-    const breakoutAlert = alerts.find((a: any) => a.strategy === 'breakout_NEW');
+    expect(scalperAlert).toBeDefined();
+    expect(scalperAlert.symbol).toBe("BTC/USDT");
+    expect(scalperAlert.status).toBe("pending");
+  });
+
+  it("allows multiple qualifying strategies to independently generate alerts for distinct symbols without committed-strategy suppression", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+
+    // Set committed strategy in DO to 'scalper-v2'
+    mockStorage.set("isActive", true);
+    mockStorage.set("userId", "user-multi-strat");
+    mockStorage.set("strategy", "scalper-v2");
+    mockStorage.set("positionSize", 100);
+    mockStorage.set("monitoredSymbols", ["BTC/USDT", "ETH/USDT", "XRP/USDT"]);
+    mockStorage.set("lock:alarmGeneration", 1);
+
+    mockExecuteCycle.mockImplementation((symbol: string) => {
+      if (symbol === "BTC/USDT") {
+        return Promise.resolve([
+          {
+            strategyId: 'scalper-v2',
+            confidenceScore: 85,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '5m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 50000,
+                stopLoss: 49000,
+                takeProfit: 52000,
+                timeframe: '5m',
+                riskAssessment: { positionSizeRecommendation: 100 }
+              }
+            }
+          }
+        ]);
+      } else if (symbol === "ETH/USDT") {
+        return Promise.resolve([
+          {
+            strategyId: 'momentum',
+            confidenceScore: 92,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '15m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 3000,
+                stopLoss: 2900,
+                takeProfit: 3200,
+                timeframe: '15m',
+                riskAssessment: { positionSizeRecommendation: 100 }
+              }
+            }
+          }
+        ]);
+      } else if (symbol === "XRP/USDT") {
+        return Promise.resolve([
+          {
+            strategyId: 'breakout',
+            confidenceScore: 78,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '1h',
+              signal: {
+                type: 'BUY',
+                signalPrice: 1.0,
+                stopLoss: 0.95,
+                takeProfit: 1.10,
+                timeframe: '1h',
+                riskAssessment: { positionSizeRecommendation: 100 }
+              }
+            }
+          }
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await bot.alarm();
+
+    const alerts = mockStorage.get("alerts") || [];
+
+    // All three distinct symbols independently generate alerts
+    expect(alerts.length).toBe(3);
+    const scalperAlert = alerts.find((a: any) => a.strategy === 'scalper-v2_NEW' && a.symbol === 'BTC/USDT');
+    const momentumAlert = alerts.find((a: any) => a.strategy === 'momentum_NEW' && a.symbol === 'ETH/USDT');
+    const breakoutAlert = alerts.find((a: any) => a.strategy === 'breakout_NEW' && a.symbol === 'XRP/USDT');
 
     expect(scalperAlert).toBeDefined();
     expect(momentumAlert).toBeDefined();
@@ -257,8 +344,6 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
     expect(scalperAlert.status).toBe('pending');
     expect(momentumAlert.status).toBe('pending');
     expect(breakoutAlert.status).toBe('pending');
-
-    expect(alerts.length).toBe(3);
   });
 
   // --------------------------------------------------------------------------
