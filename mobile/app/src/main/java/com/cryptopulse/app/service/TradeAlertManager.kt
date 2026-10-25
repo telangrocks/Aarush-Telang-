@@ -31,6 +31,7 @@ open class TradeAlertManager @Inject constructor(
     constructor() : this(android.content.ContextWrapper(null), TradeAlertDataStore())
     constructor(dataStore: TradeAlertDataStore, dispatcher: kotlinx.coroutines.CoroutineDispatcher) : this(android.content.ContextWrapper(null), dataStore) {
         this.scope = CoroutineScope(dispatcher)
+        restoreActiveAlert()
     }
 
     protected open val audioManager: TradeAlertAudioManager? by lazy {
@@ -47,6 +48,9 @@ open class TradeAlertManager @Inject constructor(
     private var activeAlertData: Map<String, Any>? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var hardwareTimeoutJob: Job? = null
+    private var restoreJob: Job? = null
+    @Volatile private var restoreFailed: Boolean = false
+    private val restoreBarrier = kotlinx.coroutines.CompletableDeferred<Boolean>()
     private val handledAlertsCache = ConcurrentHashMap<String, String>()
 
     companion object {
@@ -65,8 +69,9 @@ open class TradeAlertManager @Inject constructor(
         }
     }
 
-    private fun restoreActiveAlert() {
-        scope.launch {
+    protected open fun restoreActiveAlert() {
+        restoreJob?.cancel()
+        restoreJob = scope.launch {
             try {
                 val history = dataStore.getHandledAlertHistory()
                 history.forEach { (id, record) ->
@@ -78,7 +83,14 @@ open class TradeAlertManager @Inject constructor(
                     _currentState.value = TradeAlertState.USER_VIEWING_ALERT
                     TradeAlertLogger.log("ALERT_RESTORED", "Restored active alert from DataStore: ${alert["id"]}")
                 }
-            } catch (_: Throwable) {}
+                restoreFailed = false
+                restoreBarrier.complete(true)
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                TradeAlertLogger.error("ALERT_RESTORE_FAILED", e)
+                restoreFailed = true
+                restoreBarrier.complete(false)
+            }
         }
     }
 
@@ -96,17 +108,33 @@ open class TradeAlertManager @Inject constructor(
             }
         }
 
+        if (existingHardwareState == "RESOLVED") {
+            TradeAlertLogger.log(
+                "RESOLVED_ALERT_SUPPRESSED",
+                "Alert $alertId is already resolved; ignoring duplicate presentation."
+            )
+            return
+        }
+
+        val status = alertData["status"] as? String
+        if (status == "expired" || status == "executed" || status == "filled") {
+            TradeAlertLogger.log(
+                "TERMINAL_ALERT_SUPPRESSED",
+                "Alert $alertId is in terminal status $status; ignoring."
+            )
+            return
+        }
+
         if (existingHardwareState != null) {
             TradeAlertLogger.log(
                 "DUPLICATE_ALERT_HARDWARE_SUPPRESSED",
                 "Alert $alertId is already in state $existingHardwareState; suppressing duplicate hardware trigger."
             )
-            // Update active data silently if it matches current active alert
-            if (activeAlertData != null && (activeAlertData?.get("id") == alertId || activeAlertData?.get("alertId") == alertId)) {
-                activeAlertData = alertData
-                scope.launch { dataStore?.saveActiveAlert(alertData) }
-                scope.launch { AlertBus.send(alertData) }
-            }
+            // Decouple hardware silencing from UI delivery:
+            // An unresolved alert must still update active alert data and reach the UI via AlertBus
+            activeAlertData = alertData
+            scope.launch { dataStore?.saveActiveAlert(alertData) }
+            scope.launch { AlertBus.send(alertData) }
             return
         }
 
@@ -227,7 +255,7 @@ open class TradeAlertManager @Inject constructor(
     open fun restoreAlertForViewing(alertData: Map<String, Any>) {
         val alertId = (alertData["id"] as? String) ?: (alertData["alertId"] as? String) ?: return
         activeAlertData = alertData
-        if (!handledAlertsCache.containsKey(alertId)) {
+        if (handledAlertsCache[alertId] != "RESOLVED" && !handledAlertsCache.containsKey(alertId)) {
             handledAlertsCache[alertId] = "HARDWARE_SILENCED"
             scope.launch {
                 try {
@@ -311,7 +339,42 @@ open class TradeAlertManager @Inject constructor(
 
     fun getActiveAlert(): Map<String, Any>? = activeAlertData
 
-    fun isAlertHandled(alertId: String): Boolean {
+    /**
+     * Explicit non-blocking synchronization barrier.
+     * Suspends until DataStore restoration completes.
+     * Cannot return early because restoreBarrier is initialized at object instantiation.
+     * Returns true if restoration succeeded, false if DataStore read failed.
+     */
+    open suspend fun awaitRestored(): Boolean {
+        return restoreBarrier.await()
+    }
+
+    /**
+     * Non-blocking O(1) memory lookup safe for Android Main Thread invocation.
+     * Returns true ONLY if the alert has been explicitly resolved (executed or dismissed).
+     * If DataStore restoration failed and the alert is unverified in memory, returns true (fail-closed)
+     * so that an empty cache after a failed read does not authorize duplicate execution.
+     */
+    open fun isAlertResolved(alertId: String): Boolean {
+        val cachedState = handledAlertsCache[alertId]
+        if (cachedState != null) {
+            return cachedState == "RESOLVED"
+        }
+        if (restoreFailed) {
+            TradeAlertLogger.log(
+                "ALERT_RESTORE_FAIL_CLOSED",
+                "Alert $alertId is unverified because DataStore restoration failed. Rejecting duplicate."
+            )
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Checks if the alert was previously received in this or a restored session.
+     * Used for hardware suppression to prevent re-arming sound/vibration.
+     */
+    open fun isAlertKnown(alertId: String): Boolean {
         if (handledAlertsCache.containsKey(alertId)) return true
         val fromDataStore = try {
             kotlinx.coroutines.runBlocking { dataStore.getHandledAlertHistory()[alertId] }
@@ -322,6 +385,8 @@ open class TradeAlertManager @Inject constructor(
         }
         return false
     }
+
+    open fun isAlertHandled(alertId: String): Boolean = isAlertResolved(alertId)
 
     private fun acquireWakeLock() {
         if (appContext == null) return

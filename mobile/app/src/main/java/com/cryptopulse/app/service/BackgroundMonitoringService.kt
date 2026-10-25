@@ -31,7 +31,7 @@ class BackgroundMonitoringService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollingJob: Job? = null
-    private var lastAlertId: String? = null
+    internal var lastAlertId: String? = null
 
     companion object {
         const val CHANNEL_ID = "trading_bot_channel"
@@ -158,11 +158,11 @@ class BackgroundMonitoringService : Service() {
                 }
                 if (result is com.cryptopulse.app.core.network.NetworkResult.Success) {
                     val alerts = result.data
-                    if (alerts.isNotEmpty()) {
-                        val latestAlert = alerts.first()
-                        if (latestAlert.id != lastAlertId) {
-                            lastAlertId = latestAlert.id
-                            showTradeAlert(latestAlert)
+                    val actionableAlert = selectActionableAlert(alerts)
+                    if (actionableAlert != null) {
+                        if (actionableAlert.id != lastAlertId) {
+                            lastAlertId = actionableAlert.id
+                            showTradeAlert(actionableAlert)
                         }
                     }
                 }
@@ -172,18 +172,13 @@ class BackgroundMonitoringService : Service() {
         }
     }
 
-    private fun showTradeAlert(alert: com.cryptopulse.app.domain.models.BotAlert) {
-        val map = buildMap<String, Any> {
-            put("id", alert.id)
-            put("symbol", alert.symbol)
-            put("entryPrice", alert.entryPrice)
-            put("stopLoss", alert.stopLoss)
-            put("takeProfit", alert.takeProfit)
-            put("estimatedPnl", alert.estimatedPnl)
-            put("strategy", alert.strategy ?: "")
-            put("side", alert.side ?: "")
-            alert.timeframe?.let { put("timeframe", it) }
+    internal fun selectActionableAlert(alerts: List<com.cryptopulse.app.domain.models.BotAlert>): com.cryptopulse.app.domain.models.BotAlert? {
+        return alerts.firstOrNull { alert ->
+            !tradeAlertManager.isAlertResolved(alert.id)
         }
-        tradeAlertManager.onNewAlertReceived(map)
+    }
+
+    internal fun showTradeAlert(alert: com.cryptopulse.app.domain.models.BotAlert) {
+        tradeAlertManager.onNewAlertReceived(alert.toMap())
     }
 }

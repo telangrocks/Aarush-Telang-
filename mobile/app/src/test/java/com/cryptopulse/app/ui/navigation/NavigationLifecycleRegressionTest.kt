@@ -36,6 +36,19 @@ class NavigationLifecycleRegressionTest {
 
     private class FakeTestTradeAlertManager : TradeAlertManager() {
         var dismissOrExecuteCallCount = 0
+        private val alertStates = mutableMapOf<String, String>()
+
+        fun setAlertState(id: String, state: String) {
+            alertStates[id] = state
+        }
+
+        override fun isAlertResolved(alertId: String): Boolean {
+            return alertStates[alertId] == "RESOLVED"
+        }
+
+        override fun isAlertKnown(alertId: String): Boolean {
+            return alertStates.containsKey(alertId)
+        }
 
         override fun dismissOrExecuteAlert() {
             dismissOrExecuteCallCount++
@@ -115,8 +128,17 @@ class NavigationLifecycleRegressionTest {
         val now = System.currentTimeMillis()
         val staleTimestamp = now - 350_000L // 5m 50s ago (> 300,000ms TTL)
 
-        val isFresh = (now - staleTimestamp) <= 300_000L
-        assertFalse("Alert exceeding 300,000ms must be rejected as stale", isFresh)
+        val result = com.cryptopulse.app.MainActivity.validateAlertData(
+            alertId = "a_stale",
+            symbol = "BTC/USDT",
+            side = "BUY",
+            strategy = "ScalperV2",
+            entryPrice = 95000.0,
+            stopLoss = 93000.0,
+            takeProfit = 98000.0,
+            timestamp = staleTimestamp
+        )
+        assertNull("Alert exceeding 300,000ms must be rejected as stale by production gate", result)
     }
 
     @Test
@@ -124,48 +146,126 @@ class NavigationLifecycleRegressionTest {
         val now = System.currentTimeMillis()
         val freshTimestamp = now - 60_000L // 1 minute ago
 
-        val isFresh = (now - freshTimestamp) <= 300_000L
-        assertTrue("Alert within 300,000ms must be accepted as fresh", isFresh)
+        val result = com.cryptopulse.app.MainActivity.validateAlertData(
+            alertId = "a_fresh",
+            symbol = "BTC/USDT",
+            side = "BUY",
+            strategy = "ScalperV2",
+            entryPrice = 95000.0,
+            stopLoss = 93000.0,
+            takeProfit = 98000.0,
+            timestamp = freshTimestamp
+        )
+        assertNotNull("Alert within 300,000ms must be accepted as fresh by production gate", result)
+        assertEquals("a_fresh", result?.alertId)
+        assertEquals("BTC/USDT", result?.symbol)
     }
 
     @Test
     fun `Safety Gate rejects trade alert with missing execution-critical fields`() {
-        fun validateMandatoryFields(
-            alertId: String?,
-            symbol: String?,
-            side: String?,
-            strategy: String?,
-            entryPrice: Double?,
-            stopLoss: Double?,
-            takeProfit: Double?
-        ): Boolean {
-            if (alertId.isNullOrBlank() ||
-                symbol.isNullOrBlank() ||
-                side.isNullOrBlank() || (!side.equals("BUY", ignoreCase = true) && !side.equals("SELL", ignoreCase = true)) ||
-                strategy.isNullOrBlank() ||
-                entryPrice == null || entryPrice <= 0.0 ||
-                stopLoss == null || stopLoss <= 0.0 ||
-                takeProfit == null || takeProfit <= 0.0
-            ) {
-                return false
-            }
-            return true
-        }
+        val now = System.currentTimeMillis()
 
         // Test valid alert
-        assertTrue(validateMandatoryFields("a1", "BTC/USDT", "BUY", "ScalperV2", 95000.0, 93000.0, 98000.0))
+        assertNotNull(com.cryptopulse.app.MainActivity.validateAlertData("a1", "BTC/USDT", "BUY", "ScalperV2", 95000.0, 93000.0, 98000.0, now))
 
         // Test zero/negative SL
-        assertFalse(validateMandatoryFields("a1", "BTC/USDT", "BUY", "ScalperV2", 95000.0, 0.0, 98000.0))
+        assertNull(com.cryptopulse.app.MainActivity.validateAlertData("a1", "BTC/USDT", "BUY", "ScalperV2", 95000.0, 0.0, 98000.0, now))
 
         // Test zero/negative TP
-        assertFalse(validateMandatoryFields("a1", "BTC/USDT", "BUY", "ScalperV2", 95000.0, 93000.0, -1.0))
+        assertNull(com.cryptopulse.app.MainActivity.validateAlertData("a1", "BTC/USDT", "BUY", "ScalperV2", 95000.0, 93000.0, -1.0, now))
 
         // Test invalid side
-        assertFalse(validateMandatoryFields("a1", "BTC/USDT", "HOLD", "ScalperV2", 95000.0, 93000.0, 98000.0))
+        assertNull(com.cryptopulse.app.MainActivity.validateAlertData("a1", "BTC/USDT", "HOLD", "ScalperV2", 95000.0, 93000.0, 98000.0, now))
 
         // Test missing symbol
-        assertFalse(validateMandatoryFields("a1", "", "BUY", "ScalperV2", 95000.0, 93000.0, 98000.0))
+        assertNull(com.cryptopulse.app.MainActivity.validateAlertData("a1", "", "BUY", "ScalperV2", 95000.0, 93000.0, 98000.0, now))
+
+        // Test missing alertId
+        assertNull(com.cryptopulse.app.MainActivity.validateAlertData(null, "BTC/USDT", "BUY", "ScalperV2", 95000.0, 93000.0, 98000.0, now))
+    }
+
+    @Test
+    fun `Production Alert Gate accepts active and silenced alerts but rejects resolved alerts`() {
+        val now = System.currentTimeMillis()
+        val alertManager = FakeTestTradeAlertManager()
+
+        // 1. Alert in active state -> must be accepted for confirmation
+        alertManager.setAlertState("alert_active", "HARDWARE_ACTIVE")
+        val activeResult = com.cryptopulse.app.MainActivity.validateAlertData(
+            "alert_active", "BTC/USDT", "BUY", "ScalperV2", 95000.0, 93000.0, 98000.0, now, tradeAlertManager = alertManager
+        )
+        assertNotNull("Active alert must be accepted for routing to trade_alert screen", activeResult)
+
+        // 2. Alert in silenced state -> must remain accepted for confirmation
+        alertManager.setAlertState("alert_silenced", "HARDWARE_SILENCED")
+        val silencedResult = com.cryptopulse.app.MainActivity.validateAlertData(
+            "alert_silenced", "BTC/USDT", "BUY", "ScalperV2", 95000.0, 93000.0, 98000.0, now, tradeAlertManager = alertManager
+        )
+        assertNotNull("Silenced alert must remain accepted for routing to trade_alert screen", silencedResult)
+
+        // 3. Alert in resolved state -> must be rejected as duplicate
+        alertManager.setAlertState("alert_resolved", "RESOLVED")
+        val resolvedResult = com.cryptopulse.app.MainActivity.validateAlertData(
+            "alert_resolved", "BTC/USDT", "BUY", "ScalperV2", 95000.0, 93000.0, 98000.0, now, tradeAlertManager = alertManager
+        )
+        assertNull("Resolved alert must be strictly rejected as duplicate", resolvedResult)
+    }
+
+    @Test
+    fun `Repeated notification intent deduplication prevents duplicate routing for same alert ID`() {
+        val now = System.currentTimeMillis()
+        val alertManager = FakeTestTradeAlertManager()
+        val alertId = "alert_repeat_test"
+
+        // 1. Initial delivery of active trade alert is accepted by production routing gate
+        alertManager.setAlertState(alertId, "HARDWARE_ACTIVE")
+        val initialResult = com.cryptopulse.app.MainActivity.validateAlertData(
+            alertId = alertId,
+            symbol = "BTC/USDT",
+            side = "BUY",
+            strategy = "ScalperV2",
+            entryPrice = 95000.0,
+            stopLoss = 93000.0,
+            takeProfit = 98000.0,
+            timestamp = now,
+            tradeAlertManager = alertManager
+        )
+        assertNotNull("Initial delivery of active trade alert must be accepted by production routing gate", initialResult)
+        assertEquals(alertId, initialResult?.alertId)
+
+        // 2. Alert lifecycle completes: trade executed or dismissed, marked RESOLVED in manager
+        alertManager.setAlertState(alertId, "RESOLVED")
+
+        // 3. Repeated delivery or notification tap for identical alert ID is rejected by production routing gate
+        val repeatedResult = com.cryptopulse.app.MainActivity.validateAlertData(
+            alertId = alertId,
+            symbol = "BTC/USDT",
+            side = "BUY",
+            strategy = "ScalperV2",
+            entryPrice = 95000.0,
+            stopLoss = 93000.0,
+            takeProfit = 98000.0,
+            timestamp = now,
+            tradeAlertManager = alertManager
+        )
+        assertNull("Repeated delivery of resolved alert must be rejected as duplicate by production routing gate", repeatedResult)
+
+        // 4. Fresh alert with distinct ID is accepted
+        val freshAlertId = "alert_new_distinct"
+        alertManager.setAlertState(freshAlertId, "HARDWARE_ACTIVE")
+        val freshResult = com.cryptopulse.app.MainActivity.validateAlertData(
+            alertId = freshAlertId,
+            symbol = "ETH/USDT",
+            side = "BUY",
+            strategy = "ScalperV2",
+            entryPrice = 3500.0,
+            stopLoss = 3400.0,
+            takeProfit = 3700.0,
+            timestamp = now,
+            tradeAlertManager = alertManager
+        )
+        assertNotNull("Fresh alert with distinct ID must be accepted by production routing gate", freshResult)
+        assertEquals(freshAlertId, freshResult?.alertId)
     }
 
     @Test

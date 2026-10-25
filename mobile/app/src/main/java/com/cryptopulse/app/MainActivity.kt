@@ -53,6 +53,7 @@ import com.cryptopulse.app.ui.auth.TradeSetupState
 import com.cryptopulse.app.service.TradeAlertManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.firstOrNull
 import javax.inject.Inject
 
@@ -72,7 +73,7 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    private data class ValidatedAlertData(
+    internal data class ValidatedAlertData(
         val alertId: String,
         val symbol: String,
         val side: String,
@@ -137,6 +138,7 @@ class MainActivity : FragmentActivity() {
     private var lastHandledAlertId: String? = null
     private var currentActiveAlertId: String? = null
     private var isLoggingOut = false
+    private var alertRoutingJob: kotlinx.coroutines.Job? = null
 
     private val sharedExchangeViewModel: ExchangeViewModel by viewModels()
 
@@ -153,22 +155,7 @@ class MainActivity : FragmentActivity() {
         val timestamp = (alert["timestamp"] as? Number)?.toLong() ?: (alert["serverTimestamp"] as? Number)?.toLong()
         val timeframe = alert["timeframe"]?.toString()
 
-        if (alertId.isNullOrBlank() ||
-            symbol.isNullOrBlank() ||
-            side.isNullOrBlank() || (!side.equals("BUY", ignoreCase = true) && !side.equals("SELL", ignoreCase = true)) ||
-            strategy.isNullOrBlank() ||
-            entryPrice == null || entryPrice <= 0.0 ||
-            stopLoss == null || stopLoss <= 0.0 ||
-            takeProfit == null || takeProfit <= 0.0
-        ) {
-            return null
-        }
-
-        if (timestamp != null && timestamp > 0L && (System.currentTimeMillis() - timestamp) > 300_000L) {
-            return null
-        }
-
-        return ValidatedAlertData(
+        return validateAlertData(
             alertId = alertId,
             symbol = symbol,
             side = side,
@@ -179,7 +166,8 @@ class MainActivity : FragmentActivity() {
             estimatedPnl = estimatedPnl,
             positionSize = positionSize,
             timestamp = timestamp,
-            timeframe = timeframe
+            timeframe = timeframe,
+            tradeAlertManager = tradeAlertManager
         )
     }
 
@@ -212,9 +200,9 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val initialAlert = if (savedInstanceState == null) parseValidatedAlert(intent) else null
+
         if (savedInstanceState == null) {
-            handleIncomingAlertIntent(intent)
+            dispatchIncomingAlertIntent(intent)
         }
         setContent {
             CryptoPulseTheme {
@@ -276,7 +264,7 @@ class MainActivity : FragmentActivity() {
                             if (isInsideAuthFlow) {
                                 pendingValidatedAlert?.let { alert ->
                                     val isFresh = alert.timestamp?.let { (System.currentTimeMillis() - it) < 300_000L } ?: false
-                                    if (isFresh) {
+                                    if (isFresh && !tradeAlertManager.isAlertResolved(alert.alertId)) {
                                         sharedExchangeViewModel.selectCandidate(alert.toMarketCandidate())
                                         sharedExchangeViewModel.setPendingAlert(alert.toAlertMap())
                                         navController.navigate("trade_alert") {
@@ -295,7 +283,7 @@ class MainActivity : FragmentActivity() {
                                 if (isLoggingOut) return@collect
                                 try {
                                     val alertId = (alert["id"] ?: alert["alertId"] ?: alert["opportunityId"])?.toString()
-                                    if (alertId != null && tradeAlertManager.isAlertHandled(alertId)) {
+                                    if (alertId != null && tradeAlertManager.isAlertResolved(alertId)) {
                                         return@collect
                                     }
                                     if (alertId != null && alertId == currentActiveAlertId) {
@@ -373,7 +361,7 @@ class MainActivity : FragmentActivity() {
                                 }
                             )
                         }
-                        val authStartDest = if (initialAlert != null || pendingValidatedAlert != null) "technical_analysis" else "connect_exchange"
+                        val authStartDest = if (pendingValidatedAlert != null) "technical_analysis" else "connect_exchange"
                         navigation(startDestination = authStartDest, route = "authenticated_flow") {
                             composable("connect_exchange") {
                                 ConnectExchangeScreen(
@@ -555,15 +543,10 @@ class MainActivity : FragmentActivity() {
                                 val isLoadingPreview by technicalAnalysisViewModel.isLoadingPreview.collectAsState()
 
                                 LaunchedEffect(Unit) {
-                                    initialAlert?.let { alert ->
-                                        viewModel.selectCandidate(alert.toMarketCandidate())
-                                        viewModel.setPendingAlert(alert.toAlertMap())
-                                    } ?: run {
-                                        if (viewModel.selectedCandidate.value == null) {
-                                            tradeSetupConfig?.let { config ->
-                                                config.symbol?.let { sym ->
-                                                    viewModel.restoreSession(sym, config.strategyId)
-                                                }
+                                    if (viewModel.selectedCandidate.value == null) {
+                                        tradeSetupConfig?.let { config ->
+                                            config.symbol?.let { sym ->
+                                                viewModel.restoreSession(sym, config.strategyId)
                                             }
                                         }
                                     }
@@ -788,7 +771,67 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    private fun parseValidatedAlert(intent: Intent?): ValidatedAlertData? {
+    companion object {
+        const val ALERT_TTL_MS = 300_000L
+
+        @androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PRIVATE)
+        internal fun validateAlertData(
+            alertId: String?,
+            symbol: String?,
+            side: String?,
+            strategy: String?,
+            entryPrice: Double?,
+            stopLoss: Double?,
+            takeProfit: Double?,
+            timestamp: Long?,
+            estimatedPnl: Double = 0.0,
+            positionSize: Double = 0.0,
+            timeframe: String? = null,
+            tradeAlertManager: TradeAlertManager? = null
+        ): ValidatedAlertData? {
+            // MANDATORY SAFETY REQUIREMENT: Never silently substitute 0.0 for execution-critical fields
+            if (alertId.isNullOrBlank() ||
+                symbol.isNullOrBlank() ||
+                side.isNullOrBlank() || (!side.equals("BUY", ignoreCase = true) && !side.equals("SELL", ignoreCase = true)) ||
+                strategy.isNullOrBlank() ||
+                entryPrice == null || entryPrice <= 0.0 ||
+                stopLoss == null || stopLoss <= 0.0 ||
+                takeProfit == null || takeProfit <= 0.0
+            ) {
+                android.util.Log.w("MainActivity", "[SAFETY_GATE] Trade alert rejected: missing or invalid mandatory fields (alertId=$alertId, symbol=$symbol, side=$side, strategy=$strategy, entry=$entryPrice, SL=$stopLoss, TP=$takeProfit)")
+                return null
+            }
+
+            // Stale alert validation (5-minute freshness window)
+            if (timestamp != null && timestamp > 0L && (System.currentTimeMillis() - timestamp) > ALERT_TTL_MS) {
+                android.util.Log.w("MainActivity", "[STALE_ALERT] Alert $alertId is stale (${(System.currentTimeMillis() - timestamp) / 1000}s old). Rejecting.")
+                return null
+            }
+
+            // Check if alert was already handled/resolved
+            if (tradeAlertManager != null && tradeAlertManager.isAlertResolved(alertId)) {
+                android.util.Log.w("MainActivity", "[DUPLICATE_ALERT] Alert $alertId is already resolved. Rejecting.")
+                return null
+            }
+
+            return ValidatedAlertData(
+                alertId = alertId,
+                symbol = symbol,
+                side = side,
+                strategy = strategy,
+                entryPrice = entryPrice,
+                stopLoss = stopLoss,
+                takeProfit = takeProfit,
+                estimatedPnl = estimatedPnl,
+                positionSize = positionSize,
+                timestamp = timestamp,
+                timeframe = timeframe
+            )
+        }
+    }
+
+    @androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PRIVATE)
+    internal fun parseValidatedAlert(intent: Intent?): ValidatedAlertData? {
         if (intent == null) return null
 
         val isAlert = intent.getBooleanExtra("extra_alert", false) ||
@@ -837,32 +880,7 @@ class MainActivity : FragmentActivity() {
         val timeframe = intent.getStringExtra("timeframe")
             ?: intent.getStringExtra("alert_timeframe")
 
-        // MANDATORY SAFETY REQUIREMENT: Never silently substitute 0.0 for execution-critical fields
-        if (alertId.isNullOrBlank() ||
-            symbol.isNullOrBlank() ||
-            side.isNullOrBlank() || (!side.equals("BUY", ignoreCase = true) && !side.equals("SELL", ignoreCase = true)) ||
-            strategy.isNullOrBlank() ||
-            entryPrice == null || entryPrice <= 0.0 ||
-            stopLoss == null || stopLoss <= 0.0 ||
-            takeProfit == null || takeProfit <= 0.0
-        ) {
-            android.util.Log.w("MainActivity", "[SAFETY_GATE] Trade alert rejected: missing or invalid mandatory fields (alertId=$alertId, symbol=$symbol, side=$side, strategy=$strategy, entry=$entryPrice, SL=$stopLoss, TP=$takeProfit)")
-            return null
-        }
-
-        // Stale alert validation (5-minute freshness window)
-        if (timestamp != null && timestamp > 0L && (System.currentTimeMillis() - timestamp) > 300_000L) {
-            android.util.Log.w("MainActivity", "[STALE_ALERT] Alert $alertId is stale (${(System.currentTimeMillis() - timestamp) / 1000}s old). Rejecting.")
-            return null
-        }
-
-        // Check if alert was already handled/resolved
-        if (tradeAlertManager.isAlertHandled(alertId)) {
-            android.util.Log.w("MainActivity", "[DUPLICATE_ALERT] Alert $alertId is already resolved/handled. Rejecting.")
-            return null
-        }
-
-        return ValidatedAlertData(
+        return validateAlertData(
             alertId = alertId,
             symbol = symbol,
             side = side,
@@ -873,7 +891,8 @@ class MainActivity : FragmentActivity() {
             estimatedPnl = estimatedPnl,
             positionSize = positionSize,
             timestamp = timestamp,
-            timeframe = timeframe
+            timeframe = timeframe,
+            tradeAlertManager = tradeAlertManager
         )
     }
 
@@ -940,7 +959,23 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIncomingAlertIntent(intent)
+        dispatchIncomingAlertIntent(intent)
+    }
+
+    override fun onDestroy() {
+        alertRoutingJob?.cancel()
+        alertRoutingJob = null
+        super.onDestroy()
+    }
+
+    private fun dispatchIncomingAlertIntent(intent: Intent?) {
+        if (intent == null) return
+        alertRoutingJob?.cancel()
+        alertRoutingJob = lifecycleScope.launch {
+            tradeAlertManager.awaitRestored()
+            if (!isActive || isFinishing || isDestroyed) return@launch
+            handleIncomingAlertIntent(intent)
+        }
     }
 }
 
