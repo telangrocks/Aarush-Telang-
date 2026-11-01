@@ -10,18 +10,48 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.cryptopulse.app.domain.repository.AuthRepository
 import com.cryptopulse.app.domain.repository.ExchangeRepository
+import com.cryptopulse.app.domain.repository.FcmRepository
 import com.cryptopulse.app.data.local.ExchangeConnectionManager
+import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.domain.model.AuthResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val repository: AuthRepository,
     private val exchangeRepository: ExchangeRepository,
-    private val exchangeConnectionManager: ExchangeConnectionManager
+    private val exchangeConnectionManager: ExchangeConnectionManager,
+    private val fcmRepository: FcmRepository,
+    private val tokenManager: TokenManager
 ) : ViewModel() {
+
+    // Secondary constructor to maintain compatibility with existing tests that construct AuthViewModel with 3 arguments
+    constructor(
+        repository: AuthRepository,
+        exchangeRepository: ExchangeRepository,
+        exchangeConnectionManager: ExchangeConnectionManager
+    ) : this(
+        repository = repository,
+        exchangeRepository = exchangeRepository,
+        exchangeConnectionManager = exchangeConnectionManager,
+        fcmRepository = object : FcmRepository {
+            override suspend fun registerToken(token: String): com.cryptopulse.app.core.network.NetworkResult<Unit> =
+                com.cryptopulse.app.core.network.NetworkResult.Success(Unit)
+        },
+        tokenManager = object : TokenManager(android.content.ContextWrapper(null)) {
+            override suspend fun getFcmToken(): String? = null
+            override suspend fun saveFcmToken(fcmToken: String) {}
+        }
+    ) {
+        firebaseTokenResolver = { null }
+    }
 
     var email by mutableStateOf("")
     var password by mutableStateOf("")
@@ -83,7 +113,77 @@ class AuthViewModel @Inject constructor(
 
     private var loginJob: kotlinx.coroutines.Job? = null
     private var registerJob: kotlinx.coroutines.Job? = null
+    private var fcmRegistrationJob: kotlinx.coroutines.Job? = null
     private var lastSubmitTimeMs: Long = 0L
+    private var lastRegisteredToken: String? = null
+
+    internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+
+    internal var firebaseTokenResolver: suspend () -> String? = {
+        withContext(ioDispatcher) {
+            try {
+                val task = com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                com.google.android.gms.tasks.Tasks.await(task)
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                android.util.Log.w("AuthViewModel", "Unable to resolve FCM token from Firebase: ${e.message}")
+                null
+            }
+        }
+    }
+
+    internal fun registerFcmTokenAsync() {
+        if (fcmRegistrationJob?.isActive == true) {
+            android.util.Log.d("AuthViewModel", "FCM registration already in progress; skipping duplicate attempt")
+            return
+        }
+
+        fcmRegistrationJob = viewModelScope.launch {
+            try {
+                val cachedToken = tokenManager.getFcmToken()
+                val tokenToRegister = if (!cachedToken.isNullOrEmpty()) {
+                    cachedToken
+                } else {
+                    val resolved = try {
+                        firebaseTokenResolver()
+                    } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
+                        android.util.Log.w("AuthViewModel", "Unable to resolve FCM token: ${e.message}")
+                        null
+                    }
+                    if (!resolved.isNullOrEmpty()) {
+                        tokenManager.saveFcmToken(resolved)
+                    }
+                    resolved
+                }
+
+                if (tokenToRegister.isNullOrEmpty()) {
+                    android.util.Log.w("AuthViewModel", "No FCM token available to register post-authentication")
+                    return@launch
+                }
+
+                if (tokenToRegister == lastRegisteredToken) {
+                    android.util.Log.d("AuthViewModel", "FCM token already successfully registered for current session")
+                    return@launch
+                }
+
+                android.util.Log.d("AuthViewModel", "Registering FCM token with backend (token length: ${tokenToRegister.length})")
+                val result = fcmRepository.registerToken(tokenToRegister)
+                when (result) {
+                    is com.cryptopulse.app.core.network.NetworkResult.Success -> {
+                        lastRegisteredToken = tokenToRegister
+                        android.util.Log.i("AuthViewModel", "FCM token registered successfully with backend")
+                    }
+                    is com.cryptopulse.app.core.network.NetworkResult.Error -> {
+                        android.util.Log.w("AuthViewModel", "Failed to register FCM token with backend: ${result.error}")
+                    }
+                }
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                android.util.Log.e("AuthViewModel", "Error during FCM registration: ${e.message}", e)
+            }
+        }
+    }
 
     companion object {
         const val SUBMIT_DEBOUNCE_MS = 1000L
@@ -160,12 +260,18 @@ class AuthViewModel @Inject constructor(
                 when (val result = repository.register(email.trim(), password, confirmPassword)) {
                     is NetworkResult.Success -> {
                         isAuthenticated = true
+                        lastRegisteredToken = null
+                        registerFcmTokenAsync()
                     }
                     is NetworkResult.Error -> {
                         errorMessage = extractErrorMessage(result.error)
                     }
                     else -> {}
                 }
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                android.util.Log.e("AuthViewModel", "Registration failed with unexpected error: ${e.message}", e)
+                errorMessage = e.localizedMessage ?: "Registration failed. Please check your connection and try again."
             } finally {
                 isLoading = false
             }
@@ -219,21 +325,26 @@ class AuthViewModel @Inject constructor(
                             } else {
                                 exchangeConnectionManager.clearConnection()
                             }
-                        } catch (_: Exception) {}
+                        } catch (e: Throwable) {
+                            if (e is CancellationException) throw e
+                            // Soft-fail on exchange connection check; do not block auth
+                        }
                         isAuthenticated = true
+                        lastRegisteredToken = null
+                        registerFcmTokenAsync()
                     }
                     is NetworkResult.Error -> {
                         errorMessage = extractErrorMessage(result.error)
                     }
                     else -> {}
                 }
+            } catch (e: Throwable) {
+                if (e is CancellationException) throw e
+                android.util.Log.e("AuthViewModel", "Login failed with unexpected error: ${e.message}", e)
+                errorMessage = e.localizedMessage ?: "Login failed. Please check your connection and try again."
             } finally {
                 isLoading = false
             }
         }
     }
 }
-
-
-
-

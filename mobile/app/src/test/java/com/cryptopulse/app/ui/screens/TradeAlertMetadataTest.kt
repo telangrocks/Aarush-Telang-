@@ -5,6 +5,8 @@ import com.cryptopulse.app.data.mapper.bot.toDomain
 import com.cryptopulse.app.domain.models.BotAlert
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class TradeAlertMetadataTest {
@@ -173,5 +175,100 @@ class TradeAlertMetadataTest {
         val tfDisplay = formatTimeframe(sellMap["timeframe"] as? String)
         assertEquals("Breakout", stratDisplay)
         assertEquals("1h", tfDisplay)
+    }
+
+    // ── 5. Approved Quantity Formatting & Clamping ────────────────────────────
+
+    @Test
+    fun testFormatQuantity_integerContractsWithThousandsSeparator() {
+        // 1000PEPE clamped to 999,900 contracts
+        assertEquals("999,900", formatQuantity(999900.0))
+        assertEquals("1,000,000", formatQuantity(1000000.0))
+        assertEquals("100", formatQuantity(100.0))
+    }
+
+    @Test
+    fun testFormatQuantity_decimalContracts() {
+        // SOL with 58.2 contracts
+        assertEquals("58.2", formatQuantity(58.2))
+        assertEquals("0.005", formatQuantity(0.005))
+        assertEquals("12.3456", formatQuantity(12.3456))
+    }
+
+    @Test
+    fun testFormatQuantity_missingOrInvalid_returnsFallbackDash() {
+        assertEquals("—", formatQuantity(null))
+        assertEquals("—", formatQuantity(0.0))
+        assertEquals("—", formatQuantity(-10.0))
+        assertEquals("—", formatQuantity(Double.NaN))
+    }
+
+    @Test
+    fun testBotAlert_toMapAndFromMapWithApprovedQuantityFields() {
+        val alert = BotAlert(
+            id = "alert_pepe_quantized",
+            symbol = "1000PEPE/USDT",
+            entryPrice = 0.004962,
+            stopLoss = 0.004714,
+            takeProfit = 0.005458,
+            estimatedPnl = 496.15,
+            strategy = "ScalperV2",
+            side = "BUY",
+            timestamp = "2026-11-01T05:00:00Z",
+            timeframe = "15m",
+            quantity = 999900.0,
+            requestedBudget = 5555.0,
+            effectiveNotional = 4961.50
+        )
+
+        val map = alert.toMap()
+        assertEquals(999900.0, map["quantity"])
+        assertEquals(5555.0, map["requestedBudget"])
+        assertEquals(4961.50, map["effectiveNotional"])
+
+        val reconstructed = BotAlert.fromMap(map)
+        assertEquals(999900.0, reconstructed.quantity)
+        assertEquals(5555.0, reconstructed.requestedBudget)
+        assertEquals(4961.50, reconstructed.effectiveNotional)
+    }
+
+    @Test
+    fun testBotAlertDto_toDomainMapsApprovedQuantityFields() {
+        val dto = BotAlertDto(
+            id = "alert_dto_sol",
+            symbol = "SOL/USDT",
+            entryPrice = 95.42,
+            stopLoss = 93.51,
+            takeProfit = 99.23,
+            estimatedPnl = 221.74,
+            strategy = "ScalperV2",
+            side = "BUY",
+            timestamp = "2026-11-01T05:00:00Z",
+            signalPrice = 95.42,
+            targetEntryPrice = 95.42,
+            positionSize = 5553.44,
+            quantity = 58.2,
+            requestedBudget = 5555.0,
+            effectiveNotional = 5553.444
+        )
+
+        val domain = dto.toDomain()
+        assertEquals(58.2, domain.quantity)
+        assertEquals(5555.0, domain.requestedBudget)
+        assertEquals(5553.444, domain.effectiveNotional)
+    }
+
+    @Test
+    fun testClampingDetection_whenBudgetExceedsEffectiveNotional() {
+        val requestedBudget = 5555.0
+        val effectiveNotional = 4961.50
+        val difference = requestedBudget - effectiveNotional
+        // When Bybit clamps 1000PEPE, difference is 593.5 USDT (> 0.5 USDT threshold)
+        assertTrue(difference > 0.5)
+
+        // When unclamped (e.g. SOL at 5553.44 with budget 5555.0, difference is 1.56, also clamped slightly)
+        // Exact unclamped: budget 500.0, notional 500.0
+        val exactDiff = 500.0 - 500.0
+        assertFalse(exactDiff > 0.5)
     }
 }

@@ -7,6 +7,7 @@ import com.cryptopulse.app.data.api.dto.auth.request.*
 import com.cryptopulse.app.data.datasource.remote.auth.AuthRemoteDataSource
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.domain.repository.AuthRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,8 +24,13 @@ class AuthRepositoryImpl @Inject constructor(
                 val access = result.data.accessToken
                 val refresh = result.data.refreshToken
                 if (!access.isNullOrBlank() && !refresh.isNullOrBlank()) {
-                    tokenManager.saveTokens(access, refresh)
-                    NetworkResult.Success(Unit)
+                    try {
+                        tokenManager.saveTokens(access, refresh)
+                        NetworkResult.Success(Unit)
+                    } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
+                        NetworkResult.Error(NetworkError.Unknown(Exception("Failed to persist secure session: ${e.message}", e)))
+                    }
                 } else {
                     NetworkResult.Error(NetworkError.Serialization)
                 }
@@ -39,9 +45,14 @@ class AuthRepositoryImpl @Inject constructor(
                 val access = result.data.accessToken
                 val refresh = result.data.refreshToken
                 if (!access.isNullOrBlank() && !refresh.isNullOrBlank()) {
-                    tokenManager.saveTokens(access, refresh)
-                    tokenManager.markRegistrationCompleted()
-                    NetworkResult.Success(Unit)
+                    try {
+                        tokenManager.saveTokens(access, refresh)
+                        tokenManager.markRegistrationCompleted()
+                        NetworkResult.Success(Unit)
+                    } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
+                        NetworkResult.Error(NetworkError.Unknown(Exception("Failed to persist secure session: ${e.message}", e)))
+                    }
                 } else {
                     NetworkResult.Error(NetworkError.Serialization)
                 }
@@ -51,12 +62,22 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     override suspend fun logout(): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
-        when (val result = authRemoteDataSource.logout()) {
-            is NetworkResult.Success -> {
-                tokenManager.clearTokens()
-                NetworkResult.Success(Unit)
+        try {
+            when (val result = authRemoteDataSource.logout()) {
+                is NetworkResult.Success -> {
+                    tokenManager.clearTokens()
+                    NetworkResult.Success(Unit)
+                }
+                is NetworkResult.Error -> {
+                    // Always clear tokens locally on logout even if backend request fails
+                    tokenManager.clearTokens()
+                    result
+                }
             }
-            is NetworkResult.Error -> result
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            tokenManager.clearTokens()
+            NetworkResult.Error(NetworkError.Unknown(e))
         }
     }
 
@@ -70,8 +91,13 @@ class AuthRepositoryImpl @Inject constructor(
                 val access = result.data.accessToken
                 val newRefresh = result.data.refreshToken
                 if (!access.isNullOrBlank() && !newRefresh.isNullOrBlank()) {
-                    tokenManager.saveTokens(access, newRefresh)
-                    NetworkResult.Success(Unit)
+                    try {
+                        tokenManager.saveTokens(access, newRefresh)
+                        NetworkResult.Success(Unit)
+                    } catch (e: Throwable) {
+                        if (e is CancellationException) throw e
+                        NetworkResult.Error(NetworkError.Unknown(Exception("Failed to persist refreshed session: ${e.message}", e)))
+                    }
                 } else {
                     tokenManager.clearTokens()
                     NetworkResult.Error(NetworkError.Serialization)
@@ -88,5 +114,3 @@ class AuthRepositoryImpl @Inject constructor(
         }
     }
 }
-
-

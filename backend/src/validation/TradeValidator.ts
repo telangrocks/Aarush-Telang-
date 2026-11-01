@@ -11,6 +11,7 @@ export interface TradeValidationParams {
   currentMarketPrice?: number;
   tradeValueUsdt?: number;
   quantity?: number;
+  isApprovedQuantity?: boolean;
   stopLoss?: number;
   takeProfit?: number;
 }
@@ -21,6 +22,7 @@ export interface TradeValidationResult {
   errorMessage?: string;
   quantizedQuantity?: number;
   postRoundingNotional?: number;
+  wasClampedToMax?: boolean;
   metrics?: {
     durationMs: number;
     stepReached: number;
@@ -48,6 +50,17 @@ export class TradeValidator {
         metrics: { durationMs: performance.now() - startTime, stepReached: 1 },
       };
       console.log('[DIAGNOSTIC] Exit TradeValidator.validate() (Metadata failure):', JSON.stringify(res));
+      return res;
+    }
+
+    if (rules.maxQty === undefined || rules.maxQty === null || !Number.isFinite(rules.maxQty) || rules.maxQty <= 0) {
+      const res = {
+        isValid: false,
+        errorCode: ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE,
+        errorMessage: `Authoritative exchange maximum order quantity (maxQty) for '${rules.symbol}' is unavailable or invalid. Execution cannot safely proceed.`,
+        metrics: { durationMs: performance.now() - startTime, stepReached: 1 },
+      };
+      console.log('[DIAGNOSTIC] Exit TradeValidator.validate() (maxQty metadata failure):', JSON.stringify(res));
       return res;
     }
 
@@ -138,8 +151,9 @@ export class TradeValidator {
 
     // 4. Raw Quantity Calculation
     let rawQtyBN: BigNumber;
-    if (params.quantity && params.quantity > 0) {
-      rawQtyBN = new BigNumber(params.quantity);
+    const isApprovedQuantityValidation = params.isApprovedQuantity === true;
+    if (params.quantity !== undefined && params.quantity !== null && params.quantity > 0) {
+      rawQtyBN = new BigNumber(params.quantity!);
     } else if (params.tradeValueUsdt && params.tradeValueUsdt > 0) {
       rawQtyBN = new BigNumber(params.tradeValueUsdt).dividedBy(entryPriceBN);
     } else {
@@ -151,17 +165,57 @@ export class TradeValidator {
       };
     }
 
+    // 4.5. Maximum Quantity Constraint Enforcement
+    const maxQtyBN = new BigNumber(rules.maxQty);
+    let clampedQtyBN = rawQtyBN;
+    let wasClampedToMax = false;
+
+    if (isApprovedQuantityValidation) {
+      // If verifying an already approved quantity, DO NOT silently modify it!
+      // If the approved quantity exceeds maxQty, fail closed and require fresh confirmation.
+      if (rawQtyBN.isGreaterThan(maxQtyBN)) {
+        return {
+          isValid: false,
+          errorCode: ValidationErrorReason.MAX_QTY_FAILED,
+          errorMessage: `Approved order quantity (${rawQtyBN.toFixed()}) exceeds exchange maximum order quantity (${maxQtyBN.toFixed()}). Fresh confirmation is required.`,
+          quantizedQuantity: rawQtyBN.toNumber(),
+          postRoundingNotional: rawQtyBN.multipliedBy(entryPriceBN).toNumber(),
+          wasClampedToMax: true,
+          metrics: { durationMs: performance.now() - startTime, stepReached: 4.5 },
+        };
+      }
+    } else {
+      // During initial sizing (budget -> quantity), clamp raw quantity to exchange maximum limit before step-size quantization
+      if (rawQtyBN.isGreaterThan(maxQtyBN)) {
+        clampedQtyBN = maxQtyBN;
+        wasClampedToMax = true;
+      }
+    }
+
     // 5. Step Size Quantization (Floor rounding to stepSize)
     const stepSizeBN = new BigNumber(rules.stepSize ?? 0);
-    let roundedQtyBN: BigNumber = rawQtyBN;
+    let roundedQtyBN: BigNumber = clampedQtyBN;
     if (stepSizeBN.isGreaterThan(0)) {
-      const steps = rawQtyBN.dividedBy(stepSizeBN).integerValue(BigNumber.ROUND_FLOOR);
+      const steps = clampedQtyBN.dividedBy(stepSizeBN).integerValue(BigNumber.ROUND_FLOOR);
       roundedQtyBN = steps.multipliedBy(stepSizeBN);
     }
 
-    // 6. Quantity Filter (Min/Max Qty)
+    if (isApprovedQuantityValidation) {
+      // If verifying an already approved quantity, ensure it is aligned with step size and not modified
+      if (!roundedQtyBN.isEqualTo(rawQtyBN)) {
+        return {
+          isValid: false,
+          errorCode: ValidationErrorReason.INVALID_STEP_SIZE,
+          errorMessage: `Approved order quantity (${rawQtyBN.toFixed()}) is not aligned with exchange step size (${stepSizeBN.toFixed()}). Fresh confirmation is required.`,
+          quantizedQuantity: roundedQtyBN.toNumber(),
+          postRoundingNotional: roundedQtyBN.multipliedBy(entryPriceBN).toNumber(),
+          metrics: { durationMs: performance.now() - startTime, stepReached: 5 },
+        };
+      }
+    }
+
+    // 6. Quantity Filter (Independent validation of final quantity against all exchange limits)
     const minQtyBN = new BigNumber(rules.minQty ?? 0);
-    const maxQtyBN = new BigNumber(rules.maxQty ?? 0);
 
     if (minQtyBN.isGreaterThan(0) && roundedQtyBN.isLessThan(minQtyBN)) {
       return {
@@ -213,7 +267,8 @@ export class TradeValidator {
       isValid: true,
       quantizedQuantity: roundedQtyBN.toNumber(),
       postRoundingNotional: postRoundingNotionalBN.toNumber(),
-      metrics: { durationMs: performance.now() - startTime, stepReached: 8 },
+      wasClampedToMax,
+      metrics: { durationMs: performance.now() - startTime, stepReached: 9 },
     };
     console.log('[DIAGNOSTIC] Exit TradeValidator.validate() (Success):', JSON.stringify(finalResult));
     return finalResult;

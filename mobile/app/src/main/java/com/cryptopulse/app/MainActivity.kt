@@ -138,6 +138,7 @@ class MainActivity : FragmentActivity() {
     private var lastHandledAlertId: String? = null
     private var currentActiveAlertId: String? = null
     private var isLoggingOut = false
+    private var lastRegisteredFcmToken: String? = null
     private var alertRoutingJob: kotlinx.coroutines.Job? = null
 
     private val sharedExchangeViewModel: ExchangeViewModel by viewModels()
@@ -214,18 +215,12 @@ class MainActivity : FragmentActivity() {
                     val tokenState by tokenManager.tokenFlow.collectAsState(initial = com.cryptopulse.app.data.local.TokenState.Uninitialized)
                     val token = (tokenState as? com.cryptopulse.app.data.local.TokenState.Authenticated)?.token
 
-                    val isRegistered = tokenManager.isRegistrationCompletedSync()
-                    val hasCachedToken = tokenManager.hasCachedTokenSync()
-
-                    val startDestination = when {
-                        !isRegistered -> "onboarding"
-                        !hasCachedToken -> "auth"
-                        else -> "authenticated_flow"
-                    }
+                    val startDestination = "splash"
                     val coroutineScope = rememberCoroutineScope()
 
                     val performLogout: () -> Unit = {
                         isLoggingOut = true
+                        lastRegisteredFcmToken = null
                         currentActiveAlertId = null
                         pendingValidatedAlert = null
                         sharedExchangeViewModel.resetState()
@@ -328,6 +323,7 @@ class MainActivity : FragmentActivity() {
                                 tradeSessionRepository = tradeSessionRepository,
                                 authRepository = authRepository,
                                 tradeAlertManager = tradeAlertManager,
+                                fcmRepository = fcmRepository,
                             )
                         }
                         composable("onboarding") {
@@ -342,10 +338,15 @@ class MainActivity : FragmentActivity() {
                             AuthScreen(
                                 viewModel = viewModel,
                                 onAuthSuccess = {
-                                    navController.navigate("authenticated_flow") {
-                                        popUpTo("auth") {
-                                            inclusive = true
+                                    try {
+                                        navController.navigate("authenticated_flow") {
+                                            popUpTo(navController.graph.id) {
+                                                inclusive = true
+                                            }
+                                            launchSingleTop = true
                                         }
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("MainActivity", "Navigation to authenticated_flow failed: ${e.message}", e)
                                     }
                                     pendingValidatedAlert?.let { alert ->
                                         val isFresh = alert.timestamp?.let { (System.currentTimeMillis() - it) < 300_000L } ?: false
@@ -705,11 +706,17 @@ class MainActivity : FragmentActivity() {
                                 }
                                 val strategy = alert?.get("strategy") as? String
                                 val timeframe = alert?.get("timeframe") as? String
+                                val quantity = (alert?.get("quantity") as? Number)?.toDouble() ?: (alert?.get("quantity") as? String)?.toDoubleOrNull()
+                                val requestedBudget = (alert?.get("requestedBudget") as? Number)?.toDouble() ?: (alert?.get("requestedBudget") as? String)?.toDoubleOrNull()
+                                val effectiveNotional = (alert?.get("effectiveNotional") as? Number)?.toDouble() ?: (alert?.get("effectiveNotional") as? String)?.toDoubleOrNull()
                                 TradeAlertScreen(
                                     onBack = { navController.popBackStack() },
                                     onTradeExecuted = {
-                                        navController.navigate("market_candidates") {
-                                            popUpTo("market_candidates") { inclusive = false }
+                                        if (!navController.popBackStack("technical_analysis", inclusive = false)) {
+                                            navController.navigate("technical_analysis") {
+                                                popUpTo("trade_alert") { inclusive = true }
+                                                launchSingleTop = true
+                                            }
                                         }
                                     },
                                     candidate = marketCandidate,
@@ -720,6 +727,9 @@ class MainActivity : FragmentActivity() {
                                     signalPrice = math.signalPrice,
                                     targetEntryPrice = math.targetEntryPrice,
                                     tradeAmountUsdt = math.positionSize,
+                                    requestedBudget = requestedBudget ?: if (math.positionSize > 0.0) math.positionSize else null,
+                                    quantity = quantity,
+                                    effectiveNotional = effectiveNotional ?: if (quantity != null && quantity > 0.0 && math.entryPrice > 0.0) quantity * math.entryPrice else null,
                                     strategy = strategy,
                                     timeframe = timeframe,
                                     viewModel = viewModel
@@ -756,15 +766,35 @@ class MainActivity : FragmentActivity() {
                                     }
                                     resolved
                                 } catch (e: Exception) {
+                                    android.util.Log.w("MainActivity", "FirebaseMessaging token resolution failed: ${e.message}")
                                     null
                                 }
                             }
                         }
                         if (!fcmToken.isNullOrEmpty()) {
-                            fcmRepository.registerToken(fcmToken)
+                            if (fcmToken != lastRegisteredFcmToken) {
+                                android.util.Log.d("MainActivity", "Registering FCM token with backend (token length: ${fcmToken.length})")
+                                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    fcmRepository.registerToken(fcmToken)
+                                }
+                                when (result) {
+                                    is com.cryptopulse.app.core.network.NetworkResult.Success -> {
+                                        lastRegisteredFcmToken = fcmToken
+                                        android.util.Log.i("MainActivity", "FCM token registered successfully with backend.")
+                                    }
+                                    is com.cryptopulse.app.core.network.NetworkResult.Error -> {
+                                        android.util.Log.w("MainActivity", "FCM token registration returned error: ${result.error}")
+                                    }
+                                }
+                            } else {
+                                android.util.Log.d("MainActivity", "FCM token already registered for current session.")
+                            }
+                        } else {
+                            android.util.Log.w("MainActivity", "No FCM token available to register.")
                         }
                     } catch (e: Exception) {
-                        // Silently fail - FCM registration is optional and must not crash app
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        android.util.Log.e("MainActivity", "Unexpected failure during FCM token registration: ${e.message}", e)
                     }
                 }
             }

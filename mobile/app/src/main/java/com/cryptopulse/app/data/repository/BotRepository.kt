@@ -78,6 +78,17 @@ class BotRepositoryImpl @Inject constructor(
                 )
             )
         }
+        val resolvedPositionSize = config?.tradeValueUsdt?.takeIf { it > 0.0 }
+        if (resolvedPositionSize == null) {
+            return@withContext NetworkResult.Error(
+                com.cryptopulse.app.core.error.NetworkError.HttpError(
+                    code = 400,
+                    message = "Cannot activate bot: valid trade budget is required.",
+                    detail = "Invalid or missing position size"
+                )
+            )
+        }
+
         val primarySymbol = symbols.first()
         val mergedConfig = mutableMapOf<String, Any>()
         config?.parameters?.let { mergedConfig.putAll(it) }
@@ -88,7 +99,7 @@ class BotRepositoryImpl @Inject constructor(
             coinId = primarySymbol,
             strategy = strategy,
             targetEntryPrice = config?.entryPrice?.takeIf { it > 0.0 },
-            positionSize = config?.tradeValueUsdt?.takeIf { it > 0.0 } ?: 5.0,
+            positionSize = resolvedPositionSize,
             config = mergedConfig.takeIf { it.isNotEmpty() }
         )
         when (val result = botRemoteDataSource.activate(request)) {
@@ -169,7 +180,16 @@ class BotRepositoryImpl @Inject constructor(
                     NetworkResult.Success(result.data.toDomain(alertId))
                 }
             }
-            is NetworkResult.Error -> result
+            is NetworkResult.Error -> {
+                if (result.error is com.cryptopulse.app.core.error.NetworkError.Timeout ||
+                    (result.error is com.cryptopulse.app.core.error.NetworkError.HttpError && (result.error.code == 502 || result.error.code == 504)) ||
+                    result.error is com.cryptopulse.app.core.error.NetworkError.Unknown
+                ) {
+                    val fallback = verifyStatusOnTimeout(alertId)
+                    if (fallback != null) return@withContext fallback
+                }
+                result
+            }
         }
     }
 
@@ -188,8 +208,57 @@ class BotRepositoryImpl @Inject constructor(
                     NetworkResult.Success(result.data.toDomain(request.alertId))
                 }
             }
-            is NetworkResult.Error -> result
+            is NetworkResult.Error -> {
+                if (result.error is com.cryptopulse.app.core.error.NetworkError.Timeout ||
+                    (result.error is com.cryptopulse.app.core.error.NetworkError.HttpError && (result.error.code == 502 || result.error.code == 504)) ||
+                    result.error is com.cryptopulse.app.core.error.NetworkError.Unknown
+                ) {
+                    val fallback = verifyStatusOnTimeout(request.alertId)
+                    if (fallback != null) return@withContext fallback
+                }
+                result
+            }
         }
+    }
+
+    private suspend fun verifyStatusOnTimeout(positionId: String, maxAttempts: Int = 3, delayMs: Long = 1000L): NetworkResult<TradeExecutionResult>? {
+        for (attempt in 1..maxAttempts) {
+            when (val statusRes = botRemoteDataSource.getExecutionStatus(positionId)) {
+                is NetworkResult.Success -> {
+                    val dto = statusRes.data
+                    val isConfirmedOrActive = dto.success && (
+                        dto.isFilled ||
+                        dto.entryStatus == "FILLED" ||
+                        dto.entryStatus == "OPEN" ||
+                        dto.entryStatus == "PENDING_ENTRY" ||
+                        !dto.orderId.isNullOrBlank()
+                    )
+                    val isExplicitFailure = dto.entryStatus == "FAILED" ||
+                        dto.entryStatus == "CANCELLED" ||
+                        dto.entryStatus == "REJECTED" ||
+                        (!dto.success && !dto.orderId.isNullOrBlank())
+
+                    if (isConfirmedOrActive) {
+                        return NetworkResult.Success(dto.toDomain())
+                    } else if (isExplicitFailure) {
+                        return NetworkResult.Error(
+                            com.cryptopulse.app.core.error.NetworkError.HttpError(
+                                code = 400,
+                                message = dto.message ?: "Order execution was rejected or cancelled by exchange.",
+                                detail = dto.message
+                            )
+                        )
+                    }
+                }
+                is NetworkResult.Error -> {
+                    // Endpoint might still be completing or unreachable; retry up to maxAttempts
+                }
+            }
+            if (attempt < maxAttempts) {
+                delay(delayMs)
+            }
+        }
+        return null
     }
 
     @Deprecated("Do not use in production. Real trades must use executeTrade(alertId).", level = DeprecationLevel.WARNING)

@@ -56,6 +56,7 @@ open class TradeAlertManager @Inject constructor(
     companion object {
         const val CHANNEL_ID = "trading_bot_channel"
         const val ALERT_NOTIFICATION_ID = 1002
+        const val FILL_NOTIFICATION_ID = 1004
         const val TRADE_ALERT_HARDWARE_TIMEOUT_MS = 30_000L // Central 30 seconds hardware lifetime
         const val WAKELOCK_TIMEOUT_MS = TRADE_ALERT_HARDWARE_TIMEOUT_MS + 5_000L // 35 seconds safety cap
     }
@@ -117,10 +118,19 @@ open class TradeAlertManager @Inject constructor(
         }
 
         val status = alertData["status"] as? String
-        if (status == "expired" || status == "executed" || status == "filled") {
+        if (status == "expired" || status == "executed" || status == "filled" || status == "submitted") {
             TradeAlertLogger.log(
                 "TERMINAL_ALERT_SUPPRESSED",
-                "Alert $alertId is in terminal status $status; ignoring."
+                "Alert $alertId is in terminal or submitted status $status; ignoring."
+            )
+            return
+        }
+
+        val type = (alertData["type"] as? String) ?: (alertData["alertType"] as? String)
+        if (type.equals("TRADE_FILLED", ignoreCase = true) || type.equals("TRADE_SUBMITTED", ignoreCase = true)) {
+            TradeAlertLogger.log(
+                "FILL_EVENT_SUPPRESSED_FROM_TRADE_ALERT",
+                "Alert $alertId has event type $type; suppressing actionable alert presentation."
             )
             return
         }
@@ -314,6 +324,110 @@ open class TradeAlertManager @Inject constructor(
         activeAlertData = null
         scope.launch { dataStore?.saveActiveAlert(null) }
         _currentState.value = TradeAlertState.IDLE
+    }
+
+    /**
+     * Authoritative handler for order-submission events (e.g. limit orders resting on exchange).
+     * Marks alertId and orderId as RESOLVED so user is not prompted to submit again,
+     * silences any ongoing siren/vibration, and displays an informational "Order Submitted" notification.
+     */
+    @Synchronized
+    open fun onTradeSubmitted(
+        alertId: String,
+        orderId: String? = null,
+        symbol: String = "UNKNOWN",
+        side: String = "BUY",
+        entryPrice: Double = 0.0
+    ) {
+        TradeAlertLogger.log(
+            "TRADE_SUBMITTED_RECEIVED",
+            "Handling trade submission for alertId=$alertId, orderId=$orderId, symbol=$symbol, price=$entryPrice"
+        )
+
+        // Mark alertId as RESOLVED so duplicate prompt does not occur
+        if (alertId.isNotBlank()) {
+            handledAlertsCache[alertId] = "RESOLVED"
+            scope.launch {
+                try {
+                    dataStore?.recordAlertHardwareState(alertId, "RESOLVED")
+                } catch (_: Throwable) {}
+            }
+        }
+
+        // Mark orderId as RESOLVED if distinct
+        if (!orderId.isNullOrBlank()) {
+            handledAlertsCache[orderId] = "RESOLVED"
+            scope.launch {
+                try {
+                    dataStore?.recordAlertHardwareState(orderId, "RESOLVED")
+                } catch (_: Throwable) {}
+            }
+        }
+
+        // If this alert is currently active in the manager, dismiss it
+        val currentActiveId = (activeAlertData?.get("id") as? String) ?: (activeAlertData?.get("alertId") as? String)
+        if (currentActiveId != null && (currentActiveId == alertId || currentActiveId == orderId)) {
+            dismissOrExecuteAlert()
+        } else {
+            silenceHardware(alertId)
+        }
+
+        // Post informational submission notification (default priority, no alarm/vibration)
+        scope.launch {
+            postExecutionNotification(alertId, orderId, symbol, side, entryPrice, isSubmitted = true)
+        }
+    }
+
+    /**
+     * Authoritative handler for order-fill events.
+     * Marks alertId and orderId as RESOLVED, silences any ongoing siren/vibration,
+     * and displays an informational confirmation notification (no alarm, no action screen).
+     */
+    @Synchronized
+    open fun onTradeFilled(
+        alertId: String,
+        orderId: String? = null,
+        symbol: String = "UNKNOWN",
+        side: String = "BUY",
+        entryPrice: Double = 0.0
+    ) {
+        TradeAlertLogger.log(
+            "TRADE_FILLED_RECEIVED",
+            "Handling trade fill execution for alertId=$alertId, orderId=$orderId, symbol=$symbol, price=$entryPrice"
+        )
+
+        // Mark alertId as RESOLVED
+        if (alertId.isNotBlank()) {
+            handledAlertsCache[alertId] = "RESOLVED"
+            scope.launch {
+                try {
+                    dataStore?.recordAlertHardwareState(alertId, "RESOLVED")
+                } catch (_: Throwable) {}
+            }
+        }
+
+        // Mark orderId as RESOLVED if distinct
+        if (!orderId.isNullOrBlank()) {
+            handledAlertsCache[orderId] = "RESOLVED"
+            scope.launch {
+                try {
+                    dataStore?.recordAlertHardwareState(orderId, "RESOLVED")
+                } catch (_: Throwable) {}
+            }
+        }
+
+        // If this alert is currently active in the manager, dismiss it
+        val currentActiveId = (activeAlertData?.get("id") as? String) ?: (activeAlertData?.get("alertId") as? String)
+        if (currentActiveId != null && (currentActiveId == alertId || currentActiveId == orderId)) {
+            dismissOrExecuteAlert()
+        } else {
+            silenceHardware(alertId)
+        }
+
+        // Post informational fill notification (default priority, no alarm/vibration)
+        scope.launch {
+            postExecutionNotification(alertId, orderId, symbol, side, entryPrice, isSubmitted = false)
+        }
     }
 
     /**
@@ -532,6 +646,79 @@ open class TradeAlertManager @Inject constructor(
         try {
             val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.cancel(ALERT_NOTIFICATION_ID)
+        } catch (e: Exception) {
+            TradeAlertLogger.error("NOTIFICATION_CANCEL_ERROR", e)
+        }
+    }
+
+    /**
+     * Displays a non-intrusive, informational notification confirming order submission or execution.
+     * Strictly does NOT ring the siren or launch the TradeAlertScreen.
+     */
+    protected open fun postExecutionNotification(
+        alertId: String,
+        orderId: String?,
+        symbol: String,
+        side: String,
+        entryPrice: Double,
+        isSubmitted: Boolean = false
+    ) {
+        if (appContext == null) return
+        try {
+            val intent = Intent(appContext, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("extra_alert", false)
+                putExtra("symbol", symbol)
+                putExtra("side", side)
+                putExtra("alert_id", alertId)
+                orderId?.let { putExtra("order_id", it) }
+            }
+
+            val pendingIntent = PendingIntent.getActivity(
+                appContext, 3, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val formattedPrice = if (entryPrice > 0.0) "$${"%.4f".format(entryPrice)}" else "Market"
+            val title = if (isSubmitted) "Order Submitted: $side $symbol" else "Order Filled: $side $symbol"
+            val contentText = if (isSubmitted) {
+                "$side $symbol order submitted at $formattedPrice"
+            } else {
+                "$side $symbol executed at $formattedPrice"
+            }
+
+            val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+                .setContentTitle(title)
+                .setContentText(contentText)
+                .setSmallIcon(com.cryptopulse.app.R.drawable.ic_notification_cryptopulse)
+                .setContentIntent(pendingIntent)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setAutoCancel(true)
+                .build()
+
+            val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            manager?.notify(FILL_NOTIFICATION_ID, notification)
+            TradeAlertLogger.log("EXECUTION_NOTIFICATION_POSTED", "Posted execution notification (submitted=$isSubmitted) for $symbol")
+        } catch (e: Exception) {
+            TradeAlertLogger.error("EXECUTION_NOTIFICATION_ERROR", e)
+        }
+    }
+
+    protected open fun postFillNotification(
+        alertId: String,
+        orderId: String?,
+        symbol: String,
+        side: String,
+        entryPrice: Double
+    ) {
+        postExecutionNotification(alertId, orderId, symbol, side, entryPrice, isSubmitted = false)
+    }
+
+    private fun cancelFillNotification() {
+        if (appContext == null) return
+        try {
+            val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.cancel(FILL_NOTIFICATION_ID)
         } catch (e: Exception) {
             TradeAlertLogger.error("NOTIFICATION_CANCEL_ERROR", e)
         }

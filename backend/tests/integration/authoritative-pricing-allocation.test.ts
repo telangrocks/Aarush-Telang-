@@ -613,7 +613,7 @@ describe('Authoritative Bybit Price Normalization & Trade Allocation Priority', 
             precision: { price: 0.000001, amount: 10 },
             limits: {
               price: { min: new BigNumber(0.000001) },
-              amount: { min: new BigNumber(10) },
+              amount: { min: new BigNumber(10), max: new BigNumber(16500000) },
               cost: { min: new BigNumber(1) }
             }
           }

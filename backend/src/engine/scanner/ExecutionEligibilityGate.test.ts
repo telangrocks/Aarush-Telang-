@@ -44,6 +44,7 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 0.001,
         minOrderQty: 0.001,
         minNotional: 5,
+        maxOrderQty: 100,
       });
 
       expect(result.isExecutable).toBe(false);
@@ -59,6 +60,7 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 0.01,
         minOrderQty: 0.01,
         minNotional: 5,
+        maxOrderQty: 100,
       });
 
       expect(result.isExecutable).toBe(false);
@@ -81,6 +83,7 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 0.01,
         minOrderQty: 0.01,
         minNotional: 5,
+        maxOrderQty: 100,
       });
 
       expect(result.isExecutable).toBe(false);
@@ -100,6 +103,7 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 0.01,
         minOrderQty: 0.01,
         minNotional: 5,
+        maxOrderQty: 100,
       });
 
       expect(result.isExecutable).toBe(true);
@@ -118,6 +122,7 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 1,
         minOrderQty: 1,
         minNotional: 5,
+        maxOrderQty: 100,
       });
 
       expect(result.isExecutable).toBe(true);
@@ -133,6 +138,7 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 10,
         minOrderQty: 10,
         minNotional: 5,
+        maxOrderQty: 100,
       });
 
       expect(result.isExecutable).toBe(true);
@@ -142,8 +148,8 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
   });
 
   describe('Dynamic capital scaling across multiple tiers', () => {
-    const btcParams = { currentPrice: 65000, qtyStep: 0.001, minOrderQty: 0.001, minNotional: 5 };
-    const ethParams = { currentPrice: 3500, qtyStep: 0.01, minOrderQty: 0.01, minNotional: 5 };
+    const btcParams = { currentPrice: 65000, qtyStep: 0.001, minOrderQty: 0.001, minNotional: 5, maxOrderQty: 100 };
+    const ethParams = { currentPrice: 3500, qtyStep: 0.01, minOrderQty: 0.01, minNotional: 5, maxOrderQty: 1000 };
 
     it('handles 5 USDT: both BTC and ETH rejected', () => {
       expect(ExecutionEligibilityGate.evaluate({ ...btcParams, tradeAmountUsdt: 5 }).isExecutable).toBe(false);
@@ -184,6 +190,7 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 0.1,
         minOrderQty: 0.1,
         minNotional: 5.0,
+        maxOrderQty: 100,
       });
 
       expect(result.isExecutable).toBe(false);
@@ -197,6 +204,7 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 1,
         minOrderQty: 1,
         minNotional: 5,
+        maxOrderQty: 100,
       });
       expect(zero.isExecutable).toBe(false);
       expect(zero.rejectionReason).toContain('Invalid trade amount');
@@ -207,6 +215,7 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 1,
         minOrderQty: 1,
         minNotional: 5,
+        maxOrderQty: 100,
       });
       expect(negative.isExecutable).toBe(false);
     });
@@ -218,9 +227,134 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         qtyStep: 1,
         minOrderQty: 1,
         minNotional: 5,
+        maxOrderQty: 100,
       });
       expect(zeroPrice.isExecutable).toBe(false);
       expect(zeroPrice.rejectionReason).toContain('Invalid market price');
+    });
+  });
+  describe('Exchange Maximum Quantity Handling (maxOrderQty)', () => {
+    it('reproduces and clamps 1000PEPE ($5,555 budget, entry $0.004962, maxOrderQty 999,999, step 100)', () => {
+      const result = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 5555,
+        currentPrice: 0.004962,
+        qtyStep: 100,
+        minOrderQty: 100,
+        minNotional: 5,
+        maxOrderQty: 999999,
+      });
+
+      expect(result.isExecutable).toBe(true);
+      expect(result.quantizedQty).toBe(999900);
+      expect(result.wasClampedToMax).toBe(true);
+      expect(result.postRoundingNotional).toBeCloseTo(4961.5038, 2);
+      expect(result.postRoundingNotional).toBeLessThanOrEqual(5555);
+      expect(result.quantizedQty).toBeLessThanOrEqual(999999);
+    });
+
+    it('accepts order when quantity is below maxOrderQty without clamping', () => {
+      const result = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 1000,
+        currentPrice: 0.004962,
+        qtyStep: 100,
+        minOrderQty: 100,
+        minNotional: 5,
+        maxOrderQty: 999999,
+      });
+
+      expect(result.isExecutable).toBe(true);
+      expect(result.quantizedQty).toBe(201500);
+      expect(result.wasClampedToMax).toBe(false);
+    });
+
+    it('accepts order when quantity equals maxOrderQty exactly', () => {
+      const result = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 5000,
+        currentPrice: 0.005,
+        qtyStep: 100,
+        minOrderQty: 100,
+        minNotional: 5,
+        maxOrderQty: 1000000,
+      });
+
+      expect(result.isExecutable).toBe(true);
+      expect(result.quantizedQty).toBe(1000000);
+      expect(result.wasClampedToMax).toBe(false);
+    });
+
+    it('rejects invalid or non-positive maxOrderQty (fails closed)', () => {
+      const zeroMax = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 100,
+        currentPrice: 10,
+        qtyStep: 1,
+        minOrderQty: 1,
+        minNotional: 5,
+        maxOrderQty: 0,
+      });
+      expect(zeroMax.isExecutable).toBe(false);
+      expect(zeroMax.rejectionReason).toContain('Invalid exchange maximum order quantity');
+
+      const negMax = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 100,
+        currentPrice: 10,
+        qtyStep: 1,
+        minOrderQty: 1,
+        minNotional: 5,
+        maxOrderQty: -50,
+      });
+      expect(negMax.isExecutable).toBe(false);
+      expect(negMax.rejectionReason).toContain('Invalid exchange maximum order quantity');
+
+      const undefinedMax = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 100,
+        currentPrice: 10,
+        qtyStep: 1,
+        minOrderQty: 1,
+        minNotional: 5,
+        maxOrderQty: undefined as any,
+      });
+      expect(undefinedMax.isExecutable).toBe(false);
+      expect(undefinedMax.rejectionReason).toContain('Invalid exchange maximum order quantity');
+
+      const nanMax = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 100,
+        currentPrice: 10,
+        qtyStep: 1,
+        minOrderQty: 1,
+        minNotional: 5,
+        maxOrderQty: NaN,
+      });
+      expect(nanMax.isExecutable).toBe(false);
+      expect(nanMax.rejectionReason).toContain('Invalid exchange maximum order quantity');
+    });
+
+    it('rejects when clamped quantity drops below minOrderQty', () => {
+      const result = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 1000,
+        currentPrice: 10,
+        qtyStep: 1,
+        minOrderQty: 50,
+        minNotional: 5,
+        maxOrderQty: 20,
+      });
+
+      expect(result.isExecutable).toBe(false);
+      expect(result.rejectionReason).toContain('Quantized qty (20) < minOrderQty (50)');
+    });
+
+    it('rejects when post-rounding notional drops below minNotional after clamping', () => {
+      const result = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 1000,
+        currentPrice: 0.001,
+        qtyStep: 1,
+        minOrderQty: 1,
+        minNotional: 50,
+        maxOrderQty: 10000,
+      });
+
+      expect(result.isExecutable).toBe(false);
+      expect(result.rejectionReason).toContain('Post-rounding notional');
+      expect(result.rejectionReason).toContain('< minNotional');
     });
   });
 });
@@ -250,7 +384,7 @@ describe('MarketOpportunityScanner Stage 2 Execution Eligibility Integration', (
         quote: 'USDT',
         active: true,
         category: 'linear',
-        limits: { cost: { min: 5 }, amount: { min: 0.001 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.001, max: 100 } },
         precision: { price: 0.1, amount: 0.001 },
       },
       {
@@ -260,7 +394,7 @@ describe('MarketOpportunityScanner Stage 2 Execution Eligibility Integration', (
         quote: 'USDT',
         active: true,
         category: 'linear',
-        limits: { cost: { min: 5 }, amount: { min: 1 } },
+        limits: { cost: { min: 5 }, amount: { min: 1, max: 100000 } },
         precision: { price: 0.0001, amount: 1 },
       },
     ];
@@ -305,7 +439,7 @@ describe('MarketOpportunityScanner Stage 2 Execution Eligibility Integration', (
         quote: 'USDT',
         active: true,
         category: 'linear',
-        limits: { cost: { min: 5 }, amount: { min: 0.001 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.001, max: 100 } },
         precision: { price: 0.1, amount: 0.001 },
       },
       {
@@ -315,7 +449,7 @@ describe('MarketOpportunityScanner Stage 2 Execution Eligibility Integration', (
         quote: 'USDT',
         active: true,
         category: 'linear',
-        limits: { cost: { min: 5 }, amount: { min: 1 } },
+        limits: { cost: { min: 5 }, amount: { min: 1, max: 100000 } },
         precision: { price: 0.0001, amount: 1 },
       },
     ];
@@ -368,7 +502,7 @@ describe('MarketOpportunityScanner Stage 2 Execution Eligibility Integration', (
         quote: 'USDT',
         active: true,
         category: 'linear',
-        limits: { cost: { min: 5 }, amount: { min: 0.001 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.001, max: 100 } },
         precision: { price: 0.1, amount: 0.001 },
       });
       tickers.push({
@@ -390,7 +524,7 @@ describe('MarketOpportunityScanner Stage 2 Execution Eligibility Integration', (
         quote: 'USDT',
         active: true,
         category: 'linear',
-        limits: { cost: { min: 5 }, amount: { min: 1 } },
+        limits: { cost: { min: 5 }, amount: { min: 1, max: 100000 } },
         precision: { price: 0.01, amount: 1 },
       });
       tickers.push({

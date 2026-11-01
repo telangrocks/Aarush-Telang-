@@ -8,6 +8,7 @@ import android.content.Context
 import android.media.RingtoneManager
 import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -46,7 +47,10 @@ import com.cryptopulse.app.ui.components.TradeExecutionConfirmationCard
 import com.cryptopulse.app.domain.models.ExecutionUiState
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private const val AUTO_DISMISS_DELAY_MS = 4000L
 
 /**
  * Electric cyan horizontal lens flare divider matching the reference branding design.
@@ -243,6 +247,9 @@ fun TradeAlertScreen(
     signalPrice: Double = 0.0,
     targetEntryPrice: Double? = null,
     tradeAmountUsdt: Double = 0.0,
+    requestedBudget: Double? = null,
+    quantity: Double? = null,
+    effectiveNotional: Double? = null,
     strategy: String? = null,
     timeframe: String? = null,
     viewModel: ExchangeViewModel,
@@ -254,9 +261,31 @@ fun TradeAlertScreen(
     val isUnknownState by viewModel.isUnknownState.collectAsState()
 
     val isExecuting = executionState is ExecutionUiState.Submitting || executionState is ExecutionUiState.AwaitingFill
+    val isExecutionSuccess = executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed
+    var hasNavigated by remember { mutableStateOf(false) }
 
     LaunchedEffect(candidate.pairName) {
         viewModel.startLiveTicker(candidate.pairName)
+    }
+
+    LaunchedEffect(isExecutionSuccess) {
+        if (isExecutionSuccess && !hasNavigated) {
+            delay(AUTO_DISMISS_DELAY_MS)
+            if (!hasNavigated && (executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed)) {
+                hasNavigated = true
+                viewModel.dismissExecutionConfirmation { onTradeExecuted() }
+            }
+        }
+    }
+
+    BackHandler(enabled = !hasNavigated) {
+        hasNavigated = true
+        if (executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed) {
+            viewModel.dismissExecutionConfirmation { onBack() }
+        } else {
+            viewModel.dismissCurrentAlert()
+            onBack()
+        }
     }
 
     DisposableEffect(Unit) {
@@ -276,11 +305,14 @@ fun TradeAlertScreen(
                     title = {},
                     navigationIcon = {
                         IconButton(onClick = {
+                            if (!hasNavigated) {
+                                hasNavigated = true
                             if (executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed) {
                                 viewModel.dismissExecutionConfirmation { onBack() }
                             } else {
                                 viewModel.dismissCurrentAlert()
                                 onBack()
+                            }
                             }
                         }) {
                             Icon(
@@ -416,6 +448,7 @@ fun TradeAlertScreen(
                                             enabled = !isExecuting,
                                             testTag = "trade_alert_cancel_button",
                                         )
+                                        val isQuantityValid = quantity != null && quantity > 0.0 && !quantity.isNaN()
                                         TradeAlertCyberButton(
                                             text = "TRADE",
                                             onClick = {
@@ -432,7 +465,7 @@ fun TradeAlertScreen(
                                             },
                                             leadingIcon = Icons.Default.Check,
                                             modifier = Modifier.weight(1f),
-                                            enabled = !isExecuting,
+                                            enabled = !isExecuting && isQuantityValid,
                                             testTag = "trade_alert_trade_button",
                                         )
                                     }
@@ -538,22 +571,22 @@ fun TradeAlertScreen(
                         is ExecutionUiState.Filled -> {
                             TradeExecutionConfirmationCard(
                                 result = state.result,
-                                onViewCandidates = {
-                                    viewModel.dismissExecutionConfirmation { onTradeExecuted() }
-                                },
                                 onDismiss = {
-                                    viewModel.dismissExecutionConfirmation { onBack() }
+                                    if (!hasNavigated) {
+                                        hasNavigated = true
+                                        viewModel.dismissExecutionConfirmation { onBack() }
+                                    }
                                 }
                             )
                         }
                         is ExecutionUiState.Confirmed -> {
                             TradeExecutionConfirmationCard(
                                 result = state.result,
-                                onViewCandidates = {
-                                    viewModel.dismissExecutionConfirmation { onTradeExecuted() }
-                                },
                                 onDismiss = {
-                                    viewModel.dismissExecutionConfirmation { onBack() }
+                                    if (!hasNavigated) {
+                                        hasNavigated = true
+                                        viewModel.dismissExecutionConfirmation { onBack() }
+                                    }
                                 }
                             )
                         }
@@ -644,18 +677,84 @@ fun TradeAlertScreen(
                                 SummaryRow("Entry Price", "${formatPrice(entryPrice)} USDT", Color.White, "trade_alert_entry")
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
-                                // 3. Stop Loss
+                                // 5. Requested Budget
+                                val displayBudget = requestedBudget ?: if (tradeAmountUsdt > 0.0) tradeAmountUsdt else null
+                                if (displayBudget != null) {
+                                    SummaryRow("Requested Budget", "${"%.2f".format(displayBudget)} USDT", Color.White, "trade_alert_requested_budget")
+                                    HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
+                                }
+
+                                // 6. Approved Quantity
+                                val isQuantityValid = quantity != null && quantity > 0.0 && !quantity.isNaN()
+                                SummaryRow(
+                                    "Approved Quantity",
+                                    formatQuantity(quantity),
+                                    if (isQuantityValid) Color.White else Color(0xFFFF3D57),
+                                    "trade_alert_quantity"
+                                )
+                                HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
+
+                                // 7. Order Notional
+                                val displayNotional = effectiveNotional ?: (quantity?.let { if (it > 0.0 && entryPrice > 0.0) it * entryPrice else null })
+                                if (displayNotional != null) {
+                                    SummaryRow("Order Notional", "${"%.2f".format(displayNotional)} USDT", Color.White, "trade_alert_notional")
+                                    HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
+                                }
+
+                                // 8. Stop Loss
                                 SummaryRow("Stop Loss", "${formatPrice(stopLossPrice)} USDT", Color(0xFFFF3D57), "trade_alert_stop_loss")
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
-                                // 4. Take Profit
+                                // 9. Take Profit
                                 SummaryRow("Take Profit", "${formatPrice(takeProfitPrice)} USDT", Color(0xFF00FFA3), "trade_alert_take_profit")
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
-                                // 5. Estimated P&L
+                                // 10. Estimated P&L
                                 val pnlSign = if (estimatedPnl >= 0) "+" else ""
                                 val pnlColor = if (estimatedPnl >= 0) Color(0xFF00FFA3) else Color(0xFFFF3D57)
                                 SummaryRow("Estimated P&L", "$pnlSign${"%.2f".format(estimatedPnl)} USDT", pnlColor, "trade_alert_estimated_pnl")
+
+                                if (!isQuantityValid) {
+                                    Spacer(Modifier.height(10.dp))
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color(0x33FF3D57), RoundedCornerShape(8.dp))
+                                            .border(1.dp, Color(0x88FF3D57), RoundedCornerShape(8.dp))
+                                            .padding(8.dp)
+                                            .testTag("trade_alert_invalid_quantity_notice"),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Warning, null, tint = Color(0xFFFF3D57), modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            "Exchange-approved quantity is unavailable or invalid. Trade execution is disabled for safety.",
+                                            color = Color(0xFFFF8595),
+                                            fontSize = 11.5.sp,
+                                            lineHeight = 15.sp
+                                        )
+                                    }
+                                } else if (displayBudget != null && displayNotional != null && (displayBudget - displayNotional) > 0.5) {
+                                    Spacer(Modifier.height(10.dp))
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color(0x2200E5FF), RoundedCornerShape(8.dp))
+                                            .border(1.dp, Color(0x6600E5FF), RoundedCornerShape(8.dp))
+                                            .padding(8.dp)
+                                            .testTag("trade_alert_clamped_notice"),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Info, null, tint = Color(0xFF00E5FF), modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            "Position size adjusted to Bybit exchange limits (${formatQuantity(quantity)} max contracts). Effective notional is ${"%.2f".format(displayNotional)} USDT.",
+                                            color = Color(0xFFE0F7FA),
+                                            fontSize = 11.5.sp,
+                                            lineHeight = 15.sp
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -701,6 +800,15 @@ private fun SummaryRow(label: String, value: String, valueColor: Color, testTag:
             fontWeight = FontWeight.Bold,
             style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
         )
+    }
+}
+
+internal fun formatQuantity(quantity: Double?): String {
+    if (quantity == null || quantity <= 0.0 || quantity.isNaN()) return "—"
+    return if (quantity % 1.0 == 0.0) {
+        String.format(java.util.Locale.US, "%,d", quantity.toLong())
+    } else {
+        String.format(java.util.Locale.US, "%.6f", quantity).trimEnd('0').trimEnd('.')
     }
 }
 

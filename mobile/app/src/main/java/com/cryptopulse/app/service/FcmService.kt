@@ -69,7 +69,11 @@ class FcmService : FirebaseMessagingService() {
 
     private fun handleDataPayload(data: Map<String, String>) {
         val alertType = data["type"] ?: data["alertType"]
-        if (alertType.equals("TRADE_ALERT", ignoreCase = true) || data["extra_alert"] == "true") {
+        if (alertType.equals("TRADE_FILLED", ignoreCase = true) || data["status"] == "filled") {
+            handleTradeExecutionPayload(data, isSubmitted = false)
+        } else if (alertType.equals("TRADE_SUBMITTED", ignoreCase = true) || data["status"] == "submitted") {
+            handleTradeExecutionPayload(data, isSubmitted = true)
+        } else if (alertType.equals("TRADE_ALERT", ignoreCase = true) || data["extra_alert"] == "true") {
             val alertId = data["id"] ?: data["alertId"] ?: data["opportunityId"] ?: ""
             if (alertId.isBlank()) return
             val alertData = buildMap<String, Any> {
@@ -83,6 +87,9 @@ class FcmService : FirebaseMessagingService() {
                 data["takeProfit"]?.toDoubleOrNull()?.let { put("takeProfit", it) }
                 data["estimatedPnl"]?.toDoubleOrNull()?.let { put("estimatedPnl", it) }
                 data["positionSize"]?.toDoubleOrNull()?.let { put("positionSize", it) }
+                data["quantity"]?.toDoubleOrNull()?.let { put("quantity", it) }
+                data["requestedBudget"]?.toDoubleOrNull()?.let { put("requestedBudget", it) }
+                data["effectiveNotional"]?.toDoubleOrNull()?.let { put("effectiveNotional", it) }
                 data["strategy"]?.let { put("strategy", it) }
                 data["side"]?.let { put("side", it) }
                 data["serverTimestamp"]?.let {
@@ -98,6 +105,33 @@ class FcmService : FirebaseMessagingService() {
                 put("alertType", "TRADE_ALERT")
             }
             tradeAlertManager.onNewAlertReceived(alertData)
+        }
+    }
+
+    private fun handleTradeExecutionPayload(data: Map<String, String>, isSubmitted: Boolean) {
+        val alertId = data["alertId"] ?: data["id"] ?: ""
+        val orderId = data["orderId"] ?: data["exchangeOrderId"]
+        val symbol = data["symbol"] ?: "UNKNOWN"
+        val side = data["side"] ?: "BUY"
+        val entryPrice = data["entryPrice"]?.toDoubleOrNull() ?: 0.0
+
+        Log.d("FcmService", "Handling trade execution payload (isSubmitted=$isSubmitted): alertId=$alertId, orderId=$orderId, symbol=$symbol")
+        if (isSubmitted) {
+            tradeAlertManager.onTradeSubmitted(
+                alertId = alertId,
+                orderId = orderId,
+                symbol = symbol,
+                side = side,
+                entryPrice = entryPrice
+            )
+        } else {
+            tradeAlertManager.onTradeFilled(
+                alertId = alertId,
+                orderId = orderId,
+                symbol = symbol,
+                side = side,
+                entryPrice = entryPrice
+            )
         }
     }
 

@@ -215,6 +215,10 @@ class ExchangeViewModel @Inject constructor(
 
     private var tickerJob: Job? = null
     private var isProcessingTrade = false
+    private var consecutiveTickerFailures = 0
+
+    private val _tickerError = MutableStateFlow<String?>(null)
+    val tickerError: StateFlow<String?> = _tickerError
 
 
     // ── User-facing error state ──────────
@@ -407,7 +411,7 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
-    fun fetchMarketCandidates(budget: Double = 5.0) {
+    fun fetchMarketCandidates(budget: Double) {
         _candidatesError.value = null
         _candidatesLoading.value = true
         _marketDataState.value = MarketDataUiState.Loading
@@ -471,6 +475,8 @@ class ExchangeViewModel @Inject constructor(
         tickerJob = null
         activeTickerSymbol = null
         isProcessingTrade = false
+        consecutiveTickerFailures = 0
+        _tickerError.value = null
         _liveAlertPrice.value = null
         _isUnknownState.value = false
         _uiState.value = ExchangeUiState.Idle
@@ -641,13 +647,26 @@ class ExchangeViewModel @Inject constructor(
         tickerJob?.cancel()
         Log.d(TAG, "[DIAGNOSTIC] startLiveTicker starting polling loop for $normalizedSymbol")
         tickerJob = viewModelScope.launch {
+            consecutiveTickerFailures = 0
             while (isActive && !isProcessingTrade) {
                 when (val result = marketRepository.getTicker(normalizedSymbol)) {
                     is NetworkResult.Success -> {
+                        consecutiveTickerFailures = 0
                         _liveAlertPrice.value = result.data.price
+                        _ticker.value = result.data
+                        if (_tickerError.value != null) {
+                            _tickerError.value = null
+                        }
                     }
                     is NetworkResult.Error -> {
-                        // Silently ignore ticker errors during alert
+                        consecutiveTickerFailures++
+                        if (consecutiveTickerFailures >= 3) {
+                            val err = getUserFriendlyErrorMessage(endpointName = "/api/market/ticker", exception = result.exceptionOrNull() ?: Exception("Price feed unavailable")).first
+                            _tickerError.value = "Market price feed temporarily unavailable ($err). Showing last known price."
+                            Log.w(TAG, "[DIAGNOSTIC] Persistent ticker failure ($consecutiveTickerFailures consecutive) for $normalizedSymbol: $err")
+                        } else {
+                            Log.d(TAG, "[DIAGNOSTIC] Transient ticker failure ($consecutiveTickerFailures/3) for $normalizedSymbol: retaining last known price (${_liveAlertPrice.value})")
+                        }
                     }
                 }
                 delay(2000L)
@@ -660,6 +679,8 @@ class ExchangeViewModel @Inject constructor(
         tickerJob?.cancel()
         tickerJob = null
         activeTickerSymbol = null
+        consecutiveTickerFailures = 0
+        _tickerError.value = null
     }
 
     fun setPendingAlert(alert: Map<String, Any>) {
@@ -732,8 +753,18 @@ class ExchangeViewModel @Inject constructor(
         val signalPrice = alert["signalPrice"] as? Double
         val stopLoss = alert["stopLoss"] as? Double
         val takeProfit = alert["takeProfit"] as? Double
-        val positionSizeUsdt = alert["positionSize"] as? Double
+        val quantity = (alert["quantity"] as? Number)?.toDouble() ?: (alert["quantity"] as? String)?.toDoubleOrNull()
+        val requestedBudget = (alert["requestedBudget"] as? Number)?.toDouble() ?: (alert["requestedBudget"] as? String)?.toDoubleOrNull()
+        val effectiveNotional = (alert["effectiveNotional"] as? Number)?.toDouble() ?: (alert["effectiveNotional"] as? String)?.toDoubleOrNull()
+        val positionSizeUsdt = requestedBudget ?: ((alert["positionSize"] as? Number)?.toDouble() ?: (alert["positionSize"] as? String)?.toDoubleOrNull())
         val entryIntent = (alert["entryIntent"] as? String) ?: "IMMEDIATE"
+
+        if (quantity == null || quantity <= 0.0 || quantity.isNaN()) {
+            val errMsg = "Missing or invalid approved quantity. Cannot execute trade."
+            _tradeError.value = errMsg
+            _executionState.value = ExecutionUiState.Failed(errMsg)
+            return
+        }
 
         val requestDto = com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto(
             alertId = alertId,
@@ -745,6 +776,8 @@ class ExchangeViewModel @Inject constructor(
             stopLoss = stopLoss,
             takeProfit = takeProfit,
             positionSizeUsdt = positionSizeUsdt,
+            quantity = quantity,
+            requireApprovedQuantity = true,
             strategy = strategy,
             entryIntent = entryIntent
         )
@@ -913,10 +946,40 @@ class ExchangeViewModel @Inject constructor(
                 }.onFailure { e ->
                     isProcessingTrade = false
                     val errorMessage = getUserFriendlyErrorMessage(endpointName = "/api/trading-bot/execute-trade", exception = e).first
-                    if (errorMessage.contains("UNKNOWN_STATE") || errorMessage.contains("Network failure") || errorMessage.contains("timeout")) {
+                    val isTimeoutOrUnknown = errorMessage.contains("UNKNOWN_STATE") || errorMessage.contains("Network failure") || errorMessage.contains("timeout") || errorMessage.contains("Connection timeout")
+                    if (isTimeoutOrUnknown) {
                         _isUnknownState.value = true
                         _tradeError.value = "Order status unknown due to network timeout. The backend is safely reconciling. Please wait."
-                        _executionState.value = ExecutionUiState.Failed("Order status unknown due to network timeout. The backend is safely reconciling. Please wait.")
+                        _executionState.value = ExecutionUiState.AwaitingFill(
+                            positionId = alertId,
+                            alertId = alertId,
+                            symbol = symbol ?: "",
+                            side = side ?: "BUY"
+                        )
+                        executionPollingJob?.cancel()
+                        executionPollingJob = viewModelScope.launch {
+                            botRepository.pollExecutionStatus(alertId)
+                                .collect { statusResult ->
+                                    if (statusResult.isFilled) {
+                                        _isUnknownState.value = false
+                                        _tradeError.value = null
+                                        _executionState.value = ExecutionUiState.Filled(statusResult)
+                                        _lastTrade.value = TradeSetupState(
+                                            entryPrice = statusResult.actualFillPrice,
+                                            stopLossPrice = statusResult.stopLoss,
+                                            takeProfitPrice = statusResult.takeProfit,
+                                        )
+                                    } else if (statusResult.entryStatus == "OPEN" || statusResult.entryStatus == "PENDING_ENTRY" || statusResult.entryStatus == "NEW") {
+                                        _isUnknownState.value = false
+                                        _tradeError.value = null
+                                        _executionState.value = ExecutionUiState.Confirmed(statusResult)
+                                    } else if (statusResult.entryStatus == "FAILED" || statusResult.entryStatus == "CANCELLED" || statusResult.entryStatus == "REJECTED") {
+                                        _isUnknownState.value = false
+                                        _executionState.value = ExecutionUiState.Failed("Order execution was cancelled or rejected by exchange.")
+                                        _tradeError.value = "Order execution was cancelled or rejected by exchange."
+                                    }
+                                }
+                        }
                     } else {
                         _isUnknownState.value = false
                         _tradeError.value = errorMessage

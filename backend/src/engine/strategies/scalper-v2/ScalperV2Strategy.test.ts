@@ -163,7 +163,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
   // --------------------------------------------------------------------------
   // TEST 3: 15m Conflict
   // --------------------------------------------------------------------------
-  it('3. 15m conflict: 4h LONG + 1h LONG + 15m SHORT + 5m BUY -> 5m BUY qualifies (MTF informational only)', () => {
+  it('3. 15m entry timeframe conflict: 4h LONG + 1h LONG confirm broader market direction -> 5m BUY qualifies', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBearishCandles(35, 150, '15m'), // Contradicts LONG
@@ -182,7 +182,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
   // --------------------------------------------------------------------------
   // TEST 4: 1h Conflict
   // --------------------------------------------------------------------------
-  it('4. 1h conflict: 4h LONG + 1h SHORT + 15m LONG + 5m BUY -> 5m BUY qualifies (MTF informational only)', () => {
+  it('4. 1h conflict: 4h LONG + 1h SHORT + 15m LONG + 5m BUY -> 5m BUY rejected due to 1h conflict', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBullishCandles(35, 100, '15m'),
@@ -193,15 +193,16 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     const context = new StrategyContext(snapshot, 10000).freeze();
     const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(true);
-    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+    expect(result.hasSignal).toBe(false);
+    expect(result.metadata.signal).toBeNull();
+    expect(result.metadata.reasoning.some((r: string) => r.includes('[MTF CONFIRMATION] BUY rejected: Conflicted by higher timeframe (1h) direction'))).toBe(true);
     expect(result.metadata.targetTimeframe).toBe('5m');
   });
 
   // --------------------------------------------------------------------------
   // TEST 5: 4h Conflict
   // --------------------------------------------------------------------------
-  it('5. 4h conflict: 4h SHORT + 1h LONG + 15m LONG + 5m BUY -> 5m BUY qualifies (MTF informational only)', () => {
+  it('5. 4h conflict: 4h SHORT + 1h LONG + 15m LONG + 5m BUY -> 5m BUY rejected due to 4h conflict', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBullishCandles(35, 100, '15m'),
@@ -212,15 +213,16 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     const context = new StrategyContext(snapshot, 10000).freeze();
     const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(true);
-    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+    expect(result.hasSignal).toBe(false);
+    expect(result.metadata.signal).toBeNull();
+    expect(result.metadata.reasoning.some((r: string) => r.includes('[MTF CONFIRMATION] BUY rejected: Conflicted by higher timeframe (4h) direction'))).toBe(true);
     expect(result.metadata.targetTimeframe).toBe('5m');
   });
 
   // --------------------------------------------------------------------------
   // TEST 6: 5m Conflict
   // --------------------------------------------------------------------------
-  it('6. 5m conflict: 4h LONG + 1h LONG + 15m LONG + 5m SELL -> 5m SELL qualifies (MTF cannot veto)', () => {
+  it('6. 5m conflict: 4h LONG + 1h LONG + 15m LONG + 5m SELL -> 5m SELL rejected due to higher TF conflict', () => {
     const snapshot = buildMtfSnapshot({
       '5m': createBearishCandles(35, 150, '5m'), // 5m generates SELL
       '15m': createBullishCandles(35, 100, '15m'), // higher timeframes are LONG
@@ -231,8 +233,9 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
     const context = new StrategyContext(snapshot, 10000).freeze();
     const result = strategy.evaluate(context, '5m');
 
-    expect(result.hasSignal).toBe(true);
-    expect(result.metadata.signal?.type).toBe(SignalType.SELL);
+    expect(result.hasSignal).toBe(false);
+    expect(result.metadata.signal).toBeNull();
+    expect(result.metadata.reasoning.some((r: string) => r.includes('Conflicted by higher timeframe'))).toBe(true);
   });
 
   // --------------------------------------------------------------------------
@@ -387,9 +390,9 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
   });
 
   // --------------------------------------------------------------------------
-  // PROOF OF CAUSAL RELEVANCE: EACH TIMEFRAME ALONE CHANGES OUTCOME
+  // PROOF OF HIGHER TIMEFRAME CONFIRMATION AUTHORITY: CONFLICT VETOES SIGNALS
   // --------------------------------------------------------------------------
-  describe('Proof of 5m Authority: Higher Timeframes Cannot Veto 5m Signals', () => {
+  describe('Proof of Higher Timeframe Confirmation Authority: Conflict Vetoes Signals', () => {
     const baseBullish = {
       '5m': createBullishCandles(35, 100, '5m'),
       '15m': createBullishCandles(35, 100, '15m'),
@@ -397,7 +400,7 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
       '4h': createBullishCandles(35, 100, '4h'),
     };
 
-    it('Proof A: Changing ONLY 4h does NOT veto 5m BUY', () => {
+    it('Proof A: Changing ONLY 4h to Bearish DOES veto 5m BUY', () => {
       const resBase = strategy.evaluate(new StrategyContext(buildMtfSnapshot(baseBullish), 10000).freeze(), '5m');
       expect(resBase.hasSignal).toBe(true);
       expect(resBase.metadata.signal?.type).toBe(SignalType.BUY);
@@ -407,21 +410,23 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
         '4h': createBearishCandles(35, 150, '4h'),
       });
       const resInvert4h = strategy.evaluate(new StrategyContext(snapInvert4h, 10000).freeze(), '5m');
-      expect(resInvert4h.hasSignal).toBe(true);
-      expect(resInvert4h.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(resInvert4h.hasSignal).toBe(false);
+      expect(resInvert4h.metadata.signal).toBeNull();
+      expect(resInvert4h.metadata.reasoning.some((r: string) => r.includes('[MTF CONFIRMATION] BUY rejected: Conflicted by higher timeframe (4h) direction'))).toBe(true);
     });
 
-    it('Proof B: Changing ONLY 1h does NOT veto 5m BUY', () => {
+    it('Proof B: Changing ONLY 1h to Bearish DOES veto 5m BUY', () => {
       const snapInvert1h = buildMtfSnapshot({
         ...baseBullish,
         '1h': createBearishCandles(35, 150, '1h'),
       });
       const resInvert1h = strategy.evaluate(new StrategyContext(snapInvert1h, 10000).freeze(), '5m');
-      expect(resInvert1h.hasSignal).toBe(true);
-      expect(resInvert1h.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(resInvert1h.hasSignal).toBe(false);
+      expect(resInvert1h.metadata.signal).toBeNull();
+      expect(resInvert1h.metadata.reasoning.some((r: string) => r.includes('[MTF CONFIRMATION] BUY rejected: Conflicted by higher timeframe (1h) direction'))).toBe(true);
     });
 
-    it('Proof C: Changing ONLY 15m does NOT veto 5m BUY', () => {
+    it('Proof C: Changing ONLY 15m to Bearish does NOT veto 5m BUY (15m is entry TF, 1h & 4h confirm)', () => {
       const snapInvert15m = buildMtfSnapshot({
         ...baseBullish,
         '15m': createBearishCandles(35, 150, '15m'),
@@ -439,6 +444,181 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
       const resInvert5m = strategy.evaluate(new StrategyContext(snapInvert5m, 10000).freeze(), '5m');
       expect(resInvert5m.hasSignal).toBe(false);
       expect(resInvert5m.metadata.signal).toBeNull();
+    });
+  });
+
+  // ==========================================================================
+  // REFURBISHED MULTI-TIMEFRAME CONFIRMATION REQUIREMENTS
+  // ==========================================================================
+  describe('Refurbished Multi-Timeframe Confirmation Verification', () => {
+    it('15m BUY entry opportunity supported by 1h & 4h Bullish qualifies BUY', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createBullishCandles(35, 100, '15m'),
+        '1h': createBullishCandles(35, 100, '1h'),
+        '4h': createBullishCandles(35, 100, '4h'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '15m');
+
+      expect(result.hasSignal).toBe(true);
+      expect(result.metadata.signal).not.toBeNull();
+      expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(result.metadata.targetTimeframe).toBe('15m');
+    });
+
+    it('15m SELL entry opportunity supported by 1h & 4h Bearish qualifies SELL', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBearishCandles(35, 150, '5m'),
+        '15m': createBearishCandles(35, 150, '15m'),
+        '1h': createBearishCandles(35, 150, '1h'),
+        '4h': createBearishCandles(35, 150, '4h'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '15m');
+
+      expect(result.hasSignal).toBe(true);
+      expect(result.metadata.signal).not.toBeNull();
+      expect(result.metadata.signal?.type).toBe(SignalType.SELL);
+      expect(result.metadata.targetTimeframe).toBe('15m');
+    });
+
+    it('disagreeing higher timeframes (1h Bullish, 4h Bearish) rejects 5m BUY candidate due to 4h conflict', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createBullishCandles(35, 100, '15m'),
+        '1h': createBullishCandles(35, 100, '1h'),
+        '4h': createBearishCandles(35, 150, '4h'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+      expect(result.metadata.reasoning.some((r: string) => r.includes('Conflicted by higher timeframe (4h) direction'))).toBe(true);
+    });
+
+    it('disagreeing higher timeframes (1h Bearish, 4h Bullish) rejects 5m BUY candidate due to 1h conflict', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createBullishCandles(35, 100, '15m'),
+        '1h': createBearishCandles(35, 150, '1h'),
+        '4h': createBullishCandles(35, 100, '4h'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+      expect(result.metadata.reasoning.some((r: string) => r.includes('Conflicted by higher timeframe (1h) direction'))).toBe(true);
+    });
+
+    it('does not require all 4 TFs to agree: 5m BUY with 15m Bearish, 1h Bullish, and 4h Flat qualifies BUY', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createBearishCandles(35, 150, '15m'),
+        '1h': createBullishCandles(35, 100, '1h'),
+        '4h': createFlatCandles(35, 100, '4h'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+
+      expect(result.hasSignal).toBe(true);
+      expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(result.metadata.mtfConfirmation?.confirmingTimeframes).toContain('1h');
+      expect(result.metadata.mtfConfirmation?.neutralTimeframes).toContain('4h');
+      expect(result.metadata.mtfConfirmation?.conflictingTimeframes).toHaveLength(0);
+    });
+
+    it('does not require all 4 TFs to agree: 5m BUY with 15m Flat, 1h Flat, and 4h Bullish qualifies BUY', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createFlatCandles(35, 100, '15m'),
+        '1h': createFlatCandles(35, 100, '1h'),
+        '4h': createBullishCandles(35, 100, '4h'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+
+      expect(result.hasSignal).toBe(true);
+      expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(result.metadata.mtfConfirmation?.confirmingTimeframes).toContain('4h');
+      expect(result.metadata.mtfConfirmation?.neutralTimeframes).toContain('1h');
+      expect(result.metadata.mtfConfirmation?.conflictingTimeframes).toHaveLength(0);
+    });
+
+    it('1h targetTimeframe computes indicators & confidence but suppresses entry signal', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createBullishCandles(35, 100, '15m'),
+        '1h': createBullishCandles(35, 100, '1h'),
+        '4h': createBullishCandles(35, 100, '4h'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '1h');
+
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+      expect(result.metadata.indicatorSnapshot.timeframes['1h']).toBeDefined();
+      expect(result.metadata.conditionResult.timeframes['1h']).toBeDefined();
+      expect(result.confidenceScore).toBeGreaterThan(0);
+      expect(result.metadata.reasoning.some((r: string) => r.includes('[MTF ROLE] Timeframe 1h is a macro confirmation timeframe'))).toBe(true);
+    });
+
+    it('4h targetTimeframe computes indicators & confidence but suppresses entry signal', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createBullishCandles(35, 100, '15m'),
+        '1h': createBullishCandles(35, 100, '1h'),
+        '4h': createBullishCandles(35, 100, '4h'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '4h');
+
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+      expect(result.metadata.indicatorSnapshot.timeframes['4h']).toBeDefined();
+      expect(result.metadata.conditionResult.timeframes['4h']).toBeDefined();
+      expect(result.confidenceScore).toBeGreaterThan(0);
+      expect(result.metadata.reasoning.some((r: string) => r.includes('[MTF ROLE] Timeframe 4h is a macro confirmation timeframe'))).toBe(true);
+    });
+
+    it('rejects 5m BUY when both 1h and 4h are Sideways / Neutral', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createBullishCandles(35, 100, '15m'),
+        '1h': createFlatCandles(35, 100, '1h'),
+        '4h': createFlatCandles(35, 100, '4h'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+      expect(result.metadata.reasoning.some((r: string) => r.includes('Lacks higher-timeframe confirmation'))).toBe(true);
+    });
+
+    it('rejects 5m BUY when both 1h and 4h are missing from snapshot', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createBullishCandles(35, 100, '15m'),
+      });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+      expect(result.metadata.reasoning.some((r: string) => r.includes('Missing required higher-timeframe data (1h, 4h) for confirmation'))).toBe(true);
     });
   });
 

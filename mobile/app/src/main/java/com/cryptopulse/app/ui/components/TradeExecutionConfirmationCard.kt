@@ -38,7 +38,6 @@ import java.util.Locale
 @Composable
 fun TradeExecutionConfirmationCard(
     result: TradeExecutionResult,
-    onViewCandidates: () -> Unit,
     onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -125,14 +124,6 @@ fun TradeExecutionConfirmationCard(
                         testTag = "trade_executed_estimated_pnl"
                     )
                 }
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // CTA Button: VIEW TOP 10 OPPORTUNITIES
-                TradeExecutedCtaButton(
-                    text = "VIEW TOP 10 OPPORTUNITIES",
-                    onClick = onViewCandidates
-                )
             }
         }
 
@@ -307,45 +298,6 @@ private fun ExecutionDetailRow(
             fontSize = 13.5.sp,
             fontWeight = FontWeight.Bold,
             style = TextStyle(fontFeatureSettings = "tnum")
-        )
-    }
-}
-
-/**
- * Premium cyber button with radiant cyan-to-purple horizontal gradient.
- */
-@Composable
-private fun TradeExecutedCtaButton(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val buttonShape = RoundedCornerShape(24.dp)
-    val buttonGradient = Brush.horizontalGradient(
-        listOf(
-            Color(0xFF0099FF),
-            Color(0xFF6B42FF),
-            Color(0xFFB526FF)
-        )
-    )
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(52.dp)
-            .clip(buttonShape)
-            .background(buttonGradient)
-            .clickable(onClick = onClick)
-            .testTag("trade_executed_cta_button"),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = text,
-            color = Color.White,
-            fontSize = 14.5.sp,
-            fontWeight = FontWeight.ExtraBold,
-            letterSpacing = 0.5.sp,
-            textAlign = TextAlign.Center
         )
     }
 }

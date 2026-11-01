@@ -530,7 +530,7 @@ export class AnalysisSnapshotMapper {
       sig?.riskAssessment?.riskClassification ||
       (result.metadata as any)?.riskAssessment?.riskClassification ||
       manifest.riskProfile?.toUpperCase() ||
-      'LOW'
+      'UNKNOWN'
     );
 
     return {

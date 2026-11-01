@@ -90,12 +90,14 @@ function selectBoundedDiscoveryMarkets(
       const qtyStep = toNum(t.qtyStep ?? m?.precision?.amount, 0);
       const minOrderQty = toNum(t.minOrderQty ?? m?.limits?.amount?.min, 0);
       const minNotional = toNum(t.minNotional ?? m?.limits?.cost?.min, 0);
+      const maxOrderQty = toNum(t.maxQty ?? m?.limits?.amount?.max ?? m?.info?.lotSizeFilter?.maxOrderQty, 0);
       const elig = ExecutionEligibilityGate.evaluate({
         tradeAmountUsdt: userAllocation,
         currentPrice: px,
         qtyStep: qtyStep > 0 ? qtyStep : 0,
         minOrderQty: minOrderQty > 0 ? minOrderQty : 0,
         minNotional: minNotional > 0 ? minNotional : 0,
+        maxOrderQty: maxOrderQty > 0 ? maxOrderQty : undefined,
       });
       if (!elig.isExecutable) continue;
     }
@@ -784,7 +786,7 @@ export async function handleGetExchangeBalances(
   }
 }
 
-export function mapScanResultToCandidates(scanResult: any): any[] {
+export function mapScanResultToCandidates(scanResult: any, tickers?: any[]): any[] {
   const seenPairs = new Set<string>();
   const distinctOpportunities: MarketOpportunity[] = [];
   const sourcePool = scanResult.allQualifiedOpportunities && scanResult.allQualifiedOpportunities.length > 0 
@@ -799,6 +801,14 @@ export function mapScanResultToCandidates(scanResult: any): any[] {
     }
   }
 
+  const tickerMap = new Map<string, any>();
+  if (Array.isArray(tickers)) {
+    for (const t of tickers) {
+      if (t?.pairName) tickerMap.set(t.pairName, t);
+      if (t?.symbol) tickerMap.set(t.symbol, t);
+    }
+  }
+
   return distinctOpportunities.map((opp: any, idx: number) => {
     const baseAsset = opp.symbol.includes('/') ? opp.symbol.split('/')[0] : opp.symbol.replace(/USDT$/, '');
     const px = opp.timeframes?.['1m']?.closePrice || opp.timeframes?.['5m']?.closePrice || opp.timeframes?.['15m']?.closePrice || 0;
@@ -806,6 +816,10 @@ export function mapScanResultToCandidates(scanResult: any): any[] {
     const oppId = opp.opportunityId || `${opp.symbol}:${strat}:${opp.dominantDirection}`;
     const rawPct = opp.marketQuality?.priceChangePercent24h ?? opp.priceChangePercent24h ?? 0;
     const cleanPct = typeof rawPct === 'number' && Number.isFinite(rawPct) ? rawPct : 0;
+    const matchedTicker = tickerMap.get(opp.symbol) || tickerMap.get(baseAsset);
+    const resolvedMaxQty = (typeof opp.marketQuality?.maxOrderQty === 'number' && opp.marketQuality.maxOrderQty > 0)
+      ? opp.marketQuality.maxOrderQty
+      : (typeof matchedTicker?.maxQty === 'number' && matchedTicker.maxQty > 0 ? matchedTicker.maxQty : null);
     return {
       id: oppId,
       opportunityId: oppId,
@@ -825,7 +839,7 @@ export function mapScanResultToCandidates(scanResult: any): any[] {
       tickSize: opp.marketQuality?.tickSize ?? 0.01,
       minPrice: null,
       maxPrice: null,
-      maxQty: null,
+      maxQty: resolvedMaxQty,
       score: opp.opportunityScore,
       rank: idx + 1,
       tradeSide: opp.dominantDirection === 'LONG' ? 'BUY' : (opp.dominantDirection === 'SHORT' ? 'SELL' : 'NEUTRAL'),
@@ -1156,7 +1170,8 @@ export async function handleGetPersonalizedMarketCandidates(
       if (
         !scanResult ||
         scanResult.screenedCount === 0 ||
-        (scanResult.allQualifiedOpportunities.length > 0 &&
+        (scanResult.allQualifiedOpportunities &&
+          scanResult.allQualifiedOpportunities.length > 0 &&
           scanResult.allQualifiedOpportunities.every((o: any) => o.state === 'DATA_DEGRADED'))
       ) {
         c.status(503);
@@ -1169,8 +1184,11 @@ export async function handleGetPersonalizedMarketCandidates(
 
       if (scanResult.topOpportunities && scanResult.topOpportunities.length > 0) {
         console.log(`[DIAGNOSTIC] Stage 9: MarketOpportunityScanner produced ${scanResult.topOpportunities.length} opportunities (${scanResult.allQualifiedOpportunities.length} total qualified)`);
-        candidates = mapScanResultToCandidates(scanResult);
+        const mapped = mapScanResultToCandidates(scanResult, tickers);
+        // Exclude degraded candidates to prevent exposing degraded market data as valid trading setups
+        candidates = mapped.filter((c: any) => c.opportunityState !== 'DATA_DEGRADED');
       } else {
+        console.log(`[DIAGNOSTIC] Stage 9: 0 usable opportunities discovered (screenedCount=${scanResult?.screenedCount ?? 0}). Returning empty candidates list.`);
         candidates = [];
       }
       console.log(`[DIAGNOSTIC] Stage 9: evaluation completed with ${candidates.length} candidates`);
@@ -1701,6 +1719,11 @@ export async function handleGetTechnicalAnalysis(
     }
 
     const snapshotDto = AnalysisSnapshotMapper.map(evalResult, manifest, snapshot, 'PREVIEW', false);
+    snapshotDto.strategyAnalyses = AnalysisSnapshotMapper.mapStrategyEvaluations(
+      results && results.length > 0 ? results : [evalResult],
+      registry,
+      Date.now()
+    );
     return c.json(snapshotDto);
   } catch (e: unknown) {
     const error = e as Error;
@@ -1913,6 +1936,14 @@ export async function handleExecuteTrade(
     if (!alertId) {
       c.status(400);
       return c.json({ success: false, message: "alertId is required to execute a trade." });
+    }
+
+    if (reqBody?.quantity !== undefined) {
+      const q = Number(reqBody.quantity);
+      if (!Number.isFinite(q) || q <= 0) {
+        c.status(400);
+        return c.json({ success: false, code: "INVALID_QUANTITY", message: "Approved quantity must be a positive finite number." });
+      }
     }
 
     const botId = c.env.TRADING_BOTS.idFromName(userId);
@@ -2329,12 +2360,14 @@ export async function handleTriggerManualTradeAlert(
       : (parseFloat(rawQtyStep) || 0);
 
     const rawMinNotional = matchedMarket.limits?.cost?.min as any;
+    const rawMaxQty = (matchedMarket.limits?.amount?.max ?? (matchedMarket as any).info?.lotSizeFilter?.maxOrderQty) as any;
+    const maxOrderQty = typeof rawMaxQty?.toNumber === 'function' ? rawMaxQty.toNumber() : (typeof rawMaxQty === 'number' ? rawMaxQty : (parseFloat(rawMaxQty) || 0));
     const minNotional = typeof rawMinNotional?.toNumber === 'function'
       ? rawMinNotional.toNumber()
       : (typeof rawMinNotional === 'number' ? rawMinNotional : (parseFloat(rawMinNotional) || 0));
 
     // Fail closed if required execution constraints cannot be verified
-    if (minOrderQty <= 0 || qtyStep <= 0 || minNotional <= 0) {
+    if (minOrderQty <= 0 || qtyStep <= 0 || minNotional <= 0 || maxOrderQty <= 0 || !Number.isFinite(maxOrderQty)) {
       c.status(400);
       return c.json({
         success: false,
@@ -2346,6 +2379,7 @@ export async function handleTriggerManualTradeAlert(
           qtyStep,
           minOrderQty,
           minNotional,
+      maxOrderQty,
         }
       });
     }
@@ -2357,6 +2391,7 @@ export async function handleTriggerManualTradeAlert(
       qtyStep,
       minOrderQty,
       minNotional,
+      maxOrderQty,
     });
 
     if (!eligibility.isExecutable) {
@@ -2373,6 +2408,7 @@ export async function handleTriggerManualTradeAlert(
           minOrderQty,
           qtyStep,
           minNotional,
+      maxOrderQty,
           quantizedQty: eligibility.quantizedQty,
           postRoundingNotional: eligibility.postRoundingNotional,
           rejectionReason: eligibility.rejectionReason,
@@ -2428,6 +2464,9 @@ export async function handleTriggerManualTradeAlert(
       stopLoss: finalStopLoss,
       takeProfit: finalTakeProfit,
       positionSize: parseFloat(positionSize.toFixed(2)),
+      quantity: eligibility.quantizedQty,
+      requestedBudget: positionSize,
+      effectiveNotional: eligibility.postRoundingNotional,
       estimatedPnl: parseFloat(estimatedPnl.toFixed(2)),
       timestamp: new Date().toISOString(),
       status: 'pending',

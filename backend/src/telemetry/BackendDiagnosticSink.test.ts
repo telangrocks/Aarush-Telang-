@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BackendDiagnosticSink, EVENT_PAYLOAD_ALLOWLIST } from './BackendDiagnosticSink';
 import { StrategyOrchestrator } from '../engine/orchestrator/StrategyOrchestrator';
-import { sendTradeNotification } from '../handlers/notifications';
+import { sendTradeNotification, sendTradeFillNotification } from '../handlers/notifications';
 
 describe('BackendDiagnosticSink', () => {
   let mockDb: any;
@@ -273,6 +273,163 @@ describe('BackendDiagnosticSink', () => {
       const calls = emitSpy.mock.calls;
       const lastCall = calls[calls.length - 1];
       expect(JSON.stringify(lastCall[0])).not.toContain('secret-fcm-token-12345');
+    } finally {
+      global.fetch = originalFetch;
+      emitSpy.mockRestore();
+    }
+  });
+
+  it('RULE 8: sendTradeFillNotification sends distinct alertId, orderId, and type TRADE_FILLED', async () => {
+    const sink = new BackendDiagnosticSink({ db: null });
+    const emitSpy = vi.spyOn(sink, 'emit');
+
+    const mockEnv: any = {
+      DB: {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnValue({
+            first: vi.fn().mockResolvedValue({ fcm_token: 'test-fcm-token-67890' }),
+          }),
+        }),
+      },
+      FCM_SERVER_KEY: 'test-server-key',
+    };
+
+    let capturedRequestBody: any = null;
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.body) {
+        capturedRequestBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: 1 }),
+      } as any;
+    });
+
+    try {
+      await sendTradeFillNotification(mockEnv, 'user-fill-1', {
+        alertId: 'signal-alert-xyz',
+        orderId: 'bybit-order-999',
+        symbol: 'BTC/USDT',
+        side: 'BUY',
+        entryPrice: 95500.5,
+        stopLoss: 94000,
+        takeProfit: 98000,
+        strategy: 'ScalperV2',
+        actionType: 'TRADE_FILLED',
+      }, sink);
+
+      // Verify the FCM message payload has distinct alertId, orderId, and TRADE_FILLED type
+      expect(capturedRequestBody).toBeDefined();
+      expect(capturedRequestBody.notification.title).toBe('Order Filled: BUY BTC/USDT');
+      expect(capturedRequestBody.notification.priority).toBe('normal');
+      expect(capturedRequestBody.data.type).toBe('TRADE_FILLED');
+      expect(capturedRequestBody.data.alertType).toBe('TRADE_FILLED');
+      expect(capturedRequestBody.data.alertId).toBe('signal-alert-xyz');
+      expect(capturedRequestBody.data.orderId).toBe('bybit-order-999');
+      expect(capturedRequestBody.data.exchangeOrderId).toBe('bybit-order-999');
+      expect(capturedRequestBody.data.id).toBe('signal-alert-xyz');
+      expect(capturedRequestBody.data.status).toBe('filled');
+      expect(capturedRequestBody.data.isTerminal).toBe('true');
+      expect(capturedRequestBody.data.extra_alert).toBe('false');
+
+      // Verify telemetry emission
+      expect(emitSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-fill-1',
+          category: 'NOTIFICATION',
+          eventName: 'FCM_DISPATCH_RESULT',
+          correlationId: 'signal-alert-xyz',
+          payload: expect.objectContaining({
+            alertId: 'signal-alert-xyz',
+            orderId: 'bybit-order-999',
+            success: true,
+            transport: 'fcm_legacy',
+            httpStatus: 200,
+            errorCode: null,
+          }),
+        })
+      );
+    } finally {
+      global.fetch = originalFetch;
+      emitSpy.mockRestore();
+    }
+  });
+
+  it('RULE 9: sendTradeFillNotification for TRADE_SUBMITTED sends accurate title, status submitted, and isTerminal false', async () => {
+    const sink = new BackendDiagnosticSink({ db: null });
+    const emitSpy = vi.spyOn(sink, 'emit');
+
+    const mockEnv: any = {
+      DB: {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnValue({
+            first: vi.fn().mockResolvedValue({ fcm_token: 'test-fcm-token-sub-123' }),
+          }),
+        }),
+      },
+      FCM_SERVER_KEY: 'test-server-key',
+    };
+
+    let capturedRequestBody: any = null;
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.body) {
+        capturedRequestBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: 1 }),
+      } as any;
+    });
+
+    try {
+      await sendTradeFillNotification(mockEnv, 'user-sub-1', {
+        alertId: 'signal-alert-limit-1',
+        orderId: 'bybit-limit-order-888',
+        symbol: 'BTC/USDT',
+        side: 'BUY',
+        entryPrice: 94000.0,
+        stopLoss: 92500,
+        takeProfit: 97000,
+        strategy: 'ScalperV2',
+        actionType: 'TRADE_SUBMITTED',
+      }, sink);
+
+      expect(capturedRequestBody).toBeDefined();
+      expect(capturedRequestBody.notification.title).toBe('Order Submitted: BUY BTC/USDT');
+      expect(capturedRequestBody.notification.body).toContain('order submitted at $94000.0000');
+      expect(capturedRequestBody.notification.priority).toBe('normal');
+      expect(capturedRequestBody.data.type).toBe('TRADE_SUBMITTED');
+      expect(capturedRequestBody.data.alertType).toBe('TRADE_SUBMITTED');
+      expect(capturedRequestBody.data.alertId).toBe('signal-alert-limit-1');
+      expect(capturedRequestBody.data.orderId).toBe('bybit-limit-order-888');
+      expect(capturedRequestBody.data.exchangeOrderId).toBe('bybit-limit-order-888');
+      expect(capturedRequestBody.data.id).toBe('signal-alert-limit-1');
+      expect(capturedRequestBody.data.status).toBe('submitted');
+      expect(capturedRequestBody.data.entryStatus).toBe('SUBMITTED');
+      expect(capturedRequestBody.data.isTerminal).toBe('false');
+      expect(capturedRequestBody.data.extra_alert).toBe('false');
+
+      // Verify telemetry emission
+      expect(emitSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-sub-1',
+          category: 'NOTIFICATION',
+          eventName: 'FCM_DISPATCH_RESULT',
+          correlationId: 'signal-alert-limit-1',
+          payload: expect.objectContaining({
+            alertId: 'signal-alert-limit-1',
+            orderId: 'bybit-limit-order-888',
+            success: true,
+            transport: 'fcm_legacy',
+            httpStatus: 200,
+            errorCode: null,
+          }),
+        })
+      );
     } finally {
       global.fetch = originalFetch;
       emitSpy.mockRestore();

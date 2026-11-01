@@ -774,6 +774,204 @@ class TradeAlertSafetyTest {
         assertNotNull("Fresh alert must be active", manager.getActiveAlert())
         assertEquals("fresh_valid_after_restart", manager.getActiveAlert()?.get("id"))
     }
+
+    // ── Test 24: TRADE_FILLED does not trigger siren, vibration, or active alert screen ──
+    @Test
+    fun testTradeFillEventDoesNotTriggerActionableAlertHardware() = runTest(testDispatcher) {
+        val fakeDataStore = FakePersistentTradeAlertDataStore()
+        val manager = TestableTradeAlertManager(dataStore = fakeDataStore, dispatcher = testDispatcher)
+
+        // Incoming fill confirmation from backend
+        manager.onTradeFilled(
+            alertId = "signal_alert_fill_1",
+            orderId = "bybit_order_999",
+            symbol = "BTC/USDT",
+            side = "BUY",
+            entryPrice = 95200.0
+        )
+        testScheduler.runCurrent()
+
+        // Verify NO audible alert or vibration was started
+        assertEquals("Audio siren must NOT start on trade fill", 0, manager.audioStartCount)
+        assertEquals("Vibration must NOT start on trade fill", 0, manager.vibrationStartCount)
+        assertEquals("State must remain IDLE", TradeAlertState.IDLE, manager.currentState.value)
+        assertNull("Active actionable alert must NOT be set", manager.getActiveAlert())
+
+        // Verify both alertId and orderId are recorded as RESOLVED
+        assertTrue("Original alertId must be RESOLVED", manager.isAlertResolved("signal_alert_fill_1"))
+        assertTrue("Exchange orderId must be RESOLVED", manager.isAlertResolved("bybit_order_999"))
+
+        // Verify informational fill notification was posted
+        assertEquals("Informational notification must be posted once", 1, manager.fillNotificationCount)
+    }
+
+    // ── Test 25: TRADE_FILLED silences ongoing siren and clears active alert ──
+    @Test
+    fun testTradeFillSilencesAndResolvesCurrentlyActiveAlert() = runTest(testDispatcher) {
+        val fakeDataStore = FakePersistentTradeAlertDataStore()
+        val manager = TestableTradeAlertManager(dataStore = fakeDataStore, dispatcher = testDispatcher)
+        val alert = createTestAlert("active_alert_to_fill", "SOL/USDT")
+
+        // 1. Initial actionable trade signal arrives -> siren & vibration start
+        manager.onNewAlertReceived(alert)
+        assertEquals(TradeAlertState.VOICE_PLAYING, manager.currentState.value)
+        assertEquals(1, manager.audioStartCount)
+        assertEquals(1, manager.vibrationStartCount)
+        assertEquals("active_alert_to_fill", manager.getActiveAlert()?.get("id"))
+
+        // 2. Autonomous or manual fill occurs on exchange -> backend dispatches fill confirmation
+        manager.onTradeFilled(
+            alertId = "active_alert_to_fill",
+            orderId = "bybit_order_fill_222",
+            symbol = "SOL/USDT",
+            side = "BUY",
+            entryPrice = 180.5
+        )
+        testScheduler.runCurrent()
+
+        // 3. Hardware MUST be stopped, active alert dismissed, and state returned to IDLE
+        assertEquals("State must transition to IDLE upon fill", TradeAlertState.IDLE, manager.currentState.value)
+        assertTrue("Audio must be stopped", manager.audioStopCount >= 1)
+        assertTrue("Vibration must be stopped", manager.vibrationStopCount >= 1)
+        assertNull("Active alert data must be cleared", manager.getActiveAlert())
+        assertTrue("alertId must be marked RESOLVED", manager.isAlertResolved("active_alert_to_fill"))
+        assertTrue("orderId must be marked RESOLVED", manager.isAlertResolved("bybit_order_fill_222"))
+
+        // 4. Subsequent duplicate delivery of either alertId or orderId must be rejected
+        manager.onNewAlertReceived(alert)
+        testScheduler.runCurrent()
+        assertEquals("Hardware audio must NOT re-arm for resolved alert", 1, manager.audioStartCount)
+        assertEquals("State must remain IDLE", TradeAlertState.IDLE, manager.currentState.value)
+    }
+
+    // ── Test 26: onNewAlertReceived with TRADE_FILLED event type is suppressed ──
+    @Test
+    fun testOnNewAlertReceivedWithTradeFilledTypeIsSuppressed() = runTest(testDispatcher) {
+        val fakeDataStore = FakePersistentTradeAlertDataStore()
+        val manager = TestableTradeAlertManager(dataStore = fakeDataStore, dispatcher = testDispatcher)
+
+        val fillAlertData = mapOf(
+            "id" to "alert_fill_payload_3",
+            "alertId" to "alert_fill_payload_3",
+            "symbol" to "ZEC/USDT",
+            "side" to "SELL",
+            "entryPrice" to 45.2,
+            "type" to "TRADE_FILLED",
+            "alertType" to "TRADE_FILLED",
+            "status" to "filled"
+        )
+
+        manager.onNewAlertReceived(fillAlertData)
+        testScheduler.runCurrent()
+
+        assertEquals("Audio siren must NOT trigger for TRADE_FILLED", 0, manager.audioStartCount)
+        assertEquals("Vibration must NOT trigger for TRADE_FILLED", 0, manager.vibrationStartCount)
+        assertEquals("State must remain IDLE", TradeAlertState.IDLE, manager.currentState.value)
+        assertNull("Active alert must remain null", manager.getActiveAlert())
+    }
+
+    // ── Test 27: Legitimate new trade signal triggers normally after previous trade fill ──
+    @Test
+    fun testLegitimateTradeAlertStillTriggersNormally() = runTest(testDispatcher) {
+        val fakeDataStore = FakePersistentTradeAlertDataStore()
+        val manager = TestableTradeAlertManager(dataStore = fakeDataStore, dispatcher = testDispatcher)
+
+        // 1. Alert 1 fills
+        manager.onTradeFilled("alert_filled_1", "order_1", "BTC/USDT", "BUY", 95000.0)
+        testScheduler.runCurrent()
+        assertEquals(0, manager.audioStartCount)
+
+        // 2. Alert 2 is a legitimate new trade opportunity
+        val newAlert = createTestAlert("legitimate_new_alert_2", "ETH/USDT")
+        manager.onNewAlertReceived(newAlert)
+        testScheduler.runCurrent()
+
+        assertEquals("New legitimate signal MUST start audio", 1, manager.audioStartCount)
+        assertEquals("New legitimate signal MUST start vibration", 1, manager.vibrationStartCount)
+        assertEquals(TradeAlertState.VOICE_PLAYING, manager.currentState.value)
+        assertEquals("legitimate_new_alert_2", manager.getActiveAlert()?.get("id"))
+    }
+
+    // ── Test 28: TRADE_SUBMITTED does not trigger siren, vibration, or trade screen, and presents as submitted ──
+    @Test
+    fun testTradeSubmittedDoesNotTriggerActionableAlertHardwareAndPresentsAccurateNotification() = runTest(testDispatcher) {
+        val fakeDataStore = FakePersistentTradeAlertDataStore()
+        val manager = TestableTradeAlertManager(dataStore = fakeDataStore, dispatcher = testDispatcher)
+
+        // Incoming submission confirmation from backend
+        manager.onTradeSubmitted(
+            alertId = "signal_alert_sub_1",
+            orderId = "bybit_order_open_1",
+            symbol = "BTC/USDT",
+            side = "BUY",
+            entryPrice = 94500.0
+        )
+        testScheduler.runCurrent()
+
+        // Verify NO audible alert or vibration was started
+        assertEquals("Audio siren must NOT start on trade submission", 0, manager.audioStartCount)
+        assertEquals("Vibration must NOT start on trade submission", 0, manager.vibrationStartCount)
+        assertEquals("State must remain IDLE", TradeAlertState.IDLE, manager.currentState.value)
+        assertNull("Active actionable alert must NOT be set", manager.getActiveAlert())
+
+        // Verify both alertId and orderId are recorded as RESOLVED to protect against duplicate submission
+        assertTrue("Original alertId must be RESOLVED", manager.isAlertResolved("signal_alert_sub_1"))
+        assertTrue("Exchange orderId must be RESOLVED", manager.isAlertResolved("bybit_order_open_1"))
+
+        // Verify presented as SUBMITTED, NOT as filled
+        assertEquals("Submitted notification count must be 1", 1, manager.submittedNotificationCount)
+        assertEquals("Fill notification count must be 0", 0, manager.fillNotificationCount)
+    }
+
+    // ── Test 29: Resting submitted order transition to filled updates accurately without replay ──
+    @Test
+    fun testRestingSubmittedOrderTransitionToFilledPresentsAccurately() = runTest(testDispatcher) {
+        val fakeDataStore = FakePersistentTradeAlertDataStore()
+        val manager = TestableTradeAlertManager(dataStore = fakeDataStore, dispatcher = testDispatcher)
+
+        // 1. Limit order is placed on exchange
+        manager.onTradeSubmitted("alert_resting_99", "bybit_order_open_99", "SOL/USDT", "BUY", 185.0)
+        testScheduler.runCurrent()
+
+        assertEquals("Submitted notification count must be 1", 1, manager.submittedNotificationCount)
+        assertEquals("Fill notification count must be 0", 0, manager.fillNotificationCount)
+        assertEquals("Audio siren must NOT start", 0, manager.audioStartCount)
+
+        // 2. Limit order fills later on exchange
+        manager.onTradeFilled("alert_resting_99", "bybit_order_open_99", "SOL/USDT", "BUY", 185.0)
+        testScheduler.runCurrent()
+
+        assertEquals("Submitted notification count remains 1", 1, manager.submittedNotificationCount)
+        assertEquals("Fill notification count must now be 1", 1, manager.fillNotificationCount)
+        assertEquals("Audio siren must NOT start on fill transition", 0, manager.audioStartCount)
+        assertEquals("State remains IDLE", TradeAlertState.IDLE, manager.currentState.value)
+    }
+
+    // ── Test 30: onNewAlertReceived with TRADE_SUBMITTED event type or status is suppressed ──
+    @Test
+    fun testOnNewAlertReceivedWithTradeSubmittedTypeOrStatusIsSuppressed() = runTest(testDispatcher) {
+        val fakeDataStore = FakePersistentTradeAlertDataStore()
+        val manager = TestableTradeAlertManager(dataStore = fakeDataStore, dispatcher = testDispatcher)
+
+        val submittedAlertData = mapOf(
+            "id" to "alert_sub_payload_4",
+            "alertId" to "alert_sub_payload_4",
+            "symbol" to "ZEC/USDT",
+            "side" to "SELL",
+            "entryPrice" to 44.5,
+            "type" to "TRADE_SUBMITTED",
+            "alertType" to "TRADE_SUBMITTED",
+            "status" to "submitted"
+        )
+
+        manager.onNewAlertReceived(submittedAlertData)
+        testScheduler.runCurrent()
+
+        assertEquals("Audio siren must NOT trigger for TRADE_SUBMITTED", 0, manager.audioStartCount)
+        assertEquals("Vibration must NOT trigger for TRADE_SUBMITTED", 0, manager.vibrationStartCount)
+        assertEquals("State must remain IDLE", TradeAlertState.IDLE, manager.currentState.value)
+        assertNull("Active alert must remain null", manager.getActiveAlert())
+    }
 }
 
 // ── Testable Subclass for Pure JVM Unit Verification ──────────────────────────
@@ -788,11 +986,14 @@ class TestableTradeAlertManager(
     var vibrationStartCount = 0
     var vibrationStopCount = 0
     var wakeLockReleased = false
+    var fillNotificationCount = 0
+    var submittedNotificationCount = 0
 
     override fun onNewAlertReceived(alertData: Map<String, Any>) {
         val alertId = (alertData["id"] as? String) ?: (alertData["alertId"] as? String) ?: return
         val status = alertData["status"] as? String
-        if (status == "expired" || status == "executed" || status == "filled" || isAlertResolved(alertId)) {
+        val type = (alertData["type"] as? String) ?: (alertData["alertType"] as? String)
+        if (status == "expired" || status == "executed" || status == "filled" || status == "submitted" || isAlertResolved(alertId) || type == "TRADE_FILLED" || type == "TRADE_SUBMITTED") {
             super.onNewAlertReceived(alertData)
             return
         }
@@ -819,6 +1020,31 @@ class TestableTradeAlertManager(
         vibrationStopCount++
         wakeLockReleased = true
         super.dismissOrExecuteAlert()
+    }
+
+    override fun postExecutionNotification(
+        alertId: String,
+        orderId: String?,
+        symbol: String,
+        side: String,
+        entryPrice: Double,
+        isSubmitted: Boolean
+    ) {
+        if (isSubmitted) {
+            submittedNotificationCount++
+        } else {
+            fillNotificationCount++
+        }
+    }
+
+    override fun postFillNotification(
+        alertId: String,
+        orderId: String?,
+        symbol: String,
+        side: String,
+        entryPrice: Double
+    ) {
+        fillNotificationCount++
     }
 }
 

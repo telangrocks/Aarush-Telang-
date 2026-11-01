@@ -217,6 +217,376 @@ class AuthViewModelTest {
             kotlinx.coroutines.Dispatchers.resetMain()
         }
     }
+
+    @Test
+    fun testLoginSuccess_registersCachedFcmToken() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeAuthRepo = FakeAuthRepository()
+            val fakeFcmRepo = FakeFcmRepository()
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = "fcm_test_token_alpha")
+            val viewModel = AuthViewModel(
+                repository = fakeAuthRepo,
+                exchangeRepository = FakeExchangeRepository(),
+                exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+                fcmRepository = fakeFcmRepo,
+                tokenManager = fakeTokenManager
+            )
+            viewModel.email = "test@example.com"
+            viewModel.password = "ValidPass123!"
+
+            viewModel.login()
+            testScheduler.advanceUntilIdle()
+
+            assertTrue(viewModel.isAuthenticated)
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+            assertEquals("fcm_test_token_alpha", fakeFcmRepo.registeredTokens.first())
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testRegisterSuccess_registersCachedFcmToken() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeAuthRepo = FakeAuthRepository()
+            val fakeFcmRepo = FakeFcmRepository()
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = "fcm_test_token_beta")
+            val viewModel = AuthViewModel(
+                repository = fakeAuthRepo,
+                exchangeRepository = FakeExchangeRepository(),
+                exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+                fcmRepository = fakeFcmRepo,
+                tokenManager = fakeTokenManager
+            )
+            viewModel.email = "test@example.com"
+            viewModel.password = "ValidPass123!"
+            viewModel.confirmPassword = "ValidPass123!"
+
+            viewModel.register()
+            testScheduler.advanceUntilIdle()
+
+            assertTrue(viewModel.isAuthenticated)
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+            assertEquals("fcm_test_token_beta", fakeFcmRepo.registeredTokens.first())
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testLoginSuccess_whenNoCachedToken_doesNotCrashOrBlockAuth() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeAuthRepo = FakeAuthRepository()
+            val fakeFcmRepo = FakeFcmRepository()
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = null)
+            val viewModel = AuthViewModel(
+                repository = fakeAuthRepo,
+                exchangeRepository = FakeExchangeRepository(),
+                exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+                fcmRepository = fakeFcmRepo,
+                tokenManager = fakeTokenManager
+            )
+            viewModel.email = "test@example.com"
+            viewModel.password = "ValidPass123!"
+
+            viewModel.login()
+            testScheduler.advanceUntilIdle()
+
+            assertTrue(viewModel.isAuthenticated)
+            assertEquals(0, fakeFcmRepo.registerCallCount)
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testLoginSuccess_whenFcmRegistrationFails_doesNotBlockAuthentication() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeAuthRepo = FakeAuthRepository()
+            val fakeFcmRepo = FakeFcmRepository().apply {
+                registerResult = com.cryptopulse.app.core.network.NetworkResult.Error(
+                    com.cryptopulse.app.core.error.NetworkError.HttpError(500, "Internal Server Error")
+                )
+            }
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = "fcm_test_token_error")
+            val viewModel = AuthViewModel(
+                repository = fakeAuthRepo,
+                exchangeRepository = FakeExchangeRepository(),
+                exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+                fcmRepository = fakeFcmRepo,
+                tokenManager = fakeTokenManager
+            )
+            viewModel.email = "test@example.com"
+            viewModel.password = "ValidPass123!"
+
+            viewModel.login()
+            testScheduler.advanceUntilIdle()
+
+            // Authentication must succeed and not be blocked by FCM failure
+            assertTrue(viewModel.isAuthenticated)
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testDuplicateFcmRegistration_isPrevented() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeAuthRepo = FakeAuthRepository()
+            val fakeFcmRepo = FakeFcmRepository()
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = "fcm_duplicate_test")
+            val viewModel = AuthViewModel(
+                repository = fakeAuthRepo,
+                exchangeRepository = FakeExchangeRepository(),
+                exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+                fcmRepository = fakeFcmRepo,
+                tokenManager = fakeTokenManager
+            )
+            viewModel.email = "test@example.com"
+            viewModel.password = "ValidPass123!"
+
+            viewModel.login()
+            testScheduler.advanceUntilIdle()
+
+            // Trigger second async registration with same token
+            viewModel.registerFcmTokenAsync()
+            testScheduler.advanceUntilIdle()
+
+            // Exactly one registration dispatched due to session token deduplication
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testSessionRestoration_registersCachedFcmToken() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeFcmRepo = FakeFcmRepository()
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = "fcm_test_token_restored")
+
+            val success = com.cryptopulse.app.ui.screens.registerFcmTokenOnSessionRestoration(
+                tokenManager = fakeTokenManager,
+                fcmRepository = fakeFcmRepo
+            )
+
+            assertTrue(success)
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+            assertEquals("fcm_test_token_restored", fakeFcmRepo.registeredTokens.first())
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testSessionRestoration_whenNoCachedToken_returnsFalseSafely() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeFcmRepo = FakeFcmRepository()
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = null)
+
+            val success = com.cryptopulse.app.ui.screens.registerFcmTokenOnSessionRestoration(
+                tokenManager = fakeTokenManager,
+                fcmRepository = fakeFcmRepo
+            )
+
+            assertFalse(success)
+            assertEquals(0, fakeFcmRepo.registerCallCount)
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testSessionRestoration_whenFcmRegistrationFails_returnsFalseSafely() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeFcmRepo = FakeFcmRepository().apply {
+                registerResult = com.cryptopulse.app.core.network.NetworkResult.Error(
+                    com.cryptopulse.app.core.error.NetworkError.Timeout
+                )
+            }
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = "fcm_test_token_timeout")
+
+            val success = com.cryptopulse.app.ui.screens.registerFcmTokenOnSessionRestoration(
+                tokenManager = fakeTokenManager,
+                fcmRepository = fakeFcmRepo
+            )
+
+            assertFalse(success)
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testRegisterFcmTokenAsync_whenTokenNotInCache_resolvesFromFirebaseAndSavesToTokenManager() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeAuthRepo = FakeAuthRepository()
+            val fakeFcmRepo = FakeFcmRepository()
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = null)
+            val viewModel = AuthViewModel(
+                repository = fakeAuthRepo,
+                exchangeRepository = FakeExchangeRepository(),
+                exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+                fcmRepository = fakeFcmRepo,
+                tokenManager = fakeTokenManager
+            ).apply {
+                ioDispatcher = testDispatcher
+                firebaseTokenResolver = { "resolved_token_from_firebase_123" }
+            }
+
+            viewModel.registerFcmTokenAsync()
+            testScheduler.advanceUntilIdle()
+
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+            assertEquals("resolved_token_from_firebase_123", fakeFcmRepo.registeredTokens.first())
+            assertEquals("resolved_token_from_firebase_123", fakeTokenManager.cachedFcmToken)
+            assertEquals(1, fakeTokenManager.saveFcmTokenCallCount)
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testRegisterFcmTokenAsync_whenFirebaseThrowsException_handlesSafelyWithoutCrashingOrRegistering() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeAuthRepo = FakeAuthRepository()
+            val fakeFcmRepo = FakeFcmRepository()
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = null)
+            val viewModel = AuthViewModel(
+                repository = fakeAuthRepo,
+                exchangeRepository = FakeExchangeRepository(),
+                exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+                fcmRepository = fakeFcmRepo,
+                tokenManager = fakeTokenManager
+            ).apply {
+                ioDispatcher = testDispatcher
+                firebaseTokenResolver = { throw java.lang.IllegalStateException("Google Play Services unavailable") }
+            }
+
+            viewModel.registerFcmTokenAsync()
+            testScheduler.advanceUntilIdle()
+
+            assertEquals(0, fakeFcmRepo.registerCallCount)
+            assertEquals(null, fakeTokenManager.cachedFcmToken)
+            assertEquals(0, fakeTokenManager.saveFcmTokenCallCount)
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testRegisterFcmTokenAsync_whenBackendRegistrationFails_handlesErrorSafelyWithoutCrashing() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeAuthRepo = FakeAuthRepository()
+            val fakeFcmRepo = FakeFcmRepository().apply {
+                registerResult = com.cryptopulse.app.core.network.NetworkResult.Error(
+                    com.cryptopulse.app.core.error.NetworkError.HttpError(500, "Server Error")
+                )
+            }
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = "fcm_token_fail_test")
+            val viewModel = AuthViewModel(
+                repository = fakeAuthRepo,
+                exchangeRepository = FakeExchangeRepository(),
+                exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+                fcmRepository = fakeFcmRepo,
+                tokenManager = fakeTokenManager
+            ).apply {
+                ioDispatcher = testDispatcher
+            }
+
+            viewModel.registerFcmTokenAsync()
+            testScheduler.advanceUntilIdle()
+
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun testRegisterFcmTokenAsync_duplicateCallsWithSameToken_areDeduplicated() = kotlinx.coroutines.test.runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        kotlinx.coroutines.Dispatchers.setMain(testDispatcher)
+        try {
+            val fakeAuthRepo = FakeAuthRepository()
+            val fakeFcmRepo = FakeFcmRepository()
+            val fakeTokenManager = FakeTestTokenManager(initialFcmToken = "fcm_token_dedup")
+            val viewModel = AuthViewModel(
+                repository = fakeAuthRepo,
+                exchangeRepository = FakeExchangeRepository(),
+                exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+                fcmRepository = fakeFcmRepo,
+                tokenManager = fakeTokenManager
+            ).apply {
+                ioDispatcher = testDispatcher
+            }
+
+            viewModel.registerFcmTokenAsync()
+            testScheduler.advanceUntilIdle()
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+
+            // Second call with same token
+            viewModel.registerFcmTokenAsync()
+            testScheduler.advanceUntilIdle()
+            assertEquals(1, fakeFcmRepo.registerCallCount)
+        } finally {
+            kotlinx.coroutines.Dispatchers.resetMain()
+        }
+    }
+}
+
+class FakeFcmRepository : com.cryptopulse.app.domain.repository.FcmRepository {
+    var registerCallCount = 0
+    val registeredTokens = mutableListOf<String>()
+    var registerResult: com.cryptopulse.app.core.network.NetworkResult<Unit> =
+        com.cryptopulse.app.core.network.NetworkResult.Success(Unit)
+    var delayMs: Long = 0L
+
+    override suspend fun registerToken(token: String): com.cryptopulse.app.core.network.NetworkResult<Unit> {
+        registerCallCount++
+        registeredTokens.add(token)
+        if (delayMs > 0) {
+            kotlinx.coroutines.delay(delayMs)
+        }
+        return registerResult
+    }
+}
+
+class FakeTestTokenManager(
+    initialFcmToken: String? = null
+) : com.cryptopulse.app.data.local.TokenManager(android.content.ContextWrapper(null)) {
+    var cachedFcmToken: String? = initialFcmToken
+    var saveFcmTokenCallCount = 0
+
+    override suspend fun getFcmToken(): String? = cachedFcmToken
+    override suspend fun saveFcmToken(fcmToken: String) {
+        saveFcmTokenCallCount++
+        cachedFcmToken = fcmToken
+    }
 }
 
 class FakeAuthRepository : com.cryptopulse.app.domain.repository.AuthRepository {

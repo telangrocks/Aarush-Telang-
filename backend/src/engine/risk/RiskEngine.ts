@@ -33,9 +33,49 @@ export class RiskEngine {
     explanation.push(`Take Profit distance calculated at ${takeProfitDistance.toFixed(2)} (ATR multiplier: ${tpMultiplier}).`);
 
     // Assess risk classification based on exposure limits
-    const maxAllowedExposure = context.accountBalance * (this.config.maxExposureLimit / 100);
-    const riskClassification: RiskClassification = 'LOW';
-    explanation.push('Risk classification is LOW.');
+    const maxAllowedExposure = (Number.isFinite(context.accountBalance) && context.accountBalance > 0)
+      ? context.accountBalance * (this.config.maxExposureLimit / 100)
+      : 0;
+
+    // Defensive validation: fail closed on non-finite, zero, or negative required inputs
+    if (
+      !Number.isFinite(context.currentPrice) ||
+      context.currentPrice <= 0 ||
+      !Number.isFinite(stopLossDistance) ||
+      stopLossDistance <= 0
+    ) {
+      const riskClassification: RiskClassification = 'EXTREME';
+      explanation.push('Invalid or non-positive required inputs for risk calculation: fail closed to EXTREME with 0 position size.');
+
+      return {
+        timestamp: context.timestamp,
+        stopLossDistance: Number.isFinite(stopLossDistance) ? stopLossDistance : 0,
+        takeProfitDistance: Number.isFinite(takeProfitDistance) ? takeProfitDistance : 0,
+        riskRewardRatio: tpMultiplier,
+        positionSizeRecommendation: 0,
+        maximumExposure: maxAllowedExposure,
+        riskClassification,
+        explanation
+      };
+    }
+
+    // Assess dynamic risk classification based on stop loss distance percentage
+    const stopLossPercent = (stopLossDistance / context.currentPrice) * 100;
+    let riskClassification: RiskClassification = 'LOW';
+
+    if (stopLossPercent >= 12.0) {
+      riskClassification = 'EXTREME';
+      explanation.push(`Risk classification is EXTREME (Stop Loss distance is ${stopLossPercent.toFixed(2)}% of entry price >= 12.0%).`);
+    } else if (stopLossPercent >= 8.0) {
+      riskClassification = 'HIGH';
+      explanation.push(`Risk classification is HIGH (Stop Loss distance is ${stopLossPercent.toFixed(2)}% of entry price >= 8.0%).`);
+    } else if (stopLossPercent >= 5.0) {
+      riskClassification = 'MEDIUM';
+      explanation.push(`Risk classification is MEDIUM (Stop Loss distance is ${stopLossPercent.toFixed(2)}% of entry price >= 5.0%).`);
+    } else {
+      riskClassification = 'LOW';
+      explanation.push(`Risk classification is LOW (Stop Loss distance is ${stopLossPercent.toFixed(2)}% of entry price < 5.0%).`);
+    }
 
     const positionSizeRecommendation = OrderSizing.calculateSize(
       context.accountBalance,

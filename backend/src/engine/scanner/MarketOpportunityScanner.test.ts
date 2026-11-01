@@ -58,7 +58,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
         quote: 'USDT',
         active: true,
         category: 'linear',
-        limits: { cost: { min: 5 }, amount: { min: 0.01 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
         precision: { price: 0.01, amount: 0.01 },
       });
     }
@@ -69,7 +69,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
       quote: 'USDT',
       active: true,
       category: 'linear',
-      limits: { cost: { min: 5 }, amount: { min: 0.01 } },
+      limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
       precision: { price: 0.01, amount: 0.01 },
     });
 
@@ -178,7 +178,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
         quote: 'USDT',
         active: true,
         category: 'linear',
-        limits: { cost: { min: 5 }, amount: { min: 0.01 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
         precision: { price: 0.01, amount: 0.01 },
       },
       {
@@ -188,7 +188,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
         quote: 'USDT',
         active: true,
         category: 'linear',
-        limits: { cost: { min: 5 }, amount: { min: 0.01 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
         precision: { price: 0.01, amount: 0.01 },
       },
     ];
@@ -441,7 +441,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
         active: true,
         category: 'linear',
         contractType: 'LinearPerpetual',
-        limits: { cost: { min: 5 }, amount: { min: 0.01 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
       },
       // Duplicate ETH perpetual record (should be deduplicated at Stage 1)
       {
@@ -452,7 +452,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
         active: true,
         category: 'linear',
         contractType: 'LinearPerpetual',
-        limits: { cost: { min: 5 }, amount: { min: 0.01 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
       },
       // Dated linear delivery futures (should be filtered out of perpetual scanner universe)
       {
@@ -463,7 +463,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
         active: true,
         category: 'linear',
         contractType: 'LinearFutures',
-        limits: { cost: { min: 5 }, amount: { min: 0.01 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
       },
       // Distinct coin SOL
       {
@@ -474,7 +474,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
         active: true,
         category: 'linear',
         contractType: 'LinearPerpetual',
-        limits: { cost: { min: 5 }, amount: { min: 0.01 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
       },
     ];
 
@@ -527,7 +527,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
       precision: { price: 0.01, amount: 0.01 },
       limits: {
         cost: { min: i < 5 ? 10.0 : 5.0 }, // First 5 require $10 minNotional
-        amount: { min: 0.01 }
+        amount: { min: 0.01, max: 1000 }
       },
     }));
 
@@ -594,7 +594,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
       precision: { price: 0.01, amount: 0.01 },
       limits: {
         cost: { min: i < 5 ? 10.0 : 5.0 },
-        amount: { min: 0.01 }
+        amount: { min: 0.01, max: 1000 }
       },
     }));
 
@@ -647,7 +647,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
       precision: { price: 0.01, amount: 0.01 },
       limits: {
         cost: { min: i === 0 ? 5.0 : 10.0 }, // Only COIN1 has minNotional 5, rest have 10
-        amount: { min: 0.01 }
+        amount: { min: 0.01, max: 1000 }
       },
     }));
 

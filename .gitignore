@@ -98,5 +98,9 @@ scratch_token.txt
 
 
 
+# Local Datastore preferences cache (local only)
+mobile/app/datastore/
+*.preferences_pb
+
 patch_backups/
 *.bak

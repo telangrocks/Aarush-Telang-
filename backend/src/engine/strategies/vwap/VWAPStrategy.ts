@@ -25,6 +25,8 @@ export class VWAPStrategy implements IStrategy {
     riskProfile: VWAP_STRATEGY_MANIFEST.riskProfile,
     supportedMarkets: ['CRYPTO'],
     supportedTimeframes: VWAP_STRATEGY_MANIFEST.supportedTimeframes as Timeframe[],
+    // Note: SMA 200 is configured in indicatorConfig as an optional macro reference,
+    // but strategy evaluation relies strictly on closed-candle VWAP, EMA 50, ATR 14, and Volume 20.
     minimumCandles: 200,
     defaultConfiguration: DEFAULT_VWAP_CONFIG,
     supportsLong: true,
@@ -43,6 +45,16 @@ export class VWAPStrategy implements IStrategy {
   private conditionEngine: ConditionEngine;
   private confidenceEngine: ConfidenceEngine;
   private riskEngine: RiskEngine;
+
+  // Defect A: 1-bar bounded transient crossover recovery map
+  private rejectedEdgeEvents = new Map<string, {
+    timestamp: number;
+    direction: SignalType;
+    reason: 'ACCOUNT_BALANCE_UNAVAILABLE' | 'DISALLOWED_RISK_CLASSIFICATION';
+  }>();
+
+  // Defect B: Closed-candle duplicate signal suppression map (tracks last emitted closed-bar close timestamp T)
+  private lastEmittedBarTimestamps = new Map<string, number>();
 
   constructor(private config: VWAPConfig = DEFAULT_VWAP_CONFIG) {
     this.indicatorEngine = new IndicatorEngine(config.indicatorConfig);
@@ -71,6 +83,15 @@ export class VWAPStrategy implements IStrategy {
       return this.createNoSignalResult(context, [`Insufficient closed candle data for analysis (minimum 2 closed candles required for timeframe ${targetTimeframe})`], targetTimeframe);
     }
 
+    const currentCandle = closedCandles[closedCandles.length - 1];
+    const previousCandle = closedCandles[closedCandles.length - 2];
+    const T = getCandleCloseTime(currentCandle, targetTimeframe);
+    const tfMs = CandleValidator.timeframeToMs(targetTimeframe);
+    const T_previous = T - tfMs;
+    const prevCandleCloseTime = getCandleCloseTime(previousCandle, targetTimeframe);
+
+    const stateKey = `${context.marketSnapshot.symbol.toUpperCase()}:${targetTimeframe}`;
+
     // Build Closed-Candle Projections for targetTimeframe
     const currentCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
       [targetTimeframe]: closedCandles,
@@ -91,54 +112,97 @@ export class VWAPStrategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    const currentCandle = closedCandles[closedCandles.length - 1];
-    const previousCandle = closedCandles[closedCandles.length - 2];
-
     // Guard A — Current price validation
     const currentPrice = currentCandle?.close || context.marketSnapshot.currentPrice || 0;
     const previousPrice = previousCandle?.close || currentPrice;
 
-    if (!currentPrice || currentPrice <= 0) {
+    if (!currentPrice || currentPrice <= 0 || !Number.isFinite(currentPrice)) {
+      this.rejectedEdgeEvents.delete(stateKey);
       return this.createNoSignalResult(context, ['Invalid or missing current price'], targetTimeframe, indicatorSnapshot, conditionResult);
     }
 
-    // Guard B — Account balance validation
+    // Guard B — Account balance validation & transient rejection recording (Defect A)
     if (!context.accountBalance || context.accountBalance <= 0) {
+      const vwapVals = VWAPCalculator.calculate(closedCandles);
+      if (vwapVals && vwapVals.length >= 2) {
+        const curV = vwapVals[vwapVals.length - 1];
+        const prevV = vwapVals[vwapVals.length - 2];
+        const crossedAbove = previousPrice <= prevV && currentPrice > curV;
+        const crossedBelow = previousPrice >= prevV && currentPrice < curV;
+        if (crossedAbove) {
+          this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
+        } else if (crossedBelow) {
+          this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
+        }
+      }
       return this.createNoSignalResult(context, ['Account balance is zero or unconfigured'], targetTimeframe, indicatorSnapshot, conditionResult);
     }
 
     // Retrieve standard indicators needed for evaluation strictly on targetTimeframe
     const tfIndicators = indicatorSnapshot.timeframes[targetTimeframe];
     if (!tfIndicators) {
+      this.rejectedEdgeEvents.delete(stateKey);
       return this.createNoSignalResult(context, [`Indicators failed to calculate for ${targetTimeframe}`], targetTimeframe, indicatorSnapshot, conditionResult);
     }
 
-    // -- Strategy Specific Logic: VWAP Calculation & Validation --
+    // -- Strategy Specific Logic: VWAP Calculation & Defensive Validation (Defect D) --
     const vwapValues = VWAPCalculator.calculate(closedCandles);
+    if (!vwapValues || vwapValues.length !== closedCandles.length || vwapValues.length < 2) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.createNoSignalResult(context, ['Invalid VWAP calculation: non-finite or corrupted candle inputs detected'], targetTimeframe, indicatorSnapshot, conditionResult);
+    }
+
     const currentVwap = vwapValues[vwapValues.length - 1];
     const previousVwap = vwapValues[vwapValues.length - 2];
+
+    if (!Number.isFinite(currentVwap) || currentVwap <= 0 || !Number.isFinite(previousVwap) || previousVwap <= 0) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.createNoSignalResult(context, ['Invalid VWAP calculation: non-finite or corrupted candle inputs detected'], targetTimeframe, indicatorSnapshot, conditionResult);
+    }
 
     // Distance from VWAP Check (Over-extension)
     const deviationPercent = Math.abs(currentPrice - currentVwap) / currentVwap * 100;
     if (deviationPercent > this.config.vwapRules.maxDeviationThresholdPercent) {
+      this.rejectedEdgeEvents.delete(stateKey);
       return this.createNoSignalResult(context, ['Price excessively extended away from VWAP'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore);
     }
 
     // Sideways Chop Check (Minimum Displacement)
     const displacementPercent = Math.abs(currentPrice - previousPrice) / previousPrice * 100;
     if (displacementPercent < this.config.vwapRules.minSidewaysDisplacementPercent) {
+      this.rejectedEdgeEvents.delete(stateKey);
       return this.createNoSignalResult(context, ['No meaningful VWAP displacement (sideways market)'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore);
     }
 
-    // Volume Confirmation Check
-    let avgVolume = 0;
-    if (tfIndicators.volume && tfIndicators.volume.length > 0 && !isNaN(tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume)) {
-      avgVolume = tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume;
-    } else {
-      avgVolume = closedCandles.reduce((sum: number, c: NormalizedCandle) => sum + (c.volume || 0), 0) / closedCandles.length;
+    // Volume Confirmation Check & Defensive Validation (Defect E)
+    const currentVol = currentCandle.volume;
+    if (typeof currentVol !== 'number' || !Number.isFinite(currentVol) || currentVol <= 0) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.createNoSignalResult(context, ['Invalid or non-positive current candle volume'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore);
     }
 
-    if (currentCandle.volume < avgVolume * this.config.vwapRules.minVolumeMultiplier) {
+    let avgVolume = 0;
+    if (tfIndicators.volume && tfIndicators.volume.length > 0 && typeof tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume === 'number' && Number.isFinite(tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume) && tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume > 0) {
+      avgVolume = tfIndicators.volume[tfIndicators.volume.length - 1].averageVolume;
+    } else {
+      let sumVol = 0;
+      for (const c of closedCandles) {
+        if (typeof c.volume !== 'number' || !Number.isFinite(c.volume) || c.volume < 0) {
+          this.rejectedEdgeEvents.delete(stateKey);
+          return this.createNoSignalResult(context, ['Invalid candle volume detected in history'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore);
+        }
+        sumVol += c.volume;
+      }
+      avgVolume = sumVol / closedCandles.length;
+    }
+
+    if (!Number.isFinite(avgVolume) || avgVolume <= 0) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.createNoSignalResult(context, ['Invalid or non-positive average volume'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore);
+    }
+
+    if (currentVol < avgVolume * this.config.vwapRules.minVolumeMultiplier) {
+      this.rejectedEdgeEvents.delete(stateKey);
       return this.createNoSignalResult(context, ['Low volume rejection (volume confirmation not met)'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore);
     }
 
@@ -146,9 +210,91 @@ export class VWAPStrategy implements IStrategy {
     const crossedAboveVwap = previousPrice <= previousVwap && currentPrice > currentVwap;
     const crossedBelowVwap = previousPrice >= previousVwap && currentPrice < currentVwap;
 
-    // 4. Risk strictly on targetTimeframe ATR
+    // Defect A: 1-bar bounded transient recovery detection from T_previous
+    const pendingRejected = this.rejectedEdgeEvents.get(stateKey);
+    const isImmediatelyPrecedingBar = Boolean(
+      pendingRejected &&
+      (pendingRejected.timestamp === T_previous || pendingRejected.timestamp === prevCandleCloseTime)
+    );
+
+    const isRecoveredBuyEvent = Boolean(
+      isImmediatelyPrecedingBar &&
+      pendingRejected!.direction === SignalType.BUY &&
+      currentPrice > currentVwap
+    );
+
+    const isRecoveredSellEvent = Boolean(
+      isImmediatelyPrecedingBar &&
+      pendingRejected!.direction === SignalType.SELL &&
+      currentPrice < currentVwap
+    );
+
+    // Invalidation / Expiry / Direction reversal cleanup:
+    if (pendingRejected && !isRecoveredBuyEvent && !isRecoveredSellEvent && pendingRejected.timestamp !== T) {
+      this.rejectedEdgeEvents.delete(stateKey);
+    }
+
+    const isEdgeBuy = crossedAboveVwap || isRecoveredBuyEvent;
+    const isEdgeSell = crossedBelowVwap || isRecoveredSellEvent;
+
+    const volMultiplier = currentVol / avgVolume;
+    const customIndicators = [
+      { name: 'VWAP Fair Value', value: `$${currentVwap.toFixed(2)}`, signal: currentPrice > currentVwap ? 'BULLISH' : 'BEARISH' },
+      { name: 'VWAP Deviation', value: `${deviationPercent.toFixed(2)}%`, signal: deviationPercent <= this.config.vwapRules.maxDeviationThresholdPercent ? 'BULLISH' : 'BEARISH' },
+      { name: 'Volume Multiplier', value: `${volMultiplier.toFixed(2)}x`, signal: volMultiplier >= this.config.vwapRules.minVolumeMultiplier ? 'BULLISH' : 'NEUTRAL' },
+      { name: 'Price Displacement', value: `${displacementPercent.toFixed(2)}%`, signal: displacementPercent >= this.config.vwapRules.minSidewaysDisplacementPercent ? 'BULLISH' : 'NEUTRAL' }
+    ];
+
+    // Defect B: Duplicate Signal Suppression for closed candle T
+    const lastEmittedT = this.lastEmittedBarTimestamps.get(stateKey);
+    if (lastEmittedT !== undefined && lastEmittedT === T) {
+      return this.createNoSignalResult(
+        context,
+        [`Duplicate signal suppressed: ${targetTimeframe} bar at ${T} already emitted a signal`],
+        targetTimeframe,
+        indicatorSnapshot,
+        conditionResult,
+        confidenceScore,
+        customIndicators
+      );
+    }
+
+    // 4. Signal — Direction determination
+    let finalSignalType: SignalType | null = null;
+    const reasoning: string[] = [];
+    const tfUpper = targetTimeframe.toUpperCase();
+
+    if (isEdgeBuy) {
+      finalSignalType = SignalType.BUY;
+      if (isRecoveredBuyEvent) {
+        reasoning.push(`[${tfUpper} EDGE RECOVERY] Recovered BUY event: ${targetTimeframe} trigger recovered after transient rejection on previous bar.`);
+      }
+      reasoning.push(`VWAP: Strong volume crossover above fair value on ${targetTimeframe}`);
+    } else if (isEdgeSell) {
+      if (this.manifest.supportsShort) {
+        finalSignalType = SignalType.SELL;
+        if (isRecoveredSellEvent) {
+          reasoning.push(`[${tfUpper} EDGE RECOVERY] Recovered SELL event: ${targetTimeframe} trigger recovered after transient rejection on previous bar.`);
+        }
+        reasoning.push(`VWAP: Strong volume crossover below fair value on ${targetTimeframe}`);
+      } else {
+        reasoning.push('VWAP: Bearish setup detected but shorting is disabled');
+      }
+    } else {
+      if (pendingRejected && !isRecoveredBuyEvent && !isRecoveredSellEvent && pendingRejected.timestamp !== T) {
+        this.rejectedEdgeEvents.delete(stateKey);
+      }
+      return this.createNoSignalResult(context, ['No definitive VWAP crossover'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore, customIndicators);
+    }
+
+    // 5. Risk strictly on targetTimeframe ATR (Defect C indicator completeness)
     const atrArray = tfIndicators.atr?.[this.config.conditionConfig.atrPeriod];
     const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
+
+    if (typeof currentAtr !== 'number' || !Number.isFinite(currentAtr) || currentAtr <= 0) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.createNoSignalResult(context, ['ATR is zero or unavailable — cannot calculate risk parameters'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore, customIndicators);
+    }
 
     const riskContext: RiskContext = {
       timestamp: context.timestamp,
@@ -157,32 +303,6 @@ export class VWAPStrategy implements IStrategy {
       accountBalance: context.accountBalance
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
-
-    // 5. Signal — The strategy's own crossover logic is authoritative for direction
-    let finalSignalType: SignalType | null = null;
-    const reasoning: string[] = [];
-
-    const volMultiplier = avgVolume > 0 ? (currentCandle.volume / avgVolume) : 1.0;
-    const customIndicators = [
-      { name: 'VWAP Fair Value', value: `$${currentVwap.toFixed(2)}`, signal: currentPrice > currentVwap ? 'BULLISH' : 'BEARISH' },
-      { name: 'VWAP Deviation', value: `${deviationPercent.toFixed(2)}%`, signal: deviationPercent <= this.config.vwapRules.maxDeviationThresholdPercent ? 'BULLISH' : 'BEARISH' },
-      { name: 'Volume Multiplier', value: `${volMultiplier.toFixed(2)}x`, signal: volMultiplier >= this.config.vwapRules.minVolumeMultiplier ? 'BULLISH' : 'NEUTRAL' },
-      { name: 'Price Displacement', value: `${displacementPercent.toFixed(2)}%`, signal: displacementPercent >= this.config.vwapRules.minSidewaysDisplacementPercent ? 'BULLISH' : 'NEUTRAL' }
-    ];
-
-    if (crossedAboveVwap) {
-      finalSignalType = SignalType.BUY;
-      reasoning.push(`VWAP: Strong volume crossover above fair value on ${targetTimeframe}`);
-    } else if (crossedBelowVwap) {
-      if (this.manifest.supportsShort) {
-        finalSignalType = SignalType.SELL;
-        reasoning.push(`VWAP: Strong volume crossover below fair value on ${targetTimeframe}`);
-      } else {
-        reasoning.push('VWAP: Bearish setup detected but shorting is disabled');
-      }
-    } else {
-      return this.createNoSignalResult(context, ['No definitive VWAP crossover'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore, customIndicators);
-    }
 
     // Apply confidence threshold from config using Model C directional arbitration on targetTimeframe
     const primaryTfConfidence = confidenceScore.timeframes?.[targetTimeframe];
@@ -201,6 +321,7 @@ export class VWAPStrategy implements IStrategy {
         longScore < minConfidence ||
         shortScore >= minConfidence
       ) {
+        this.rejectedEdgeEvents.delete(stateKey);
         finalSignalType = null;
         reasoning.push('VWAP: Model C confidence rejected BUY setup');
       } else {
@@ -213,6 +334,7 @@ export class VWAPStrategy implements IStrategy {
         shortScore < minConfidence ||
         longScore >= minConfidence
       ) {
+        this.rejectedEdgeEvents.delete(stateKey);
         finalSignalType = null;
         reasoning.push('VWAP: Model C confidence rejected SELL setup');
       } else {
@@ -220,7 +342,13 @@ export class VWAPStrategy implements IStrategy {
       }
     }
 
+    // Risk Classification Gate (Defect A: Disallowed Risk Classification Transient Rejection)
     if (finalSignalType !== null && !this.config.signalRules.allowedRiskClassifications.includes(riskAssessment.riskClassification)) {
+      this.rejectedEdgeEvents.set(stateKey, {
+        timestamp: T,
+        direction: finalSignalType,
+        reason: 'DISALLOWED_RISK_CLASSIFICATION'
+      });
       reasoning.push(`VWAP: Risk classification ${riskAssessment.riskClassification} is not allowed by signal rules`);
       finalSignalType = null;
     }
@@ -229,6 +357,10 @@ export class VWAPStrategy implements IStrategy {
 
     let activeSignal: TradingSignal | null = null;
     if (hasSignal && finalSignalType !== null) {
+      // Consume pending recovery and record emitted closed-bar timestamp to suppress intra-candle duplicates
+      this.rejectedEdgeEvents.delete(stateKey);
+      this.lastEmittedBarTimestamps.set(stateKey, T);
+
       const directionalScore = finalSignalType === SignalType.SELL
         ? (primaryTfConfidence?.shortScore ?? confidenceScore.overallShortScore ?? 0)
         : (primaryTfConfidence?.longScore ?? confidenceScore.overallLongScore ?? 0);

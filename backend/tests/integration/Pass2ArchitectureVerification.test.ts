@@ -187,12 +187,12 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
         total: { USDT: 10000 },
       }),
       fetchKlines: vi.fn().mockResolvedValue(
-        Array.from({ length: 30 }, (_, i) => ({
-          openTime: Date.now() - (30 - i) * 3600000,
-          open: 49900 + i * 10,
-          high: 50100 + i * 10,
-          low: 49800 + i * 10,
-          close: 50000 + i * 10,
+        Array.from({ length: 60 }, (_, i) => ({
+          openTime: Date.now() - (60 - i) * 3600000,
+          open: 49000 + i * 20,
+          high: 49100 + i * 20,
+          low: 48900 + i * 20,
+          close: 49010 + i * 20,
           volume: 500,
         }))
       ),
@@ -681,9 +681,9 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
   });
 
   // =========================================================================
-  // Test 8: MarketRegime Decoupling
+  // Test 8: MarketRegime Evaluation & Gate 4.5 Mandatory Safety Gate
   // =========================================================================
-  it('8. MarketRegime evaluate emits telemetry without vetoing autonomous alerts', async () => {
+  it('8. MarketRegime evaluate emits telemetry and Gate 4.5 prohibits candidate when strategy is disallowed', async () => {
     const bot = new TradingBot(mockState, mockEnv);
 
     mockStorage.set('isActive', true);
@@ -729,11 +729,9 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
 
     await bot.alarm();
 
-    // Alert was generated despite MarketRegime returning allowed: false
+    // Under Stage 2 Mandatory Safety Condition B, Gate 4.5 prohibits candidates when isStrategyAllowed is false
     const alerts = mockStorage.get('alerts');
     expect(alerts).toBeDefined();
-    expect(alerts.length).toBe(1);
-    expect(alerts[0].symbol).toBe('BTC/USDT');
-    expect(alerts[0].status).toBe('pending');
+    expect(alerts.length).toBe(0);
   });
 });

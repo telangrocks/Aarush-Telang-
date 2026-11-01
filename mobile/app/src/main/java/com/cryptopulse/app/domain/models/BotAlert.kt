@@ -15,6 +15,9 @@ data class BotAlert(
     val positionSize: Double? = null,
     val entryIntent: String? = null,
     val timeframe: String? = null,
+    val quantity: Double? = null,
+    val requestedBudget: Double? = null,
+    val effectiveNotional: Double? = null,
 ) {
     fun toMap(): Map<String, Any> = buildMap {
         put("id", id)
@@ -35,6 +38,9 @@ data class BotAlert(
         positionSize?.let { put("positionSize", it) }
         entryIntent?.let { put("entryIntent", it) }
         timeframe?.let { put("timeframe", it) }
+        quantity?.let { put("quantity", it) }
+        requestedBudget?.let { put("requestedBudget", it) }
+        effectiveNotional?.let { put("effectiveNotional", it) }
         put("type", "TRADE_ALERT")
         put("alertType", "TRADE_ALERT")
     }
@@ -55,6 +61,9 @@ data class BotAlert(
             positionSize = (map["positionSize"] as? Number)?.toDouble(),
             entryIntent = map["entryIntent"] as? String,
             timeframe = map["timeframe"] as? String,
+            quantity = (map["quantity"] as? Number)?.toDouble() ?: (map["quantity"] as? String)?.toDoubleOrNull(),
+            requestedBudget = (map["requestedBudget"] as? Number)?.toDouble() ?: (map["requestedBudget"] as? String)?.toDoubleOrNull(),
+            effectiveNotional = (map["effectiveNotional"] as? Number)?.toDouble() ?: (map["effectiveNotional"] as? String)?.toDoubleOrNull(),
         )
     }
 }

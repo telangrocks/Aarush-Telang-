@@ -75,28 +75,40 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         volume: 1000,
         quoteVolume: 50000000,
       })),
-      fetchKlines: vi.fn().mockResolvedValue(
-        Array.from({ length: 30 }, (_, i) => ({
-          openTime: Date.now() - (30 - i) * 3600000,
-          open: 49000 + i * 10,
-          high: 50100 + i * 10,
-          low: 48900 + i * 10,
-          close: 50000 + i * 10,
-          volume: 500,
-        }))
-      ),
+      fetchKlines: vi.fn().mockImplementation((sym: string) => {
+        const basePrice = sym.includes('ETH') ? 3000 : 50000;
+        const step = sym.includes('ETH') ? 1.0 : 10.0;
+        const now = Date.now();
+        const stepMs = 3600000;
+        return Promise.resolve(
+          Array.from({ length: 60 }, (_, i) => {
+            const openTime = now - (60 - i) * stepMs;
+            const price = basePrice + i * step;
+            return {
+              openTime,
+              timestamp: openTime,
+              closeTime: openTime + stepMs,
+              open: price,
+              high: price + step * 0.5,
+              low: price - step * 0.5,
+              close: price,
+              volume: 500,
+            };
+          })
+        );
+      }),
       fetchBalance: vi.fn().mockResolvedValue({
         free: { USDT: 10000 },
         total: { USDT: 10000 },
       }),
       fetchMarkets: vi.fn().mockResolvedValue([
-        { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001 } } },
-        { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+        { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } },
+        { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
       ]),
       fetchMarket: vi.fn().mockImplementation(async (sym: string) => {
         const list = [
-          { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001 } } },
-          { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+          { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } },
+          { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
         ];
         return list.find(m => m.symbol === sym || m.id === sym.replace(/[\/_-]/g, '')) || null;
       }),
@@ -1015,5 +1027,118 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
     const resComp = await bot.fetch(reqComp);
     // Blocked by either 409 SYMBOL_POSITION_CONFLICT or 423
     expect([409, 423]).toContain(resComp.status);
+  });
+
+  // --------------------------------------------------------------------------
+  // Test 12 (DEF-02): Concurrency Safety Invariant Across Alarm and Execution
+  // --------------------------------------------------------------------------
+  it("Test 12 (DEF-02): Synchronous pre-persistence fencing and atomic WAL reservation prevent duplicate executable exposure", async () => {
+    const bot = new TradingBot(mockState, mockEnv);
+
+    mockStorage.set("isActive", true);
+    mockStorage.set("userId", "user-def02-concurrency");
+    mockStorage.set("strategy", "ScalperV2");
+    mockStorage.set("coinId", "BTC/USDT");
+    mockStorage.set("monitoredSymbols", ["BTC/USDT"]);
+    mockStorage.set("lock:alarmGeneration", 1);
+    mockStorage.set("alerts", []);
+    mockStorage.set("activePositions", []);
+
+    mockExecuteCycle.mockResolvedValue([
+      {
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'BUY',
+            signalPrice: 50000,
+            stopLoss: 49500,
+            takeProfit: 51000,
+            timeframe: '5m',
+            riskAssessment: { positionSizeRecommendation: 100 }
+          }
+        }
+      }
+    ]);
+
+    // Ensure constructor recovery promise has completed before setting scenario state
+    await (bot as any).ensureInitialized();
+
+    // Scenario A: Trade execution is currently in flight when alarm reaches pre-persistence check
+    mockStorage.set("isExecutingTrade", true);
+    (bot as any).isExecutingTrade = true;
+    await bot.alarm();
+
+    // In-flight mutex must have discarded the alert
+    const alertsA = mockStorage.get("alerts") || [];
+    expect(alertsA.length).toBe(0);
+
+    // Scenario B: Trade execution finishes, normal alarm generates a single alert
+    mockStorage.set("isExecutingTrade", false);
+    (bot as any).isExecutingTrade = false;
+    await bot.alarm();
+
+    const alertsB = mockStorage.get("alerts") || [];
+    expect(alertsB.length).toBe(1);
+    const alertId = alertsB[0].id;
+    expect(alertsB[0].symbol).toBe("BTC/USDT");
+    expect(alertsB[0].status).toBe("pending");
+
+    // Scenario C: Immediate subsequent alarm cycle (< 300s) detects prePersistActiveAlert
+    // and strictly suppresses candidate generation to prevent duplicate alert spam
+    await bot.alarm();
+    const alertsC = mockStorage.get("alerts") || [];
+    expect(alertsC.length).toBe(1); // Still exactly 1 alert, no duplicate added!
+
+    // Scenario D: Competing concurrent execution requests for this alert
+    // First request acquires atomic WAL transaction and executes
+    const req1 = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alertId })
+    });
+    const res1 = await bot.fetch(req1);
+    expect(res1.status).toBe(200);
+
+    // Duplicate execution request with the same alertId is idempotently blocked from re-dispatch
+    const reqDup = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alertId })
+    });
+    const resDup = await bot.fetch(reqDup);
+    const bodyDup = await resDup.json<any>();
+    expect(bodyDup.code).toBe("DUPLICATE_DISPATCH_BLOCKED");
+
+    // Competing execution request on same normalized ticker while position is active is strictly blocked (HTTP 409/423)
+    mockStorage.set("alerts", [
+      ...(mockStorage.get("alerts") || []),
+      {
+        id: "alert-btc-competing",
+        symbol: "BTC/USDT",
+        strategy: "Momentum_NEW",
+        side: "BUY",
+        status: "pending",
+        timeframe: "15m",
+        generation: 1,
+        source: "AUTONOMOUS",
+        positionSize: 100,
+        signalPrice: 50000,
+        targetEntryPrice: 50000,
+        timestamp: new Date().toISOString(),
+      }
+    ]);
+    const reqComp = new Request("http://bot/execute-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alertId: "alert-btc-competing" })
+    });
+    const resComp = await bot.fetch(reqComp);
+    expect([409, 423]).toContain(resComp.status);
+
+    // Concurrency invariant proven: exactly one order executed on exchange, zero duplicate exposure
+    expect(mockAdapterInstance.createOrder).toHaveBeenCalledTimes(1);
   });
 });

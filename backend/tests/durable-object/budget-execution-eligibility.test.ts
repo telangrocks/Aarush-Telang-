@@ -35,15 +35,24 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
         }),
         fetchKlines: vi.fn().mockImplementation((sym: string) => {
           const basePrice = sym.includes('GRAM') ? 1.249 : 50000;
+          const step = sym.includes('GRAM') ? 0.01 : 10.0;
+          const now = Date.now();
+          const stepMs = 3600000;
           return Promise.resolve(
-            Array.from({ length: 30 }, (_, i) => ({
-              openTime: Date.now() - (30 - i) * 3600000,
-              open: basePrice,
-              high: basePrice * 1.01,
-              low: basePrice * 0.99,
-              close: basePrice,
-              volume: 100
-            }))
+            Array.from({ length: 60 }, (_, i) => {
+              const openTime = now - (60 - i) * stepMs;
+              const price = basePrice + i * step;
+              return {
+                openTime,
+                timestamp: openTime,
+                closeTime: openTime + stepMs,
+                open: price,
+                high: price + step * 0.5,
+                low: price - step * 0.5,
+                close: price,
+                volume: 1000
+              };
+            })
           );
         }),
         fetchBalance: vi.fn().mockResolvedValue({ free: { USDT: 10000 }, total: { USDT: 10000 } }),
@@ -82,6 +91,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       qtyStep: 0.1,
       minOrderQty: 0.1,
       minNotional: 5.0,
+      maxOrderQty: 100000,
     });
 
     expect(result.isExecutable).toBe(false);
@@ -100,6 +110,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       qtyStep: 0.1,
       minOrderQty: 0.1,
       minNotional: 5.0,
+      maxOrderQty: 100000,
     });
 
     expect(result.isExecutable).toBe(true);
@@ -118,6 +129,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       qtyStep: 0.1,
       minOrderQty: 0.1,
       minNotional: 5.0,
+      maxOrderQty: 100000,
     });
 
     expect(result.isExecutable).toBe(false);
@@ -135,6 +147,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       qtyStep: 0.001,
       minOrderQty: 0.001,
       minNotional: 5.0,
+      maxOrderQty: 100000,
     });
 
     expect(result.isExecutable).toBe(false);
@@ -152,6 +165,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       qtyStep: 0,
       minOrderQty: 0.1,
       minNotional: 5.0,
+      maxOrderQty: 100000,
     });
     expect(zeroStep.isExecutable).toBe(false);
     expect(zeroStep.rejectionReason).toBe("Invalid exchange quantity step size (must be positive and finite)");
@@ -162,6 +176,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       qtyStep: -0.1,
       minOrderQty: 0.1,
       minNotional: 5.0,
+      maxOrderQty: 100000,
     });
     expect(negativeStep.isExecutable).toBe(false);
     expect(negativeStep.rejectionReason).toBe("Invalid exchange quantity step size (must be positive and finite)");
@@ -172,6 +187,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       qtyStep: NaN,
       minOrderQty: 0.1,
       minNotional: 5.0,
+      maxOrderQty: 100000,
     });
     expect(nanStep.isExecutable).toBe(false);
     expect(nanStep.rejectionReason).toBe("Invalid exchange quantity step size (must be positive and finite)");
@@ -188,6 +204,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       baseAsset: "GRAM",
       quoteAsset: "USDT",
       minNotional: 5.0,
+      maxOrderQty: 100000,
       minQty: 0.1,
       maxQty: 100000.0,
       stepSize: 0.1,
@@ -231,6 +248,8 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
         qtyStep: tc.step,
         minOrderQty: tc.step,
         minNotional: 5.0,
+        maxOrderQty: 100000,
+      maxOrderQty: 100000,
       });
 
       expect(res.postRoundingNotional).toBeLessThanOrEqual(tc.budget + 1e-9);
@@ -395,7 +414,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
           active: true,
           category: 'linear',
           precision: { amount: 0.1, price: 0.001 },
-          limits: { cost: { min: 5.0 }, amount: { min: 0.1 } }
+          limits: { cost: { min: 5.0 }, amount: { min: 0.1, max: 100000 } }
         },
         {
           id: 'BTCUSDT',
@@ -404,7 +423,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
           active: true,
           category: 'linear',
           precision: { amount: 0.00001, price: 1.0 },
-          limits: { cost: { min: 5.0 }, amount: { min: 0.00001 } }
+          limits: { cost: { min: 5.0 }, amount: { min: 0.00001, max: 1000 } }
         }
       ];
 

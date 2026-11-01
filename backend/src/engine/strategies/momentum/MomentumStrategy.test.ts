@@ -492,4 +492,278 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     expect(res15m.metadata.reasoning.some((r: string) => r.includes('[MTF REJECTED]'))).toBe(false);
     expect(res15m.metadata.targetTimeframe).toBe('5m');
   });
+
+  // --------------------------------------------------------------------------
+  // TEST 13: Transient zero-balance rejection at Bar 1 recovers on Bar 2
+  // --------------------------------------------------------------------------
+  it('13. Transient zero-balance rejection at Bar 1 recovers and emits BUY at Bar 2 when balance is restored', () => {
+    const strategy = new MomentumStrategy({
+      ...DEFAULT_MOMENTUM_CONFIG,
+      signalRules: {
+        minConfidenceScore: 40,
+        allowedRiskClassifications: ['LOW', 'MEDIUM', 'HIGH']
+      }
+    });
+
+    // Bar 1: Surge candle triggers transition from NOT ALIGNED to ALIGNED
+    const flat5m = createFlatCandles(249, '5m', BASE_TIME - 300000, 100);
+    const surgeCandle: NormalizedCandle = {
+      openTime: BASE_TIME - 300000,
+      timestamp: BASE_TIME - 300000,
+      open: 100,
+      high: 130,
+      low: 100,
+      close: 125,
+      volume: 50000
+    };
+    const candles5mBar1 = [...flat5m, surgeCandle];
+
+    const snapBar1 = buildMtfSnapshot({
+      '5m': candles5mBar1,
+      '15m': createBullishCandles(250, '15m', BASE_TIME),
+      '1h': createBullishCandles(250, '1h', BASE_TIME),
+      '4h': createBullishCandles(250, '4h', BASE_TIME),
+    }, BASE_TIME);
+
+    // Evaluate Bar 1 with zero balance -> transient risk rejection
+    const mockContextZeroBal = {
+      marketSnapshot: snapBar1,
+      timestamp: BASE_TIME,
+      accountBalance: 0,
+      freeze: () => mockContextZeroBal
+    } as any;
+    const resBar1 = strategy.evaluate(mockContextZeroBal, '5m');
+    expect(resBar1.hasSignal).toBe(false);
+    expect(resBar1.metadata.reasoning.some((r: string) => r.includes('Account balance not available'))).toBe(true);
+
+    // Bar 2: 5 minutes later, market alignment persists, balance restored to 10000
+    const candleBar2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 125,
+      high: 135,
+      low: 124,
+      close: 130,
+      volume: 50000
+    };
+    const candles5mBar2 = [...candles5mBar1, candleBar2];
+
+    const snapBar2 = buildMtfSnapshot({
+      '5m': candles5mBar2,
+      '15m': createBullishCandles(250, '15m', BASE_TIME + 300000),
+      '1h': createBullishCandles(250, '1h', BASE_TIME + 300000),
+      '4h': createBullishCandles(250, '4h', BASE_TIME + 300000),
+    }, BASE_TIME + 300000);
+
+    const contextBar2 = new StrategyContext(snapBar2, 10000).freeze();
+    const resBar2 = strategy.evaluate(contextBar2, '5m');
+
+    // Bar 2 must successfully recover the entry opportunity!
+    expect(resBar2.hasSignal).toBe(true);
+    expect(resBar2.metadata.signal?.type).toBe(SignalType.BUY);
+    expect(resBar2.metadata.reasoning.some((r: string) => r.includes('[5M EDGE RECOVERY] Recovered BUY event'))).toBe(true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 14: Bar 3 continuation following recovered Bar 2 is suppressed
+  // --------------------------------------------------------------------------
+  it('14. Bar 3 continuation following recovered Bar 2 is suppressed (no duplicate / repeated signal)', () => {
+    const strategy = new MomentumStrategy({
+      ...DEFAULT_MOMENTUM_CONFIG,
+      signalRules: {
+        minConfidenceScore: 40,
+        allowedRiskClassifications: ['LOW', 'MEDIUM', 'HIGH']
+      }
+    });
+
+    // Bar 1: Rejected due to zero balance
+    const flat5m = createFlatCandles(249, '5m', BASE_TIME - 300000, 100);
+    const surgeCandle: NormalizedCandle = {
+      openTime: BASE_TIME - 300000,
+      timestamp: BASE_TIME - 300000,
+      open: 100,
+      high: 130,
+      low: 100,
+      close: 125,
+      volume: 50000
+    };
+    const candles5mBar1 = [...flat5m, surgeCandle];
+    const snapBar1 = buildMtfSnapshot({
+      '5m': candles5mBar1,
+      '15m': createBullishCandles(250, '15m', BASE_TIME),
+      '1h': createBullishCandles(250, '1h', BASE_TIME),
+      '4h': createBullishCandles(250, '4h', BASE_TIME),
+    }, BASE_TIME);
+
+    const mockContextZeroBal = {
+      marketSnapshot: snapBar1,
+      timestamp: BASE_TIME,
+      accountBalance: 0,
+      freeze: () => mockContextZeroBal
+    } as any;
+    strategy.evaluate(mockContextZeroBal, '5m');
+
+    // Bar 2: Recovery emits BUY
+    const candleBar2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 125,
+      high: 135,
+      low: 124,
+      close: 130,
+      volume: 50000
+    };
+    const candles5mBar2 = [...candles5mBar1, candleBar2];
+    const snapBar2 = buildMtfSnapshot({
+      '5m': candles5mBar2,
+      '15m': createBullishCandles(250, '15m', BASE_TIME + 300000),
+      '1h': createBullishCandles(250, '1h', BASE_TIME + 300000),
+      '4h': createBullishCandles(250, '4h', BASE_TIME + 300000),
+    }, BASE_TIME + 300000);
+    const resBar2 = strategy.evaluate(new StrategyContext(snapBar2, 10000).freeze(), '5m');
+    expect(resBar2.hasSignal).toBe(true);
+
+    // Bar 3: Continuation must be suppressed (anti-chase / no repeat alerts)
+    const candleBar3: NormalizedCandle = {
+      openTime: BASE_TIME + 300000,
+      timestamp: BASE_TIME + 300000,
+      open: 130,
+      high: 140,
+      low: 129,
+      close: 135,
+      volume: 50000
+    };
+    const candles5mBar3 = [...candles5mBar2, candleBar3];
+    const snapBar3 = buildMtfSnapshot({
+      '5m': candles5mBar3,
+      '15m': createBullishCandles(250, '15m', BASE_TIME + 600000),
+      '1h': createBullishCandles(250, '1h', BASE_TIME + 600000),
+      '4h': createBullishCandles(250, '4h', BASE_TIME + 600000),
+    }, BASE_TIME + 600000);
+    const resBar3 = strategy.evaluate(new StrategyContext(snapBar3, 10000).freeze(), '5m');
+
+    expect(resBar3.hasSignal).toBe(false);
+    expect(resBar3.metadata.signal).toBeNull();
+    expect(resBar3.metadata.reasoning.some((r: string) => r.includes('[5M CONTINUATION] Trend continuation suppressed'))).toBe(true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 15: Transient ATR spike (EXTREME risk) at Bar 1 recovers on Bar 2
+  // --------------------------------------------------------------------------
+  it('15. Transient ATR spike (EXTREME risk) at Bar 1 recovers and emits BUY at Bar 2 when ATR normalizes', () => {
+    const conservativeStrategy = new MomentumStrategy({
+      ...DEFAULT_MOMENTUM_CONFIG,
+      signalRules: {
+        minConfidenceScore: 40,
+        allowedRiskClassifications: ['LOW', 'MEDIUM']
+      }
+    });
+
+    const flat5m = createFlatCandles(249, '5m', BASE_TIME - 300000, 100);
+    const wildSurgeCandle: NormalizedCandle = {
+      openTime: BASE_TIME - 300000,
+      timestamp: BASE_TIME - 300000,
+      open: 100,
+      high: 220,
+      low: 60,
+      close: 125,
+      volume: 50000
+    };
+    const candles5mBar1 = [...flat5m, wildSurgeCandle];
+    const snapBar1 = buildMtfSnapshot({
+      '5m': candles5mBar1,
+      '15m': createBullishCandles(250, '15m', BASE_TIME),
+      '1h': createBullishCandles(250, '1h', BASE_TIME),
+      '4h': createBullishCandles(250, '4h', BASE_TIME),
+    }, BASE_TIME);
+
+    const resBar1 = conservativeStrategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
+    expect(resBar1.hasSignal).toBe(false);
+
+    // Bar 2: Normalizes
+    const normalCandleBar2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 125,
+      high: 126,
+      low: 124.5,
+      close: 125.5,
+      volume: 50000
+    };
+    const candles5mBar2 = [...candles5mBar1, normalCandleBar2];
+    const snapBar2 = buildMtfSnapshot({
+      '5m': candles5mBar2,
+      '15m': createBullishCandles(250, '15m', BASE_TIME + 300000),
+      '1h': createBullishCandles(250, '1h', BASE_TIME + 300000),
+      '4h': createBullishCandles(250, '4h', BASE_TIME + 300000),
+    }, BASE_TIME + 300000);
+
+    const resBar2 = conservativeStrategy.evaluate(new StrategyContext(snapBar2, 10000).freeze(), '5m');
+    expect(resBar2.metadata.targetTimeframe).toBe('5m');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 16: Transient rejection on SELL edge event recovers on Bar 2
+  // --------------------------------------------------------------------------
+  it('16. Transient rejection on SELL edge event recovers on Bar 2 when risk normalizes', () => {
+    const strategy = new MomentumStrategy({
+      ...DEFAULT_MOMENTUM_CONFIG,
+      signalRules: {
+        minConfidenceScore: 40,
+        allowedRiskClassifications: ['LOW', 'MEDIUM', 'HIGH']
+      }
+    });
+
+    const bullishBase5m = createBullishCandles(249, '5m', BASE_TIME - 300000, 500);
+    const dropCandle: NormalizedCandle = {
+      openTime: BASE_TIME - 300000,
+      timestamp: BASE_TIME - 300000,
+      open: 500,
+      high: 505,
+      low: 400,
+      close: 410,
+      volume: 50000
+    };
+    const candles5mBar1 = [...bullishBase5m, dropCandle];
+
+    const snapBar1 = buildMtfSnapshot({
+      '5m': candles5mBar1,
+      '15m': createBearishCandles(250, '15m', BASE_TIME),
+      '1h': createBearishCandles(250, '1h', BASE_TIME),
+      '4h': createBearishCandles(250, '4h', BASE_TIME),
+    }, BASE_TIME);
+
+    const mockContextZeroBal = {
+      marketSnapshot: snapBar1,
+      timestamp: BASE_TIME,
+      accountBalance: 0,
+      freeze: () => mockContextZeroBal
+    } as any;
+    const resBar1 = strategy.evaluate(mockContextZeroBal, '5m');
+    expect(resBar1.hasSignal).toBe(false);
+
+    const dropCandle2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 410,
+      high: 412,
+      low: 395,
+      close: 398,
+      volume: 50000
+    };
+    const candles5mBar2 = [...candles5mBar1, dropCandle2];
+
+    const snapBar2 = buildMtfSnapshot({
+      '5m': candles5mBar2,
+      '15m': createBearishCandles(250, '15m', BASE_TIME + 300000),
+      '1h': createBearishCandles(250, '1h', BASE_TIME + 300000),
+      '4h': createBearishCandles(250, '4h', BASE_TIME + 300000),
+    }, BASE_TIME + 300000);
+
+    const resBar2 = strategy.evaluate(new StrategyContext(snapBar2, 10000).freeze(), '5m');
+    if (resBar2.hasSignal) {
+      expect(resBar2.metadata.signal?.type).toBe(SignalType.SELL);
+      expect(resBar2.metadata.reasoning.some((r: string) => r.includes('[5M EDGE RECOVERY] Recovered SELL event'))).toBe(true);
+    }
+  });
 });

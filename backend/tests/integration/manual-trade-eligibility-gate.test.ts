@@ -73,7 +73,7 @@ describe('Manual Trade Pre-Alert Execution Eligibility Gate', () => {
           precision: { price: 0.1, amount: 0.001 },
           limits: {
             price: { min: new BigNumber(0.1) },
-            amount: { min: new BigNumber(0.001) },
+            amount: { min: new BigNumber(0.001), max: new BigNumber(1000) },
             cost: { min: new BigNumber(5) },
           },
         },
@@ -125,7 +125,7 @@ describe('Manual Trade Pre-Alert Execution Eligibility Gate', () => {
           precision: { price: 0.0001, amount: 0.1 },
           limits: {
             price: { min: new BigNumber(0.0001) },
-            amount: { min: new BigNumber(0.1) },
+            amount: { min: new BigNumber(0.1), max: new BigNumber(100000) },
             cost: { min: new BigNumber(5) },
           },
         },
@@ -171,7 +171,7 @@ describe('Manual Trade Pre-Alert Execution Eligibility Gate', () => {
           precision: { price: 0.1, amount: 0.001 },
           limits: {
             price: { min: new BigNumber(0.1) },
-            amount: { min: new BigNumber(0.001) },
+            amount: { min: new BigNumber(0.001), max: new BigNumber(1000) },
             cost: { min: new BigNumber(5) },
           },
         },
@@ -281,7 +281,7 @@ describe('Manual Trade Pre-Alert Execution Eligibility Gate', () => {
           precision: { price: 0.01, amount: 0.01 },
           limits: {
             price: { min: new BigNumber(0.01) },
-            amount: { min: new BigNumber(0.01) },
+            amount: { min: new BigNumber(0.01), max: new BigNumber(10000) },
             cost: { min: new BigNumber(5) },
           },
         },

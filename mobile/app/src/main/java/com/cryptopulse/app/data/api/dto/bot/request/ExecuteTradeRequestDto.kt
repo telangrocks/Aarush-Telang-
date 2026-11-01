@@ -14,6 +14,8 @@ data class ExecuteTradeRequestDto(
     @SerializedName("positionSizeUsdt") val positionSizeUsdt: Double? = null,
     @SerializedName("strategy") val strategy: String? = null,
     @SerializedName("isMockTrade") val isMockTrade: Boolean = false,
-    @SerializedName("entryIntent") val entryIntent: String? = null
+    @SerializedName("entryIntent") val entryIntent: String? = null,
+    @SerializedName("quantity") val quantity: Double? = null,
+    @SerializedName("requireApprovedQuantity") val requireApprovedQuantity: Boolean? = true
 )
 

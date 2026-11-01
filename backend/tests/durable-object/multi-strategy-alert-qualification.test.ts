@@ -17,27 +17,39 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
         fetchTicker: vi.fn().mockImplementation((sym: string) => {
           return Promise.resolve({ symbol: sym.replace('/', ''), last: 50000, bid: 49990, ask: 50010, high: 51000, low: 49000, volume: 100, quoteVolume: 5000000 });
         }),
-        fetchKlines: vi.fn().mockResolvedValue(
-          Array.from({ length: 30 }, (_, i) => ({
-            openTime: Date.now() - (30 - i) * 3600000,
-            open: 50000,
-            high: 51000,
-            low: 49000,
-            close: 50500,
-            volume: 100
-          }))
-        ),
+        fetchKlines: vi.fn().mockImplementation((sym: string) => {
+          const basePrice = sym.includes('ETH') ? 3000 : (sym.includes('XRP') ? 0.5 : 50000);
+          const step = sym.includes('ETH') ? 1.0 : (sym.includes('XRP') ? 0.001 : 10.0);
+          const now = Date.now();
+          const stepMs = 3600000;
+          return Promise.resolve(
+            Array.from({ length: 60 }, (_, i) => {
+              const openTime = now - (60 - i) * stepMs;
+              const price = basePrice + i * step;
+              return {
+                openTime,
+                timestamp: openTime,
+                closeTime: openTime + stepMs,
+                open: price,
+                high: price + step * 0.5,
+                low: price - step * 0.5,
+                close: price,
+                volume: 500,
+              };
+            })
+          );
+        }),
         fetchBalance: vi.fn().mockResolvedValue({ free: { USDT: 10000 }, total: { USDT: 10000 } }),
         fetchMarkets: vi.fn().mockResolvedValue([
-          { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001 } } },
-          { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-          { id: 'XRPUSDT', symbol: 'XRP/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 1.0, price: 0.0001 }, limits: { cost: { min: 5 }, amount: { min: 1.0 } } },
+          { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } },
+          { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+          { id: 'XRPUSDT', symbol: 'XRP/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 1.0, price: 0.0001 }, limits: { cost: { min: 5 }, amount: { min: 1.0, max: 100000 } } },
         ]),
         fetchMarket: vi.fn().mockImplementation(async (sym: string) => {
           const list = [
-            { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001 } } },
-            { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-            { id: 'XRPUSDT', symbol: 'XRP/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 1.0, price: 0.0001 }, limits: { cost: { min: 5 }, amount: { min: 1.0 } } },
+            { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } },
+            { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+            { id: 'XRPUSDT', symbol: 'XRP/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 1.0, price: 0.0001 }, limits: { cost: { min: 5 }, amount: { min: 1.0, max: 100000 } } },
           ];
           return list.find(m => m.symbol === sym || m.id === sym.replace('/', '')) || null;
         }),

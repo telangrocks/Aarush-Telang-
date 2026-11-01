@@ -48,19 +48,30 @@ import com.cryptopulse.app.ui.theme.*
 private val STRATEGY_CLEAN_REGEX = Regex("[-_]")
 
 private fun resolveShortStrategyName(strategyId: String?, displayName: String?): String {
-    if (displayName != null && displayName.isNotBlank()) {
-        val clean = displayName
+    val cleanDisplay = displayName?.trim()?.replace(Regex("(?i)_new$"), "")
+    if (!cleanDisplay.isNullOrBlank()) {
+        val stripped = cleanDisplay
             .replace(Regex("(?i)\\b(Trading\\s+Strategy|Strategy)\\b"), "")
             .trim()
-        if (clean.isNotBlank()) return clean.uppercase()
+        if (stripped.isNotBlank()) {
+            return when (stripped.lowercase().replace(STRATEGY_CLEAN_REGEX, "")) {
+                "scalperv2", "scalping", "scalper" -> "SCALPER V2"
+                "momentum" -> "MOMENTUM"
+                "breakout" -> "BREAKOUT"
+                "meanreversion", "reversion" -> "MEAN REVERSION"
+                "vwap" -> "VWAP"
+                else -> stripped.uppercase()
+            }
+        }
     }
-    return when ((strategyId ?: "").lowercase().replace(STRATEGY_CLEAN_REGEX, "")) {
+    val cleanId = (strategyId ?: "").trim().replace(Regex("(?i)_new$"), "")
+    return when (cleanId.lowercase().replace(STRATEGY_CLEAN_REGEX, "")) {
         "scalperv2", "scalping", "scalper" -> "SCALPER V2"
         "momentum" -> "MOMENTUM"
         "breakout" -> "BREAKOUT"
         "meanreversion", "reversion" -> "MEAN REVERSION"
         "vwap" -> "VWAP"
-        else -> (strategyId ?: "SCALPER V2").uppercase()
+        else -> (if (cleanId.isNotBlank()) cleanId else "SCALPER V2").uppercase()
     }
 }
 
@@ -616,19 +627,21 @@ fun TechnicalAnalysisScreen(
     val resolvedStrategyId = resolvedViewedStrategyId
 
     val matchingStrategy = remember(availableStrategies, resolvedViewedStrategyId) {
-        availableStrategies.find { it.id.equals(resolvedViewedStrategyId, ignoreCase = true) }
+        val cleanViewed = resolvedViewedStrategyId.trim().replace(Regex("(?i)_new$"), "")
+        availableStrategies.find { it.id.equals(cleanViewed, ignoreCase = true) || it.id.equals(resolvedViewedStrategyId, ignoreCase = true) }
     }
 
     val activeStrategyDisplayName = remember(matchingStrategy, analysisState?.strategyMetadata?.displayName, resolvedViewedStrategyId) {
+        val cleanViewed = resolvedViewedStrategyId.trim().replace(Regex("(?i)_new$"), "")
         matchingStrategy?.name
-            ?: analysisState?.strategyMetadata?.displayName
-            ?: when (resolvedViewedStrategyId.lowercase().replace(STRATEGY_CLEAN_REGEX, "")) {
+            ?: analysisState?.strategyMetadata?.displayName?.trim()?.replace(Regex("(?i)_new$"), "")
+            ?: when (cleanViewed.lowercase().replace(STRATEGY_CLEAN_REGEX, "")) {
                 "scalperv2", "scalping", "scalper" -> "SCALPER V2"
                 "momentum" -> "MOMENTUM"
                 "breakout" -> "BREAKOUT"
                 "meanreversion", "reversion" -> "MEAN REVERSION"
                 "vwap" -> "VWAP"
-                else -> resolvedViewedStrategyId.uppercase()
+                else -> cleanViewed.uppercase()
             }
     }
 

@@ -17,6 +17,7 @@ export interface MarketQualityAssessment {
   readonly qtyStep?: number;
   readonly minOrderQty: number;
   readonly minNotionalUsdt: number;
+  readonly maxOrderQty?: number;
   readonly isStablecoinOrLeveraged: boolean;
   readonly priceChangePercent24h?: number;
   readonly dataSanity: {

@@ -110,7 +110,7 @@ fun MarketCandidatesScreen(
     onBack: (() -> Unit)? = null,
     onIncreaseBudget: (() -> Unit)? = null,
     onChangeApiKeys: (() -> Unit)? = null,
-    budget: Double = 5.0,
+    budget: Double,
     viewModel: com.cryptopulse.app.ui.auth.ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
 ) {
     android.util.Log.d("VM_CHECK", "[DIAGNOSTIC] MarketCandidatesScreen ExchangeViewModel hash=${System.identityHashCode(viewModel)}")

@@ -6,6 +6,7 @@ export interface ExecutionEligibilityParams {
   readonly qtyStep: number;
   readonly minOrderQty: number;
   readonly minNotional: number;
+  readonly maxOrderQty?: number;
 }
 
 export interface ExecutionEligibilityResult {
@@ -16,6 +17,8 @@ export interface ExecutionEligibilityResult {
   readonly minNotional: number;
   readonly minOrderQty: number;
   readonly qtyStep: number;
+  readonly maxOrderQty?: number;
+  readonly wasClampedToMax?: boolean;
   readonly rejectionReason?: string;
 }
 
@@ -78,6 +81,20 @@ export class ExecutionEligibilityGate {
       };
     }
 
+    if (params.maxOrderQty === undefined || params.maxOrderQty === null || !Number.isFinite(params.maxOrderQty) || params.maxOrderQty <= 0) {
+      return {
+        isExecutable: false,
+        rawQty: 0,
+        quantizedQty: 0,
+        postRoundingNotional: 0,
+        minNotional: params.minNotional || 5,
+        minOrderQty: params.minOrderQty || 0,
+        qtyStep: params.qtyStep || 0,
+        maxOrderQty: params.maxOrderQty,
+        rejectionReason: 'Invalid exchange maximum order quantity (must be positive and finite)',
+      };
+    }
+
     const minNotional = params.minNotional > 0 ? params.minNotional : 5.0;
     const minOrderQty = params.minOrderQty > 0 ? params.minOrderQty : 0.00001;
     const qtyStep = params.qtyStep;
@@ -105,8 +122,18 @@ export class ExecutionEligibilityGate {
     // rawQty = tradeAmountUsdt / currentPrice
     const rawQtyBN = tradeAmountBN.dividedBy(priceBN);
 
-    // steps = floor(rawQty / qtyStep)
-    const stepsBN = rawQtyBN.dividedBy(stepSizeBN).integerValue(BigNumber.ROUND_FLOOR);
+    // Apply exchange maximum quantity constraint before step-size quantization
+    let effectiveRawQtyBN = rawQtyBN;
+    let wasClampedToMax = false;
+    const maxOrderQty = params.maxOrderQty;
+    const maxOrderQtyBN = new BigNumber(maxOrderQty);
+    if (rawQtyBN.isGreaterThan(maxOrderQtyBN)) {
+      effectiveRawQtyBN = maxOrderQtyBN;
+      wasClampedToMax = true;
+    }
+
+    // steps = floor(effectiveRawQty / qtyStep)
+    const stepsBN = effectiveRawQtyBN.dividedBy(stepSizeBN).integerValue(BigNumber.ROUND_FLOOR);
 
     // quantizedQty = steps * qtyStep
     const quantizedQtyBN = stepsBN.multipliedBy(stepSizeBN);
@@ -129,6 +156,8 @@ export class ExecutionEligibilityGate {
         minNotional,
         minOrderQty,
         qtyStep,
+        maxOrderQty,
+        wasClampedToMax,
         rejectionReason: `Quantized qty (${quantizedQty}) < minOrderQty (${minOrderQty}) (requires min ~$${minCapitalRequired.toFixed(2)} USDT at price $${price.toFixed(4)})`,
       };
     }
@@ -146,6 +175,8 @@ export class ExecutionEligibilityGate {
         minNotional,
         minOrderQty,
         qtyStep,
+        maxOrderQty,
+        wasClampedToMax,
         rejectionReason: `Post-rounding notional ($${postRoundingDisplay} USDT) < minNotional ($${minNotional.toFixed(2)} USDT)`,
       };
     }
@@ -158,6 +189,8 @@ export class ExecutionEligibilityGate {
       minNotional,
       minOrderQty,
       qtyStep,
+      maxOrderQty,
+      wasClampedToMax,
     };
   }
 }

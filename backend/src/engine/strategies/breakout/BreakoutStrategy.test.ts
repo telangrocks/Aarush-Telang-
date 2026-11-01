@@ -117,7 +117,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
   const testStrategy = new BreakoutStrategy({
     ...DEFAULT_BREAKOUT_CONFIG,
     signalRules: {
-      minConfidenceScore: 30,
+      minConfidenceScore: 50,
       allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
     }
   });
@@ -278,13 +278,13 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     const context = new StrategyContext(snapshot, 10000).freeze();
     const result = testStrategy.evaluate(context, '5m');
 
-    if (result.hasSignal) {
-      expect(result.metadata.signal?.type).toBe(SignalType.BUY);
-      expect(result.metadata.signal?.entryPrice).toBe(breakoutClose);
-      expect(result.metadata.signal?.stopLoss).toBeLessThan(breakoutClose);
-      expect(result.metadata.signal?.takeProfit).toBeGreaterThan(breakoutClose);
-      expect(result.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New BUY event"))).toBe(true);
-    }
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal).not.toBeNull();
+    expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+    expect(result.metadata.signal?.entryPrice).toBe(breakoutClose);
+    expect(result.metadata.signal?.stopLoss).toBeLessThan(breakoutClose);
+    expect(result.metadata.signal?.takeProfit).toBeGreaterThan(breakoutClose);
+    expect(result.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New BUY event"))).toBe(true);
   });
 
   // --------------------------------------------------------------------------
@@ -314,13 +314,13 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     const context = new StrategyContext(snapshot, 10000).freeze();
     const result = testStrategy.evaluate(context, '5m');
 
-    if (result.hasSignal) {
-      expect(result.metadata.signal?.type).toBe(SignalType.SELL);
-      expect(result.metadata.signal?.entryPrice).toBe(breakdownClose);
-      expect(result.metadata.signal?.stopLoss).toBeGreaterThan(breakdownClose);
-      expect(result.metadata.signal?.takeProfit).toBeLessThan(breakdownClose);
-      expect(result.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New SELL event"))).toBe(true);
-    }
+    expect(result.hasSignal).toBe(true);
+    expect(result.metadata.signal).not.toBeNull();
+    expect(result.metadata.signal?.type).toBe(SignalType.SELL);
+    expect(result.metadata.signal?.entryPrice).toBe(breakdownClose);
+    expect(result.metadata.signal?.stopLoss).toBeGreaterThan(breakdownClose);
+    expect(result.metadata.signal?.takeProfit).toBeLessThan(breakdownClose);
+    expect(result.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New SELL event"))).toBe(true);
   });
 
   // --------------------------------------------------------------------------
@@ -364,22 +364,44 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
   // TEST 10: Edge Transition: TRUE -> TRUE continuation is suppressed
   // --------------------------------------------------------------------------
   it("10. Edge Transition: Aligned at both T and T_previous -> continuation suppressed", () => {
-    // Both previous and current candles are long established bullish trend
+    const fiveMinMs = 5 * 60 * 1000;
+    const baseCandles5m = createBullishCandles(50, "5m", BASE_TIME - fiveMinMs);
+    // Surge candle at T_previous
+    const candleTprev: NormalizedCandle = {
+      openTime: BASE_TIME - fiveMinMs,
+      timestamp: BASE_TIME - fiveMinMs,
+      open: 200,
+      high: 305,
+      low: 198,
+      close: 300,
+      volume: 10000
+    };
+    // Surge candle at T
+    const candleT: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 300,
+      high: 315,
+      low: 298,
+      close: 310,
+      volume: 10000
+    };
+    const candles5m = [...baseCandles5m, candleTprev, candleT];
+
     const snapshot = buildMtfSnapshot({
-      "5m": createBullishCandles(60, "5m", BASE_TIME),
-      "15m": createBullishCandles(60, "15m", BASE_TIME),
-      "1h": createBullishCandles(60, "1h", BASE_TIME),
-      "4h": createBullishCandles(60, "4h", BASE_TIME),
-    }, BASE_TIME);
+      "5m": candles5m,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
 
     const context = new StrategyContext(snapshot, 10000).freeze();
     const result = testStrategy.evaluate(context, '5m');
 
-    // If both current and previous bar are aligned, it must suppress continuation
-    if (result.metadata.reasoning.some((r: string) => r.includes("[5M CONTINUATION]"))) {
-      expect(result.hasSignal).toBe(false);
-      expect(result.metadata.signal).toBeNull();
-    }
+    // Both current and previous bar are aligned, so continuation must be suppressed unconditionally
+    expect(result.hasSignal).toBe(false);
+    expect(result.metadata.signal).toBeNull();
+    expect(result.metadata.reasoning.some((r: string) => r.includes("[5M CONTINUATION] Trend continuation suppressed"))).toBe(true);
   });
 
   // --------------------------------------------------------------------------
@@ -495,5 +517,673 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     });
     const res35_all = verifyStrategyDataContract("Breakout", snap35_all);
     expect(res35_all.isValid).toBe(true);
+  });
+
+  // Helper: Construct context that explicitly carries zero balance (bypassing StrategyContext constructor fallback)
+  function createZeroBalanceContext(snapshot: MarketSnapshot): Readonly<StrategyContext> {
+    const ctx = {
+      timestamp: snapshot.timestamp,
+      marketSnapshot: snapshot,
+      accountBalance: 0,
+      freeze: () => ctx
+    };
+    return ctx as any;
+  }
+
+  // --------------------------------------------------------------------------
+  // TEST 14: BUY recovery after confirmed transient zero-balance rejection
+  // --------------------------------------------------------------------------
+  it("14. BUY recovery after confirmed transient zero-balance rejection", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    // Flat baseline ensures previous bar is NOT ALIGNED
+    const flat5m = createFlatCandles(49, "5m", BASE_TIME - fiveMinMs, 100);
+    const surgeCandle: NormalizedCandle = {
+      openTime: BASE_TIME - fiveMinMs,
+      timestamp: BASE_TIME - fiveMinMs,
+      open: 100,
+      high: 135,
+      low: 100,
+      close: 130,
+      volume: 50000
+    };
+    const candles5mBar1 = [...flat5m, surgeCandle];
+
+    const snapBar1 = buildMtfSnapshot({
+      "5m": candles5mBar1,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+
+    // Bar 1 evaluated with zero balance -> transient risk rejection
+    const ctxZeroBal = createZeroBalanceContext(snapBar1);
+    const resBar1 = strategy.evaluate(ctxZeroBal, '5m');
+    expect(resBar1.hasSignal).toBe(false);
+    expect(resBar1.metadata.reasoning.some((r: string) => r.includes("Account balance not available"))).toBe(true);
+
+    // Bar 2: 5 minutes later, breakout alignment continues, balance restored to 10000
+    const candleBar2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 130,
+      high: 140,
+      low: 128,
+      close: 135,
+      volume: 50000
+    };
+    const candles5mBar2 = [...candles5mBar1, candleBar2];
+
+    const snapBar2 = buildMtfSnapshot({
+      "5m": candles5mBar2,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+
+    const ctxRestored = new StrategyContext(snapBar2, 10000).freeze();
+    const resBar2 = strategy.evaluate(ctxRestored, '5m');
+
+    expect(resBar2.hasSignal).toBe(true);
+    expect(resBar2.metadata.signal?.type).toBe(SignalType.BUY);
+    expect(resBar2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY] Recovered BUY event"))).toBe(true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 15: SELL recovery after confirmed transient zero-balance rejection
+  // --------------------------------------------------------------------------
+  it("15. SELL recovery after confirmed transient zero-balance rejection", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    // Flat baseline ensures previous bar is NOT ALIGNED
+    const flat5m = createFlatCandles(49, "5m", BASE_TIME - fiveMinMs, 500);
+    const dropCandle: NormalizedCandle = {
+      openTime: BASE_TIME - fiveMinMs,
+      timestamp: BASE_TIME - fiveMinMs,
+      open: 500,
+      high: 505,
+      low: 390,
+      close: 400,
+      volume: 50000
+    };
+    const candles5mBar1 = [...flat5m, dropCandle];
+
+    const snapBar1 = buildMtfSnapshot({
+      "5m": candles5mBar1,
+      "15m": createBearishCandles(50, "15m", BASE_TIME),
+      "1h": createBearishCandles(50, "1h", BASE_TIME),
+      "4h": createBearishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+
+    const ctxZeroBal = createZeroBalanceContext(snapBar1);
+    const resBar1 = strategy.evaluate(ctxZeroBal, '5m');
+    expect(resBar1.hasSignal).toBe(false);
+
+    // Bar 2: Breakdown alignment continues, balance restored
+    const dropCandle2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 400,
+      high: 402,
+      low: 385,
+      close: 390,
+      volume: 50000
+    };
+    const candles5mBar2 = [...candles5mBar1, dropCandle2];
+
+    const snapBar2 = buildMtfSnapshot({
+      "5m": candles5mBar2,
+      "15m": createBearishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBearishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBearishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+
+    const ctxRestored = new StrategyContext(snapBar2, 10000).freeze();
+    const resBar2 = strategy.evaluate(ctxRestored, '5m');
+
+    expect(resBar2.hasSignal).toBe(true);
+    expect(resBar2.metadata.signal?.type).toBe(SignalType.SELL);
+    expect(resBar2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY] Recovered SELL event"))).toBe(true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 16: Consecutive transient rejections followed by recovery with window check
+  // --------------------------------------------------------------------------
+  it("16. Consecutive transient rejections followed by recovery, with permitted window explicitly tested", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    // Bar 1: Breakout at T_1 from flat baseline
+    const flat5m = createFlatCandles(49, "5m", BASE_TIME - fiveMinMs, 100);
+    const surgeCandle: NormalizedCandle = {
+      openTime: BASE_TIME - fiveMinMs,
+      timestamp: BASE_TIME - fiveMinMs,
+      open: 100, high: 135, low: 100, close: 130, volume: 50000
+    };
+    const candlesBar1 = [...flat5m, surgeCandle];
+    const snapBar1 = buildMtfSnapshot({
+      "5m": candlesBar1,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+    const resBar1 = strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+    expect(resBar1.hasSignal).toBe(false);
+
+    // Bar 2: Breakout continues at T_2, but balance is STILL 0 -> rejected again
+    const candleBar2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 130, high: 140, low: 128, close: 135, volume: 50000
+    };
+    const candlesBar2 = [...candlesBar1, candleBar2];
+    const snapBar2 = buildMtfSnapshot({
+      "5m": candlesBar2,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+    const resBar2 = strategy.evaluate(createZeroBalanceContext(snapBar2), '5m');
+    expect(resBar2.hasSignal).toBe(false);
+
+    // Bar 3: Breakout continues at T_3, balance restored -> recovers on Bar 3!
+    const candleBar3: NormalizedCandle = {
+      openTime: BASE_TIME + fiveMinMs,
+      timestamp: BASE_TIME + fiveMinMs,
+      open: 135, high: 145, low: 134, close: 140, volume: 50000
+    };
+    const candlesBar3 = [...candlesBar2, candleBar3];
+    const snapBar3 = buildMtfSnapshot({
+      "5m": candlesBar3,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + 2 * fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + 2 * fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + 2 * fiveMinMs),
+    }, BASE_TIME + 2 * fiveMinMs);
+    const resBar3 = strategy.evaluate(new StrategyContext(snapBar3, 10000).freeze(), '5m');
+    expect(resBar3.hasSignal).toBe(true);
+    expect(resBar3.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY] Recovered BUY event"))).toBe(true);
+
+    // Window Check: Bar 4 skipped directly to Bar 6 (gap of 2 bars without evaluation)
+    const candlesGap = [...candlesBar3, {
+      openTime: BASE_TIME + 4 * fiveMinMs,
+      timestamp: BASE_TIME + 4 * fiveMinMs,
+      open: 140, high: 150, low: 138, close: 145, volume: 50000
+    }];
+    const snapGap = buildMtfSnapshot({
+      "5m": candlesGap,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + 5 * fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + 5 * fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + 5 * fiveMinMs),
+    }, BASE_TIME + 5 * fiveMinMs);
+    const resGap = strategy.evaluate(new StrategyContext(snapGap, 10000).freeze(), '5m');
+    // Mismatch in timestamps cannot recover
+    expect(resGap.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY]"))).toBe(false);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 17: Repeated evaluation of same closed candle produces no duplicate recovery
+  // --------------------------------------------------------------------------
+  it("17. Repeated evaluation of the same closed candle does not produce duplicate recovery", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    const flat5m = createFlatCandles(49, "5m", BASE_TIME - fiveMinMs, 100);
+    const surgeCandle: NormalizedCandle = {
+      openTime: BASE_TIME - fiveMinMs,
+      timestamp: BASE_TIME - fiveMinMs,
+      open: 100, high: 135, low: 100, close: 130, volume: 50000
+    };
+    const candlesBar1 = [...flat5m, surgeCandle];
+    const snapBar1 = buildMtfSnapshot({
+      "5m": candlesBar1,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+
+    // Initial evaluation with zero balance
+    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+    // Immediate repeat evaluation on the same candle with zero balance
+    const resBar1Repeat = strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+    expect(resBar1Repeat.hasSignal).toBe(false);
+
+    // Bar 2: Recovers
+    const candleBar2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 130, high: 140, low: 128, close: 135, volume: 50000
+    };
+    const candlesBar2 = [...candlesBar1, candleBar2];
+    const snapBar2 = buildMtfSnapshot({
+      "5m": candlesBar2,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+    const ctxBar2 = new StrategyContext(snapBar2, 10000).freeze();
+
+    const resBar2 = strategy.evaluate(ctxBar2, '5m');
+    expect(resBar2.hasSignal).toBe(true);
+
+    // Immediate repeat evaluation on the exact same Bar 2
+    const resBar2Repeat = strategy.evaluate(ctxBar2, '5m');
+    expect(resBar2Repeat.hasSignal).toBe(false);
+    expect(resBar2Repeat.metadata.reasoning.some((r: string) => r.includes("[5M CONTINUATION]"))).toBe(true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 18: Multi-symbol state isolation
+  // --------------------------------------------------------------------------
+  it("18. Multi-symbol state isolation: symbol A rejection does not bleed into symbol B", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    // BTC breaks out at T_1 from flat baseline with zero balance
+    const btcFlat = createFlatCandles(49, "5m", BASE_TIME - fiveMinMs, 100);
+    const btcSurge: NormalizedCandle = {
+      openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs,
+      open: 100, high: 135, low: 100, close: 130, volume: 50000
+    };
+    const btcCandlesBar1 = [...btcFlat, btcSurge];
+    const snapBtc1 = buildMtfSnapshot({
+      "5m": btcCandlesBar1,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+    snapBtc1.symbol = "BTC/USDT";
+    const resBtc1 = strategy.evaluate(createZeroBalanceContext(snapBtc1), '5m');
+    expect(resBtc1.hasSignal).toBe(false);
+
+    // ETH is completely flat at T_1 with balance 10000
+    const ethCandlesBar1 = createFlatCandles(50, "5m", BASE_TIME);
+    const snapEth1 = buildMtfSnapshot({
+      "5m": ethCandlesBar1,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+    snapEth1.symbol = "ETH/USDT";
+    const resEth1 = strategy.evaluate(new StrategyContext(snapEth1, 10000).freeze(), '5m');
+    expect(resEth1.hasSignal).toBe(false);
+
+    // Bar 2: ETH breaks out for the first time at Bar 2 from flat baseline
+    const ethFlat = createFlatCandles(49, "5m", BASE_TIME, 100);
+    const ethSurge: NormalizedCandle = {
+      openTime: BASE_TIME, timestamp: BASE_TIME,
+      open: 100, high: 135, low: 100, close: 130, volume: 50000
+    };
+    const ethCandlesBar2 = [...ethFlat, ethSurge];
+    const snapEth2 = buildMtfSnapshot({
+      "5m": ethCandlesBar2,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+    snapEth2.symbol = "ETH/USDT";
+    const resEth2 = strategy.evaluate(new StrategyContext(snapEth2, 10000).freeze(), '5m');
+    // ETH should produce a NEW edge event, not a recovered event!
+    expect(resEth2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New BUY event"))).toBe(true);
+    expect(resEth2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY]"))).toBe(false);
+
+    // Bar 2: BTC continues breakout with balance restored -> BTC recovers
+    const btcCandlesBar2 = [...btcCandlesBar1, {
+      openTime: BASE_TIME, timestamp: BASE_TIME,
+      open: 130, high: 140, low: 128, close: 135, volume: 50000
+    }];
+    const snapBtc2 = buildMtfSnapshot({
+      "5m": btcCandlesBar2,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+    snapBtc2.symbol = "BTC/USDT";
+    const resBtc2 = strategy.evaluate(new StrategyContext(snapBtc2, 10000).freeze(), '5m');
+    expect(resBtc2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY] Recovered BUY event"))).toBe(true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 19: Multi-timeframe state isolation
+  // --------------------------------------------------------------------------
+  it("19. Multi-timeframe state isolation: 5m rejection does not affect 15m", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    const btcCandles5m = createBullishCandles(50, "5m", BASE_TIME - fiveMinMs);
+    btcCandles5m.push({
+      openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs,
+      open: 200, high: 305, low: 198, close: 300, volume: 10000
+    });
+    const snap = buildMtfSnapshot({
+      "5m": btcCandles5m,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+
+    // 5m rejected by zero balance
+    const res5m = strategy.evaluate(createZeroBalanceContext(snap), '5m');
+    expect(res5m.hasSignal).toBe(false);
+
+    // 15m evaluated with positive balance -> 15m must NOT recover 5m's state
+    const res15m = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '15m');
+    expect(res15m.metadata.reasoning.some((r: string) => r.includes("[15M EDGE RECOVERY]"))).toBe(false);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 20: Alignment break clears pending recovery
+  // --------------------------------------------------------------------------
+  it("20. Alignment break clears pending recovery: no recovery if alignment is lost", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    // Bar 1: Breakout at T_1 with zero balance
+    const candlesBar1 = createBullishCandles(50, "5m", BASE_TIME - fiveMinMs);
+    candlesBar1.push({
+      openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs,
+      open: 200, high: 305, low: 198, close: 300, volume: 10000
+    });
+    const snapBar1 = buildMtfSnapshot({
+      "5m": candlesBar1,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+
+    // Bar 2: Market breaks alignment (flat/bearish drop)
+    const candlesBar2 = [...candlesBar1, {
+      openTime: BASE_TIME, timestamp: BASE_TIME,
+      open: 300, high: 301, low: 150, close: 160, volume: 100
+    }];
+    const snapBar2 = buildMtfSnapshot({
+      "5m": candlesBar2,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+    const resBar2 = strategy.evaluate(new StrategyContext(snapBar2, 10000).freeze(), '5m');
+
+    // Alignment is lost, so no signal and pending recovery must be purged
+    expect(resBar2.hasSignal).toBe(false);
+    expect(resBar2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY]"))).toBe(false);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 21: Direction reversal clears pending recovery
+  // --------------------------------------------------------------------------
+  it("21. Direction reversal clears pending recovery: BUY rejection does not recover on SELL", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    // Bar 1: Bullish breakout with zero balance -> pending BUY rejection
+    const candlesBar1 = createBullishCandles(50, "5m", BASE_TIME - fiveMinMs);
+    candlesBar1.push({
+      openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs,
+      open: 200, high: 305, low: 198, close: 300, volume: 10000
+    });
+    const snapBar1 = buildMtfSnapshot({
+      "5m": candlesBar1,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+
+    // Bar 2: Flash crash breakdown candle
+    const candlesBar2 = [...candlesBar1, {
+      openTime: BASE_TIME, timestamp: BASE_TIME,
+      open: 300, high: 301, low: 50, close: 60, volume: 20000
+    }];
+    const snapBar2 = buildMtfSnapshot({
+      "5m": candlesBar2,
+      "15m": createBearishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBearishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBearishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+    const resBar2 = strategy.evaluate(new StrategyContext(snapBar2, 10000).freeze(), '5m');
+
+    // It must NEVER recover as a BUY
+    expect(resBar2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY] Recovered BUY event"))).toBe(false);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 22: Continuation suppression remains correct after successful recovery
+  // --------------------------------------------------------------------------
+  it("22. Continuation suppression remains correct after successful recovery (Bar 3 suppressed)", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    // Bar 1: Rejected
+    const candlesBar1 = createBullishCandles(50, "5m", BASE_TIME - fiveMinMs);
+    candlesBar1.push({
+      openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs,
+      open: 200, high: 305, low: 198, close: 300, volume: 10000
+    });
+    const snapBar1 = buildMtfSnapshot({
+      "5m": candlesBar1,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+
+    // Bar 2: Recovers
+    const candlesBar2 = [...candlesBar1, {
+      openTime: BASE_TIME, timestamp: BASE_TIME,
+      open: 300, high: 315, low: 298, close: 310, volume: 10000
+    }];
+    const snapBar2 = buildMtfSnapshot({
+      "5m": candlesBar2,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+    const resBar2 = strategy.evaluate(new StrategyContext(snapBar2, 10000).freeze(), '5m');
+    expect(resBar2.hasSignal).toBe(true);
+
+    // Bar 3: Continuation must be suppressed
+    const candlesBar3 = [...candlesBar2, {
+      openTime: BASE_TIME + fiveMinMs, timestamp: BASE_TIME + fiveMinMs,
+      open: 310, high: 325, low: 308, close: 320, volume: 10000
+    }];
+    const snapBar3 = buildMtfSnapshot({
+      "5m": candlesBar3,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + 2 * fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + 2 * fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + 2 * fiveMinMs),
+    }, BASE_TIME + 2 * fiveMinMs);
+    const resBar3 = strategy.evaluate(new StrategyContext(snapBar3, 10000).freeze(), '5m');
+
+    expect(resBar3.hasSignal).toBe(false);
+    expect(resBar3.metadata.reasoning.some((r: string) => r.includes("[5M CONTINUATION] Trend continuation suppressed"))).toBe(true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 23: Permanent rejection reasons (invalid price, zero ATR, insufficient candles) do NOT recover
+  // --------------------------------------------------------------------------
+  it("23. Permanent rejection reasons (invalid price, zero ATR, insufficient candles) do not become recoverable", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+
+    // Sub-case A: Invalid current price (<= 0)
+    const candlesA1 = createBullishCandles(50, "5m", BASE_TIME - fiveMinMs);
+    candlesA1.push({
+      openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs,
+      open: 0, high: 0, low: 0, close: 0, volume: 10000
+    });
+    const snapA1 = buildMtfSnapshot({ "5m": candlesA1 }, BASE_TIME);
+    snapA1.currentPrice = 0;
+    const resA1 = strategy.evaluate(new StrategyContext(snapA1, 10000).freeze(), '5m');
+    expect(resA1.hasSignal).toBe(false);
+    expect(resA1.metadata.reasoning.some((r: string) => r.includes("Invalid current price"))).toBe(true);
+
+    // Bar 2 has valid price, but Bar 1 was permanently invalid price -> no recovery!
+    const candlesA2 = createBullishCandles(51, "5m", BASE_TIME);
+    const snapA2 = buildMtfSnapshot({ "5m": candlesA2 }, BASE_TIME + fiveMinMs);
+    const resA2 = strategy.evaluate(new StrategyContext(snapA2, 10000).freeze(), '5m');
+    expect(resA2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY]"))).toBe(false);
+
+    // Sub-case B: Zero/invalid ATR (<= 0)
+    // 50 identical flat candles where high = low = close produces ATR = 0
+    const flat50ZeroTr: NormalizedCandle[] = [];
+    for (let i = 0; i < 50; i++) {
+      const openTime = (BASE_TIME - fiveMinMs) - (50 - i) * fiveMinMs;
+      flat50ZeroTr.push({
+        openTime,
+        timestamp: openTime,
+        open: 100,
+        high: 100,
+        low: 100,
+        close: 100,
+        volume: 1000
+      });
+    }
+    const snapB1 = buildMtfSnapshot({ "5m": flat50ZeroTr }, BASE_TIME - fiveMinMs);
+    const resB1 = strategy.evaluate(new StrategyContext(snapB1, 10000).freeze(), '5m');
+    expect(resB1.hasSignal).toBe(false);
+    expect(resB1.metadata.reasoning.some((r: string) => r.includes("ATR is zero or unavailable"))).toBe(true);
+
+    // Bar 2 has valid ATR, but Bar 1 was permanently rejected by zero ATR -> no recovery!
+    const candlesB2 = createBullishCandles(50, "5m", BASE_TIME);
+    const snapB2 = buildMtfSnapshot({ "5m": candlesB2 }, BASE_TIME);
+    const resB2 = strategy.evaluate(new StrategyContext(snapB2, 10000).freeze(), '5m');
+    expect(resB2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY]"))).toBe(false);
+
+    // Sub-case C: Insufficient closed-candle history (< 35 required)
+    const candlesC1 = createBullishCandles(30, "5m", BASE_TIME - fiveMinMs);
+    const snapC1 = buildMtfSnapshot({ "5m": candlesC1 }, BASE_TIME - fiveMinMs);
+    const resC1 = strategy.evaluate(new StrategyContext(snapC1, 10000).freeze(), '5m');
+    expect(resC1.hasSignal).toBe(false);
+    expect(resC1.metadata.reasoning.some((r: string) => r.includes("Insufficient closed candle data"))).toBe(true);
+
+    // Bar 2 has 35 closed candles, but Bar 1 had insufficient candles -> no recovery!
+    const candlesC2 = createBullishCandles(35, "5m", BASE_TIME);
+    const snapC2 = buildMtfSnapshot({ "5m": candlesC2 }, BASE_TIME);
+    const resC2 = strategy.evaluate(new StrategyContext(snapC2, 10000).freeze(), '5m');
+    expect(resC2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY]"))).toBe(false);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 24: Recovery reruns fresh risk and safety validation; fresh sizing and SL/TP are computed
+  // --------------------------------------------------------------------------
+  it("24. Recovery reruns fresh risk and safety validation; fresh sizing and SL/TP are computed", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+
+    const fiveMinMs = 5 * 60 * 1000;
+    // Bar 1: Entry price 130, rejected by balance = 0
+    const flat5m = createFlatCandles(49, "5m", BASE_TIME - fiveMinMs, 100);
+    const surgeCandle: NormalizedCandle = {
+      openTime: BASE_TIME - fiveMinMs,
+      timestamp: BASE_TIME - fiveMinMs,
+      open: 100,
+      high: 135,
+      low: 100,
+      close: 130,
+      volume: 50000
+    };
+    const candlesBar1 = [...flat5m, surgeCandle];
+    const snapBar1 = buildMtfSnapshot({
+      "5m": candlesBar1,
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME);
+    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+
+    // Bar 2: Entry price moves up to 140 with different ATR
+    const candleBar2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 130,
+      high: 145,
+      low: 128,
+      close: 140,
+      volume: 50000
+    };
+    const candlesBar2 = [...candlesBar1, candleBar2];
+    const snapBar2 = buildMtfSnapshot({
+      "5m": candlesBar2,
+      "15m": createBullishCandles(50, "15m", BASE_TIME + fiveMinMs),
+      "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
+      "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
+    }, BASE_TIME + fiveMinMs);
+    const resBar2 = strategy.evaluate(new StrategyContext(snapBar2, 10000).freeze(), '5m');
+
+    expect(resBar2.hasSignal).toBe(true);
+    // Verified that entry price is freshly 140 (not stale 130 from Bar 1)
+    expect(resBar2.metadata.signal?.entryPrice).toBe(140);
+    // Verified stopLoss is freshly computed based on 140
+    expect(resBar2.metadata.signal?.stopLoss).toBeLessThan(140);
+    expect(resBar2.metadata.signal?.takeProfit).toBeGreaterThan(140);
   });
 });

@@ -16,18 +16,26 @@ vi.mock('../../src/exchanges', async (importOriginal) => {
     ExchangeManager: {
       getProvider: vi.fn().mockResolvedValue({
         fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', last: 50100, bid: 50090, ask: 50110 }),
-        fetchKlines: vi.fn().mockImplementation(() =>
-          Promise.resolve(
-            Array.from({ length: 30 }, (_, i) => ({
-              openTime: Date.now() - (30 - i) * 3600000,
-              open: 50000 + i,
-              high: 50100 + i,
-              low: 49900 + i,
-              close: 50050 + i,
-              volume: 500,
-            }))
-          )
-        ),
+        fetchKlines: vi.fn().mockImplementation(() => {
+          const now = Date.now();
+          const stepMs = 3600000;
+          return Promise.resolve(
+            Array.from({ length: 60 }, (_, i) => {
+              const openTime = now - (60 - i) * stepMs;
+              const price = 50000 + i * 10;
+              return {
+                openTime,
+                timestamp: openTime,
+                closeTime: openTime + stepMs,
+                open: price,
+                high: price + 5,
+                low: price - 5,
+                close: price,
+                volume: 500,
+              };
+            })
+          );
+        }),
         fetchBalance: vi.fn().mockResolvedValue({
           free: { USDT: 5000 },
           total: { USDT: 5000 },
@@ -40,7 +48,7 @@ vi.mock('../../src/exchanges', async (importOriginal) => {
             precision: { price: 0.1, amount: 0.001 },
             limits: {
               cost: { min: 5 },
-              amount: { min: 0.001 }
+              amount: { min: 0.001, max: 1000 }
             }
           }
         ]),
@@ -51,7 +59,7 @@ vi.mock('../../src/exchanges', async (importOriginal) => {
           precision: { price: 0.1, amount: 0.001 },
           limits: {
             cost: { min: 5 },
-            amount: { min: 0.001 }
+            amount: { min: 0.001, max: 1000 }
           }
         })),
         fetchPositions: vi.fn().mockResolvedValue([]),
@@ -818,7 +826,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
           symbol: 'BTC/USDT',
           category: 'linear',
           precision: { price: 0.1, amount: 0.001 },
-          limits: { cost: { min: 5 }, amount: { min: 0.001 } },
+          limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } },
         };
       }),
       fetchPositions: vi.fn().mockResolvedValue([]),
@@ -1279,7 +1287,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         symbol: 'BTC/USDT',
         category: 'linear',
         precision: { price: 0.1, amount: 0.001 },
-        limits: { cost: { min: 5 }, amount: { min: 0.001 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } },
       }),
       fetchOrder: vi.fn().mockResolvedValue({
         id: 'ord-unprot-t16',
@@ -1698,7 +1706,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         symbol: 'BTC/USDT',
         category: 'linear',
         precision: { price: 0.1, amount: 0.001 },
-        limits: { cost: { min: 5 }, amount: { min: 0.001 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } },
       }),
       fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTC/USDT', last: 50100, bid: 50090, ask: 50110 }),
       fetchOrder: vi.fn().mockRejectedValue(new Error('Order not yet visible in realtime or history')),
@@ -1874,7 +1882,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         symbol: 'BTC/USDT',
         category: 'linear',
         precision: { price: 0.1, amount: 0.001 },
-        limits: { cost: { min: 5 }, amount: { min: 0.001 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } },
       }),
       fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTC/USDT', last: 50100, bid: 50090, ask: 50110 }),
       supportsOco: vi.fn().mockReturnValue(false),
@@ -2029,7 +2037,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         symbol: 'BTC/USDT',
         category: 'linear',
         precision: { price: 0.1, amount: 0.001 },
-        limits: { cost: { min: 5 }, amount: { min: 0.001 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } },
       }),
     });
 
@@ -2209,7 +2217,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         contractType: 'LinearPerpetual',
         active: true,
         precision: { price: 0.01, amount: 0.1 },
-        limits: { cost: { min: 5 }, amount: { min: 0.1 } },
+        limits: { cost: { min: 5 }, amount: { min: 0.1, max: 1000 } },
       };
     });
 

@@ -262,7 +262,7 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
         precision: { price: 0.01, amount: 0.1 },
         limits: {
           cost: { min: new BigNumber(5) },
-          amount: { min: new BigNumber(0.1) },
+          amount: { min: new BigNumber(0.1), max: new BigNumber(100000) },
           price: { min: new BigNumber(0.01) },
         },
       });
@@ -398,7 +398,7 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
         precision: { price: 0, amount: 0.1 }, // Invalid tickSize 0!
         limits: {
           cost: { min: new BigNumber(5) },
-          amount: { min: new BigNumber(0.1) },
+          amount: { min: new BigNumber(0.1), max: new BigNumber(100000) },
           price: { min: new BigNumber(0.01) },
         },
       });

@@ -89,8 +89,25 @@ describe('Exchange Connectivity Module Fixes Unit Tests', () => {
     }
 
     const adapter = new TimeoutTestAdapter();
-    // Non-routable IP to guarantee timeout abort
-    await expect(adapter.testTimeout('https://10.255.255.1', 150)).rejects.toThrow('Request timed out after 150ms.');
+    // Deterministic mock to simulate a pending request that aborts when controller signal fires
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((_url: any, init?: any) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal) {
+          signal.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }
+      });
+    });
+
+    try {
+      await expect(adapter.testTimeout('https://10.255.255.1', 150)).rejects.toThrow('Request timed out after 150ms.');
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it('EC-H5: disconnect() clears credentials and disconnectProvider clears state', async () => {

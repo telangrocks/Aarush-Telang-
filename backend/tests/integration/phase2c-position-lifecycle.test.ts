@@ -39,10 +39,12 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
   let mockState: any;
   let mockEnv: any;
   let d1Positions: Map<string, any>;
+  let d1AuditLog: Map<string, any>;
 
   beforeEach(() => {
     mockStorage = new Map();
     d1Positions = new Map();
+    d1AuditLog = new Map();
     mockFetchOrder.mockReset();
     mockFetchClosedOrders.mockReset();
     mockFetchMyTrades.mockReset();
@@ -64,6 +66,17 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
 
     mockEnv = {
       DB: {
+        batch: vi.fn().mockImplementation(async (stmts: any[]) => {
+          for (const s of stmts) {
+            if (s && typeof s.run === 'function') {
+              await s.run();
+            }
+          }
+          return [
+            { success: true, meta: { changes: 1 } },
+            { success: true, meta: { changes: 1 } }
+          ];
+        }),
         prepare: vi.fn().mockImplementation((query: string) => ({
           bind: vi.fn().mockImplementation((...args: any[]) => ({
             run: vi.fn().mockImplementation(async () => {
@@ -71,7 +84,17 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
                 const id = args[0];
                 d1Positions.delete(id);
               }
-              return { success: true };
+              if (query.includes('INSERT INTO audit_log')) {
+                const id = args[0];
+                d1AuditLog.set(id, {
+                  id,
+                  user_id: args[1],
+                  action: query.includes('AUDIT_CONFLICT_DETECTED') ? 'AUDIT_CONFLICT_DETECTED' : 'POSITION_CLOSED',
+                  metadata: args[2],
+                  created_at: args[3]
+                });
+              }
+              return { success: true, meta: { changes: 1 } };
             }),
             first: vi.fn().mockImplementation(async () => {
               if (query.includes('FROM users')) {
@@ -88,6 +111,10 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
               if (query.includes('FROM trade_positions')) {
                 const id = args[0];
                 return d1Positions.get(id) || null;
+              }
+              if (query.includes('FROM audit_log')) {
+                const id = args[0];
+                return d1AuditLog.get(id) || null;
               }
               return null;
             }),
@@ -159,6 +186,11 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
     // Verify D1 record deleted from active position ledger per zero permanent history design
     const updatedPos = d1Positions.get(alertId);
     expect(updatedPos).toBeUndefined();
+    expect(d1AuditLog.has(`pos_close_${alertId}`)).toBe(true);
+    const auditRecord = d1AuditLog.get(`pos_close_${alertId}`);
+    const meta = JSON.parse(auditRecord.metadata);
+    expect(meta.evidenceStatus).toBe('VERIFIED_EXCHANGE_RECORD');
+    expect(meta.realizedPnl).toBe(3.00);
     const data: any = await res.json();
     expect(data.status).toBe("CLOSED");
   });
@@ -209,6 +241,11 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
 
     const updatedPos = d1Positions.get(alertId);
     expect(updatedPos).toBeUndefined();
+    expect(d1AuditLog.has(`pos_close_${alertId}`)).toBe(true);
+    const auditRecord = d1AuditLog.get(`pos_close_${alertId}`);
+    const meta = JSON.parse(auditRecord.metadata);
+    expect(meta.evidenceStatus).toBe('VERIFIED_EXCHANGE_RECORD');
+    expect(meta.realizedPnl).toBe(-1.50);
     const data: any = await res.json();
     expect(data.status).toBe("CLOSED");
   });
@@ -258,6 +295,11 @@ describe("Phase 2C — Exchange-Native Position & TP/SL Lifecycle Reconciliation
 
     const updatedPos = d1Positions.get(alertId);
     expect(updatedPos).toBeUndefined();
+    expect(d1AuditLog.has(`pos_close_${alertId}`)).toBe(true);
+    const auditRecord = d1AuditLog.get(`pos_close_${alertId}`);
+    const meta = JSON.parse(auditRecord.metadata);
+    expect(meta.evidenceStatus).toBe('VERIFIED_EXCHANGE_RECORD');
+    expect(meta.realizedPnl).toBe(0.85);
     const data: any = await res.json();
     expect(data.status).toBe("CLOSED");
   });

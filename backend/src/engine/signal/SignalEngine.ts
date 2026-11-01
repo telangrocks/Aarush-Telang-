@@ -26,20 +26,38 @@ export class SignalEngine {
       return null;
     }
 
-    // A signal direction is usually determined by the strategy/condition, but in a generic 
-    // engine layer, we rely on the condition result or confidence factors. 
-    // Infer direction from the conditionResult's trend.
-    const tfCondition = conditionResult.timeframes[context.timeframe];
-    let proposedType: SignalType | null = null;
-    if (tfCondition) {
-      if (tfCondition.trend.trendDirection === 'UP' || tfCondition.trend.emaCrossoverState === 'BULLISH') {
-        proposedType = SignalType.BUY;
-      } else if (tfCondition.trend.trendDirection === 'DOWN' || tfCondition.trend.emaCrossoverState === 'BEARISH') {
-        proposedType = SignalType.SELL;
-      }
+    // Fail closed if market conditions on trigger timeframe are completely neutral
+    const tfCondition = conditionResult?.timeframes?.[context.timeframe];
+    if (
+      tfCondition &&
+      tfCondition.trend?.trendDirection === 'SIDEWAYS' &&
+      tfCondition.trend?.emaCrossoverState === 'NONE' &&
+      tfCondition.momentum?.macdDirection === 'NEUTRAL' &&
+      tfCondition.momentum?.rsiState === 'NEUTRAL'
+    ) {
+      return null;
     }
 
-    if (!proposedType) {
+    // Model C Directional Arbitration:
+    // BUY only when long qualifies (longScore >= minConfidenceScore) and short does not (shortScore < minConfidenceScore).
+    // SELL only when short qualifies (shortScore >= minConfidenceScore) and long does not (longScore < minConfidenceScore).
+    // Return null when both or neither qualify.
+    let proposedType: SignalType | null = null;
+    const { longScore, shortScore } = tfConfidence;
+
+    if (typeof longScore === 'number' && typeof shortScore === 'number') {
+      const minConf = this.rules.minConfidenceScore;
+      const isLongQualified = longScore >= minConf && shortScore < minConf;
+      const isShortQualified = shortScore >= minConf && longScore < minConf;
+
+      if (isLongQualified) {
+        proposedType = SignalType.BUY;
+      } else if (isShortQualified) {
+        proposedType = SignalType.SELL;
+      } else {
+        return null;
+      }
+    } else {
       return null;
     }
 

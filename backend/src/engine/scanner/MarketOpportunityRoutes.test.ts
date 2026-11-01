@@ -764,4 +764,146 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
     expect(mapped[2].priceChangePercent24h).toBe(0);
     expect(mapped[3].priceChangePercent24h).toBe(0);
   });
+
+  it('handleGetPersonalizedMarketCandidates returns 200 with empty array when screenedCount is 0', async () => {
+    const mockMarkets = [
+      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear' },
+    ];
+    const mockTickers = [
+      { symbol: 'BTC/USDT', last: 50000, bid: 49990, ask: 50010, quoteVolume: 20_000_000, high: 51000, low: 49000 },
+    ];
+
+    const mockAdapter = {
+      fetchMarkets: vi.fn().mockResolvedValue(mockMarkets),
+      fetchTickers: vi.fn().mockResolvedValue(mockTickers),
+    } as unknown as IExchangeProvider & ICandleProvider;
+
+    vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
+    vi.spyOn(MarketOpportunityScanner.prototype, 'scan').mockResolvedValue({
+      timestamp: Date.now(),
+      executionDurationMs: 10,
+      universeSize: 1,
+      eligibleCount: 1,
+      qualityCount: 1,
+      screenedCount: 0,
+      allQualifiedOpportunities: [],
+      topOpportunities: [],
+      telemetry: {} as any,
+    });
+
+    const mockDb = {
+      prepare: vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnValue({
+          first: vi.fn().mockResolvedValue({
+            exchange_name: 'bybit',
+            exchange_environment: 'demo',
+          }),
+        }),
+      }),
+    };
+
+    const mockContext = {
+      get: vi.fn().mockReturnValue({ sub: 'user-empty-screened-test' }),
+      env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
+      status: vi.fn(),
+      json: vi.fn().mockImplementation((data) => data),
+      req: { query: vi.fn() },
+    } as any;
+
+    const response = await handleGetPersonalizedMarketCandidates(mockContext) as any;
+    expect(mockContext.status).toHaveBeenCalledWith(503);
+    expect(response).toEqual({
+      success: false,
+      code: 'MARKET_DATA_DEGRADED',
+      error: 'Market data temporarily degraded or unavailable during discovery scan.',
+    });
+    expect(mockContext.json).toHaveBeenCalledWith({
+      success: false,
+      code: 'MARKET_DATA_DEGRADED',
+      error: 'Market data temporarily degraded or unavailable during discovery scan.',
+    });
+  });
+
+  it('handleGetPersonalizedMarketCandidates returns 503 MARKET_DATA_DEGRADED when all candidates are degraded', async () => {
+    const mockMarkets = [
+      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear' },
+    ];
+    const mockTickers = [
+      { symbol: 'BTC/USDT', last: 50000, bid: 49990, ask: 50010, quoteVolume: 20_000_000, high: 51000, low: 49000 },
+    ];
+
+    const mockAdapter = {
+      fetchMarkets: vi.fn().mockResolvedValue(mockMarkets),
+      fetchTickers: vi.fn().mockResolvedValue(mockTickers),
+    } as unknown as IExchangeProvider & ICandleProvider;
+
+    vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
+    vi.spyOn(MarketOpportunityScanner.prototype, 'scan').mockResolvedValue({
+      timestamp: Date.now(),
+      executionDurationMs: 10,
+      universeSize: 1,
+      eligibleCount: 1,
+      qualityCount: 1,
+      screenedCount: 1,
+      allQualifiedOpportunities: [
+        {
+          symbol: 'BTC/USDT',
+          state: 'DATA_DEGRADED',
+          opportunityId: 'BTC/USDT:ScalperV2:LONG',
+          dominantDirection: 'LONG',
+          opportunityScore: 80,
+          marketQuality: { turnover24hUsdt: 10_000_000, priceChangePercent24h: 2.1 },
+          strategyCompatibility: [{ strategyId: 'ScalperV2' }],
+          timeframes: {},
+          rawFactors: { netEdgeRatio: 3.5 },
+        } as any,
+      ],
+      topOpportunities: [
+        {
+          symbol: 'BTC/USDT',
+          state: 'DATA_DEGRADED',
+          opportunityId: 'BTC/USDT:ScalperV2:LONG',
+          dominantDirection: 'LONG',
+          opportunityScore: 80,
+          marketQuality: { turnover24hUsdt: 10_000_000, priceChangePercent24h: 2.1 },
+          strategyCompatibility: [{ strategyId: 'ScalperV2' }],
+          timeframes: {},
+          rawFactors: { netEdgeRatio: 3.5 },
+        } as any,
+      ],
+      telemetry: {} as any,
+    });
+
+    const mockDb = {
+      prepare: vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnValue({
+          first: vi.fn().mockResolvedValue({
+            exchange_name: 'bybit',
+            exchange_environment: 'demo',
+          }),
+        }),
+      }),
+    };
+
+    const mockContext = {
+      get: vi.fn().mockReturnValue({ sub: 'user-degraded-filter-test' }),
+      env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
+      status: vi.fn(),
+      json: vi.fn().mockImplementation((data) => data),
+      req: { query: vi.fn() },
+    } as any;
+
+    const response = await handleGetPersonalizedMarketCandidates(mockContext) as any;
+    expect(mockContext.status).toHaveBeenCalledWith(503);
+    expect(response).toEqual({
+      success: false,
+      code: 'MARKET_DATA_DEGRADED',
+      error: 'Market data temporarily degraded or unavailable during discovery scan.',
+    });
+    expect(mockContext.json).toHaveBeenCalledWith({
+      success: false,
+      code: 'MARKET_DATA_DEGRADED',
+      error: 'Market data temporarily degraded or unavailable during discovery scan.',
+    });
+  });
 });

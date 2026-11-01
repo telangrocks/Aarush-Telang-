@@ -37,13 +37,16 @@ class ForensicNetworkInterceptor(
         val method = request.method
         val startNs = System.nanoTime()
 
-        // Filter: We specifically track market, trading bot, auth, and exchange endpoints
+        // Filter: We specifically track market, trading bot, auth, exchange, and fcm endpoints
         val isTargetEndpoint = path.contains("/api/trading-bot/") ||
                 path.contains("/api/market/") ||
                 path.contains("/api/strategies") ||
                 path.contains("/api/exchange/") ||
                 path.contains("/api/auth/") ||
-                path.contains("/api/user/")
+                path.contains("/api/user/") ||
+                path.contains("/api/login") ||
+                path.contains("/api/register") ||
+                path.contains("/api/fcm/")
 
         var response: Response? = null
         var caughtException: IOException? = null

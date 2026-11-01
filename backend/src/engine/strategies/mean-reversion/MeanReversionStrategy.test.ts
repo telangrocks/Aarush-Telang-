@@ -6,6 +6,9 @@ import { MarketSnapshot, NormalizedCandle } from "../../market-data/MarketSnapsh
 import { SignalType } from "../../signal";
 import { CandleValidator } from "../../../infrastructure/exchange/CandleValidator";
 import { verifyStrategyDataContract } from "../../matrix/MatrixEvaluator";
+import { StrategyRegistry } from "../StrategyRegistry";
+import { EvaluationResult } from "../../dto/EvaluationResult";
+import { TradingBot } from "../../../trading-bot";
 
 // Canonical base timestamp aligned to 4h boundary
 const BASE_TIME = 1700000000000 - (1700000000000 % (4 * 3600 * 1000));
@@ -68,6 +71,16 @@ function createDefaultMtfSnapshot(count = 60, timestamp = BASE_TIME) {
   }, timestamp);
 }
 
+function createZeroBalanceContext(snapshot: MarketSnapshot): Readonly<StrategyContext> {
+  const ctx = {
+    timestamp: snapshot.timestamp,
+    marketSnapshot: snapshot,
+    accountBalance: 0,
+    freeze: () => ctx
+  };
+  return ctx as any;
+}
+
 function mockIndicators(
   strategy: MeanReversionStrategy,
   options: {
@@ -80,6 +93,7 @@ function mockIndicators(
     previousRsi5m?: number;
     prevSnapshotRsiCurr?: number;
     prevSnapshotRsiPrev?: number;
+    rsiByTimestamp?: Record<number, [number, number]>;
   } = {}
 ) {
   const {
@@ -91,13 +105,21 @@ function mockIndicators(
     currentRsi5m = 28,
     previousRsi5m = 22,
     prevSnapshotRsiCurr = 50,
-    prevSnapshotRsiPrev = 50
+    prevSnapshotRsiPrev = 50,
+    rsiByTimestamp
   } = options;
 
   vi.spyOn((strategy as any).indicatorEngine, "evaluate").mockImplementation((snapshot: any) => {
-    const isPrev = snapshot.timestamp < BASE_TIME;
-    const rsiCurr = isPrev ? prevSnapshotRsiCurr : currentRsi5m;
-    const rsiPrev = isPrev ? prevSnapshotRsiPrev : previousRsi5m;
+    let rsiCurr = currentRsi5m;
+    let rsiPrev = previousRsi5m;
+
+    if (rsiByTimestamp && rsiByTimestamp[snapshot.timestamp]) {
+      [rsiPrev, rsiCurr] = rsiByTimestamp[snapshot.timestamp];
+    } else {
+      const isPrev = snapshot.timestamp < BASE_TIME;
+      rsiCurr = isPrev ? prevSnapshotRsiCurr : currentRsi5m;
+      rsiPrev = isPrev ? prevSnapshotRsiPrev : previousRsi5m;
+    }
 
     return {
       timestamp: snapshot.timestamp,
@@ -337,74 +359,204 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
   });
 
   // ==========================================================================
-  // 4. DIRECTIONAL INTEGRITY (Tests 13 - 15)
+  // 4. MEAN REVERSION CONFIDENCE THRESHOLD (Tests 13 - 15c)
   // ==========================================================================
-  describe("Directional Integrity & Non-Blocking Confidence", () => {
-    it("13. bearish/trend-following ConfidenceEngine scores MUST NOT convert a valid MR BUY into NO SIGNAL", () => {
+  describe("MeanReversion Confidence Threshold Enforcement (minConfidenceScore: 75)", () => {
+    it("13. confidence score below 75 threshold -> rejected (hasSignal: false)", () => {
       const snap = createDefaultMtfSnapshot();
-      mockIndicators(strategy, { currentRsi5m: 28, previousRsi5m: 22 });
+      // Weak/shallow reversal curl: previous RSI 24.5 (barely oversold), current 25.0 (weak 0.5 curl)
+      mockIndicators(strategy, { currentRsi5m: 25.0, previousRsi5m: 24.5 });
 
-      // Mock ConfidenceEngine emitting strong BEARISH scores (trend-following model thinks market is falling)
-      vi.spyOn((strategy as any).confidenceEngine, "evaluate").mockReturnValue({
-        timestamp: BASE_TIME,
-        overallScore: 20,
-        overallLongScore: 10,
-        overallShortScore: 90,
-        timeframes: {
-          "5m": { score: 20, longScore: 10, shortScore: 90 }
-        }
-      } as any);
+      const ctx = new StrategyContext(snap, 10000).freeze();
+      const res = strategy.evaluate(ctx, '5m');
+
+      expect(res.hasSignal).toBe(false);
+      expect(res.metadata.signal).toBeNull();
+      expect(res.confidenceScore).toBeLessThan(75);
+      expect(res.metadata.reasoning.some((r: string) => r.includes("below required minimum (75)"))).toBe(true);
+    });
+
+    it("14. decisive reversal curl meeting/exceeding 75 threshold -> accepted (hasSignal: true)", () => {
+      const snap = createDefaultMtfSnapshot();
+      // Strong reversal curl: previous RSI 22.0 (oversold), current 28.0 (strong 6-point bounce)
+      mockIndicators(strategy, { currentRsi5m: 28.0, previousRsi5m: 22.0 });
 
       const ctx = new StrategyContext(snap, 10000).freeze();
       const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
+      expect(res.metadata.signal).not.toBeNull();
+      expect(res.confidenceScore).toBe(76);
+      expect(res.metadata.signal?.confidenceScore).toBe(76);
       expect(res.metadata.signal?.type).toBe(SignalType.BUY);
     });
 
-    it("14. bullish/trend-following ConfidenceEngine scores MUST NOT convert a valid MR SELL into NO SIGNAL", () => {
+    it("15. SELL reversal confidence enforces 75 threshold symmetrically", () => {
       const snap = createDefaultMtfSnapshot();
-      mockIndicators(strategy, { currentRsi5m: 72, previousRsi5m: 78 });
-
-      // Mock ConfidenceEngine emitting strong BULLISH scores (trend-following model thinks market is rallying)
-      vi.spyOn((strategy as any).confidenceEngine, "evaluate").mockReturnValue({
-        timestamp: BASE_TIME,
-        overallScore: 85,
-        overallLongScore: 90,
-        overallShortScore: 10,
-        timeframes: {
-          "5m": { score: 85, longScore: 90, shortScore: 10 }
-        }
-      } as any);
+      // Strong overbought rejection: previous RSI 78.0, current 72.0 (symmetric 6-point drop, depth 3)
+      mockIndicators(strategy, { currentRsi5m: 72.0, previousRsi5m: 78.0 });
 
       const ctx = new StrategyContext(snap, 10000).freeze();
       const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
+      expect(res.confidenceScore).toBe(76);
       expect(res.metadata.signal?.type).toBe(SignalType.SELL);
+      expect(res.metadata.signal?.confidenceScore).toBe(76);
     });
 
-    it("15. ConfidenceEngine scores do not determine BUY versus SELL", () => {
+    it("15b. weak SELL reversal curl below 75 threshold -> rejected", () => {
       const snap = createDefaultMtfSnapshot();
-      // 5M RSI indicates SELL curl
-      mockIndicators(strategy, { currentRsi5m: 71, previousRsi5m: 77 });
-
-      // Even if ConfidenceEngine has 100 longScore, MR reversal logic determines SELL
-      vi.spyOn((strategy as any).confidenceEngine, "evaluate").mockReturnValue({
-        timestamp: BASE_TIME,
-        overallScore: 100,
-        overallLongScore: 100,
-        overallShortScore: 0,
-        timeframes: {
-          "5m": { score: 100, longScore: 100, shortScore: 0 }
-        }
-      } as any);
+      // Weak overbought curl: previous RSI 75.5, current 75.0 (barely 0.5 drop)
+      mockIndicators(strategy, { currentRsi5m: 75.0, previousRsi5m: 75.5 });
 
       const ctx = new StrategyContext(snap, 10000).freeze();
       const res = strategy.evaluate(ctx, '5m');
 
-      expect(res.hasSignal).toBe(true);
-      expect(res.metadata.signal?.type).toBe(SignalType.SELL);
+      expect(res.hasSignal).toBe(false);
+      expect(res.metadata.signal).toBeNull();
+      expect(res.confidenceScore).toBeLessThan(75);
+      expect(res.metadata.reasoning.some((r: string) => r.includes("below required minimum (75)"))).toBe(true);
+    });
+
+    it("15c. missing, NaN, or non-finite RSI inputs fail closed with score 0", () => {
+      const snap = createDefaultMtfSnapshot();
+      mockIndicators(strategy, { currentRsi5m: NaN, previousRsi5m: 22.0 });
+
+      const ctx = new StrategyContext(snap, 10000).freeze();
+      const res = strategy.evaluate(ctx, '5m');
+
+      expect(res.hasSignal).toBe(false);
+      expect(res.confidenceScore).toBe(0);
+      expect(res.metadata.signal).toBeNull();
+    });
+
+    it("15d. 1.0-point RSI bounce cannot pass the confidence gate (reversal noise rejected)", () => {
+      const snap = createDefaultMtfSnapshot();
+      // Marginal 1.0-point bounce: previous RSI 24.0, current 25.0
+      mockIndicators(strategy, { currentRsi5m: 25.0, previousRsi5m: 24.0 });
+
+      const ctx = new StrategyContext(snap, 10000).freeze();
+      const res = strategy.evaluate(ctx, '5m');
+
+      expect(res.hasSignal).toBe(false);
+      expect(res.metadata.signal).toBeNull();
+      // Calculated score is ~45, strictly < 75
+      expect(res.confidenceScore).toBeLessThan(75);
+      expect(res.metadata.reasoning.some((r: string) => r.includes("below required minimum (75)"))).toBe(true);
+    });
+
+    it("15e. missing or zero volume receives 0 volume credit and cannot inflate confidence", () => {
+      // Build snapshot where candle volume is explicitly 0
+      const zeroVolCandles: NormalizedCandle[] = createCandles(60, "5m", BASE_TIME).map(c => ({ ...c, volume: 0 }));
+      const snap = buildMtfSnapshot({
+        "5m": zeroVolCandles,
+        "15m": createCandles(60, "15m", BASE_TIME),
+        "1h": createCandles(60, "1h", BASE_TIME),
+        "4h": createCandles(60, "4h", BASE_TIME),
+      });
+
+      // Moderate curl: previous RSI 23.0, current 26.5 (curl = 3.5).
+      // With confirmed volume, this would pass. With 0 volume (0 pts), it fails closed!
+      mockIndicators(strategy, { currentRsi5m: 26.5, previousRsi5m: 23.0 });
+
+      const ctx = new StrategyContext(snap, 10000).freeze();
+      const res = strategy.evaluate(ctx, '5m');
+
+      expect(res.hasSignal).toBe(false);
+      expect(res.metadata.signal).toBeNull();
+      expect(res.confidenceScore).toBeLessThan(75);
+    });
+
+    it("15f. LOW and MEDIUM risk classifications award 0 directional confidence points (independent safety gate)", () => {
+      const snap = createDefaultMtfSnapshot();
+      mockIndicators(strategy, { currentRsi5m: 28.0, previousRsi5m: 22.0 });
+
+      // Evaluate under LOW risk
+      vi.spyOn((strategy as any).riskEngine, "evaluate").mockReturnValueOnce({
+        riskClassification: "LOW",
+        stopLossDistance: 2.0,
+        takeProfitDistance: 5.0,
+        maximumExposure: 10.0,
+        positionSizeRecommendation: 10,
+        explanation: ["Low risk"]
+      } as any);
+      const resLow = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+
+      // Evaluate under MEDIUM risk
+      vi.spyOn((strategy as any).riskEngine, "evaluate").mockReturnValueOnce({
+        riskClassification: "MEDIUM",
+        stopLossDistance: 5.0,
+        takeProfitDistance: 10.0,
+        maximumExposure: 10.0,
+        positionSizeRecommendation: 10,
+        explanation: ["Medium risk"]
+      } as any);
+      const resMed = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+
+      expect(resLow.hasSignal).toBe(true);
+      expect(resMed.hasSignal).toBe(true);
+      // Directional confidence must be identical regardless of risk tier
+      expect(resLow.confidenceScore).toBe(resMed.confidenceScore);
+      expect(resLow.confidenceScore).toBe(76);
+    });
+
+    it("15g. boundary condition: weak curl (2.0 delta) fails (< 75), strong curl (>= 3.5 delta) passes (>= 75)", () => {
+      const snap = createDefaultMtfSnapshot();
+
+      // Sub-threshold: previous RSI 23.0, current 25.0 (curl delta = 2.0) -> fails
+      mockIndicators(strategy, { currentRsi5m: 25.0, previousRsi5m: 23.0 });
+      const resSub = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+      expect(resSub.hasSignal).toBe(false);
+      expect(resSub.confidenceScore).toBeLessThan(75);
+
+      // Above-threshold: previous RSI 22.0, current 27.0 (curl delta = 5.0) -> qualifies
+      mockIndicators(strategy, { currentRsi5m: 27.0, previousRsi5m: 22.0 });
+      const resSuper = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+      expect(resSuper.hasSignal).toBe(true);
+      expect(resSuper.confidenceScore).toBeGreaterThanOrEqual(75);
+    });
+
+    it("15h. missing or zero EMA separation fails closed to 0 separation credit", () => {
+      const snap = createDefaultMtfSnapshot();
+      vi.spyOn((strategy as any).indicatorEngine, "evaluate").mockImplementation((snapshot: any) => ({
+        timestamp: snapshot.timestamp,
+        timeframes: {
+          "5m": { close: [100, 100], sma: {}, ema: { 20: [100], 50: [100] }, rsi: { 14: [23.0, 25.5] }, macd: { "12,26,9": [] }, atr: { 14: [2.0] }, volume: [1000] },
+          "15m": { close: [100, 100], sma: {}, ema: { 20: [100], 50: [100] }, rsi: { 14: [50, 50] }, macd: { "12,26,9": [] }, atr: { 14: [2.0] }, volume: [1000] },
+          "1h": { close: [100, 100], sma: {}, ema: { 20: [100], 50: [100] }, rsi: { 14: [50, 50] }, macd: { "12,26,9": [] }, atr: { 14: [3.0] }, volume: [1000] },
+          "4h": { close: [100, 100], sma: {}, ema: { 20: [100], 50: [100] }, rsi: { 14: [50, 50] }, macd: { "12,26,9": [] }, atr: { 14: [4.0] }, volume: [1000] },
+        }
+      } as any));
+
+      const ctx = new StrategyContext(snap, 10000).freeze();
+      const res = strategy.evaluate(ctx, '5m');
+      // With 0 separation credit, moderate curl fails closed
+      expect(res.hasSignal).toBe(false);
+      expect(res.confidenceScore).toBeLessThan(75);
+    });
+
+    it("15i. BUY and SELL scoring are mathematically and directionally symmetric", () => {
+      const snap = createDefaultMtfSnapshot();
+
+      // Pair 1: Depth 5, Delta 5.0 (Boundary 20 -> 25 vs 80 -> 75)
+      mockIndicators(strategy, { currentRsi5m: 25.0, previousRsi5m: 20.0 });
+      const resBuy1 = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+
+      mockIndicators(strategy, { currentRsi5m: 75.0, previousRsi5m: 80.0 });
+      const resSell1 = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+
+      expect(resBuy1.confidenceScore).toBe(resSell1.confidenceScore);
+      expect(resBuy1.confidenceScore).toBe(83);
+
+      // Pair 2: Depth 2, Delta 3.0 (Boundary 23 -> 26 vs 77 -> 74)
+      mockIndicators(strategy, { currentRsi5m: 26.0, previousRsi5m: 23.0 });
+      const resBuy2 = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+
+      mockIndicators(strategy, { currentRsi5m: 74.0, previousRsi5m: 77.0 });
+      const resSell2 = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+
+      expect(resBuy2.confidenceScore).toBe(resSell2.confidenceScore);
     });
   });
 
@@ -504,19 +656,295 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
   });
 
   // ==========================================================================
+  // 5B. TRANSIENT REJECTION & BOUNDED EDGE RECOVERY (Tests 21b - 21h)
+  // ==========================================================================
+  describe("Transient Rejection & Bounded Edge Recovery", () => {
+    it("21b. BUY recovers on immediately following closed bar after transient zero balance", () => {
+      const freshStrategy = new MeanReversionStrategy();
+      const tf5mMs = 5 * 60 * 1000;
+      const t0 = BASE_TIME - tf5mMs;
+      const t1 = BASE_TIME;
+      const t2 = BASE_TIME + tf5mMs;
+
+      // Candle T1: valid BUY curl, but rejected due to zero account balance
+      const snapT1 = buildMtfSnapshot({
+        "5m": createCandles(60, "5m", t1),
+        "15m": createCandles(60, "15m", t1),
+        "1h": createCandles(60, "1h", t1),
+        "4h": createCandles(60, "4h", t1),
+      }, t1);
+      mockIndicators(freshStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [22, 28],
+          [t2]: [22, 28]
+        }
+      });
+      const ctxT1 = createZeroBalanceContext(snapT1); // 0 balance -> transient rejection
+      const resT1 = freshStrategy.evaluate(ctxT1, '5m');
+      expect(resT1.hasSignal).toBe(false);
+      expect(resT1.metadata.reasoning.some((r: string) => r.includes("Account balance is zero"))).toBe(true);
+
+      // Candle T2: immediately following bar, alignment continues, balance is restored
+      const snapT2 = buildMtfSnapshot({
+        "5m": createCandles(61, "5m", t2),
+        "15m": createCandles(60, "15m", t2),
+        "1h": createCandles(60, "1h", t2),
+        "4h": createCandles(60, "4h", t2),
+      }, t2);
+      const ctxT2 = new StrategyContext(snapT2, 10000).freeze(); // Balance restored
+      const resT2 = freshStrategy.evaluate(ctxT2, '5m');
+      expect(resT2.hasSignal).toBe(true);
+      expect(resT2.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(resT2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY] Recovered BUY event"))).toBe(true);
+    });
+
+    it("21c. SELL recovers on immediately following closed bar after transient disallowed risk tier", () => {
+      const freshStrategy = new MeanReversionStrategy();
+      const tf5mMs = 5 * 60 * 1000;
+      const t0 = BASE_TIME - tf5mMs;
+      const t1 = BASE_TIME;
+      const t2 = BASE_TIME + tf5mMs;
+
+      // Candle T1: valid SELL curl, but rejected due to HIGH risk tier
+      const snapT1 = buildMtfSnapshot({
+        "5m": createCandles(60, "5m", t1),
+        "15m": createCandles(60, "15m", t1),
+        "1h": createCandles(60, "1h", t1),
+        "4h": createCandles(60, "4h", t1),
+      }, t1);
+      mockIndicators(freshStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [78, 72],
+          [t2]: [78, 72]
+        }
+      });
+      vi.spyOn((freshStrategy as any).riskEngine, "evaluate").mockReturnValueOnce({
+        riskClassification: "HIGH", // Transiently disallowed
+        stopLossDistance: 5.0,
+        takeProfitDistance: 10.0,
+        maximumExposure: 10.0,
+        positionSizeRecommendation: 10,
+        leverageRecommendation: 1,
+        explanation: ["High risk due to temporary volatility"]
+      } as any);
+
+      const ctxT1 = new StrategyContext(snapT1, 10000).freeze();
+      const resT1 = freshStrategy.evaluate(ctxT1, '5m');
+      expect(resT1.hasSignal).toBe(false);
+      expect(resT1.metadata.reasoning.some((r: string) => r.includes("Risk classification HIGH is not allowed"))).toBe(true);
+
+      // Candle T2: immediately following bar, alignment continues, risk tier cools to MEDIUM
+      const snapT2 = buildMtfSnapshot({
+        "5m": createCandles(61, "5m", t2),
+        "15m": createCandles(60, "15m", t2),
+        "1h": createCandles(60, "1h", t2),
+        "4h": createCandles(60, "4h", t2),
+      }, t2);
+      vi.spyOn((freshStrategy as any).riskEngine, "evaluate").mockReturnValueOnce({
+        riskClassification: "MEDIUM", // Restored to allowed
+        stopLossDistance: 5.0,
+        takeProfitDistance: 10.0,
+        maximumExposure: 10.0,
+        positionSizeRecommendation: 10,
+        leverageRecommendation: 1,
+        explanation: ["Medium risk"]
+      } as any);
+
+      const ctxT2 = new StrategyContext(snapT2, 10000).freeze();
+      const resT2 = freshStrategy.evaluate(ctxT2, '5m');
+      expect(resT2.hasSignal).toBe(true);
+      expect(resT2.metadata.signal?.type).toBe(SignalType.SELL);
+      expect(resT2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE RECOVERY] Recovered SELL event"))).toBe(true);
+    });
+
+    it("21d. recovery expires after one bar (cannot recover on T + 2*tfMs)", () => {
+      const freshStrategy = new MeanReversionStrategy();
+      const tf5mMs = 5 * 60 * 1000;
+      const t0 = BASE_TIME - tf5mMs;
+      const t1 = BASE_TIME;
+      const t2 = BASE_TIME + tf5mMs;
+      const t3 = BASE_TIME + 2 * tf5mMs;
+
+      // Bar T1: rejected due to zero balance
+      const snapT1 = createDefaultMtfSnapshot(60, t1);
+      mockIndicators(freshStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [22, 28],
+          [t2]: [22, 28],
+          [t3]: [22, 28]
+        }
+      });
+      const ctxT1 = createZeroBalanceContext(snapT1);
+      freshStrategy.evaluate(ctxT1, '5m');
+
+      // Skip T2, evaluate at T3: pending recovery timestamp is T1, but T_prev at T3 is T2
+      const snapT3 = createDefaultMtfSnapshot(62, t3);
+      const ctxT3 = new StrategyContext(snapT3, 10000).freeze();
+      const resT3 = freshStrategy.evaluate(ctxT3, '5m');
+
+      expect(resT3.hasSignal).toBe(false);
+      expect(resT3.metadata.reasoning.some((r: string) => r.includes("Trend continuation suppressed"))).toBe(true);
+    });
+
+    it("21e. recovery cleared if market alignment breaks before recovery", () => {
+      const freshStrategy = new MeanReversionStrategy();
+      const tf5mMs = 5 * 60 * 1000;
+      const t0 = BASE_TIME - tf5mMs;
+      const t1 = BASE_TIME;
+      const t2 = BASE_TIME + tf5mMs;
+
+      // Bar T1: rejected due to zero balance
+      const snapT1 = createDefaultMtfSnapshot(60, t1);
+      mockIndicators(freshStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [22, 28],
+          [t2]: [50, 50]
+        }
+      });
+      freshStrategy.evaluate(createZeroBalanceContext(snapT1), '5m');
+
+      // Bar T2: RSI returns to neutral 50 (alignment breaks)
+      const snapT2 = createDefaultMtfSnapshot(61, t2);
+      const resT2 = freshStrategy.evaluate(new StrategyContext(snapT2, 10000).freeze(), '5m');
+
+      expect(resT2.hasSignal).toBe(false);
+      expect(resT2.metadata.signal).toBeNull();
+    });
+
+    it("21f. recovery cleared if direction reverses before recovery", () => {
+      const freshStrategy = new MeanReversionStrategy();
+      const tf5mMs = 5 * 60 * 1000;
+      const t0 = BASE_TIME - tf5mMs;
+      const t1 = BASE_TIME;
+      const t2 = BASE_TIME + tf5mMs;
+
+      // Bar T1: BUY rejected due to zero balance
+      const snapT1 = createDefaultMtfSnapshot(60, t1);
+      mockIndicators(freshStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [22, 28],
+          [t2]: [78, 72]
+        }
+      });
+      freshStrategy.evaluate(createZeroBalanceContext(snapT1), '5m');
+
+      // Bar T2: sudden reversal into valid SELL setup (RSI 72 from 78)
+      const snapT2 = createDefaultMtfSnapshot(61, t2);
+      const resT2 = freshStrategy.evaluate(new StrategyContext(snapT2, 10000).freeze(), '5m');
+
+      expect(resT2.hasSignal).toBe(true);
+      expect(resT2.metadata.signal?.type).toBe(SignalType.SELL);
+      expect(resT2.metadata.reasoning.some((r: string) => r.includes("[5M EDGE EVENT] New SELL event"))).toBe(true);
+    });
+
+    it("21g. permanent/non-recoverable failure (invalid price/ATR) clears pending recovery", () => {
+      const freshStrategy = new MeanReversionStrategy();
+      const tf5mMs = 5 * 60 * 1000;
+      const t0 = BASE_TIME - tf5mMs;
+      const t1 = BASE_TIME;
+      const t2 = BASE_TIME + tf5mMs;
+
+      // Bar T1: rejected due to zero balance
+      const snapT1 = createDefaultMtfSnapshot(60, t1);
+      mockIndicators(freshStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [22, 28],
+          [t2]: [22, 28]
+        }
+      });
+      freshStrategy.evaluate(createZeroBalanceContext(snapT1), '5m');
+
+      // Bar T2: price is invalid (-100) -> clears recovery and fails closed
+      const snapT2 = buildMtfSnapshot({
+        "5m": createCandles(61, "5m", t2, -100),
+      }, t2, -100);
+      const resT2 = freshStrategy.evaluate(new StrategyContext(snapT2, 10000).freeze(), '5m');
+
+      expect(resT2.hasSignal).toBe(false);
+      expect(resT2.metadata.reasoning.some((r: string) => r.includes("Invalid current price"))).toBe(true);
+    });
+
+    it("21h. recovered signal suppresses continuation on subsequent bar (no duplicate signals)", () => {
+      const freshStrategy = new MeanReversionStrategy();
+      const tf5mMs = 5 * 60 * 1000;
+      const t0 = BASE_TIME - tf5mMs;
+      const t1 = BASE_TIME;
+      const t2 = BASE_TIME + tf5mMs;
+      const t3 = BASE_TIME + 2 * tf5mMs;
+
+      // Bar T1: rejected due to zero balance
+      const snapT1 = createDefaultMtfSnapshot(60, t1);
+      mockIndicators(freshStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [22, 28],
+          [t2]: [22, 28],
+          [t3]: [22, 28]
+        }
+      });
+      freshStrategy.evaluate(createZeroBalanceContext(snapT1), '5m');
+
+      // Bar T2: successfully recovered
+      const snapT2 = createDefaultMtfSnapshot(61, t2);
+      const resT2 = freshStrategy.evaluate(new StrategyContext(snapT2, 10000).freeze(), '5m');
+      expect(resT2.hasSignal).toBe(true);
+
+      // Bar T3: continuation is suppressed
+      const snapT3 = createDefaultMtfSnapshot(62, t3);
+      const resT3 = freshStrategy.evaluate(new StrategyContext(snapT3, 10000).freeze(), '5m');
+      expect(resT3.hasSignal).toBe(false);
+      expect(resT3.metadata.reasoning.some((r: string) => r.includes("[5M CONTINUATION] Trend continuation suppressed"))).toBe(true);
+    });
+  });
+
+  // ==========================================================================
   // 6. RISK & SIZING (Tests 22 - 26)
   // ==========================================================================
-  describe("Risk & Sizing Anchored to 15M ATR", () => {
-    it("22. 15M ATR14 is used (not 5m)", () => {
+  describe("Risk & Sizing Anchored to Evaluation Timeframe ATR", () => {
+    it("22. target timeframe ATR is used (5m ATR on 5m evaluation, distinct from 15m ATR)", () => {
       const snap = createDefaultMtfSnapshot();
-      // 15m ATR is 4.0, 5m ATR is 1.0
-      mockIndicators(strategy, { currentRsi5m: 28, previousRsi5m: 22, atr15m: 4.0 });
+      // Genuinely distinct values: 15m ATR is 4.0, 5m ATR is 1.0
+      mockIndicators(strategy, { currentRsi5m: 28, previousRsi5m: 22, atr5m: 1.0, atr15m: 4.0 });
       const ctx = new StrategyContext(snap, 10000).freeze();
       const res = strategy.evaluate(ctx, '5m');
 
       expect(res.hasSignal).toBe(true);
-      // Stop loss distance should be 4.0 * 1.2 = 4.8
+      // Stop loss distance should be 5m ATR (1.0) * 1.2 = 1.2, NOT 15m ATR (4.0 * 1.2 = 4.8)
+      expect(res.metadata.signal?.riskAssessment.stopLossDistance).toBeCloseTo(1.2, 4);
+      expect(res.metadata.signal?.riskAssessment.stopLossDistance).not.toBeCloseTo(4.8, 4);
+    });
+
+    it("22b. 15m evaluation strictly uses 15m ATR (distinct from 5m ATR)", () => {
+      const snap = createDefaultMtfSnapshot();
+      mockIndicators(strategy, { currentRsi5m: 28, previousRsi5m: 22, atr5m: 1.0, atr15m: 4.0 });
+      vi.spyOn((strategy as any).indicatorEngine, "evaluate").mockImplementation((snapshot: any) => {
+        const isPrev = snapshot.timestamp < BASE_TIME;
+        const rsiCurr = isPrev ? 50 : 28;
+        const rsiPrev = isPrev ? 50 : 22;
+        return {
+          timestamp: snapshot.timestamp,
+          timeframes: {
+            "5m": { close: [100, 100], sma: {}, ema: { 20: [100], 50: [100] }, rsi: { 14: [50, 50] }, macd: { "12,26,9": [] }, atr: { 14: [1.0] }, volume: [1000] },
+            "15m": { close: [100, 100], sma: {}, ema: { 20: [100], 50: [100] }, rsi: { 14: [rsiPrev, rsiCurr] }, macd: { "12,26,9": [] }, atr: { 14: [4.0] }, volume: [1000] },
+            "1h": { close: [100, 100], sma: {}, ema: { 20: [100], 50: [100] }, rsi: { 14: [50, 50] }, macd: { "12,26,9": [] }, atr: { 14: [3.0] }, volume: [1000] },
+            "4h": { close: [100, 100], sma: {}, ema: { 20: [100], 50: [100] }, rsi: { 14: [50, 50] }, macd: { "12,26,9": [] }, atr: { 14: [4.0] }, volume: [1000] },
+          }
+        } as any;
+      });
+
+      const ctx = new StrategyContext(snap, 10000).freeze();
+      const res = strategy.evaluate(ctx, '15m');
+
+      expect(res.hasSignal).toBe(true);
+      // Stop loss distance on 15m should be 15m ATR (4.0) * 1.2 = 4.8, NOT 5m ATR (1.0 * 1.2 = 1.2)
       expect(res.metadata.signal?.riskAssessment.stopLossDistance).toBeCloseTo(4.8, 4);
+      expect(res.metadata.signal?.riskAssessment.stopLossDistance).not.toBeCloseTo(1.2, 4);
     });
 
     it("23. SL = 1.2x ATR", () => {
@@ -646,6 +1074,114 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       expect(strategy.manifest.supportsShort).toBe(true);
       expect(strategy.manifest.category).toBe("Mean Reversion");
       expect(strategy.manifest.riskProfile).toBe("Medium");
+    });
+  });
+
+  // ==========================================================================
+  // 9. TRADING BOT DISPLAY RESULT RESOLUTION (Finding 3 Regression Tests)
+  // ==========================================================================
+  describe("TradingBot.resolveDisplayResult (Finding 3 Regression)", () => {
+    const registry = StrategyRegistry.getInstance();
+
+    const scalperResult: EvaluationResult = {
+      strategyId: 'ScalperV2',
+      timestamp: Date.now(),
+      confidenceScore: 80,
+      hasSignal: true,
+      metadata: { reasoning: ['Scalper BUY signal'] }
+    };
+
+    const meanRevNoSignal: EvaluationResult = {
+      strategyId: 'MeanReversion',
+      timestamp: Date.now(),
+      confidenceScore: 40,
+      hasSignal: false,
+      metadata: { reasoning: ['MeanReversion no signal'] }
+    };
+
+    const momentumSignal: EvaluationResult = {
+      strategyId: 'Momentum',
+      timestamp: Date.now(),
+      confidenceScore: 85,
+      hasSignal: true,
+      metadata: { reasoning: ['Momentum BUY signal'] }
+    };
+
+    it("1. committed strategy with NO signal returns committed strategy result even when another strategy has a signal", () => {
+      const results = [scalperResult, meanRevNoSignal];
+      const resolved = TradingBot.resolveDisplayResult(results, 'MeanReversion', 'ScalperV2', registry);
+      expect(resolved.strategyId).toBe('MeanReversion');
+      expect(resolved.hasSignal).toBe(false);
+      expect(resolved.metadata.reasoning).toContain('MeanReversion no signal');
+    });
+
+    it("2. alias and case normalization correctly resolves committed strategy", () => {
+      const results = [scalperResult, meanRevNoSignal, momentumSignal];
+
+      // Lowercase, hyphenated, and alias variations
+      const testCases = [
+        { raw: 'meanreversion', expected: 'MeanReversion' },
+        { raw: 'mean-reversion', expected: 'MeanReversion' },
+        { raw: 'reversion', expected: 'MeanReversion' },
+        { raw: 'scalper', expected: 'ScalperV2' },
+        { raw: 'scalper-v2', expected: 'ScalperV2' },
+        { raw: 'scalperv2', expected: 'ScalperV2' },
+        { raw: 'momentum', expected: 'Momentum' },
+        { raw: 'breakout', expected: 'Breakout' },
+        { raw: 'vwap', expected: 'VWAP' }
+      ];
+
+      for (const tc of testCases) {
+        const normalized = registry.normalizeStrategyId(tc.raw);
+        expect(normalized).toBe(tc.expected);
+      }
+
+      // Check display resolution with case variation
+      const resLower = TradingBot.resolveDisplayResult(results, 'meanreversion', 'ScalperV2', registry);
+      expect(resLower.strategyId).toBe('MeanReversion');
+
+      const resHyphen = TradingBot.resolveDisplayResult(results, 'mean-reversion', 'ScalperV2', registry);
+      expect(resHyphen.strategyId).toBe('MeanReversion');
+    });
+
+    it("3. missing committed result returns neutral fallback for committed strategy, never ScalperV2 fallback", () => {
+      // Results only contain ScalperV2 and Momentum; MeanReversion was not evaluated
+      const results = [scalperResult, momentumSignal];
+      const resolved = TradingBot.resolveDisplayResult(results, 'MeanReversion', 'ScalperV2', registry);
+      expect(resolved.strategyId).toBe('MeanReversion');
+      expect(resolved.hasSignal).toBe(false);
+      expect(resolved.metadata.reasoning).toContain('Evaluation pending');
+    });
+
+    it("4. uncommitted mode: prefers first strategy with signal, or falls back to first available", () => {
+      const results = [meanRevNoSignal, scalperResult];
+      // With uncommitted strategy (null / undefined), it should pick scalperResult because it hasSignal: true
+      const resolved = TradingBot.resolveDisplayResult(results, null, 'ScalperV2', registry);
+      expect(resolved.strategyId).toBe('ScalperV2');
+      expect(resolved.hasSignal).toBe(true);
+
+      // When neither has signal, falls back to results[0]
+      const noSignalResults = [
+        { ...meanRevNoSignal, strategyId: 'MeanReversion' },
+        { ...scalperResult, hasSignal: false, strategyId: 'ScalperV2' }
+      ];
+      const resolvedFallback = TradingBot.resolveDisplayResult(noSignalResults, undefined, 'ScalperV2', registry);
+      expect(resolvedFallback.strategyId).toBe('MeanReversion');
+    });
+
+    it("5. validates resolution for all five registered strategies", () => {
+      const allFive: EvaluationResult[] = [
+        { strategyId: 'ScalperV2', timestamp: Date.now(), confidenceScore: 50, hasSignal: false, metadata: { reasoning: [] } },
+        { strategyId: 'Momentum', timestamp: Date.now(), confidenceScore: 50, hasSignal: false, metadata: { reasoning: [] } },
+        { strategyId: 'Breakout', timestamp: Date.now(), confidenceScore: 50, hasSignal: false, metadata: { reasoning: [] } },
+        { strategyId: 'MeanReversion', timestamp: Date.now(), confidenceScore: 50, hasSignal: false, metadata: { reasoning: [] } },
+        { strategyId: 'VWAP', timestamp: Date.now(), confidenceScore: 50, hasSignal: false, metadata: { reasoning: [] } },
+      ];
+
+      for (const strat of ['ScalperV2', 'Momentum', 'Breakout', 'MeanReversion', 'VWAP']) {
+        const resolved = TradingBot.resolveDisplayResult(allFive, strat, 'ScalperV2', registry);
+        expect(resolved.strategyId).toBe(strat);
+      }
     });
   });
 });

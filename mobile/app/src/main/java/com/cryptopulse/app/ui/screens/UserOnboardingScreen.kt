@@ -64,8 +64,13 @@ fun UserOnboardingScreen(navController: NavController, viewModel: AuthViewModel)
 
     LaunchedEffect(viewModel.isAuthenticated) {
         if (viewModel.isAuthenticated) {
-            navController.navigate("authenticated_flow") {
-                popUpTo("onboarding") { inclusive = true }
+            try {
+                navController.navigate("authenticated_flow") {
+                    popUpTo(navController.graph.id) { inclusive = true }
+                    launchSingleTop = true
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("UserOnboardingScreen", "Navigation to authenticated_flow failed: ${e.message}", e)
             }
         }
     }

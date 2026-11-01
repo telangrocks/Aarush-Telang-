@@ -265,4 +265,60 @@ class RetryInterceptorTest {
         assertEquals(429, response.code)
         assertEquals(1, callCount) // MUST NOT RETRY POST /api/login
     }
+
+    @Test
+    fun testGetRequest_retriesOn500_andSucceeds() {
+        val request = Request.Builder().url("http://test.com/api/market/ticker?symbol=ENA/USDT").get().build()
+        var callCount = 0
+
+        val chain = buildChain(request) { _, count ->
+            callCount = count
+            if (count < 2) {
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(500)
+                    .message("Internal Server Error")
+                    .body(okhttp3.ResponseBody.create(null, "500 error"))
+                    .build()
+            } else {
+                Response.Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, "ok"))
+                    .build()
+            }
+        }
+
+        val response = interceptor.intercept(chain)
+        assertEquals(200, response.code)
+        assertEquals(2, callCount)
+    }
+
+    @Test
+    fun testPostTradingExecution_doesNotRetryOn500() {
+        val request = Request.Builder()
+            .url("http://test.com/api/trading-bot/execute-trade")
+            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .build()
+
+        var callCount = 0
+
+        val chain = buildChain(request) { _, count ->
+            callCount = count
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(500)
+                .message("Internal Server Error")
+                .body(okhttp3.ResponseBody.create(null, "500 error"))
+                .build()
+        }
+
+        val response = interceptor.intercept(chain)
+        assertEquals(500, response.code)
+        assertEquals(1, callCount) // MUST NOT RETRY MUTATIONS
+    }
 }

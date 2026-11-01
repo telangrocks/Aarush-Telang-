@@ -46,6 +46,7 @@ export class MomentumStrategy implements IStrategy {
   private confidenceEngine: ConfidenceEngine;
   private riskEngine: RiskEngine;
   private signalEngine: SignalEngine;
+  private rejectedEdgeEvents = new Map<string, { timestamp: number; direction: SignalType }>();
 
   constructor(private config: MomentumConfig = DEFAULT_MOMENTUM_CONFIG) {
     this.indicatorEngine = new IndicatorEngine(config.indicatorConfig);
@@ -215,9 +216,34 @@ export class MomentumStrategy implements IStrategy {
       );
     }
 
+    const stateKey = `${context.marketSnapshot.symbol}:${targetTimeframe}`;
+
     // Edge transition: emit only when transitioning from NOT ALIGNED to ALIGNED
     const isNewBuyEvent = currentAlignment.isAlignedBuy && !previousAlignment.isAlignedBuy;
     const isNewSellEvent = currentAlignment.isAlignedSell && !previousAlignment.isAlignedSell;
+
+    // Edge transition recovery: check if previous bar at T_previous had a rejected edge event
+    const pendingRejected = this.rejectedEdgeEvents.get(stateKey);
+    const isRecoveredBuyEvent = Boolean(
+      pendingRejected &&
+      pendingRejected.timestamp === T_previous &&
+      pendingRejected.direction === SignalType.BUY &&
+      currentAlignment.isAlignedBuy
+    );
+    const isRecoveredSellEvent = Boolean(
+      pendingRejected &&
+      pendingRejected.timestamp === T_previous &&
+      pendingRejected.direction === SignalType.SELL &&
+      currentAlignment.isAlignedSell
+    );
+
+    if (pendingRejected && !isRecoveredBuyEvent && !isRecoveredSellEvent) {
+      // Pending rejected edge event is stale or alignment broke
+      this.rejectedEdgeEvents.delete(stateKey);
+    }
+
+    const isEdgeBuy = isNewBuyEvent || isRecoveredBuyEvent;
+    const isEdgeSell = isNewSellEvent || isRecoveredSellEvent;
 
     // 5. Evaluate Current Real Risk Gates
     const entryCandles = currentCandlesRecord[targetTimeframe]!;
@@ -225,6 +251,11 @@ export class MomentumStrategy implements IStrategy {
     const currentPrice = latestCandleClose > 0 ? latestCandleClose : context.marketSnapshot.currentPrice || 0;
 
     if (currentPrice <= 0) {
+      if (isEdgeBuy) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY });
+      } else if (isEdgeSell) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL });
+      }
       return {
         strategyId: this.manifest.id,
         timestamp: context.timestamp,
@@ -235,6 +266,11 @@ export class MomentumStrategy implements IStrategy {
     }
 
     if (!context.accountBalance || context.accountBalance <= 0) {
+      if (isEdgeBuy) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY });
+      } else if (isEdgeSell) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL });
+      }
       return {
         strategyId: this.manifest.id,
         timestamp: context.timestamp,
@@ -250,6 +286,11 @@ export class MomentumStrategy implements IStrategy {
     const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
 
     if (!currentAtr || currentAtr <= 0) {
+      if (isEdgeBuy) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY });
+      } else if (isEdgeSell) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL });
+      }
       return {
         strategyId: this.manifest.id,
         timestamp: context.timestamp,
@@ -289,13 +330,32 @@ export class MomentumStrategy implements IStrategy {
 
     const reasoning: string[] = activeSignal ? [...activeSignal.reasoning] : [`No qualified signal generated on ${targetTimeframe} trigger`];
 
-    // 7. Apply Edge Transition Gate (Anti-Chase Protection)
+    // 7. Apply Edge Transition Gate (Anti-Chase Protection & Edge Recovery)
     const tfUpper = targetTimeframe.toUpperCase();
-    if (isNewBuyEvent && activeSignal?.type === SignalType.BUY) {
-      reasoning.push(`[${tfUpper} EDGE EVENT] New BUY event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
-    } else if (isNewSellEvent && activeSignal?.type === SignalType.SELL) {
-      reasoning.push(`[${tfUpper} EDGE EVENT] New SELL event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
+    if (isEdgeBuy && activeSignal?.type === SignalType.BUY) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      if (isRecoveredBuyEvent) {
+        reasoning.push(`[${tfUpper} EDGE RECOVERY] Recovered BUY event: ${targetTimeframe} trigger recovered after transient risk rejection on previous bar.`);
+      } else {
+        reasoning.push(`[${tfUpper} EDGE EVENT] New BUY event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
+      }
+    } else if (isEdgeSell && activeSignal?.type === SignalType.SELL) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      if (isRecoveredSellEvent) {
+        reasoning.push(`[${tfUpper} EDGE RECOVERY] Recovered SELL event: ${targetTimeframe} trigger recovered after transient risk rejection on previous bar.`);
+      } else {
+        reasoning.push(`[${tfUpper} EDGE EVENT] New SELL event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
+      }
     } else {
+      // If an edge transition occurred or was recovering, but activeSignal was rejected by risk/validation:
+      if (isEdgeBuy && currentAlignment.isAlignedBuy) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY });
+      } else if (isEdgeSell && currentAlignment.isAlignedSell) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL });
+      } else if (!currentAlignment.isAlignedBuy && !currentAlignment.isAlignedSell) {
+        this.rejectedEdgeEvents.delete(stateKey);
+      }
+
       if (currentAlignment.isAlignedBuy && previousAlignment.isAlignedBuy) {
         reasoning.push(`[${tfUpper} CONTINUATION] Trend continuation suppressed: ${targetTimeframe} BUY trigger already active on previous bar.`);
       } else if (currentAlignment.isAlignedSell && previousAlignment.isAlignedSell) {
@@ -337,4 +397,3 @@ export class MomentumStrategy implements IStrategy {
     };
   }
 }
-

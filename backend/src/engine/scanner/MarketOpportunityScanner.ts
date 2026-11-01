@@ -207,6 +207,16 @@ export class MarketOpportunityScanner {
                   : 0)))));
       const cleanPriceChangePercent24h = Number.isFinite(pctVal) ? pctVal : 0;
 
+      let maxOrderQty: number | undefined;
+      if (m.limits?.amount?.max !== undefined && m.limits?.amount?.max !== null) {
+        const val = typeof m.limits.amount.max?.toNumber === 'function' ? m.limits.amount.max.toNumber() : Number(m.limits.amount.max);
+        if (Number.isFinite(val) && val > 0) maxOrderQty = val;
+      }
+      if (!maxOrderQty && (m as any).info?.lotSizeFilter?.maxOrderQty) {
+        const parsed = parseFloat(String((m as any).info.lotSizeFilter.maxOrderQty));
+        if (Number.isFinite(parsed) && parsed > 0) maxOrderQty = parsed;
+      }
+
       const quality: MarketQualityAssessment = {
         symbol: m.symbol,
         grade,
@@ -216,6 +226,7 @@ export class MarketOpportunityScanner {
         tickSize: m.precision?.price || 0.01,
         qtyStep,
         minOrderQty,
+        maxOrderQty,
         minNotionalUsdt,
         isStablecoinOrLeveraged: false,
         priceChangePercent24h: cleanPriceChangePercent24h,
@@ -246,6 +257,7 @@ export class MarketOpportunityScanner {
             qtyStep: quality.qtyStep || 0.00001,
             minOrderQty: quality.minOrderQty,
             minNotional: quality.minNotionalUsdt,
+            maxOrderQty: quality.maxOrderQty,
           });
           return eligibility.isExecutable;
         })

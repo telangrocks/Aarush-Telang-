@@ -647,4 +647,39 @@ describe('AnalysisSnapshotMapper Unit Tests', () => {
     const momChk = dto.marketAnalysis.conditionSummary.find(c => c.name.includes('Momentum'));
     expect(momChk?.status).toBe('FAILED');
   });
+
+  it('should map riskClassification from signal.riskAssessment and default safely to UNKNOWN when missing', () => {
+    const evalWithRisk: EvaluationResult = {
+      strategyId: 'ScalperV2',
+      timestamp: 1722814800000,
+      confidenceScore: 85,
+      hasSignal: true,
+      metadata: {
+        reasoning: [],
+        signal: {
+          type: 'BUY',
+          riskAssessment: { riskClassification: 'MEDIUM' }
+        } as any
+      }
+    };
+    const dtoWithRisk = AnalysisSnapshotMapper.map(evalWithRisk, dummyManifest, dummySnapshot);
+    expect(dtoWithRisk.tradingSignal?.riskClassification).toBe('MEDIUM');
+
+    const manifestWithoutRiskProfile = { ...dummyManifest, riskProfile: undefined as any };
+    const evalWithoutRisk: EvaluationResult = {
+      strategyId: 'ScalperV2',
+      timestamp: 1722814800000,
+      confidenceScore: 85,
+      hasSignal: true,
+      metadata: {
+        reasoning: [],
+        signal: {
+          type: 'BUY'
+        } as any
+      }
+    };
+    const dtoUnknown = AnalysisSnapshotMapper.map(evalWithoutRisk, manifestWithoutRiskProfile, dummySnapshot);
+    expect(dtoUnknown.tradingSignal?.riskClassification).toBe('UNKNOWN');
+  });
 });
+

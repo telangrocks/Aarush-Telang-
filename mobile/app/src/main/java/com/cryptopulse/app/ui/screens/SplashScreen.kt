@@ -30,6 +30,7 @@ import com.cryptopulse.app.R
 import com.cryptopulse.app.domain.repository.AuthRepository
 import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.repository.ExchangeRepository
+import com.cryptopulse.app.domain.repository.FcmRepository
 import com.cryptopulse.app.domain.repository.TradeSessionRepository
 import com.cryptopulse.app.domain.models.TradeSetupConfig
 import com.cryptopulse.app.data.local.TokenManager
@@ -64,6 +65,7 @@ fun SplashScreen(
     tradeSessionRepository: TradeSessionRepository,
     authRepository: AuthRepository? = null,
     tradeAlertManager: TradeAlertManager? = null,
+    fcmRepository: FcmRepository? = null,
 ) {
 
     // ── Animation state ───────────────────────────────────────────────────
@@ -155,11 +157,13 @@ fun SplashScreen(
                             // Silently fail
                         }
                     }
+                    registerFcmTokenOnSessionRestoration(tokenManager, fcmRepository)
                 }
 
                 val (isExchangeConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
                 if (token.isNullOrEmpty()) {
-                    destination = "onboarding"
+                    val isRegistered = tokenManager.isRegistrationCompleted()
+                    destination = if (isRegistered) "auth" else "onboarding"
                 } else if (!isExchangeConnected) {
                     destination = "authenticated_flow"
                 } else {
@@ -231,7 +235,8 @@ fun SplashScreen(
                 )
             }
         } catch (e: Exception) {
-            destination = if (!token.isNullOrEmpty() || tokenManager.hasCachedTokenSync()) "connect_exchange" else "onboarding"
+            val isRegistered = tokenManager.isRegistrationCompletedSync()
+            destination = if (!token.isNullOrEmpty() || tokenManager.hasCachedTokenSync()) "connect_exchange" else if (isRegistered) "auth" else "onboarding"
         }
 
         delay(2000)
@@ -241,7 +246,8 @@ fun SplashScreen(
             }
         } catch (e: Exception) {
             // Fallback navigation in case of unexpected route failure
-            val fallback = if (!token.isNullOrEmpty() || tokenManager.hasCachedTokenSync()) "authenticated_flow" else "onboarding"
+            val isRegistered = tokenManager.isRegistrationCompletedSync()
+            val fallback = if (!token.isNullOrEmpty() || tokenManager.hasCachedTokenSync()) "authenticated_flow" else if (isRegistered) "auth" else "onboarding"
             navController.navigate(fallback) {
                 popUpTo("splash") { inclusive = true }
             }
@@ -497,6 +503,105 @@ private fun BottomHorizonGlow(
         )
     }
 }
+
+/**
+ * Pure destination resolution logic for cold-start session restoration.
+ * Awaits TokenManager DataStore loading and evaluates routing safely.
+ */
+@androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PACKAGE_PRIVATE)
+internal suspend fun resolveStartupDestination(
+    tokenManager: TokenManager,
+    isExchangeConnected: Boolean,
+    authRepository: AuthRepository? = null,
+    hasActiveAlert: Boolean = false,
+    activeBotCoinId: String? = null
+): String {
+    var token = tokenManager.getToken()
+    if (tokenManager.isTokenExpired(token)) {
+        val refreshToken = tokenManager.getRefreshToken()
+        if (!refreshToken.isNullOrEmpty() && !tokenManager.isTokenExpired(refreshToken) && authRepository != null) {
+            val refreshResult = authRepository.refreshToken()
+            token = if (refreshResult is com.cryptopulse.app.core.network.NetworkResult.Success) {
+                tokenManager.getToken()
+            } else {
+                tokenManager.clearTokens()
+                null
+            }
+        } else {
+            tokenManager.clearTokens()
+            token = null
+        }
+    }
+
+    if (token.isNullOrEmpty()) {
+        val isRegistered = tokenManager.isRegistrationCompleted()
+        return if (isRegistered) "auth" else "onboarding"
+    }
+
+    if (!isExchangeConnected) {
+        return "authenticated_flow"
+    }
+
+    if (hasActiveAlert) {
+        return "trade_alert"
+    }
+
+    return if (activeBotCoinId != null) "technical_analysis" else "market_candidates"
+}
+
+/**
+ * Registers the cached or resolved FCM token with the backend during session restoration or token refresh.
+ * Safely handles missing tokens and network failures without interrupting navigation flow.
+ */
+@androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PACKAGE_PRIVATE)
+internal suspend fun registerFcmTokenOnSessionRestoration(
+    tokenManager: TokenManager,
+    fcmRepository: FcmRepository?
+): Boolean {
+    if (fcmRepository == null) return false
+    return try {
+        val cachedToken = tokenManager.getFcmToken()
+        val tokenToRegister = if (!cachedToken.isNullOrEmpty()) {
+            cachedToken
+        } else {
+            try {
+                val task = com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                val resolved = com.google.android.gms.tasks.Tasks.await(task)
+                if (!resolved.isNullOrEmpty()) {
+                    tokenManager.saveFcmToken(resolved)
+                }
+                resolved
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                android.util.Log.w("SplashScreen", "Unable to resolve FCM token from Firebase on restore: ${e.message}")
+                null
+            }
+        }
+
+        if (!tokenToRegister.isNullOrEmpty()) {
+            android.util.Log.d("SplashScreen", "Registering FCM token on session restoration (token length: ${tokenToRegister.length})")
+            val regResult = fcmRepository.registerToken(tokenToRegister)
+            when (regResult) {
+                is com.cryptopulse.app.core.network.NetworkResult.Success -> {
+                    android.util.Log.i("SplashScreen", "FCM token registered successfully on session restoration")
+                    true
+                }
+                is com.cryptopulse.app.core.network.NetworkResult.Error -> {
+                    android.util.Log.w("SplashScreen", "FCM token registration failed on session restoration: ${regResult.error}")
+                    false
+                }
+            }
+        } else {
+            android.util.Log.w("SplashScreen", "No cached or resolved FCM token found on session restoration")
+            false
+        }
+    } catch (e: Throwable) {
+        if (e is kotlinx.coroutines.CancellationException) throw e
+        android.util.Log.w("SplashScreen", "FCM token registration error during session restoration: ${e.message}")
+        false
+    }
+}
+
 
 
 

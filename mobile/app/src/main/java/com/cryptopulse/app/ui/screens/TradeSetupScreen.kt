@@ -690,7 +690,7 @@ fun AvailableBalanceCard(
 @Composable
 fun TradeSetupTargetEntryPriceCard(
     asset: String,
-    tradeAmount: String = "5.00",
+    tradeAmount: String = "",
     tradeAmountError: String? = null,
     onTradeAmountChange: (String) -> Unit = {},
     previewPrice: Double = 0.0,
@@ -715,7 +715,7 @@ fun TradeSetupTargetEntryPriceCard(
 
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "USDT allocated per trade (e.g. 5.00, 50.00, 100.00 USDT · Min 5.00 USDT)",
+            text = "USDT allocated per trade (e.g. 10.00, 50.00, 100.00 USDT)",
             color = Color(0xFF6B8AAB),
             fontSize = 11.5.sp,
             fontWeight = FontWeight.Normal

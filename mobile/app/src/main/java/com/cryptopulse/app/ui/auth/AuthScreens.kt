@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -153,7 +154,7 @@ fun AuthScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 22.dp)
+                            .padding(horizontal = 20.dp, vertical = 24.dp)
                     ) {
                         // Header: "ENTER CREDENTIALS"
                         Text(
@@ -170,7 +171,7 @@ fun AuthScreen(
                         Text(
                             text = "EMAIL ADDRESS",
                             color = Color(0xFF7E9DBF),
-                            fontSize = 11.sp,
+                            fontSize = 11.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             letterSpacing = 1.2.sp,
                         )
@@ -187,8 +188,8 @@ fun AuthScreen(
                                     Icon(
                                         imageVector = if (emailVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                                         contentDescription = if (emailVisible) "Hide email" else "Show email",
-                                        tint = Color(0xFF5B7B9E),
-                                        modifier = Modifier.size(20.dp)
+                                        tint = Color(0xFF6B8EAE),
+                                        modifier = Modifier.size(22.dp)
                                     )
                                 }
                             },
@@ -205,13 +206,13 @@ fun AuthScreen(
                             )
                         }
 
-                        Spacer(Modifier.height(18.dp))
+                        Spacer(Modifier.height(20.dp))
 
                         // Password Field
                         Text(
                             text = "PASSWORD",
                             color = Color(0xFF7E9DBF),
-                            fontSize = 11.sp,
+                            fontSize = 11.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             letterSpacing = 1.2.sp,
                         )
@@ -228,8 +229,8 @@ fun AuthScreen(
                                     Icon(
                                         imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                                         contentDescription = if (passwordVisible) "Hide password" else "Show password",
-                                        tint = Color(0xFF5B7B9E),
-                                        modifier = Modifier.size(20.dp)
+                                        tint = Color(0xFF6B8EAE),
+                                        modifier = Modifier.size(22.dp)
                                     )
                                 }
                             },
@@ -388,18 +389,23 @@ private fun SignInInputField(
         placeholder = {
             Text(
                 text = placeholder,
-                color = Color(0xFF5A738E),
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.Normal
+                color = Color(0xFF6481A0),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Normal,
             )
         },
+        textStyle = TextStyle(
+            color = Color(0xFFE8F0FF),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Normal,
+        ),
         leadingIcon = leadingIcon?.let {
             {
                 Icon(
                     imageVector = it,
                     contentDescription = null,
-                    tint = Color(0xFF5B7B9E),
-                    modifier = Modifier.size(20.dp)
+                    tint = Color(0xFF6B8EAE),
+                    modifier = Modifier.size(22.dp)
                 )
             }
         },
@@ -422,6 +428,7 @@ private fun SignInInputField(
         shape = RoundedCornerShape(14.dp),
         modifier = Modifier
             .fillMaxWidth()
+            .height(58.dp)
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
     )
 }

@@ -22,7 +22,7 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
             symbol: 'ZRO/USDT',
             id: 'ZROUSDT',
             precision: { amount: 0.0001, price: 0.0001 },
-            limits: { cost: { min: 5 }, amount: { min: 0.0001 } }
+            limits: { cost: { min: 5 }, amount: { min: 0.0001, max: 100000 } }
           }
         ]),
       }),

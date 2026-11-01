@@ -7,11 +7,13 @@ import BigNumber from 'bignumber.js';
 
 import { decrypt } from './crypto';
 import { TradeValidator } from './validation/TradeValidator';
-import { sendTradeNotification } from './handlers/notifications';
+import { sendTradeNotification, sendTradeFillNotification } from './handlers/notifications';
 import { StrategyOrchestrator, MarketDataEngine, AdapterCandleProvider } from './engine';
 import { EngineAPIService, AnalysisSnapshotMapper } from './api/engine';
+import { EvaluationResult } from './engine/dto/EvaluationResult';
 import { StrategyRegistry } from './engine/strategies/StrategyRegistry';
-import { MarketRegimeEngine } from './engine/regime/MarketRegimeEngine';
+import { MarketRegimeEngine, MarketRegime } from './engine/regime/MarketRegimeEngine';
+import { DirectionalMtfArbitrator } from './engine/arbitration/DirectionalMtfArbitrator';
 import { StructuredLogger } from './infrastructure/telemetry/Telemetry';
 import { UnifiedError } from './exchanges/models/UnifiedError';
 import { resolveCanonicalRoutingRegion } from './utils/region';
@@ -62,6 +64,9 @@ export interface TradeAlert {
   takeProfit: number;
   estimatedPnl: number;
   positionSize: number;
+  quantity?: number;
+  requestedBudget?: number;
+  effectiveNotional?: number;
   strategy: string;
   side: 'BUY' | 'SELL';
   timestamp: string;
@@ -563,6 +568,39 @@ export class TradingBot {
   private unprotectedExposureLock: UnprotectedExposureLock | null = null;
   private protectionIntents: Map<string, ProtectionIntent> = new Map();
   private closeIntents: Map<string, EmergencyCloseIntent> = new Map();
+  private reconciliationRetries: Map<string, { failures: number; quarantinedUntil: number }> = new Map();
+
+  public static resolveDisplayResult(
+    results: EvaluationResult[],
+    committedStrategyRaw: string | null | undefined,
+    fallbackManifestId: string,
+    registry: StrategyRegistry
+  ): EvaluationResult {
+    const normalizedCommitted = committedStrategyRaw ? registry.normalizeStrategyId(committedStrategyRaw) : null;
+
+    if (normalizedCommitted) {
+      const matchingResults = results.filter(r => registry.normalizeStrategyId(r.strategyId).toLowerCase() === normalizedCommitted.toLowerCase());
+      if (matchingResults.length > 0) {
+        return matchingResults.find(r => r.hasSignal) || matchingResults[0];
+      }
+      return {
+        strategyId: normalizedCommitted,
+        timestamp: Date.now(),
+        confidenceScore: 50,
+        hasSignal: false,
+        metadata: { reasoning: ['Evaluation pending'] }
+      };
+    }
+
+    return results.find(r => r.hasSignal) ||
+      results[0] || {
+        strategyId: fallbackManifestId,
+        timestamp: Date.now(),
+        confidenceScore: 50,
+        hasSignal: false,
+        metadata: { reasoning: ['Evaluation pending'] }
+      };
+  }
 
   state: DurableObjectState;
   env: Env;
@@ -741,6 +779,11 @@ export class TradingBot {
       for (const [k, v] of closeMap.entries()) {
         const cleanId = k.startsWith('intent:close:') ? k.slice('intent:close:'.length) : k;
         this.closeIntents.set(cleanId, { ...(v as EmergencyCloseIntent) });
+      }
+
+      const storedRetries = (await getVal('lock:reconciliationRetries')) as any;
+      if (Array.isArray(storedRetries)) {
+        this.reconciliationRetries = new Map(storedRetries);
       }
 
       const storedLifecycleState = (await getVal('signal_lifecycle_state')) || null;
@@ -1225,8 +1268,8 @@ export class TradingBot {
           this.runtimeState.strategy = null as any;
           this.runtimeState.alerts = updatedAlertsOnDeactivate;
         });
-        if (this.hasPendingSafetyWork()) {
-          try { await this.state.storage.setAlarm(Date.now() + 5000); } catch (e) { /* ignore */ }
+        if (await this.hasActiveExposure()) {
+          try { await this.state.storage.setAlarm(Date.now() + 60000); } catch (e) { /* ignore */ }
         } else {
           try { await this.state.storage.deleteAlarm(); } catch (e) { /* ignore */ }
         }
@@ -1548,18 +1591,10 @@ export class TradingBot {
                 region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
               });
 
-              const closeResult = await ReconciliationEngine.reconcilePositionLifecycle(provider, dbPos, Date.now());
-              if (closeResult && closeResult.status === 'CLOSED') {
+              const closeOutcome = await this.reconcileAndFinalizePositionClosure(provider, userId, dbPos, false);
+              if (closeOutcome.closed) {
                 isReconciledClosed = true;
-                await this.env.DB.prepare(
-                  `DELETE FROM trade_positions 
-                   WHERE id = ? AND user_id = ? AND status = 'OPEN'`
-                ).bind(positionId, userId).run();
-
                 dbPos = null;
-                const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p && p.id !== positionId);
-                this.runtimeState.activePositions = updatedActive;
-                await this.persistState('activePositions', updatedActive);
               }
             }
           } catch (posReconErr: any) {
@@ -1741,6 +1776,86 @@ export class TradingBot {
               }),
               { status: 409, headers: { 'Content-Type': 'application/json' } }
             );
+          }
+
+          // Strict Symbol Validation: If requestBody provides a symbol, it must match the alert symbol
+          if (requestBody.symbol) {
+            const normReqSymbol = this.normalizeSymbol(requestBody.symbol);
+            const normTargetSymbol = this.normalizeSymbol(target.symbol);
+            if (normReqSymbol !== normTargetSymbol) {
+              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Request symbol '${requestBody.symbol}' does not match alert symbol '${target.symbol}'. AlertId: ${target.id}`);
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'MISMATCHED_ALERT_SYMBOL',
+                error: `Execution rejected: Symbol '${requestBody.symbol}' does not match trade alert symbol '${target.symbol}'.`
+              }), { status: 400 });
+            }
+          }
+
+          // Strict Side Validation: If requestBody provides a side, it must match the alert side
+          if (requestBody.side) {
+            const reqSide = String(requestBody.side).toUpperCase();
+            const targetSide = String(target.side).toUpperCase();
+            if (reqSide !== targetSide) {
+              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Request side '${requestBody.side}' does not match alert side '${target.side}'. AlertId: ${target.id}`);
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'MISMATCHED_ALERT_SIDE',
+                error: `Execution rejected: Side '${requestBody.side}' does not match trade alert side '${target.side}'.`
+              }), { status: 400 });
+            }
+          }
+
+          // Authoritative Approved Quantity Verification Gate
+          const storedQuantity = target.quantity;
+          const submittedQuantity = requestBody.quantity != null ? Number(requestBody.quantity) : undefined;
+
+          if (requestBody.requireApprovedQuantity === true) {
+            if (storedQuantity == null || !Number.isFinite(storedQuantity) || storedQuantity <= 0) {
+              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Alert ${target.id} does not contain a valid backend-approved quantity.`);
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'MISSING_APPROVED_QUANTITY',
+                error: 'Execution rejected: Trade alert does not contain a valid backend-approved quantity.'
+              }), { status: 409 });
+            }
+
+            if (submittedQuantity == null || !Number.isFinite(submittedQuantity) || submittedQuantity <= 0) {
+              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Execution request missing or invalid quantity.`);
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'MISSING_SUBMITTED_QUANTITY',
+                error: 'Execution rejected: Execution request must specify the exact approved quantity.'
+              }), { status: 400 });
+            }
+
+            if (Math.abs(submittedQuantity - storedQuantity) > 1e-6) {
+              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Submitted quantity ${submittedQuantity} differs from approved quantity ${storedQuantity}. AlertId: ${target.id}`);
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'QUANTITY_TAMPERED',
+                error: `Execution rejected: Submitted quantity (${submittedQuantity}) does not match the approved quantity stored in alert (${storedQuantity}).`
+              }), { status: 409 });
+            }
+          } else if (submittedQuantity !== undefined) {
+            if (!Number.isFinite(submittedQuantity) || submittedQuantity <= 0) {
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'INVALID_SUBMITTED_QUANTITY',
+                error: 'Execution rejected: Submitted quantity must be a positive finite number.'
+              }), { status: 400 });
+            }
+
+            if (storedQuantity != null && Number.isFinite(storedQuantity) && storedQuantity > 0) {
+              if (Math.abs(submittedQuantity - storedQuantity) > 1e-6) {
+                console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Submitted quantity ${submittedQuantity} differs from approved quantity ${storedQuantity}. AlertId: ${target.id}`);
+                return new Response(JSON.stringify({
+                  success: false,
+                  code: 'QUANTITY_TAMPERED',
+                  error: `Execution rejected: Submitted quantity (${submittedQuantity}) does not match the approved quantity stored in alert (${storedQuantity}).`
+                }), { status: 409 });
+              }
+            }
           }
 
           // Signal TTL Enforcement (5 minutes = 300,000ms)
@@ -2273,6 +2388,7 @@ export class TradingBot {
               let tickSize = 0;
               let minNotional = 5;
               let minQty = 0;
+              let maxQty: number | undefined = undefined;
               let priceLimitRatioX: number = 0.10;
               let priceLimitRatioY: number = 0.10;
               let hasAuthoritativeMetadata = false;
@@ -2294,6 +2410,15 @@ export class TradingBot {
                     const amtMin = matched.limits.amount.min as any;
                     minQty = typeof amtMin?.toNumber === 'function' ? amtMin.toNumber() : (typeof amtMin === 'number' ? amtMin : 0.00001);
                   }
+                  if (matched.limits?.amount?.max !== undefined && matched.limits?.amount?.max !== null) {
+                    const amtMax = matched.limits.amount.max as any;
+                    const val = typeof amtMax?.toNumber === 'function' ? amtMax.toNumber() : (typeof amtMax === 'number' ? amtMax : parseFloat(String(amtMax)));
+                    if (Number.isFinite(val) && val > 0) maxQty = val;
+                  }
+                  if (!maxQty && (matched as any).info?.lotSizeFilter?.maxOrderQty) {
+                    const parsed = parseFloat(String((matched as any).info.lotSizeFilter.maxOrderQty));
+                    if (Number.isFinite(parsed) && parsed > 0) maxQty = parsed;
+                  }
                 }
               } catch (mErr: any) {
                 console.warn('[trading-bot] Failed to fetch authoritative markets for precision rules:', mErr?.message);
@@ -2301,6 +2426,9 @@ export class TradingBot {
 
               if (!hasAuthoritativeMetadata || tickSize <= 0) {
                 throw new Error(`Authoritative exchange metadata for ${orderSymbol} is unavailable. Cannot safely determine execution tick size.`);
+              }
+              if (!maxQty || maxQty <= 0 || !Number.isFinite(maxQty)) {
+                throw new Error(`Authoritative exchange maximum order quantity (maxQty) for ${orderSymbol} is unavailable or invalid. Execution cannot safely proceed.`);
               }
               activeTickSize = tickSize;
 
@@ -2326,6 +2454,8 @@ export class TradingBot {
                 if (target.stopLoss !== undefined) target.stopLoss = normResult.stopLoss;
               }
 
+              const approvedQuantity = (typeof target.quantity === 'number' && target.quantity > 0) ? target.quantity : undefined;
+
               const rulesRes = TradeValidator.validate({
                 symbol: orderSymbol,
                 side: target.side,
@@ -2334,7 +2464,9 @@ export class TradingBot {
                 entryPrice: limitPrice || triggerPrice || currentPrice,
                 currentMarketPrice: currentPrice,
                 markPrice: currentPrice,
-                tradeValueUsdt: positionSizeUsdt
+                quantity: approvedQuantity,
+                isApprovedQuantity: approvedQuantity !== undefined,
+                tradeValueUsdt: target.requestedBudget || positionSizeUsdt
               }, {
                 schemaVersion: "2.0",
                 symbol: orderSymbol,
@@ -2343,7 +2475,7 @@ export class TradingBot {
                 quoteAsset: orderSymbol.split('/')[1] || "USDT",
                 minNotional: minNotional,
                 minQty: minQty,
-                maxQty: 999999,
+                maxQty: maxQty,
                 stepSize: stepSize,
                 tickSize: tickSize,
                 minPrice: 0,
@@ -2358,6 +2490,10 @@ export class TradingBot {
               if (!rulesRes.isValid) {
                 console.error(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_FAILED] errorCode=${rulesRes.errorCode} errorMessage=${rulesRes.errorMessage}`);
                 throw new Error(rulesRes.errorMessage || `Order validation failed: ${rulesRes.errorCode}`);
+              }
+
+              if (approvedQuantity !== undefined && rulesRes.quantizedQuantity !== approvedQuantity) {
+                throw new Error(`Order validation changed the approved quantity from ${approvedQuantity} to ${rulesRes.quantizedQuantity}. Fresh user confirmation is required.`);
               }
 
               const qty = rulesRes.quantizedQuantity ?? 0;
@@ -2873,10 +3009,12 @@ export class TradingBot {
             const actionType = currentStatus === 'open' ? 'TRADE_SUBMITTED' : 'TRADE_FILLED';
             await this.logAuditEvent(snapshot.userId, actionType, { symbol: snapshot.symbol, side: snapshot.side, orderId: orderResult.orderId, price: averageFillPrice, quantity: orderResult.quantity, filledQuantity: filledQuantityVal, strategy: snapshot.strategy });
 
-            // FCM Push Notification for Trade Execution
+            // FCM Push Notification for Trade Execution (Informational confirmation, not actionable alert)
             try {
               if (snapshot.userId) {
-                await sendTradeNotification(this.env, snapshot.userId, orderResult.orderId || snapshot.alertId, {
+                await sendTradeFillNotification(this.env, snapshot.userId, {
+                  alertId: snapshot.alertId,
+                  orderId: orderResult.orderId || null,
                   symbol: snapshot.symbol,
                   side: snapshot.side,
                   entryPrice: averageFillPrice || snapshot.signalPrice,
@@ -2887,7 +3025,9 @@ export class TradingBot {
                   estimatedPnl: 3.0,
                   positionSize: snapshot.positionSizeUsdt,
                   strategy: snapshot.strategy,
-                });
+                  actionType: actionType as 'TRADE_SUBMITTED' | 'TRADE_FILLED',
+                  timestamp: new Date().toISOString(),
+                }, this.telemetrySink);
                 await this.logAuditEvent(snapshot.userId, 'FCM_NOTIFICATION_SENT', { orderId: orderResult.orderId, action: actionType });
               }
             } catch (fcmErr: any) {
@@ -3234,6 +3374,7 @@ export class TradingBot {
         let tickSize = 0.01;
         let minNotional = 5;
         let minQty = 0.00001;
+        let maxQty: number | undefined = undefined;
 
         if (adapter) {
           try {
@@ -3253,6 +3394,15 @@ export class TradingBot {
               if (matched.limits?.amount?.min) {
                 const amtMin = matched.limits.amount.min as any;
                 minQty = typeof amtMin?.toNumber === 'function' ? amtMin.toNumber() : (typeof amtMin === 'number' ? amtMin : 0.00001);
+              }
+              if (matched.limits?.amount?.max !== undefined && matched.limits?.amount?.max !== null) {
+                const amtMax = matched.limits.amount.max as any;
+                const val = typeof amtMax?.toNumber === 'function' ? amtMax.toNumber() : (typeof amtMax === 'number' ? amtMax : parseFloat(String(amtMax)));
+                if (Number.isFinite(val) && val > 0) maxQty = val;
+              }
+              if (!maxQty && (matched as any).info?.lotSizeFilter?.maxOrderQty) {
+                const parsed = parseFloat(String((matched as any).info.lotSizeFilter.maxOrderQty));
+                if (Number.isFinite(parsed) && parsed > 0) maxQty = parsed;
               }
             }
           } catch (mErr: any) {
@@ -3274,7 +3424,7 @@ export class TradingBot {
             quoteAsset: orderSymbol.split('/')[1] || 'USDT',
             minNotional,
             minQty,
-            maxQty: 999999,
+            maxQty: (typeof maxQty === 'number' && maxQty > 0) ? maxQty : 0,
             stepSize,
             tickSize,
             minPrice: 0,
@@ -4198,6 +4348,294 @@ export class TradingBot {
     return false;
   }
 
+  private async hasActiveExposure(): Promise<boolean> {
+    if (this.hasPendingSafetyWork()) return true;
+
+    if (Array.isArray(this.runtimeState.activePositions) && this.runtimeState.activePositions.length > 0) {
+      return true;
+    }
+
+    const userId = (this.runtimeState.userId as string) || ((await this.state.storage.get('userId')) as string);
+    if (userId) {
+      try {
+        const d1Rows = await this.env.DB.prepare(
+          "SELECT id FROM trade_positions WHERE user_id = ? AND status IN ('OPEN', 'PENDING_ENTRY') LIMIT 1"
+        ).bind(userId).first<any>();
+        if (d1Rows?.id) return true;
+      } catch (_) {
+        return true;
+      }
+
+      try {
+        const userKeys = await this.getOrLoadExchangeCredentials(userId);
+        if (userKeys?.exchangeName && userKeys.secret) {
+          const adapter = await ExchangeManager.getProvider(userKeys.exchangeName as ExchangeName, {
+            environment: normalizeEnvironment(userKeys.environment),
+            apiKey: userKeys.apiKey,
+            secret: userKeys.secret,
+            password: userKeys.password,
+            region: resolveCanonicalRoutingRegion(userKeys.region),
+          });
+          if (typeof adapter?.fetchPositions === 'function') {
+            const live = await adapter.fetchPositions('linear');
+            if (Array.isArray(live) && live.some((p: any) => {
+              const s = typeof p.size?.toNumber === 'function' ? p.size.toNumber() : Number(p.size || 0);
+              return s > 0;
+            })) {
+              return true;
+            }
+          }
+        }
+      } catch (_) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async reconcileAndFinalizePositionClosure(
+    adapter: any,
+    userId: string,
+    position: any,
+    knownClosed: boolean = false
+  ): Promise<{ closed: boolean; auditId?: string; closeResult?: any }> {
+    const positionId = String(position?.id || '');
+    if (!positionId) return { closed: false };
+    const auditId = `pos_close_${positionId}`;
+
+    // 1. Authoritative Flatness Verification (if not already verified by caller)
+    if (!knownClosed && typeof adapter?.fetchPositions === 'function') {
+      try {
+        const live = await adapter.fetchPositions('linear', position.symbol);
+        if (Array.isArray(live)) {
+          const normSym = this.normalizeSymbol(position.symbol);
+          const normSide = String(position.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+          const hasExposure = live.some((lp: any) => {
+            const size = typeof lp.size?.toNumber === 'function' ? lp.size.toNumber() : Number(lp.size || 0);
+            if (size <= 0) return false;
+            if (this.normalizeSymbol(lp.symbol) !== normSym) return false;
+            const lpSide = (String(lp.side || '').toLowerCase() === 'sell' || String(lp.side || '').toLowerCase() === 'short') ? 'SELL' : 'BUY';
+            return lpSide === normSide;
+          });
+          if (hasExposure) {
+            return { closed: false };
+          }
+        }
+      } catch (err) {
+        return { closed: false };
+      }
+    }
+
+    // 2. Pre-Check & 6-Dimension Conflict Detection
+    let auditAlreadyPersisted = false;
+    let storedMetadata: any = null;
+    try {
+      const preCheck = await this.env.DB.prepare(
+        `SELECT id, user_id, action, metadata, created_at FROM audit_log WHERE id = ?`
+      ).bind(auditId).first<any>();
+
+      if (preCheck?.metadata) {
+        storedMetadata = typeof preCheck.metadata === 'string' ? JSON.parse(preCheck.metadata) : preCheck.metadata;
+        if (storedMetadata && storedMetadata.positionId && storedMetadata.positionId !== positionId) {
+          console.error(`[AUDIT_IDENTITY_MISMATCH] Stored audit record ${auditId} has positionId ${storedMetadata.positionId} != ${positionId}. Aborting.`);
+          return { closed: false };
+        }
+        if (storedMetadata?.evidenceStatus === 'VERIFIED_EXCHANGE_RECORD') {
+          auditAlreadyPersisted = true;
+        }
+      }
+    } catch (preCheckErr) {
+      console.warn(`[AUDIT_PRECHECK_ERR] Error reading audit_log for ${auditId}:`, preCheckErr);
+    }
+
+    // 3. Attribution & Aggregation from Bybit Closed PnL
+    let evidenceStatus: 'VERIFIED_EXCHANGE_RECORD' | 'HISTORICAL_DATA_UNAVAILABLE' =
+      auditAlreadyPersisted ? 'VERIFIED_EXCHANGE_RECORD' : 'HISTORICAL_DATA_UNAVAILABLE';
+    let realizedPnlVal: number | null = auditAlreadyPersisted ? (storedMetadata.realizedPnl ?? null) : null;
+    let closePriceVal: number | null = auditAlreadyPersisted ? (storedMetadata.closePrice ?? null) : null;
+    let closedQtyVal: number | null = auditAlreadyPersisted ? (storedMetadata.closedQty ?? null) : null;
+    let fillsList: any[] = auditAlreadyPersisted ? (storedMetadata.fills || []) : [];
+    let nowIso = new Date().toISOString();
+
+    if (!auditAlreadyPersisted && typeof adapter?.fetchClosedPnl === 'function') {
+      try {
+        const fetched = await adapter.fetchClosedPnl(position.symbol);
+        const pnlList = Array.isArray(fetched) ? fetched : [];
+        const entryTimeMs = position.created_at
+          ? new Date(position.created_at).getTime()
+          : (position.entry_at ? new Date(position.entry_at).getTime() : 0);
+        const entryPrice = Number(position.average_fill_price || position.entry_price || position.entryPrice || 0);
+        const posQty = Number(position.filled_quantity || position.quantity || 0);
+
+        const matched = pnlList.filter((p: any) => {
+          if (!p) return false;
+          if (p.updatedTime && p.updatedTime < entryTimeMs - 1000) return false;
+          if (entryPrice > 0 && p.avgEntryPrice > 0) {
+            const diff = Math.abs(Number(p.avgEntryPrice) - entryPrice) / entryPrice;
+            if (diff > 0.01) return false;
+          }
+          return true;
+        });
+
+        if (matched.length > 0) {
+          let sumClosedSize = 0;
+          let sumPnl = 0;
+          let sumWeightedPrice = 0;
+          const candidateFills: any[] = [];
+
+          for (const m of matched) {
+            const fillQty = Number(m.closedSize > 0 ? m.closedSize : m.qty || 0);
+            const pnl = Number(m.closedPnl || 0);
+            const exitP = Number(m.avgExitPrice || 0);
+            if (fillQty > 0) {
+              sumClosedSize += fillQty;
+              sumPnl += pnl;
+              sumWeightedPrice += exitP * fillQty;
+              candidateFills.push({
+                orderId: m.orderId,
+                qty: fillQty,
+                exitPrice: exitP,
+                realizedPnl: pnl,
+                timestamp: m.updatedTime
+              });
+            }
+          }
+
+          const isSizeMatched = posQty <= 0 || (sumClosedSize > 0 && Math.abs(sumClosedSize - posQty) / posQty <= 0.01);
+          if (isSizeMatched && sumClosedSize > 0) {
+            evidenceStatus = 'VERIFIED_EXCHANGE_RECORD';
+            realizedPnlVal = sumPnl;
+            closePriceVal = sumWeightedPrice / sumClosedSize;
+            closedQtyVal = sumClosedSize;
+            fillsList = candidateFills;
+            if (matched[0]?.updatedTime) {
+              nowIso = new Date(Number(matched[0].updatedTime)).toISOString();
+            }
+          }
+        }
+      } catch (pnlErr) {
+        console.warn(`[PNL_FETCH_ERR] Failed to fetch closed PnL for ${position.symbol}:`, pnlErr);
+      }
+    }
+
+    // 4. Conflict Check against existing stored verified record
+    if (storedMetadata && storedMetadata.evidenceStatus === 'VERIFIED_EXCHANGE_RECORD' && evidenceStatus === 'VERIFIED_EXCHANGE_RECORD') {
+      const pnlDiff = Math.abs(Number(storedMetadata.realizedPnl || 0) - Number(realizedPnlVal || 0));
+      const priceDiff = Math.abs(Number(storedMetadata.closePrice || 0) - Number(closePriceVal || 0));
+      if (pnlDiff > 0.001 || priceDiff > 0.001) {
+        console.warn(`[AUDIT_FINANCIAL_CONFLICT] Position ${positionId}: Stored PnL=${storedMetadata.realizedPnl}, incoming PnL=${realizedPnlVal}; Stored Price=${storedMetadata.closePrice}, incoming Price=${closePriceVal}. Preserving immutable original.`);
+        try {
+          await this.env.DB.prepare(
+            `INSERT INTO audit_log (id, user_id, action, metadata, created_at)
+             VALUES (?, ?, 'AUDIT_CONFLICT_DETECTED', ?, ?)`
+          ).bind(
+            `conflict_${positionId}_${Date.now()}`,
+            userId,
+            JSON.stringify({
+              positionId,
+              stored: storedMetadata,
+              incoming: { realizedPnl: realizedPnlVal, closePrice: closePriceVal, fills: fillsList }
+            }),
+            new Date().toISOString()
+          ).run();
+        } catch (_) {}
+
+        realizedPnlVal = storedMetadata.realizedPnl;
+        closePriceVal = storedMetadata.closePrice;
+        closedQtyVal = storedMetadata.closedQty;
+        fillsList = storedMetadata.fills || [];
+        evidenceStatus = 'VERIFIED_EXCHANGE_RECORD';
+        auditAlreadyPersisted = true;
+      }
+    }
+
+    const closureMetadata = {
+      positionId,
+      symbol: position.symbol,
+      side: position.side,
+      evidenceStatus,
+      realizedPnl: realizedPnlVal,
+      closePrice: closePriceVal,
+      closedQty: closedQtyVal,
+      fills: fillsList,
+      closeReason: evidenceStatus === 'VERIFIED_EXCHANGE_RECORD' ? 'exchange_closed_pnl' : 'exchange_position_flat',
+      closedAt: nowIso
+    };
+
+    // 5. Atomic D1 Batch: Protected UPSERT into audit_log + DELETE from trade_positions
+    const batchStatements: any[] = [
+      this.env.DB.prepare(
+        `INSERT INTO audit_log (id, user_id, action, metadata, created_at)
+         VALUES (?, ?, 'POSITION_CLOSED', ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           metadata = excluded.metadata,
+           created_at = excluded.created_at
+         WHERE (
+           json_valid(audit_log.metadata) = 0
+           OR json_extract(audit_log.metadata, '$.evidenceStatus') = 'HISTORICAL_DATA_UNAVAILABLE'
+         )
+         AND json_extract(excluded.metadata, '$.evidenceStatus') = 'VERIFIED_EXCHANGE_RECORD'`
+      ).bind(auditId, userId, JSON.stringify(closureMetadata), nowIso),
+      this.env.DB.prepare(
+        `DELETE FROM trade_positions WHERE id = ? AND user_id = ?`
+      ).bind(positionId, userId)
+    ];
+
+    let batchResults: any[] = [];
+    try {
+      batchResults = await this.env.DB.batch(batchStatements);
+    } catch (batchErr) {
+      console.error(`[CLOSURE_BATCH_ERR] D1 transaction failed for position ${positionId}:`, batchErr);
+      return { closed: false };
+    }
+
+    const deleteResult = batchResults?.[1];
+    const rowsDeleted = deleteResult?.meta?.changes ?? 0;
+
+    // 6. Zero-Row Recovery & Ledger Finalization Verification Gate
+    if (rowsDeleted === 0) {
+      const stillInD1 = await this.env.DB.prepare(
+        `SELECT id FROM trade_positions WHERE id = ? AND user_id = ?`
+      ).bind(positionId, userId).first<any>();
+
+      if (stillInD1) {
+        console.error(`[CLOSURE_VERIFICATION_FAILED] Delete affected 0 rows for position ${positionId}, but row still exists in D1. Preserving DO state.`);
+        return { closed: false };
+      }
+
+      const auditVerification = await this.env.DB.prepare(
+        `SELECT id, user_id, action, metadata FROM audit_log WHERE id = ?`
+      ).bind(auditId).first<any>();
+
+      let isValidFinalizationProof = false;
+      if (auditVerification && auditVerification.action === 'POSITION_CLOSED') {
+        try {
+          const parsed = typeof auditVerification.metadata === 'string' ? JSON.parse(auditVerification.metadata) : auditVerification.metadata;
+          if (
+            parsed &&
+            parsed.positionId === positionId &&
+            ['VERIFIED_EXCHANGE_RECORD', 'HISTORICAL_DATA_UNAVAILABLE'].includes(parsed.evidenceStatus)
+          ) {
+            isValidFinalizationProof = true;
+          }
+        } catch (_) {}
+      }
+
+      if (!isValidFinalizationProof) {
+        console.error(`[CRITICAL_LEDGER_DIVERGENCE] Active row ${positionId} absent from D1, but valid finalization audit proof is missing or corrupt. Retaining reservation and failing closed.`);
+        return { closed: false };
+      }
+    }
+
+    // 7. Synchronize Durable Object State
+    const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p && p.id !== positionId);
+    this.runtimeState.activePositions = updatedActive;
+    await this.persistState('activePositions', updatedActive);
+
+    return { closed: true, auditId, closeResult: closureMetadata };
+  }
+
   private async reconcileMissingD1PositionsGroup(
     adapter: any,
     userId: string,
@@ -4355,58 +4793,11 @@ export class TradingBot {
           }
         }
 
-        // 3. Exchange confirms 0 exposure on (symbol, side) for this OPEN position: enrich close details if available and close in D1
-        let closeResult: any = null;
-        try {
-          closeResult = await ReconciliationEngine.reconcilePositionLifecycle(
-            adapter,
-            {
-              id: rowId,
-              userId,
-              symbol: rowSymbol,
-              side: String(row.side || 'BUY').toLowerCase() === 'sell' ? 'sell' : 'buy',
-              entryPrice: Number(row.average_fill_price ?? row.entry_price ?? row.entryPrice ?? 0),
-              quantity: Number(row.filled_quantity ?? row.quantity ?? 0),
-              orderId: rowOrderId,
-              createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now() - 3600_000,
-            } as any,
-            Date.now()
-          );
-        } catch (_) {}
-
-        let nowIso = (closeResult?.status === 'CLOSED' && closeResult.closedAt) ? closeResult.closedAt : new Date().toISOString();
-        let closePriceVal = closeResult?.status === 'CLOSED' ? (closeResult.closePrice ?? null) : null;
-        let realizedPnlVal = closeResult?.status === 'CLOSED' ? (closeResult.realizedPnl ?? null) : null;
-        let closeReasonVal = (closeResult?.status === 'CLOSED' && closeResult.closeReason) ? closeResult.closeReason : 'exchange_position_flat';
-
-        if (closePriceVal === null && typeof adapter?.fetchClosedPnl === 'function') {
-          try {
-            if (cachedPnlList === null) {
-              const fetched = await adapter.fetchClosedPnl(rowSymbol);
-              cachedPnlList = Array.isArray(fetched) ? fetched : [];
-            }
-            const matchedPnl =
-              (rowOrderId ? cachedPnlList.find((p: any) => p && String(p.orderId) === String(rowOrderId)) : undefined) ||
-              cachedPnlList[0];
-            if (matchedPnl) {
-              if (matchedPnl.avgExitPrice !== undefined) closePriceVal = Number(matchedPnl.avgExitPrice);
-              if (matchedPnl.closedPnl !== undefined) realizedPnlVal = Number(matchedPnl.closedPnl);
-              if (matchedPnl.updatedTime) nowIso = new Date(Number(matchedPnl.updatedTime)).toISOString();
-              closeReasonVal = 'exchange_closed_pnl';
-            }
-          } catch (_) {}
+        // 3. Exchange confirms 0 exposure on (symbol, side) for this OPEN position: finalize closure atomically
+        const closeOutcome = await this.reconcileAndFinalizePositionClosure(adapter, userId, row, true);
+        if (closeOutcome.closed) {
+          closedIds.add(rowId);
         }
-
-        await this.env.DB.prepare(
-          "DELETE FROM trade_positions WHERE id = ? AND user_id = ?"
-        )
-          .bind(rowId, userId)
-          .run();
-
-        closedIds.add(rowId);
-        const updatedActive = (this.runtimeState.activePositions || []).filter((p: any) => p.id !== rowId);
-        this.runtimeState.activePositions = updatedActive;
-        await this.persistState('activePositions', updatedActive);
       } catch (rowErr: any) {
         console.warn(`[RECONCILIATION] Failed to reconcile D1 position ${row?.id}:`, rowErr?.message || rowErr);
       }
@@ -4752,7 +5143,12 @@ export class TradingBot {
         }
 
         const isActive = this.runtimeState.isActive;
-        if (!isActive) return;
+        if (!isActive) {
+          if (await this.hasActiveExposure()) {
+            await this.monitorOpenPositions();
+          }
+          return;
+        }
 
         // Sprint 10 Phase 1 Integration
         try {
@@ -4857,6 +5253,10 @@ export class TradingBot {
               for (const currentSymbol of symbolsForCycle) {
                 let legacySignalForCandidate: any = null;
                 let legacySuppressionInfo: { isLegacySuppressedByGate: boolean; suppressionGate: string } | undefined = undefined;
+
+                // Stage 1: Market metadata hoist scope (strictly lifetime-bound to currentSymbol iteration)
+                let hoistedMarket: any = null;
+                let marketFetchAttempted = false;
                 try {
                   const results = await this.orchestrator.executeCycle(currentSymbol, undefined, undefined, accountBalance, {
                     userId,
@@ -4867,17 +5267,22 @@ export class TradingBot {
                   await this.state.storage.put('engineState', currentState);
 
                   const snapshot = await dataEngine.getSnapshot(currentSymbol, cycleTimeframes, cycleCandleLimit);
-                  const committedStrat = this.runtimeState.strategy;
-                  const displayResult = results.find(r => r.hasSignal) ||
-                    (committedStrat ? results.find(r => r.strategyId === committedStrat) : undefined) ||
-                    results[0] || {
-                      strategyId: manifest.id,
-                      timestamp: Date.now(),
-                      confidenceScore: 50,
-                      hasSignal: false,
-                      metadata: { reasoning: ['Evaluation pending'] }
-                    };
+
+                  // Stage 2: Evaluate 1h MarketRegime once per symbol from in-memory snapshot (0 extra fetches)
+                  const snapshot1h = snapshot?.candles?.['1h'];
+                  let symbolMarketRegime: MarketRegime | null = null;
+                  if (Array.isArray(snapshot1h) && snapshot1h.length >= 20) {
+                    const highs = snapshot1h.map((k: any) => k.high?.toNumber ? k.high.toNumber() : Number(k.high));
+                    const lows = snapshot1h.map((k: any) => k.low?.toNumber ? k.low.toNumber() : Number(k.low));
+                    const closes = snapshot1h.map((k: any) => k.close?.toNumber ? k.close.toNumber() : Number(k.close));
+                    const currentAtr = calculateAtr(highs, lows, closes, 14);
+                    symbolMarketRegime = MarketRegimeEngine.evaluate(highs, lows, closes, currentAtr);
+                  }
+                  const committedStratRaw = this.runtimeState.strategy;
+                  const displayResult = TradingBot.resolveDisplayResult(results, committedStratRaw, manifest.id, registry);
                   const displayManifest = registry.getManifest(displayResult.strategyId) || manifest;
+                  const normalizedCommittedStrat = committedStratRaw ? registry.normalizeStrategyId(committedStratRaw) : null;
+                  const committedStrat = normalizedCommittedStrat || committedStratRaw;
 
                   // Map and persist newAnalysis for UI preview:
                   // Prioritize if current candidate has an active signal, or if this is the primary symbol and not yet mapped
@@ -4887,11 +5292,11 @@ export class TradingBot {
                     newAnalysis.engineStatus = {
                       ...(newAnalysis.engineStatus || {}),
                       state: this.runtimeState.isActive ? currentState.toString() : 'STOPPED',
-                      activeStrategy: this.runtimeState.isActive ? (committedStrat || null) : null,
-                      committedStrategy: committedStrat || null,
+                      activeStrategy: this.runtimeState.isActive ? (normalizedCommittedStrat || null) : null,
+                      committedStrategy: normalizedCommittedStrat || null,
                     };
                     newAnalysis.isActive = this.runtimeState.isActive || false;
-                    newAnalysis.committedStrategy = committedStrat || null;
+                    newAnalysis.committedStrategy = normalizedCommittedStrat || null;
                     await this.state.storage.put('newAnalysis', newAnalysis);
                     if (currentSymbol === primarySymbol) {
                       primarySnapshotMapped = true;
@@ -4912,15 +5317,45 @@ export class TradingBot {
                     }
                   }
 
-                  const actionableResults = Array.from(candidatesByStrategy.values());
+                  // Preserve strict StrategyRegistry insertion order:
+                  // 1. ScalperV2, 2. Momentum, 3. Breakout, 4. MeanReversion, 5. VWAP
+                  const orderedActionableResults: any[] = [];
+                  for (const m of manifests) {
+                    const normId = registry.normalizeStrategyId(m.id).toLowerCase();
+                    const candidate = candidatesByStrategy.get(normId);
+                    if (candidate) {
+                      orderedActionableResults.push(candidate);
+                    }
+                  }
 
-                  for (const result of actionableResults) {
+                  for (const result of orderedActionableResults) {
                     if (result?.hasSignal && result.metadata?.signal) {
                       const sig = result.metadata.signal;
                       const stratManifest = registry.getManifest(result.strategyId);
                       if (!stratManifest) continue;
+
+                      // GATE 4: Directional Short Capability Gate (Candidate-Specific)
                       const isAllowedSignal = sig && (sig.type === 'BUY' || (sig.type === 'SELL' && stratManifest.supportsShort));
-                      if (isAllowedSignal) {
+                      if (!isAllowedSignal) {
+                        legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'UNSUPPORTED_SHORT_SIGNAL' };
+                        console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Strategy does not support short/SELL signals.`);
+                        this.telemetrySink.emit({
+                          userId,
+                          category: 'SAFETY',
+                          component: 'TradingBot',
+                          eventName: 'FINAL_DISPATCH_GATE',
+                          severity: 'WARN',
+                          cycleId,
+                          symbol: currentSymbol,
+                          strategyId: result.strategyId,
+                          payload: {
+                            passed: false,
+                            gate: 'UNSUPPORTED_SHORT_SIGNAL',
+                            side: sig?.type
+                          }
+                        });
+                        continue; // Candidate-specific failure -> continue to next strategy
+                      }
                         const alerts = this.runtimeState.alerts as TradeAlert[] || [];
                         const alertStrategyKey = `${result.strategyId}_NEW`;
                         const currentNorm = this.normalizeSymbol(currentSymbol);
@@ -4956,7 +5391,7 @@ export class TradingBot {
                               timeframe: targetTimeframe
                             }
                           });
-                          continue;
+                          break; // Ticker-wide rejection: stop evaluating further strategies for this ticker
                         }
 
                         // Phase 1 Safety Gate (Level 1): Active / Unresolved In-Flight Intent Check (Cases 5 & 6)
@@ -4989,7 +5424,7 @@ export class TradingBot {
                               gate: 'IN_FLIGHT_INTENT'
                             }
                           });
-                          continue;
+                          break; // Ticker-wide rejection: stop evaluating further strategies for this ticker
                         }
 
                         // Phase 1 Safety Gate (Level 1): Existing Open Position Check (Cases 1, 2, 3, 4)
@@ -5015,7 +5450,7 @@ export class TradingBot {
                               side: existingPos.side
                             }
                           });
-                          continue;
+                          break; // Ticker-wide rejection: stop evaluating further strategies for this ticker
                         }
 
                         // Reuse live market price already fetched in snapshot (0 extra subrequests)
@@ -5023,6 +5458,35 @@ export class TradingBot {
                         if (price <= 0) {
                           const ticker = await adapter.fetchTicker(currentSymbol).catch(() => null);
                           price = typeof ticker?.last?.toNumber === 'function' ? ticker.last.toNumber() : (typeof ticker?.last === 'number' ? ticker.last : 0);
+                        }
+
+                        // Phase 1 Safety Gate (Level 1): Risk Classification Gate (Fail Closed on EXTREME Risk)
+                        const riskClass = sig.riskAssessment?.riskClassification;
+                        if (riskClass === 'EXTREME') {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'RISK_GATE_REJECTED' };
+                          console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Risk classification is EXTREME.`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'RISK_GATE_REJECTED',
+                              riskClassification: riskClass || 'MISSING',
+                            }
+                          });
+                          await this.logAuditEvent(userId, 'ALERT_SKIPPED_RISK_GATE', {
+                            symbol: currentSymbol,
+                            strategy: result.strategyId,
+                            riskClassification: riskClass || 'MISSING',
+                            reason: `Trade opportunity rejected by risk gate (classification: ${riskClass || 'MISSING'}).`
+                          });
+                          continue;
                         }
 
                         const setupSnapshot = this.runtimeState.setupSnapshot;
@@ -5076,20 +5540,9 @@ export class TradingBot {
                           continue;
                         }
 
-                        // Informational MarketRegime Telemetry (Non-Gating per Pass 2 Architecture) — reuse 1h candles from snapshot
-                        const snapshot1h = snapshot?.candles?.['1h'];
-                        const klines = Array.isArray(snapshot1h) && snapshot1h.length >= 20
-                          ? snapshot1h.slice(-50)
-                          : (typeof adapter.fetchKlines === 'function'
-                              ? await adapter.fetchKlines(currentSymbol, '1h', 50).catch(() => [])
-                              : []);
-                        if (klines && klines.length >= 20) {
-                          const highs = klines.map((k: any) => k.high?.toNumber ? k.high.toNumber() : Number(k.high));
-                          const lows = klines.map((k: any) => k.low?.toNumber ? k.low.toNumber() : Number(k.low));
-                          const closes = klines.map((k: any) => k.close?.toNumber ? k.close.toNumber() : Number(k.close));
-                          const currentAtr = calculateAtr(highs, lows, closes, 14);
-                          const regime = MarketRegimeEngine.evaluate(highs, lows, closes, currentAtr);
-                          const regimeAllowed = MarketRegimeEngine.isStrategyAllowed(result.strategyId, regime);
+                        // Informational MarketRegime Telemetry — reuses hoisted symbolMarketRegime
+                        if (symbolMarketRegime) {
+                          const regimeAllowed = MarketRegimeEngine.isStrategyAllowed(result.strategyId, symbolMarketRegime);
                           this.telemetrySink.emit({
                             userId,
                             category: 'STRATEGY',
@@ -5100,12 +5553,48 @@ export class TradingBot {
                             symbol: currentSymbol,
                             strategyId: result.strategyId,
                             payload: {
-                              regime: regime.regime,
-                              score: regime.score,
+                              regime: symbolMarketRegime.regime,
+                              score: symbolMarketRegime.score,
                               allowed: regimeAllowed.allowed,
                               reason: regimeAllowed.reason
                             }
                           });
+                        }
+
+                        // GATE 4.5: Directional & Multi-Timeframe Arbitration Gate (Candidate-Specific)
+                        const arbitration = DirectionalMtfArbitrator.evaluateCandidate(
+                          result,
+                          snapshot,
+                          symbolMarketRegime
+                        );
+
+                        if (!arbitration.passed) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: arbitration.gate };
+                          console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): ${arbitration.reasoning}`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: arbitration.gate,
+                              reason: arbitration.reasoning,
+                              side: sig.type,
+                              timeframe: targetTimeframe
+                            }
+                          });
+                          await this.logAuditEvent(userId, 'ALERT_SKIPPED_ARBITRATION', {
+                            symbol: currentSymbol,
+                            strategy: result.strategyId,
+                            gate: arbitration.gate,
+                            reason: arbitration.reasoning
+                          });
+                          continue; // Candidate-specific failure -> falls back to next registered strategy
                         }
 
                         const targetEntryPrice = setupSnapshot?.targetEntryPrice ?? ((await this.state.storage.get('targetEntryPrice')) as number | undefined);
@@ -5115,11 +5604,15 @@ export class TradingBot {
                         const alertTakeProfit = sig.takeProfit || alertSignalPrice * 1.01;
                         const estimatedPnl = Math.abs(alertTakeProfit - alertSignalPrice) * (alertSignalPrice > 0 ? size / alertSignalPrice : 0);
 
-                        // --- AUTONOMOUS TICKSIZE NORMALIZATION FIX (Single-Symbol Lookup) ---
-                        const matchedMarket =
-                          typeof (adapter as any).fetchMarket === 'function'
-                            ? await (adapter as any).fetchMarket(currentSymbol).catch(() => null)
-                            : (await adapter.fetchMarkets().catch(() => [])).find((m: any) => m.symbol === currentSymbol);
+                        // --- AUTONOMOUS TICKSIZE NORMALIZATION FIX (Single-Symbol Lookup with Stage 1 Hoisting) ---
+                        if (!marketFetchAttempted) {
+                          marketFetchAttempted = true;
+                          hoistedMarket =
+                            typeof (adapter as any).fetchMarket === 'function'
+                              ? await (adapter as any).fetchMarket(currentSymbol).catch(() => null)
+                              : (await adapter.fetchMarkets().catch(() => [])).find((m: any) => m.symbol === currentSymbol);
+                        }
+                        const matchedMarket = hoistedMarket;
 
                         let tickSize: number | undefined;
                         let minPrice: number | undefined;
@@ -5155,210 +5648,287 @@ export class TradingBot {
                               gate: 'TICK_SIZE_UNAVAILABLE'
                             }
                           });
-                        } else {
-                          const minAllowedPrice = (minPrice && minPrice > 0) ? minPrice : tickSize;
+                          break; // Ticker-wide failure -> stop evaluating further strategies for this ticker
+                        }
 
-                          const normalized = PriceNormalizer.normalizeTradePrices({
-                            entryPrice: alertSignalPrice,
-                            theoreticalSL: alertStopLoss,
-                            theoreticalTP: alertTakeProfit,
-                            tickSize,
-                            minAllowedPrice,
-                            side: sig.type as 'BUY' | 'SELL'
-                          });
-                          // ---------------------------------------------
+                        const minAllowedPrice = (minPrice && minPrice > 0) ? minPrice : tickSize;
 
-                          // --- AUTONOMOUS EXECUTION ELIGIBILITY EVALUATION ---
-                          let stepSize: number | undefined;
-                          let minOrderQty: number | undefined;
-                          let minNotional: number | undefined;
+                        const normalized = PriceNormalizer.normalizeTradePrices({
+                          entryPrice: alertSignalPrice,
+                          theoreticalSL: alertStopLoss,
+                          theoreticalTP: alertTakeProfit,
+                          tickSize,
+                          minAllowedPrice,
+                          side: sig.type as 'BUY' | 'SELL'
+                        });
+                        // ---------------------------------------------
 
-                          if (matchedMarket) {
-                            if (typeof matchedMarket.precision?.amount === 'number' && matchedMarket.precision.amount > 0) {
-                              stepSize = matchedMarket.precision.amount;
-                            } else if (typeof matchedMarket.precision?.amount === 'string') {
-                              const parsed = parseFloat(matchedMarket.precision.amount);
-                              if (parsed > 0) stepSize = parsed;
-                            }
+                        // --- AUTONOMOUS EXECUTION ELIGIBILITY EVALUATION ---
+                        let stepSize: number | undefined;
+                        let minOrderQty: number | undefined;
+                        let minNotional: number | undefined;
+                        let maxOrderQty: number | undefined;
 
-                            if (matchedMarket.limits?.amount?.min !== undefined && matchedMarket.limits?.amount?.min !== null) {
-                              const minA = matchedMarket.limits.amount.min as any;
-                              const val = typeof minA?.toNumber === 'function' ? minA.toNumber() : (typeof minA === 'number' ? minA : parseFloat(String(minA)));
-                              if (Number.isFinite(val) && val >= 0) minOrderQty = val;
-                            }
-
-                            if (matchedMarket.limits?.cost?.min !== undefined && matchedMarket.limits?.cost?.min !== null) {
-                              const minC = matchedMarket.limits.cost.min as any;
-                              const val = typeof minC?.toNumber === 'function' ? minC.toNumber() : (typeof minC === 'number' ? minC : parseFloat(String(minC)));
-                              if (Number.isFinite(val) && val > 0) minNotional = val;
-                            }
+                        if (matchedMarket) {
+                          if (typeof matchedMarket.precision?.amount === 'number' && matchedMarket.precision.amount > 0) {
+                            stepSize = matchedMarket.precision.amount;
+                          } else if (typeof matchedMarket.precision?.amount === 'string') {
+                            const parsed = parseFloat(matchedMarket.precision.amount);
+                            if (parsed > 0) stepSize = parsed;
                           }
 
-                          if (!stepSize || stepSize <= 0) {
-                            legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'METADATA_UNAVAILABLE' };
-                            console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit qtyStep/stepSize unavailable.`);
-                            this.telemetrySink.emit({
-                              userId,
-                              category: 'SAFETY',
-                              component: 'TradingBot',
-                              eventName: 'FINAL_DISPATCH_GATE',
-                              severity: 'WARN',
-                              cycleId,
-                              symbol: currentSymbol,
-                              strategyId: result.strategyId,
-                              payload: {
-                                passed: false,
-                                gate: 'METADATA_UNAVAILABLE'
-                              }
-                            });
-                            continue;
+                          if (matchedMarket.limits?.amount?.min !== undefined && matchedMarket.limits?.amount?.min !== null) {
+                            const minA = matchedMarket.limits.amount.min as any;
+                            const val = typeof minA?.toNumber === 'function' ? minA.toNumber() : (typeof minA === 'number' ? minA : parseFloat(String(minA)));
+                            if (Number.isFinite(val) && val >= 0) minOrderQty = val;
                           }
 
-                          const resolvedMinOrderQty = (minOrderQty !== undefined && minOrderQty > 0) ? minOrderQty : stepSize;
-                          const resolvedMinNotional = (minNotional !== undefined && minNotional > 0) ? minNotional : 5.0;
-
-                          const eligibility = ExecutionEligibilityGate.evaluate({
-                            tradeAmountUsdt: size,
-                            currentPrice: alertSignalPrice,
-                            qtyStep: stepSize,
-                            minOrderQty: resolvedMinOrderQty,
-                            minNotional: resolvedMinNotional,
-                          });
-
-                          if (!eligibility.isExecutable) {
-                            legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'EXECUTION_INELIGIBLE' };
-                            console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): ${eligibility.rejectionReason}`);
-                            this.telemetrySink.emit({
-                              userId,
-                              category: 'SAFETY',
-                              component: 'TradingBot',
-                              eventName: 'FINAL_DISPATCH_GATE',
-                              severity: 'WARN',
-                              cycleId,
-                              symbol: currentSymbol,
-                              strategyId: result.strategyId,
-                              payload: {
-                                passed: false,
-                                gate: 'EXECUTION_INELIGIBLE',
-                                budget: size,
-                                currentPrice: alertSignalPrice,
-                                qtyStep: stepSize,
-                                minOrderQty: resolvedMinOrderQty,
-                                minNotional: resolvedMinNotional,
-                                postRoundingNotional: eligibility.postRoundingNotional,
-                                rejectionReason: eligibility.rejectionReason,
-                              }
-                            });
-                            continue;
+                          if (matchedMarket.limits?.cost?.min !== undefined && matchedMarket.limits?.cost?.min !== null) {
+                            const minC = matchedMarket.limits.cost.min as any;
+                            const val = typeof minC?.toNumber === 'function' ? minC.toNumber() : (typeof minC === 'number' ? minC : parseFloat(String(minC)));
+                            if (Number.isFinite(val) && val > 0) minNotional = val;
                           }
 
-                          // Autonomous alert safety check: fail closed if cycle generation was invalid at cycle start
-                          if (cycleGeneration === undefined) {
-                            console.warn(`[SAFETY GATE] Skipping autonomous alert creation for ${currentSymbol}: missing or invalid alarm generation at cycle start (${rawCycleGen})`);
-                            this.telemetrySink.emit({
-                              userId,
-                              category: 'SAFETY',
-                              component: 'TradingBot',
-                              eventName: 'ALERT_SKIPPED_INVALID_GENERATION',
-                              severity: 'WARN',
-                              correlationId: currentSymbol,
-                              cycleId,
-                              symbol: currentSymbol,
-                              strategyId: alertStrategyKey,
-                              payload: { generation: rawCycleGen }
-                            });
-                            continue;
+                          if (matchedMarket.limits?.amount?.max !== undefined && matchedMarket.limits?.amount?.max !== null) {
+                            const maxA = matchedMarket.limits.amount.max as any;
+                            const val = typeof maxA?.toNumber === 'function' ? maxA.toNumber() : (typeof maxA === 'number' ? maxA : parseFloat(String(maxA)));
+                            if (Number.isFinite(val) && val > 0) maxOrderQty = val;
                           }
-
-                          // Re-verify persisted isActive and generation immediately before publication
-                          const [freshActive, freshGen] = await Promise.all([
-                            this.state.storage.get<boolean>('isActive'),
-                            this.state.storage.get<number>('lock:alarmGeneration'),
-                          ]);
-
-                          if (freshActive !== true || freshGen !== cycleGeneration) {
-                            console.warn(`[SAFETY GATE] Discarding autonomous alert for ${currentSymbol}: lifecycle state changed mid-cycle (active=${freshActive}, storedGen=${freshGen}, cycleGen=${cycleGeneration})`);
-                            this.telemetrySink.emit({
-                              userId,
-                              category: 'SAFETY',
-                              component: 'TradingBot',
-                              eventName: 'ALERT_DISCARDED_STALE_GENERATION',
-                              severity: 'WARN',
-                              correlationId: currentSymbol,
-                              cycleId,
-                              symbol: currentSymbol,
-                              strategyId: alertStrategyKey,
-                              payload: { freshActive, freshGen, cycleGeneration }
-                            });
-                            continue;
-                          }
-
-                          const alert: TradeAlert = {
-                            id: crypto.randomUUID(),
-                            symbol: currentSymbol,
-                            signalPrice: alertSignalPrice,
-                            targetEntryPrice: alertTargetPrice,
-                            entryPrice: alertSignalPrice,
-                            stopLoss: normalized.stopLoss,
-                            takeProfit: normalized.takeProfit,
-                            estimatedPnl: estimatedPnl,
-                            positionSize: size,
-                            strategy: alertStrategyKey,
-                            side: sig.type as 'BUY' | 'SELL',
-                            timestamp: new Date().toISOString(),
-                            status: 'pending',
-                            timeframe: targetTimeframe,
-                            generation: cycleGeneration,
-                            source: 'AUTONOMOUS',
-                          };
-                          alerts.push(alert);
-                          legacySignalForCandidate = alert;
-                          await this.persistState('alerts', alerts);
-
-                          this.telemetrySink.emit({
-                            userId,
-                            category: 'ALERT',
-                            component: 'TradingBot',
-                            eventName: 'ALERT_CREATED',
-                            severity: 'INFO',
-                            correlationId: alert.id,
-                            cycleId,
-                            symbol: alert.symbol,
-                            strategyId: alert.strategy,
-                            payload: {
-                              alertId: alert.id,
-                              side: alert.side,
-                              signalPrice: alert.signalPrice,
-                              stopLoss: alert.stopLoss,
-                              takeProfit: alert.takeProfit,
-                              confidenceScore: Math.round(result.confidenceScore || 0),
-                              timeframe: targetTimeframe,
-                            }
-                          });
-
-                          // Trigger real-time FCM Push Notification to user's Android device
-                          try {
-                            await sendTradeNotification(this.env, userId, alert.id, {
-                              symbol: alert.symbol,
-                              side: alert.side,
-                              entryPrice: alert.entryPrice,
-                              targetEntryPrice: alert.targetEntryPrice,
-                              signalPrice: alert.signalPrice,
-                              stopLoss: alert.stopLoss,
-                              takeProfit: alert.takeProfit,
-                              estimatedPnl: alert.estimatedPnl,
-                              positionSize: alert.positionSize,
-                              strategy: alert.strategy,
-                              timestamp: alert.timestamp,
-                              timeframe: targetTimeframe,
-                              confidenceScore: result.confidenceScore || 0,
-                              reasoning: result.metadata?.reasoning || [],
-                            }, this.telemetrySink);
-                          } catch (notifErr) {
-                            console.error('Failed to send FCM trade notification:', notifErr);
+                          if (!maxOrderQty && (matchedMarket as any).info?.lotSizeFilter?.maxOrderQty) {
+                            const parsed = parseFloat(String((matchedMarket as any).info.lotSizeFilter.maxOrderQty));
+                            if (Number.isFinite(parsed) && parsed > 0) maxOrderQty = parsed;
                           }
                         }
-                      }
+
+                        if (!stepSize || stepSize <= 0) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'METADATA_UNAVAILABLE' };
+                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit qtyStep/stepSize unavailable.`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'METADATA_UNAVAILABLE'
+                            }
+                          });
+                          break; // Ticker-wide failure -> stop evaluating further strategies for this ticker
+                        }
+
+                        if (!maxOrderQty || maxOrderQty <= 0 || !Number.isFinite(maxOrderQty)) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'MAX_QTY_UNAVAILABLE' };
+                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit maxOrderQty unavailable.`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'MAX_QTY_UNAVAILABLE'
+                            }
+                          });
+                          break; // Ticker-wide failure -> stop evaluating further strategies for this ticker
+                        }
+
+                        const resolvedMinOrderQty = (minOrderQty !== undefined && minOrderQty > 0) ? minOrderQty : stepSize;
+                        const resolvedMinNotional = (minNotional !== undefined && minNotional > 0) ? minNotional : 5.0;
+
+                        const eligibility = ExecutionEligibilityGate.evaluate({
+                          tradeAmountUsdt: size,
+                          currentPrice: alertSignalPrice,
+                          qtyStep: stepSize,
+                          minOrderQty: resolvedMinOrderQty,
+                          minNotional: resolvedMinNotional,
+                          maxOrderQty: maxOrderQty,
+                        });
+
+                        if (!eligibility.isExecutable) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'EXECUTION_INELIGIBLE' };
+                          console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): ${eligibility.rejectionReason}`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'EXECUTION_INELIGIBLE',
+                              budget: size,
+                              currentPrice: alertSignalPrice,
+                              qtyStep: stepSize,
+                              minOrderQty: resolvedMinOrderQty,
+                              minNotional: resolvedMinNotional,
+                              postRoundingNotional: eligibility.postRoundingNotional,
+                              rejectionReason: eligibility.rejectionReason,
+                            }
+                          });
+                          continue; // Candidate-specific failure -> continue to next strategy
+                        }
+
+                        // Autonomous alert safety check: fail closed if cycle generation was invalid at cycle start
+                        if (cycleGeneration === undefined) {
+                          console.warn(`[SAFETY GATE] Skipping autonomous alert creation for ${currentSymbol}: missing or invalid alarm generation at cycle start (${rawCycleGen})`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'ALERT_SKIPPED_INVALID_GENERATION',
+                            severity: 'WARN',
+                            correlationId: currentSymbol,
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: alertStrategyKey,
+                            payload: { generation: rawCycleGen }
+                          });
+                          return; // Lifecycle-wide failure -> abort alarm execution
+                        }
+
+                        // Re-verify persisted isActive and generation immediately before publication
+                        const [freshActive, freshGen] = await Promise.all([
+                          this.state.storage.get<boolean>('isActive'),
+                          this.state.storage.get<number>('lock:alarmGeneration'),
+                        ]);
+
+                        if (freshActive !== true || freshGen !== cycleGeneration) {
+                          console.warn(`[SAFETY GATE] Discarding autonomous alert for ${currentSymbol}: lifecycle state changed mid-cycle (active=${freshActive}, storedGen=${freshGen}, cycleGen=${cycleGeneration})`);
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'ALERT_DISCARDED_STALE_GENERATION',
+                            severity: 'WARN',
+                            correlationId: currentSymbol,
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: alertStrategyKey,
+                            payload: { freshActive, freshGen, cycleGeneration }
+                          });
+                          return; // Lifecycle-wide failure -> abort alarm execution
+                        }
+
+                        // Synchronous Pre-Persistence Concurrency & Lifecycle Re-Verification
+                        // Protects the single Durable Object execution context against in-flight state mutations across prior await points.
+                        if (this.isExecutingTrade) {
+                          console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: trade execution is currently in progress.`);
+                          break;
+                        }
+                        if (this.unprotectedExposureLock) {
+                          console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: active unprotected exposure lock on ${this.unprotectedExposureLock.symbol}.`);
+                          break;
+                        }
+
+                        const prePersistActivePosition = (this.runtimeState.activePositions || []).some(
+                          (p: any) => p && p.status !== 'CLOSED' && p.status !== 'CANCELLED' && this.normalizeSymbol(p.symbol) === currentNorm
+                        );
+                        const prePersistActiveIntent = Array.from(this.runtimeState.activeIntents.values()).some((intent: any) => {
+                          const isUnresolved =
+                            ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent.status) ||
+                            (intent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent.flatnessAffirmativelyVerified);
+                          return this.normalizeSymbol(intent.symbol) === currentNorm && isUnresolved;
+                        });
+                        const prePersistActiveAlert = (this.runtimeState.alerts || []).some(
+                          (a: any) => this.normalizeSymbol(a.symbol) === currentNorm && (a.status === 'pending' || a.status === 'acknowledged') && (Date.now() - new Date(a.timestamp).getTime()) < 300_000
+                        );
+
+                        if (prePersistActivePosition || prePersistActiveIntent || prePersistActiveAlert) {
+                          console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: conflicting position, in-flight intent, or active alert detected immediately prior to persistence.`);
+                          break;
+                        }
+
+                        const effectiveAlertPositionSize = eligibility.wasClampedToMax
+                          ? eligibility.postRoundingNotional
+                          : size;
+
+                        const alert: TradeAlert = {
+                          id: crypto.randomUUID(),
+                          symbol: currentSymbol,
+                          signalPrice: alertSignalPrice,
+                          targetEntryPrice: alertTargetPrice,
+                          entryPrice: alertSignalPrice,
+                          stopLoss: normalized.stopLoss,
+                          takeProfit: normalized.takeProfit,
+                          estimatedPnl: estimatedPnl,
+                          positionSize: effectiveAlertPositionSize,
+                          quantity: eligibility.quantizedQty,
+                          requestedBudget: size,
+                          effectiveNotional: eligibility.postRoundingNotional,
+                          strategy: alertStrategyKey,
+                          side: sig.type as 'BUY' | 'SELL',
+                          timestamp: new Date().toISOString(),
+                          status: 'pending',
+                          timeframe: targetTimeframe,
+                          generation: cycleGeneration,
+                          source: 'AUTONOMOUS',
+                        };
+                        alerts.push(alert);
+                        legacySignalForCandidate = alert;
+                        await this.persistState('alerts', alerts);
+
+                        this.telemetrySink.emit({
+                          userId,
+                          category: 'ALERT',
+                          component: 'TradingBot',
+                          eventName: 'ALERT_CREATED',
+                          severity: 'INFO',
+                          correlationId: alert.id,
+                          cycleId,
+                          symbol: alert.symbol,
+                          strategyId: alert.strategy,
+                          payload: {
+                            alertId: alert.id,
+                            side: alert.side,
+                            signalPrice: alert.signalPrice,
+                            stopLoss: alert.stopLoss,
+                            takeProfit: alert.takeProfit,
+                            confidenceScore: Math.round(result.confidenceScore || 0),
+                            timeframe: targetTimeframe,
+                            positionSize: alert.positionSize,
+                            quantity: alert.quantity,
+                            wasClampedToMax: eligibility.wasClampedToMax,
+                          }
+                        });
+
+                        // Trigger real-time FCM Push Notification to user's Android device
+                        try {
+                          await sendTradeNotification(this.env, userId, alert.id, {
+                            symbol: alert.symbol,
+                            side: alert.side,
+                            entryPrice: alert.entryPrice,
+                            targetEntryPrice: alert.targetEntryPrice,
+                            signalPrice: alert.signalPrice,
+                            stopLoss: alert.stopLoss,
+                            takeProfit: alert.takeProfit,
+                            estimatedPnl: alert.estimatedPnl,
+                            positionSize: alert.positionSize,
+                            quantity: alert.quantity,
+                            requestedBudget: alert.requestedBudget,
+                            effectiveNotional: alert.effectiveNotional,
+                            strategy: alert.strategy,
+                            timestamp: alert.timestamp,
+                            timeframe: targetTimeframe,
+                            confidenceScore: result.confidenceScore || 0,
+                            reasoning: result.metadata?.reasoning || [],
+                          }, this.telemetrySink);
+                        } catch (notifErr) {
+                          console.error('Failed to send FCM trade notification:', notifErr);
+                        }
+
+                        // Stage 1: Successful strategy alert creation -> stop evaluating further strategies for this ticker
+                        break;
                     }
                   }
 
@@ -5421,6 +5991,8 @@ export class TradingBot {
         await this.state.storage.setAlarm(Date.now() + 5000);
       } else if (isActive) {
         await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS);
+      } else if (await this.hasActiveExposure()) {
+        await this.state.storage.setAlarm(Date.now() + 60000);
       }
     }
   }
@@ -5509,15 +6081,66 @@ export class TradingBot {
               groupedBySymSide.set(key, group);
             }
 
-            const MAX_ABSENT_POSITIONS_PER_ALARM = 2;
+            const MAX_ABSENT_POSITIONS_PER_ALARM = 3;
             let reconciledCount = 0;
+            const nowMs = Date.now();
+            let hasMorePending = false;
+
             for (const [groupKey, groupRows] of groupedBySymSide.entries()) {
-              if (reconciledCount >= MAX_ABSENT_POSITIONS_PER_ALARM) break;
               if (liveExposureSet.has(groupKey)) continue;
+
+              // Filter out candidates currently in quarantine backoff
+              const eligibleRows = groupRows.filter((p: any) => {
+                const q = this.reconciliationRetries.get(String(p?.id || ''));
+                return !q || nowMs >= q.quarantinedUntil;
+              });
+
+              if (eligibleRows.length === 0) continue;
+
+              if (reconciledCount >= MAX_ABSENT_POSITIONS_PER_ALARM) {
+                hasMorePending = true;
+                break;
+              }
+
               const remainingBudget = MAX_ABSENT_POSITIONS_PER_ALARM - reconciledCount;
-              const rowsSlice = groupRows.slice(0, remainingBudget);
+              const rowsSlice = eligibleRows.slice(0, remainingBudget);
+              if (eligibleRows.length > remainingBudget) {
+                hasMorePending = true;
+              }
+
               reconciledCount += rowsSlice.length;
-              await this.reconcileMissingD1PositionsGroup(adapter, userId, rowsSlice, false);
+              try {
+                const outcome = await this.reconcileMissingD1PositionsGroup(adapter, userId, rowsSlice, false);
+                for (const pos of rowsSlice) {
+                  const pId = String(pos?.id || '');
+                  if (outcome.closedIds.has(pId) || outcome.cancelledIds.has(pId)) {
+                    if (this.reconciliationRetries.has(pId)) {
+                      this.reconciliationRetries.delete(pId);
+                      await this.state.storage.put('lock:reconciliationRetries', Array.from(this.reconciliationRetries.entries()));
+                    }
+                  } else {
+                    const currentFailures = (this.reconciliationRetries.get(pId)?.failures || 0) + 1;
+                    const backoffMs = currentFailures === 1 ? 60000 : (currentFailures === 2 ? 180000 : 600000);
+                    this.reconciliationRetries.set(pId, { failures: currentFailures, quarantinedUntil: nowMs + backoffMs });
+                    await this.state.storage.put('lock:reconciliationRetries', Array.from(this.reconciliationRetries.entries()));
+                  }
+                }
+              } catch (grpErr) {
+                console.warn('[RECONCILIATION_GRP_ERR] Error in missing positions group:', grpErr);
+                for (const pos of rowsSlice) {
+                  const pId = String(pos?.id || '');
+                  const currentFailures = (this.reconciliationRetries.get(pId)?.failures || 0) + 1;
+                  const backoffMs = currentFailures === 1 ? 60000 : (currentFailures === 2 ? 180000 : 600000);
+                  this.reconciliationRetries.set(pId, { failures: currentFailures, quarantinedUntil: nowMs + backoffMs });
+                }
+                await this.state.storage.put('lock:reconciliationRetries', Array.from(this.reconciliationRetries.entries()));
+              }
+            }
+
+            if (hasMorePending) {
+              try {
+                await this.state.storage.setAlarm(Date.now() + 5000);
+              } catch (_) {}
             }
           }
         } catch (reconErr) {
@@ -5525,7 +6148,7 @@ export class TradingBot {
         }
       }
 
-      for (const position of mockPositions) {
+      for (const position of mockPositions.slice(0, 2)) {
         try {
           const ticker = await adapter.fetchTicker(position.symbol);
           if (!ticker) continue;

@@ -29,36 +29,46 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
           volume: 1000,
           quoteVolume: 100000,
         })),
-        fetchKlines: vi.fn().mockResolvedValue(
-          Array.from({ length: 30 }, (_, i) => ({
-            openTime: Date.now() - (30 - i) * 3600000,
-            open: 98 + i * 0.1,
-            high: 101 + i * 0.1,
-            low: 97 + i * 0.1,
-            close: 100 + i * 0.1,
-            volume: 500,
-          }))
-        ),
+        fetchKlines: vi.fn().mockImplementation((sym: string) => {
+          const now = Date.now();
+          const stepMs = 3600000;
+          return Promise.resolve(
+            Array.from({ length: 60 }, (_, i) => {
+              const openTime = now - (60 - i) * stepMs;
+              const price = 100 + i * 0.5;
+              return {
+                openTime,
+                timestamp: openTime,
+                closeTime: openTime + stepMs,
+                open: price,
+                high: price + 0.2,
+                low: price - 0.2,
+                close: price,
+                volume: 500,
+              };
+            })
+          );
+        }),
         fetchBalance: vi.fn().mockResolvedValue({
           free: { USDT: 5000 },
           total: { USDT: 5000 },
         }),
         fetchMarkets: vi.fn().mockResolvedValue([
-          { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001 } } },
-          { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-          { id: 'SOLUSDT', symbol: 'SOL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-          { id: 'PASSUSDT', symbol: 'PASS/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-          { id: 'REGIMEACCEPTUSDT', symbol: 'REGIME_ACCEPT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-          { id: 'REGIMEREJECTUSDT', symbol: 'REGIME_REJECT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+          { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } },
+          { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+          { id: 'SOLUSDT', symbol: 'SOL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+          { id: 'PASSUSDT', symbol: 'PASS/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+          { id: 'REGIMEACCEPTUSDT', symbol: 'REGIME_ACCEPT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+          { id: 'REGIMEREJECTUSDT', symbol: 'REGIME_REJECT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
         ]),
         fetchMarket: vi.fn().mockImplementation(async (sym: string) => {
           const list = [
-            { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001 } } },
-            { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-            { id: 'SOLUSDT', symbol: 'SOL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-            { id: 'PASSUSDT', symbol: 'PASS/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-            { id: 'REGIMEACCEPTUSDT', symbol: 'REGIME_ACCEPT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
-            { id: 'REGIMEREJECTUSDT', symbol: 'REGIME_REJECT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01 } } },
+            { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } },
+            { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+            { id: 'SOLUSDT', symbol: 'SOL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+            { id: 'PASSUSDT', symbol: 'PASS/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+            { id: 'REGIMEACCEPTUSDT', symbol: 'REGIME_ACCEPT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+            { id: 'REGIMEREJECTUSDT', symbol: 'REGIME_REJECT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
           ];
           return list.find(m => m.symbol === sym || m.id === sym.replace('/', '')) || null;
         }),
@@ -406,9 +416,9 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
   });
 
   // =========================================================================
-  // 5. MarketRegime evaluation emits telemetry without vetoing candidates
+  // 5. MarketRegime evaluation enforces Stage 2 mandatory arbitration
   // =========================================================================
-  it("Requirement 5: MarketRegime evaluation emits telemetry without vetoing candidates (Pass 2 decoupling)", async () => {
+  it("Requirement 5: MarketRegime evaluation enforces Stage 2 mandatory arbitration (prohibited candidates are vetoed, allowed candidates succeed)", async () => {
     const bot = new TradingBot(mockState, mockEnv);
 
     mockStorage.set("isActive", true);
@@ -421,9 +431,11 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     vi.spyOn(MarketRegimeEngine, "evaluate").mockImplementation((highs: number[], lows: number[], closes: number[], currentPrice: number) => {
       // Simulate evaluate
       return {
-        regime: "SIDEWAYS_HIGH_VOL",
-        score: 40,
-        dominantDirection: "REJECT",
+        regime: "TRENDING",
+        score: 80,
+        dominantDirection: "LONG",
+        allowTrendStrategies: true,
+        allowMeanReversion: false,
         symbol: "REGIME_REJECT/USDT",
       } as any;
     });
@@ -431,7 +443,7 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     let callCount = 0;
     vi.spyOn(MarketRegimeEngine, "isStrategyAllowed").mockImplementation(() => {
       callCount++;
-      if (callCount === 1) {
+      if (callCount <= 2) {
         return { allowed: false, reason: "Market regime not compatible for candidate 1" };
       }
       return { allowed: true, reason: "Compatible" };
@@ -442,13 +454,12 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     // Both candidates were processed by executeCycle
     expect(mockExecuteCycle).toHaveBeenCalledTimes(2);
 
-    // In Pass 2 architecture, MarketRegime is non-gating informational telemetry.
-    // Both candidates evaluate and generate alerts without being vetoed.
+    // In Stage 2 architecture, MarketRegime is an authoritative mandatory gate (Gate 4.5).
+    // Disallowed candidate (REGIME_REJECT/USDT) is suppressed; allowed candidate (REGIME_ACCEPT/USDT) generates an alert.
     const alerts = mockStorage.get("alerts");
     expect(alerts).toBeDefined();
-    expect(alerts.length).toBe(2);
-    expect(alerts[0].symbol).toBe("REGIME_REJECT/USDT");
-    expect(alerts[1].symbol).toBe("REGIME_ACCEPT/USDT");
+    expect(alerts.length).toBe(1);
+    expect(alerts[0].symbol).toBe("REGIME_ACCEPT/USDT");
   });
 
   // =========================================================================

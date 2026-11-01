@@ -62,6 +62,7 @@ export class BreakoutStrategy implements IStrategy {
   private confidenceEngine: ConfidenceEngine;
   private riskEngine: RiskEngine;
   private signalEngine: SignalEngine;
+  private rejectedEdgeEvents = new Map<string, { timestamp: number; direction: SignalType; reason: 'ACCOUNT_BALANCE_UNAVAILABLE' | 'DISALLOWED_RISK_CLASSIFICATION' }>();
 
   constructor(private config: BreakoutConfig = DEFAULT_BREAKOUT_CONFIG) {
     this.indicatorEngine = new IndicatorEngine(config.indicatorConfig);
@@ -226,9 +227,35 @@ export class BreakoutStrategy implements IStrategy {
       );
     }
 
+    const stateKey = `${context.marketSnapshot.symbol.toUpperCase()}:${targetTimeframe}`;
+
     // Edge transition: emit only when transitioning from NOT ALIGNED to ALIGNED
     const isNewBuyEvent = currentAlignment.isAlignedBuy && !previousAlignment.isAlignedBuy;
     const isNewSellEvent = currentAlignment.isAlignedSell && !previousAlignment.isAlignedSell;
+
+    // Edge transition recovery: check if immediately preceding closed bar at T_previous had an established transiently rejected edge event
+    const pendingRejected = this.rejectedEdgeEvents.get(stateKey);
+    const isRecoveredBuyEvent = Boolean(
+      pendingRejected &&
+      pendingRejected.timestamp === T_previous &&
+      pendingRejected.direction === SignalType.BUY &&
+      currentAlignment.isAlignedBuy
+    );
+    const isRecoveredSellEvent = Boolean(
+      pendingRejected &&
+      pendingRejected.timestamp === T_previous &&
+      pendingRejected.direction === SignalType.SELL &&
+      currentAlignment.isAlignedSell
+    );
+
+    // Invalidation / Expiry / Direction reversal cleanup:
+    // If a pending rejected event exists, but cannot be recovered (e.g., timestamp is not T_previous, alignment broke, or direction reversed), clear it.
+    if (pendingRejected && !isRecoveredBuyEvent && !isRecoveredSellEvent) {
+      this.rejectedEdgeEvents.delete(stateKey);
+    }
+
+    const isEdgeBuy = isNewBuyEvent || isRecoveredBuyEvent;
+    const isEdgeSell = isNewSellEvent || isRecoveredSellEvent;
 
     // 5. Evaluate Current Real Risk Gates
     const entryCandles = currentCandlesRecord[targetTimeframe]!;
@@ -236,6 +263,8 @@ export class BreakoutStrategy implements IStrategy {
     const currentPrice = latestCandleClose > 0 ? latestCandleClose : context.marketSnapshot.currentPrice || 0;
 
     if (currentPrice <= 0) {
+      // Permanent / invalid market data failure: clear any pending recovery and fail closed
+      this.rejectedEdgeEvents.delete(stateKey);
       return {
         strategyId: this.manifest.id,
         timestamp: context.timestamp,
@@ -246,6 +275,12 @@ export class BreakoutStrategy implements IStrategy {
     }
 
     if (!context.accountBalance || context.accountBalance <= 0) {
+      // Confirmed transient rejection: account balance unavailable/zero
+      if (isEdgeBuy) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
+      } else if (isEdgeSell) {
+        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
+      }
       return {
         strategyId: this.manifest.id,
         timestamp: context.timestamp,
@@ -261,6 +296,8 @@ export class BreakoutStrategy implements IStrategy {
     const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
 
     if (!currentAtr || currentAtr <= 0) {
+      // Unavailable indicator data: clear any pending recovery and fail closed
+      this.rejectedEdgeEvents.delete(stateKey);
       return {
         strategyId: this.manifest.id,
         timestamp: context.timestamp,
@@ -300,13 +337,45 @@ export class BreakoutStrategy implements IStrategy {
 
     const reasoning: string[] = activeSignal ? [...activeSignal.reasoning] : [`No qualified signal generated on ${targetTimeframe} trigger`];
 
-    // 7. Apply Edge Transition Gate (Anti-Chase Protection)
+    // 7. Apply Edge Transition Gate (Anti-Chase Protection & Edge Recovery)
     const tfUpper = targetTimeframe.toUpperCase();
-    if (isNewBuyEvent && activeSignal?.type === SignalType.BUY) {
-      reasoning.push(`[${tfUpper} EDGE EVENT] New BUY event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
-    } else if (isNewSellEvent && activeSignal?.type === SignalType.SELL) {
-      reasoning.push(`[${tfUpper} EDGE EVENT] New SELL event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
+    if (isEdgeBuy && activeSignal?.type === SignalType.BUY) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      if (isRecoveredBuyEvent) {
+        reasoning.push(`[${tfUpper} EDGE RECOVERY] Recovered BUY event: ${targetTimeframe} trigger recovered after transient rejection on previous bar.`);
+      } else {
+        reasoning.push(`[${tfUpper} EDGE EVENT] New BUY event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
+      }
+    } else if (isEdgeSell && activeSignal?.type === SignalType.SELL) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      if (isRecoveredSellEvent) {
+        reasoning.push(`[${tfUpper} EDGE RECOVERY] Recovered SELL event: ${targetTimeframe} trigger recovered after transient rejection on previous bar.`);
+      } else {
+        reasoning.push(`[${tfUpper} EDGE EVENT] New SELL event: ${targetTimeframe} trigger transitioned from NOT ALIGNED to ALIGNED.`);
+      }
     } else {
+      // Edge event was present (either new or recovering), but activeSignal was null or rejected.
+      // Distinguish explicitly identified transient rejection (e.g. transiently disallowed risk tier like EXTREME)
+      // from non-recoverable rejections.
+      const allowedTiers = this.config.signalRules.allowedRiskClassifications || [];
+      const isTransientRiskRejection = Boolean(
+        realRiskAssessment?.riskClassification &&
+        !allowedTiers.includes(realRiskAssessment.riskClassification)
+      );
+
+      if (isTransientRiskRejection && (isEdgeBuy || isEdgeSell)) {
+        if (isEdgeBuy && currentAlignment.isAlignedBuy) {
+          this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY, reason: 'DISALLOWED_RISK_CLASSIFICATION' });
+        } else if (isEdgeSell && currentAlignment.isAlignedSell) {
+          this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL, reason: 'DISALLOWED_RISK_CLASSIFICATION' });
+        } else {
+          this.rejectedEdgeEvents.delete(stateKey);
+        }
+      } else {
+        // Any other rejection (e.g. alignment broken, permanent failure, etc.) clears pending state
+        this.rejectedEdgeEvents.delete(stateKey);
+      }
+
       if (currentAlignment.isAlignedBuy && previousAlignment.isAlignedBuy) {
         reasoning.push(`[${tfUpper} CONTINUATION] Trend continuation suppressed: ${targetTimeframe} BUY trigger already active on previous bar.`);
       } else if (currentAlignment.isAlignedSell && previousAlignment.isAlignedSell) {

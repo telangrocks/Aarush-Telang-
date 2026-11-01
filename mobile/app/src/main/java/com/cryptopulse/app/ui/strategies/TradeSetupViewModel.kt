@@ -22,7 +22,7 @@ data class TradeSetupUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val currentSymbol: String? = null,
-    val tradeAmountUsdt: String = "5.00",
+    val tradeAmountUsdt: String = "",
     val tradeAmountError: String? = null,
     val previewPrice: Double = 0.0,
     val isEntryPriceManuallyEdited: Boolean = false,
@@ -77,7 +77,7 @@ class TradeSetupViewModel @Inject constructor(
                 previewPrice = candidate.currentMarketPrice,
                 entryPrice = "", // Clean: no coin price pre-population
                 entryPriceError = null, // Clean: no coin metadata error in trade setup
-                tradeAmountUsdt = if (currentState.tradeAmountUsdt.isNotBlank()) currentState.tradeAmountUsdt else "5.00",
+                tradeAmountUsdt = currentState.tradeAmountUsdt,
                 tradeAmountError = null,
                 isEntryPriceManuallyEdited = false,
                 minNotional = candidate.minNotional,
@@ -205,12 +205,6 @@ class TradeSetupViewModel @Inject constructor(
             return TradeSetupConfigResult.ValidationFailed(mapOf("tradeAmount" to err))
         }
 
-        val minTradeAmount = 5.0
-        if (tradeAmount < minTradeAmount) {
-            val err = "Trade amount must be at least ${String.format(Locale.US, "%.2f", minTradeAmount)} $quoteAsset."
-            _uiState.update { it.copy(tradeAmountError = err, isLoading = false) }
-            return TradeSetupConfigResult.ValidationFailed(mapOf("tradeAmount" to err))
-        }
 
         if (bal <= 0.0) {
             val err = "Insufficient $quoteAsset balance for trade."

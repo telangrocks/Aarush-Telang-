@@ -144,6 +144,318 @@ export async function handleRegisterFcmToken(
 }
 
 
+export interface TradeFillNotificationPayload {
+  alertId: string;
+  orderId?: string | null;
+  symbol: string;
+  side: "BUY" | "SELL";
+  entryPrice: number;
+  targetEntryPrice?: number;
+  signalPrice?: number;
+  stopLoss?: number;
+  takeProfit?: number;
+  estimatedPnl?: number;
+  positionSize?: number;
+  strategy?: string;
+  actionType?: "TRADE_SUBMITTED" | "TRADE_FILLED";
+  timestamp?: string;
+}
+
+export async function sendTradeFillNotification(
+  env: Env,
+  userId: string,
+  fillDetails: TradeFillNotificationPayload,
+  sink?: BackendDiagnosticSink,
+): Promise<void> {
+  const startMs = Date.now();
+  const user = await env.DB.prepare(
+    "SELECT fcm_token FROM users WHERE id = ?",
+  )
+    .bind(userId)
+    .first<{ fcm_token: string | null }>();
+
+  const fcmToken = user?.fcm_token;
+  const alertId = fillDetails.alertId;
+  const orderId = fillDetails.orderId || "";
+
+  if (!fcmToken) {
+    sink?.emit({
+      userId,
+      category: "NOTIFICATION",
+      component: "notifications",
+      eventName: "FCM_DISPATCH_RESULT",
+      severity: "WARN",
+      correlationId: alertId,
+      symbol: fillDetails.symbol,
+      strategyId: fillDetails.strategy,
+      durationMs: 0,
+      payload: {
+        alertId,
+        orderId,
+        success: false,
+        transport: "fcm_v1",
+        httpStatus: 0,
+        errorCode: "MISSING_FCM_TOKEN",
+      }
+    });
+    return;
+  }
+
+  const isSubmitted = fillDetails.actionType === "TRADE_SUBMITTED";
+  const title = isSubmitted
+    ? `Order Submitted: ${fillDetails.side} ${fillDetails.symbol}`
+    : `Order Filled: ${fillDetails.side} ${fillDetails.symbol}`;
+  const body = isSubmitted
+    ? `${fillDetails.side} ${fillDetails.symbol} order submitted at $${fillDetails.entryPrice.toFixed(4)}`
+    : `${fillDetails.side} ${fillDetails.symbol} filled at $${fillDetails.entryPrice.toFixed(4)} | Strategy: ${fillDetails.strategy || 'Autonomous'}`;
+
+  const eventType = isSubmitted ? "TRADE_SUBMITTED" : "TRADE_FILLED";
+
+  const dataPayload: Record<string, string> = {
+    type: eventType,
+    alertType: eventType,
+    id: alertId,
+    alertId: alertId,
+    orderId: orderId,
+    exchangeOrderId: orderId,
+    status: isSubmitted ? "submitted" : "filled",
+    entryStatus: isSubmitted ? "SUBMITTED" : "FILLED",
+    isTerminal: isSubmitted ? "false" : "true",
+    extra_alert: "false",
+    symbol: fillDetails.symbol,
+    side: fillDetails.side,
+    strategy: fillDetails.strategy || "",
+    entryPrice: fillDetails.entryPrice.toString(),
+    stopLoss: (fillDetails.stopLoss || 0).toString(),
+    takeProfit: (fillDetails.takeProfit || 0).toString(),
+    estimatedPnl: (fillDetails.estimatedPnl || 3.0).toString(),
+    serverTimestamp: (fillDetails.timestamp ? new Date(fillDetails.timestamp).getTime() : Date.now()).toString(),
+  };
+
+  if (fillDetails.targetEntryPrice != null) {
+    dataPayload.targetEntryPrice = fillDetails.targetEntryPrice.toString();
+  }
+  if (fillDetails.signalPrice != null) {
+    dataPayload.signalPrice = fillDetails.signalPrice.toString();
+  }
+  if (fillDetails.positionSize != null) {
+    dataPayload.positionSize = fillDetails.positionSize.toString();
+  }
+
+  // 1. Try FCM v1 HTTP API if keys are provided
+  if (env.FCM_PROJECT_ID && env.FCM_CLIENT_EMAIL && env.FCM_PRIVATE_KEY) {
+    try {
+      const accessToken = await generateGoogleAccessToken(env.FCM_CLIENT_EMAIL, env.FCM_PRIVATE_KEY);
+
+      const payload = {
+        message: {
+          token: fcmToken,
+          notification: {
+            title,
+            body,
+          },
+          data: dataPayload,
+          android: {
+            notification: {
+              sound: "default",
+              channel_id: "trading_bot_channel",
+            },
+            priority: "normal",
+          },
+        },
+      };
+
+      const response = await fetch(`https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID}/messages:send`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const durationMs = Date.now() - startMs;
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`FCM v1 fill notification send failed: ${response.status} ${errorText}`);
+        sink?.emit({
+          userId,
+          category: "NOTIFICATION",
+          component: "notifications",
+          eventName: "FCM_DISPATCH_RESULT",
+          severity: "ERROR",
+          correlationId: alertId,
+          symbol: fillDetails.symbol,
+          strategyId: fillDetails.strategy,
+          durationMs,
+          payload: {
+            alertId,
+            orderId,
+            success: false,
+            transport: "fcm_v1",
+            httpStatus: response.status,
+            errorCode: "HTTP_ERROR"
+          }
+        });
+      } else {
+        console.log(`FCM v1 fill notification sent successfully to user ${userId}`);
+        sink?.emit({
+          userId,
+          category: "NOTIFICATION",
+          component: "notifications",
+          eventName: "FCM_DISPATCH_RESULT",
+          severity: "INFO",
+          correlationId: alertId,
+          symbol: fillDetails.symbol,
+          strategyId: fillDetails.strategy,
+          durationMs,
+          payload: {
+            alertId,
+            orderId,
+            success: true,
+            transport: "fcm_v1",
+            httpStatus: response.status,
+            errorCode: null
+          }
+        });
+      }
+    } catch (err) {
+      console.error("FCM v1 fill notification failed:", err);
+      sink?.emit({
+        userId,
+        category: "NOTIFICATION",
+        component: "notifications",
+        eventName: "FCM_DISPATCH_RESULT",
+        severity: "ERROR",
+        correlationId: alertId,
+        symbol: fillDetails.symbol,
+        strategyId: fillDetails.strategy,
+        durationMs: Date.now() - startMs,
+        payload: {
+          alertId,
+          orderId,
+          success: false,
+          transport: "fcm_v1",
+          httpStatus: 0,
+          errorCode: "NETWORK_ERROR"
+        }
+      });
+    }
+    return;
+  }
+
+  // 2. Fallback to legacy FCM if legacy keys are configured
+  if (env.FCM_SERVER_KEY) {
+    try {
+      const response = await fetch("https://fcm.googleapis.com/fcm/send", {
+        method: "POST",
+        headers: {
+          Authorization: `key=${env.FCM_SERVER_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          to: fcmToken,
+          notification: {
+            title,
+            body,
+            sound: "default",
+            priority: "normal",
+          },
+          data: dataPayload,
+        }),
+      });
+
+      const durationMs = Date.now() - startMs;
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`FCM Legacy fill notification send failed: ${response.status} ${errorText}`);
+        sink?.emit({
+          userId,
+          category: "NOTIFICATION",
+          component: "notifications",
+          eventName: "FCM_DISPATCH_RESULT",
+          severity: "ERROR",
+          correlationId: alertId,
+          symbol: fillDetails.symbol,
+          strategyId: fillDetails.strategy,
+          durationMs,
+          payload: {
+            alertId,
+            orderId,
+            success: false,
+            transport: "fcm_legacy",
+            httpStatus: response.status,
+            errorCode: "HTTP_ERROR"
+          }
+        });
+      } else {
+        sink?.emit({
+          userId,
+          category: "NOTIFICATION",
+          component: "notifications",
+          eventName: "FCM_DISPATCH_RESULT",
+          severity: "INFO",
+          correlationId: alertId,
+          symbol: fillDetails.symbol,
+          strategyId: fillDetails.strategy,
+          durationMs,
+          payload: {
+            alertId,
+            orderId,
+            success: true,
+            transport: "fcm_legacy",
+            httpStatus: response.status,
+            errorCode: null
+          }
+        });
+      }
+    } catch (error) {
+      console.error("FCM Legacy fill notification failed:", error);
+      sink?.emit({
+        userId,
+        category: "NOTIFICATION",
+        component: "notifications",
+        eventName: "FCM_DISPATCH_RESULT",
+        severity: "ERROR",
+        correlationId: alertId,
+        symbol: fillDetails.symbol,
+        strategyId: fillDetails.strategy,
+        durationMs: Date.now() - startMs,
+        payload: {
+          alertId,
+          orderId,
+          success: false,
+          transport: "fcm_legacy",
+          httpStatus: 0,
+          errorCode: "NETWORK_ERROR"
+        }
+      });
+    }
+    return;
+  }
+
+  console.warn("FCM fill notification skipped: neither FCM v1 nor FCM Legacy credentials configured.");
+  sink?.emit({
+    userId,
+    category: "NOTIFICATION",
+    component: "notifications",
+    eventName: "FCM_DISPATCH_RESULT",
+    severity: "WARN",
+    correlationId: alertId,
+    symbol: fillDetails.symbol,
+    strategyId: fillDetails.strategy,
+    durationMs: 0,
+    payload: {
+      alertId,
+      orderId,
+      success: false,
+      transport: "none",
+      httpStatus: 0,
+      errorCode: "NO_FCM_CREDENTIALS"
+    }
+  });
+}
+
 export async function sendTradeNotification(
   env: Env,
   userId: string,
@@ -158,6 +470,9 @@ export async function sendTradeNotification(
     takeProfit: number;
     estimatedPnl: number;
     positionSize?: number;
+    quantity?: number;
+    requestedBudget?: number;
+    effectiveNotional?: number;
     strategy: string;
     timeframe?: string;
     timestamp?: string;
@@ -225,6 +540,15 @@ export async function sendTradeNotification(
   }
   if (opportunity.positionSize != null) {
     dataPayload.positionSize = opportunity.positionSize.toString();
+  }
+  if (opportunity.quantity != null && Number.isFinite(opportunity.quantity) && opportunity.quantity > 0) {
+    dataPayload.quantity = opportunity.quantity.toString();
+  }
+  if (opportunity.requestedBudget != null && Number.isFinite(opportunity.requestedBudget) && opportunity.requestedBudget > 0) {
+    dataPayload.requestedBudget = opportunity.requestedBudget.toString();
+  }
+  if (opportunity.effectiveNotional != null && Number.isFinite(opportunity.effectiveNotional) && opportunity.effectiveNotional > 0) {
+    dataPayload.effectiveNotional = opportunity.effectiveNotional.toString();
   }
   if (opportunity.confidenceScore != null) {
     dataPayload.confidenceScore = opportunity.confidenceScore.toString();

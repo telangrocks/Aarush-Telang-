@@ -7,7 +7,7 @@ import { IndicatorEngine } from '../../indicator/IndicatorEngine';
 import { ConditionEngine } from '../../condition/ConditionEngine';
 import { ConfidenceEngine } from '../../confidence/ConfidenceEngine';
 import { RiskEngine, RiskContext } from '../../risk';
-import { SignalEngine, SignalContext, SignalType } from '../../signal';
+import { SignalEngine, SignalContext, SignalType, TradingSignal } from '../../signal';
 
 import { StrategyManifest } from '../StrategyManifest';
 import { CandleValidator } from '../../../infrastructure/exchange/CandleValidator';
@@ -127,10 +127,23 @@ export class ScalperV2Strategy implements IStrategy {
     const latestClosed = closedCandlesAtRef[closedCandlesAtRef.length - 1];
     const T = getCandleCloseTime(latestClosed, targetTimeframe);
 
-    // Build Closed-Candle Projections for T strictly on targetTimeframe
+    // Build Closed-Candle Projections for T across all available timeframes
     const currentCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
       [targetTimeframe]: closedCandlesAtRef,
     };
+
+    if (context.marketSnapshot?.candles) {
+      for (const [tfKey, rawTfCandles] of Object.entries(context.marketSnapshot.candles)) {
+        const tf = tfKey as Timeframe;
+        if (tf === targetTimeframe) continue;
+        if (Array.isArray(rawTfCandles)) {
+          const closedTf = rawTfCandles.filter(c => getCandleCloseTime(c, tf) <= T);
+          if (closedTf.length >= MIN_CLOSED_CANDLES) {
+            currentCandlesRecord[tf] = closedTf;
+          }
+        }
+      }
+    }
 
     // Technical Indicator & Condition Evaluations on Independent In-Memory Projection
     const snapshotCurrent: MarketSnapshot = {
@@ -207,22 +220,90 @@ export class ScalperV2Strategy implements IStrategy {
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 
-    // 5. Signal: targetTimeframe provides the actual entry trigger
-    const signalContext: SignalContext = {
-      symbol: context.marketSnapshot.symbol,
-      timeframe: targetTimeframe,
-      currentPrice
-    };
+    // 5. Signal: 5m and 15m identify short-term entry opportunities; 1h and 4h confirm broader market direction
+    const MACRO_CONFIRMATION_TIMEFRAMES: Timeframe[] = ['1h', '4h'];
+    const isEntryTimeframe = targetTimeframe === '5m' || targetTimeframe === '15m';
 
-    const tradingSignal = this.signalEngine.evaluate(
-      signalContext,
-      conditionResult,
-      confidenceScore,
-      riskAssessment
-    );
+    let activeSignal: TradingSignal | null = null;
+    const reasoning: string[] = [];
 
-    let activeSignal = tradingSignal;
-    const reasoning = tradingSignal ? [...tradingSignal.reasoning] : [`No qualified signal generated on ${targetTimeframe} trigger`];
+    const availableMacroTimeframes: Timeframe[] = [];
+    const confirmingTimeframes: Timeframe[] = [];
+    const conflictingTimeframes: Timeframe[] = [];
+    const neutralTimeframes: Timeframe[] = [];
+
+    if (!isEntryTimeframe) {
+      reasoning.push(`[MTF ROLE] Timeframe ${targetTimeframe} is a macro confirmation timeframe; entry signals are restricted to 5m and 15m`);
+    } else {
+      const signalContext: SignalContext = {
+        symbol: context.marketSnapshot.symbol,
+        timeframe: targetTimeframe,
+        currentPrice
+      };
+
+      const tradingSignal = this.signalEngine.evaluate(
+        signalContext,
+        conditionResult,
+        confidenceScore,
+        riskAssessment
+      );
+
+      if (!tradingSignal) {
+        reasoning.push(`No qualified signal generated on ${targetTimeframe} trigger`);
+      } else {
+        reasoning.push(...tradingSignal.reasoning);
+        const candidateType = tradingSignal.type;
+
+        // Evaluate Higher-Timeframe Confirmation (1h and 4h) using existing strategy calculations
+        for (const mtf of MACRO_CONFIRMATION_TIMEFRAMES) {
+          const tfCond = conditionResult.timeframes[mtf];
+          if (!tfCond) {
+            continue; // Timeframe not present or insufficient closed candles
+          }
+          availableMacroTimeframes.push(mtf);
+
+          const isUp = tfCond.trend.trendDirection === 'UP' || tfCond.trend.emaCrossoverState === 'BULLISH';
+          const isDown = tfCond.trend.trendDirection === 'DOWN' || tfCond.trend.emaCrossoverState === 'BEARISH';
+
+          let mtfDirection: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+          if (isUp && !isDown) {
+            mtfDirection = 'BULLISH';
+          } else if (isDown && !isUp) {
+            mtfDirection = 'BEARISH';
+          }
+
+          if (candidateType === SignalType.BUY) {
+            if (mtfDirection === 'BEARISH') {
+              conflictingTimeframes.push(mtf);
+            } else if (mtfDirection === 'BULLISH') {
+              confirmingTimeframes.push(mtf);
+            } else {
+              neutralTimeframes.push(mtf);
+            }
+          } else if (candidateType === SignalType.SELL) {
+            if (mtfDirection === 'BULLISH') {
+              conflictingTimeframes.push(mtf);
+            } else if (mtfDirection === 'BEARISH') {
+              confirmingTimeframes.push(mtf);
+            } else {
+              neutralTimeframes.push(mtf);
+            }
+          }
+        }
+
+        // Fail-closed & Non-perfect Agreement arbitration
+        if (availableMacroTimeframes.length === 0) {
+          reasoning.push(`[MTF CONFIRMATION] ${candidateType} rejected: Missing required higher-timeframe data (1h, 4h) for confirmation`);
+        } else if (conflictingTimeframes.length > 0) {
+          reasoning.push(`[MTF CONFIRMATION] ${candidateType} rejected: Conflicted by higher timeframe (${conflictingTimeframes.join(', ')}) direction`);
+        } else if (confirmingTimeframes.length === 0) {
+          reasoning.push(`[MTF CONFIRMATION] ${candidateType} rejected: Lacks higher-timeframe confirmation (${availableMacroTimeframes.join(', ')} neutral)`);
+        } else {
+          activeSignal = tradingSignal;
+          reasoning.push(`[MTF CONFIRMATION] ${candidateType} confirmed by broader market direction (${confirmingTimeframes.join(', ')})`);
+        }
+      }
+    }
 
     if (activeSignal && !this.manifest.supportsShort && activeSignal.type === SignalType.SELL) {
       activeSignal = null;
@@ -251,6 +332,13 @@ export class ScalperV2Strategy implements IStrategy {
         confidenceScore,
         strategyConfig: this.config,
         targetTimeframe,
+        mtfConfirmation: {
+          isEntryTimeframe,
+          availableMacroTimeframes,
+          confirmingTimeframes,
+          conflictingTimeframes,
+          neutralTimeframes,
+        }
       }
     };
   }

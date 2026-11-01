@@ -64,12 +64,17 @@ export class SignalValidator {
       }
     }
 
-    // Validate Risk
-    if (!this.rules.allowedRiskClassifications.includes(riskAssessment.riskClassification)) {
+    // Validate Risk: fail closed on missing, invalid, or disallowed classification
+    const allowed = Array.isArray(this.rules?.allowedRiskClassifications)
+      ? this.rules.allowedRiskClassifications
+      : [];
+    const classification = riskAssessment?.riskClassification;
+
+    if (!classification || !allowed.includes(classification)) {
       isValid = false;
-      reasoning.push(`Risk classification ${riskAssessment.riskClassification} is not allowed by signal rules.`);
+      reasoning.push(`Risk classification ${classification || 'MISSING'} is not allowed by signal rules.`);
     } else {
-      reasoning.push(`Risk classification ${riskAssessment.riskClassification} is acceptable.`);
+      reasoning.push(`Risk classification ${classification} is acceptable.`);
     }
 
     return { isValid, reasoning };

@@ -70,6 +70,7 @@ fun ConnectExchangeScreen(
     var apiKeyVisible by remember { mutableStateOf(false) }
     var apiSecretVisible by remember { mutableStateOf(false) }
     var hasSubmittedNewConnection by rememberSaveable { mutableStateOf(false) }
+    var hasNavigatedToSetup by rememberSaveable { mutableStateOf(false) }
 
     Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Observed: uiState=$uiState ready=$readyForCandidates candidates=${candidates.size} isChangingApiKeys=$isChangingApiKeys hasSubmittedNewConnection=$hasSubmittedNewConnection")
 
@@ -87,7 +88,8 @@ fun ConnectExchangeScreen(
         } else {
             uiState is ExchangeUiState.Connected || readyForCandidates
         }
-        if (shouldNavigate) {
+        if (shouldNavigate && !hasNavigatedToSetup) {
+            hasNavigatedToSetup = true
             Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] NAVIGATING -> trade_setup")
             if (isChangingApiKeys) {
                 navController.navigate("trade_setup") {
@@ -111,8 +113,9 @@ fun ConnectExchangeScreen(
         }
         val (isConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
         Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Initial connection check: isConnected=$isConnected")
-        if (isConnected) {
+        if (isConnected && !hasNavigatedToSetup) {
             if (navController.currentDestination?.route == "connect_exchange") {
+                hasNavigatedToSetup = true
                 Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] navigation call (existing connection): navController.navigate('trade_setup')")
                 navController.navigate("trade_setup") {
                     popUpTo("connect_exchange") { inclusive = false }

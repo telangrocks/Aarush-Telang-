@@ -122,7 +122,8 @@ object AppModule {
             val path = request.url.encodedPath
 
             // Do not attach Authorization header to public auth endpoints
-            if (path.endsWith("/api/login") || path.endsWith("/api/register") || path.endsWith("/api/refresh")) {
+            val cleanPath = path.trimEnd('/')
+            if (cleanPath.endsWith("/api/login") || cleanPath.endsWith("/api/register") || cleanPath.endsWith("/api/refresh")) {
                 return chain.proceed(request)
             }
 
@@ -159,7 +160,7 @@ object AppModule {
                     val code = response.code
 
                     // Check for retryable server errors and rate-limiting
-                    if ((code == 502 || code == 503 || code == 504 || code == 429) && retryCount < MAX_RETRIES) {
+                    if ((code == 500 || code == 502 || code == 503 || code == 504 || code == 429) && retryCount < MAX_RETRIES) {
                         val retryAfterHeader = response.header("Retry-After")
                         val delayMs = if (code == 429 && retryAfterHeader != null) {
                             (retryAfterHeader.toLongOrNull()?.times(1000L) ?: (INITIAL_DELAY_MS * (1L shl retryCount))).coerceIn(500L, 3000L)
@@ -210,8 +211,8 @@ object AppModule {
     ): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-            .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .authenticator(TokenAuthenticator(tokenManager, authRepository))
             .addInterceptor(AuthInterceptor(tokenManager))

@@ -15,6 +15,7 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
   let mockState: any;
   let mockEnv: any;
   let d1Positions: Map<string, any>;
+  let auditLogs: Map<string, any>;
   let mockFetchPositions: any;
   let mockFetchClosedPnl: any;
   let mockCreateOrder: any;
@@ -25,6 +26,7 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
   beforeEach(() => {
     mockStorage = new Map();
     d1Positions = new Map();
+    auditLogs = new Map();
 
     mockFetchPositions = vi.fn();
     mockFetchClosedPnl = vi.fn().mockResolvedValue([]);
@@ -56,14 +58,42 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
     // D1 Database mock with exact SQL query handling
     mockEnv = {
       DB: {
+        batch: vi.fn().mockImplementation(async (statements: any[]) => {
+          const results = [];
+          for (const stmt of statements) {
+            if (typeof stmt?.run === "function") {
+              results.push(await stmt.run());
+            } else {
+              results.push({ success: true, meta: { changes: 1 } });
+            }
+          }
+          return results;
+        }),
         prepare: vi.fn().mockImplementation((query: string) => ({
           bind: vi.fn().mockImplementation((...args: any[]) => ({
             run: vi.fn().mockImplementation(async () => {
+              let changes = 0;
               if (query.includes('DELETE FROM trade_positions')) {
                 const id = args[0];
-                d1Positions.delete(id);
+                if (d1Positions.has(id)) {
+                  d1Positions.delete(id);
+                  changes = 1;
+                }
+              } else if (query.includes('INSERT INTO audit_log')) {
+                const auditId = args[0];
+                const auditUserId = args[1];
+                const metadata = args[2];
+                const createdAt = args[3];
+                auditLogs.set(auditId, {
+                  id: auditId,
+                  user_id: auditUserId,
+                  action: 'POSITION_CLOSED',
+                  metadata,
+                  created_at: createdAt
+                });
+                changes = 1;
               }
-              return { success: true };
+              return { success: true, meta: { changes } };
             }),
             first: vi.fn().mockImplementation(async () => {
               if (query.includes('FROM users')) {
@@ -80,6 +110,10 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
               if (query.includes('FROM trade_positions')) {
                 const id = args[0];
                 return d1Positions.get(id) || null;
+              }
+              if (query.includes('FROM audit_log')) {
+                const id = args[0];
+                return auditLogs.get(id) || null;
               }
               return null;
             }),

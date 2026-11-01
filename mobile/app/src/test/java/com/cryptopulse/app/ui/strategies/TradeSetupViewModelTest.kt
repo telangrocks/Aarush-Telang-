@@ -47,11 +47,11 @@ class TradeSetupViewModelTest {
     }
 
     @Test
-    fun `setting constraints initializes trade amount to 5_00 USDT without pre-populating coin price`() {
+    fun `setting constraints preserves empty initial trade amount without pre-populating coin price`() {
         viewModel.setConstraints(testCandidate, "Binance")
         
         val state = viewModel.uiState.value
-        assertEquals("5.00", state.tradeAmountUsdt)
+        assertEquals("", state.tradeAmountUsdt)
         assertEquals("", state.entryPrice)
         assertEquals(com.cryptopulse.app.domain.models.EntryIntent.IMMEDIATE, state.selectedEntryIntent)
         assertNull(state.entryPriceError)
@@ -66,7 +66,7 @@ class TradeSetupViewModelTest {
         val state = viewModel.uiState.value
         assertNull("Missing exchange metadata should NOT fail Trade Setup capital allocation", state.entryPriceError)
         assertNull(state.tradeAmountError)
-        assertEquals("5.00", state.tradeAmountUsdt)
+        assertEquals("", state.tradeAmountUsdt)
     }
 
     @Test
@@ -112,13 +112,14 @@ class TradeSetupViewModelTest {
 
         val state = viewModel.uiState.value
         assertEquals(1245.46, state.previewPrice, 0.001)
-        // User trade amount defaults to 5.00 USDT, NOT $1245.46
-        assertEquals("5.00", state.tradeAmountUsdt)
+        // User trade amount does not pre-populate coin price
+        assertEquals("", state.tradeAmountUsdt)
     }
 
     @Test
     fun `validateAndConfirmTrade should fail if balance is insufficient for mapped quote asset`() = runTest {
         viewModel.setConstraints(testCandidate, "Binance")
+        viewModel.updateTradeAmount("10.0", 0.0)
         
         // Mock balance without USDT (mapped from BTC/USDT)
         exchangeRepository.mockBalances = listOf(BalanceItem("BTC", 1.0, 0.0, total = 1.0))
@@ -176,6 +177,7 @@ class TradeSetupViewModelTest {
     @Test
     fun `default entry intent is IMMEDIATE and persists in TradeSetupConfig`() = runTest {
         viewModel.setConstraints(testCandidate, "Bybit")
+        viewModel.updateTradeAmount("10.0", 1000.0)
 
         exchangeRepository.mockBalances = listOf(BalanceItem("USDT", 1000.0, 0.0, total = 1000.0))
 
@@ -190,6 +192,7 @@ class TradeSetupViewModelTest {
     @Test
     fun `untouched risk settings result in emptyMap in TradeSetupConfig allowing strategy presets`() = runTest {
         viewModel.setConstraints(testCandidate, "Bybit")
+        viewModel.updateTradeAmount("10.0", 1000.0)
         exchangeRepository.mockBalances = listOf(BalanceItem("USDT", 1000.0, 0.0, total = 1000.0))
 
         val state = viewModel.uiState.value
@@ -207,6 +210,7 @@ class TradeSetupViewModelTest {
     @Test
     fun `customized risk settings populate exact riskParameters in TradeSetupConfig`() = runTest {
         viewModel.setConstraints(testCandidate, "Bybit")
+        viewModel.updateTradeAmount("10.0", 1000.0)
         exchangeRepository.mockBalances = listOf(BalanceItem("USDT", 1000.0, 0.0, total = 1000.0))
 
         viewModel.updateAtrTakeProfit(2.5)
@@ -248,6 +252,7 @@ class TradeSetupViewModelTest {
     @Test
     fun `resetRiskParameters resets risk settings back to null and produces emptyMap`() = runTest {
         viewModel.setConstraints(testCandidate, "Bybit")
+        viewModel.updateTradeAmount("10.0", 1000.0)
         exchangeRepository.mockBalances = listOf(BalanceItem("USDT", 1000.0, 0.0, total = 1000.0))
 
         viewModel.updateAtrTakeProfit(3.0)
@@ -268,15 +273,14 @@ class TradeSetupViewModelTest {
     }
 
     @Test
-    fun `validateAndConfirmTrade fails when trade amount is below minNotional`() = runTest {
+    fun `validateAndConfirmTrade succeeds for user-entered budget without arbitrary 5 USDT restriction`() = runTest {
         viewModel.setConstraints(testCandidate, "Bybit")
-        viewModel.updateTradeAmount("3.00", 1000.0)
+        viewModel.updateTradeAmount("10.00", 1000.0)
 
         val result = viewModel.validateAndConfirmTrade("ScalperV2", testCandidate, "Bybit", 1000.0)
-        assertTrue(result is TradeSetupConfigResult.ValidationFailed)
-        val error = (result as TradeSetupConfigResult.ValidationFailed).errors["tradeAmount"]
-        assertNotNull(error)
-        assertTrue(error!!.contains("at least 5.00"))
+        assertTrue(result is TradeSetupConfigResult.Success)
+        val config = (result as TradeSetupConfigResult.Success).config
+        assertEquals(10.0, config.tradeValueUsdt)
     }
 
     @Test

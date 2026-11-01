@@ -18,14 +18,14 @@ vi.mock('../../src/exchanges', async (importOriginal) => {
         fetchKlines: vi.fn().mockResolvedValue([]),
         fetchBalance: vi.fn().mockResolvedValue([]),
         fetchMarkets: vi.fn().mockResolvedValue([
-          { id: 'BTCUSDT', symbol: 'BTC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 } } },
-          { id: 'ZECUSDT', symbol: 'ZEC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 } } },
+          { id: 'BTCUSDT', symbol: 'BTC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+          { id: 'ZECUSDT', symbol: 'ZEC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
         ]),
         fetchMarket: vi.fn().mockImplementation(async (sym: string) => {
           if (sym.includes('ZEC')) {
-            return { id: 'ZECUSDT', symbol: 'ZEC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 } } };
+            return { id: 'ZECUSDT', symbol: 'ZEC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } };
           }
-          return { id: 'BTCUSDT', symbol: 'BTC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 } } };
+          return { id: 'BTCUSDT', symbol: 'BTC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } };
         }),
         createOrder: vi.fn().mockResolvedValue({
           id: 'ord-restoration-1',

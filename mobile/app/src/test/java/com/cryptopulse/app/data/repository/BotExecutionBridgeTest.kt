@@ -15,11 +15,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.cryptopulse.app.domain.models.TradeSetupConfig
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BotExecutionBridgeTest {
 
     private val testDispatcher = UnconfinedTestDispatcher()
+    private val testConfig = TradeSetupConfig(strategyId = "Momentum", symbol = "BTCUSDT", entryPrice = 0.0, tradeValueUsdt = 10.0)
 
     private val testDispatcherProvider = object : DispatcherProvider {
         override val main: CoroutineDispatcher = testDispatcher
@@ -160,7 +162,7 @@ class BotExecutionBridgeTest {
         val repository = BotRepositoryImpl(fakeDataSource, testDispatcherProvider)
 
         // 1. Activate Momentum
-        repository.activateBot("BTCUSDT", "Momentum", null)
+        repository.activateBot("BTCUSDT", "Momentum", testConfig)
         assertEquals(true, repository.isBotActive.value)
         assertEquals("Momentum", repository.committedStrategyId.value)
 
@@ -215,7 +217,7 @@ class BotExecutionBridgeTest {
         }
 
         val repository = BotRepositoryImpl(fakeDataSource, testDispatcherProvider)
-        repository.activateBot("BTCUSDT", "MeanReversion", null)
+        repository.activateBot("BTCUSDT", "MeanReversion", testConfig)
 
         assertEquals(true, repository.isBotActive.value)
         assertEquals("MeanReversion", repository.committedStrategyId.value)
@@ -248,7 +250,7 @@ class BotExecutionBridgeTest {
         }
 
         val repository = BotRepositoryImpl(fakeDataSource, testDispatcherProvider)
-        repository.activateBot("BTCUSDT", "Breakout", null)
+        repository.activateBot("BTCUSDT", "Breakout", testConfig)
         assertEquals(true, repository.isBotActive.value)
         assertEquals("Breakout", repository.committedStrategyId.value)
 
@@ -275,11 +277,160 @@ class BotExecutionBridgeTest {
         }
 
         val repository = BotRepositoryImpl(fakeDataSource, testDispatcherProvider)
-        repository.activateBot("BTCUSDT", "MeanReversion", null)
+        repository.activateBot("BTCUSDT", "MeanReversion", testConfig)
         assertEquals("MeanReversion", repository.committedStrategyId.value)
 
         // Explicit activation switch
-        repository.activateBot("BTCUSDT", "Momentum", null)
+        repository.activateBot("BTCUSDT", "Momentum", testConfig)
         assertEquals("Momentum", repository.committedStrategyId.value)
+    }
+    @Test
+    fun `executeTrade recovers successfully via getExecutionStatus when executeTrade times out and order is confirmed`() = runTest(testDispatcher) {
+        val alertId = "test-alert-timeout-recovery"
+        val fakeDataSource = object : BotRemoteDataSource {
+            override suspend fun activate(request: ActivateBotRequestDto) = NetworkResult.Success(ActivateBotResponseDto(true, "OK"))
+            override suspend fun deactivate() = NetworkResult.Success(ActivateBotResponseDto(true, "OK"))
+            override suspend fun getStatus() = NetworkResult.Success(BotStatusResponseDto(true, "BTCUSDT", "ScalperV2"))
+            override suspend fun getAnalysisStatus() = NetworkResult.Success(AnalysisSnapshotDto())
+            override suspend fun executeTrade(alertId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
+            override suspend fun executeTrade(request: ExecuteTradeRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
+            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
+            override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
+            override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
+            override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
+            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> {
+                return NetworkResult.Success(
+                    TradeExecutionStatusDto(
+                        success = true,
+                        positionId = positionId,
+                        alertId = positionId,
+                        orderId = "order_recovered_bybit",
+                        symbol = "NEAR/USDT",
+                        side = "SELL",
+                        strategy = "Breakout",
+                        exchange = "bybit",
+                        status = "OPEN",
+                        entryStatus = "FILLED",
+                        actualFillPrice = 4.566,
+                        filledQuantity = 1095.0,
+                        isFilled = true,
+                        isTerminal = true
+                    )
+                )
+            }
+        }
+
+        val repository = BotRepositoryImpl(fakeDataSource, testDispatcherProvider)
+        val result = repository.executeTrade(alertId)
+
+        assertTrue("Expected recovered success but got $result", result is NetworkResult.Success)
+        val data = (result as NetworkResult.Success).data
+        assertEquals("order_recovered_bybit", data.orderId)
+        assertEquals("NEAR/USDT", data.symbol)
+        assertEquals("SELL", data.side)
+        assertEquals(4.566, data.actualFillPrice, 0.001)
+        assertTrue(data.isFilled)
+    }
+
+    @Test
+    fun `executeTrade returns HttpError when executeTrade times out and getExecutionStatus reports exchange rejection`() = runTest(testDispatcher) {
+        val alertId = "test-alert-timeout-rejected"
+        val fakeDataSource = object : BotRemoteDataSource {
+            override suspend fun activate(request: ActivateBotRequestDto) = NetworkResult.Success(ActivateBotResponseDto(true, "OK"))
+            override suspend fun deactivate() = NetworkResult.Success(ActivateBotResponseDto(true, "OK"))
+            override suspend fun getStatus() = NetworkResult.Success(BotStatusResponseDto(true, "BTCUSDT", "ScalperV2"))
+            override suspend fun getAnalysisStatus() = NetworkResult.Success(AnalysisSnapshotDto())
+            override suspend fun executeTrade(alertId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
+            override suspend fun executeTrade(request: ExecuteTradeRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
+            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
+            override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
+            override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
+            override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
+            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> {
+                return NetworkResult.Success(
+                    TradeExecutionStatusDto(
+                        success = false,
+                        positionId = positionId,
+                        alertId = positionId,
+                        orderId = "order_rejected_id",
+                        symbol = "NEAR/USDT",
+                        side = "SELL",
+                        status = "REJECTED",
+                        entryStatus = "REJECTED",
+                        message = "Insufficient balance on Bybit",
+                        isFilled = false,
+                        isTerminal = true
+                    )
+                )
+            }
+        }
+
+        val repository = BotRepositoryImpl(fakeDataSource, testDispatcherProvider)
+        val result = repository.executeTrade(alertId)
+
+        assertTrue("Expected error on explicit rejection but got $result", result is NetworkResult.Error)
+        val err = (result as NetworkResult.Error).error
+        assertTrue(err is com.cryptopulse.app.core.error.NetworkError.HttpError)
+        val httpErr = err as com.cryptopulse.app.core.error.NetworkError.HttpError
+        assertEquals("Insufficient balance on Bybit", httpErr.message)
+    }
+
+    @Test
+    fun `executeTrade returns original Timeout error when executeTrade times out and position is not found`() = runTest(testDispatcher) {
+        val alertId = "test-alert-timeout-notfound"
+        val fakeDataSource = object : BotRemoteDataSource {
+            override suspend fun activate(request: ActivateBotRequestDto) = NetworkResult.Success(ActivateBotResponseDto(true, "OK"))
+            override suspend fun deactivate() = NetworkResult.Success(ActivateBotResponseDto(true, "OK"))
+            override suspend fun getStatus() = NetworkResult.Success(BotStatusResponseDto(true, "BTCUSDT", "ScalperV2"))
+            override suspend fun getAnalysisStatus() = NetworkResult.Success(AnalysisSnapshotDto())
+            override suspend fun executeTrade(alertId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
+            override suspend fun executeTrade(request: ExecuteTradeRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
+            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
+            override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
+            override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
+            override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
+            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> {
+                return NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(404, "Position not found."))
+            }
+        }
+
+        val repository = BotRepositoryImpl(fakeDataSource, testDispatcherProvider)
+        val result = repository.executeTrade(alertId)
+
+        assertTrue("Expected original Timeout error but got $result", result is NetworkResult.Error)
+        assertEquals(com.cryptopulse.app.core.error.NetworkError.Timeout, (result as NetworkResult.Error).error)
+    }
+
+    @Test
+    fun `activateBot rejects missing or invalid trade budget with 400 error`() = runTest(testDispatcher) {
+        val fakeDataSource = object : BotRemoteDataSource {
+            override suspend fun activate(request: ActivateBotRequestDto) = NetworkResult.Success(ActivateBotResponseDto(true, "OK"))
+            override suspend fun deactivate() = NetworkResult.Success(ActivateBotResponseDto(true, "OK"))
+            override suspend fun getStatus() = NetworkResult.Success(BotStatusResponseDto(false, null, null))
+            override suspend fun getAnalysisStatus() = NetworkResult.Success(
+                AnalysisSnapshotDto(isActive = false, committedStrategy = null, engineStatus = EngineStatusDto(state = "STOPPED", activeStrategy = null, committedStrategy = null))
+            )
+            override suspend fun executeTrade(alertId: String) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
+            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
+            override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
+            override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
+            override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
+            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
+            override suspend fun getExecutionStatus(positionId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
+        }
+        val repository = BotRepositoryImpl(fakeDataSource, testDispatcherProvider)
+        val nullResult = repository.activateBot("BTCUSDT", "Momentum", null)
+        assertTrue(nullResult is NetworkResult.Error)
+        val httpErr = (nullResult as NetworkResult.Error).error as com.cryptopulse.app.core.error.NetworkError.HttpError
+        assertEquals(400, httpErr.code)
+
+        val zeroConfig = TradeSetupConfig(strategyId = "Momentum", symbol = "BTCUSDT", entryPrice = 0.0, tradeValueUsdt = 0.0)
+        val zeroResult = repository.activateBot("BTCUSDT", "Momentum", zeroConfig)
+        assertTrue(zeroResult is NetworkResult.Error)
+        val zeroHttpErr = (zeroResult as NetworkResult.Error).error as com.cryptopulse.app.core.error.NetworkError.HttpError
+        assertEquals(400, zeroHttpErr.code)
     }
 }

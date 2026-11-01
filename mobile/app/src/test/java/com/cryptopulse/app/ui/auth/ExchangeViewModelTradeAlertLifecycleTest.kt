@@ -52,7 +52,9 @@ class ExchangeViewModelTradeAlertLifecycleTest {
             "takeProfit" to 98000.0,
             "positionSize" to 500.0,
             "strategy" to "ScalperV2",
-            "side" to "BUY"
+            "side" to "BUY",
+            "quantity" to 0.005,
+            "quantity" to 0.005
         )
         viewModel.setPendingAlert(alertData)
 
@@ -112,7 +114,8 @@ class ExchangeViewModelTradeAlertLifecycleTest {
             "takeProfit" to 3700.0,
             "positionSize" to 200.0,
             "strategy" to "Momentum",
-            "side" to "BUY"
+            "side" to "BUY",
+            "quantity" to 0.057
         )
         viewModel.setPendingAlert(alertData)
 
@@ -137,7 +140,8 @@ class ExchangeViewModelTradeAlertLifecycleTest {
             "takeProfit" to 160.0,
             "positionSize" to 300.0,
             "strategy" to "Breakout",
-            "side" to "BUY"
+            "side" to "BUY",
+            "quantity" to 2.0
         )
         viewModel.setPendingAlert(alertData)
 
@@ -160,7 +164,27 @@ class ExchangeViewModelTradeAlertLifecycleTest {
         // 4. Verify alarm manager was not re-triggered
         assertEquals(1, fakeAlertManager.dismissOrExecuteCallCount)
     }
+
+    @Test
+    fun `executeCurrentTrade fails closed when quantity is missing or invalid`() {
+        val alertData = mapOf<String, Any>(
+            "id" to "alert_missing_qty",
+            "symbol" to "SOL/USDT",
+            "entryPrice" to 150.0,
+            "side" to "BUY"
+            // No quantity provided
+        )
+        viewModel.setPendingAlert(alertData)
+
+        viewModel.executeCurrentTrade()
+
+        assertTrue(viewModel.executionState.value is ExecutionUiState.Failed)
+        assertEquals("Missing or invalid approved quantity. Cannot execute trade.", viewModel.tradeError.value)
+        assertEquals(0, fakeBotRepo.executeTradeCallCount)
+        assertEquals(0, fakeAlertManager.dismissOrExecuteCallCount)
+    }
 }
+
 
 // ── Tracking Fakes ────────────────────────────────────────────────────────────
 
