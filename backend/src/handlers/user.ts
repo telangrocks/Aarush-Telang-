@@ -47,13 +47,16 @@ export function isValidPassword(password: string): boolean {
 
 function logAuthEvent(c: Context<{ Bindings: Env }>, event: string, details: Record<string, unknown>): void {
   console.log(JSON.stringify({ event, timestamp: new Date().toISOString(), ...details }));
-  createAuditLog(c, {
+  const p = createAuditLog(c, {
     userId: (details.userId as string) || (details.user_id as string) || undefined,
     action: event,
     ip: (details.ip as string) || getClientIp(c),
     userAgent: c.req.header("user-agent") || undefined,
     metadata: details,
   }).catch(() => {});
+  if (c.executionCtx?.waitUntil) {
+    c.executionCtx.waitUntil(p);
+  }
 }
 
 function getClientIp(c: Context<{ Bindings: Env }>): string {
@@ -109,11 +112,39 @@ async function isRegistrationAllowed(
 }
 
 /**
- * Throttles login attempts per IP atomically.
+ * Throttles login attempts per IP: checks whether the IP is currently allowed.
  */
 async function isLoginAllowed(
   c: Context<{ Bindings: Env }>,
 ): Promise<boolean> {
+  try {
+    const ip = getClientIp(c);
+    const now = Date.now();
+
+    const row = await c.env.DB.prepare(
+      "SELECT count, window_start FROM login_attempts WHERE ip = ?",
+    )
+      .bind(ip)
+      .first<{ count: number; window_start: number }>();
+
+    if (!row || now - row.window_start >= LOGIN_RATE_LIMIT_WINDOW_MS) {
+      return true;
+    }
+
+    if (row.count >= MAX_LOGIN_ATTEMPTS_PER_IP) {
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    console.error("isLoginAllowed error:", err);
+    return true;
+  }
+}
+
+async function recordFailedLoginAttempt(
+  c: Context<{ Bindings: Env }>,
+): Promise<void> {
   try {
     const ip = getClientIp(c);
     const now = Date.now();
@@ -132,11 +163,7 @@ async function isLoginAllowed(
       )
         .bind(ip, now)
         .run();
-      return true;
-    }
-
-    if (row.count >= MAX_LOGIN_ATTEMPTS_PER_IP) {
-      return false;
+      return;
     }
 
     await c.env.DB.prepare(
@@ -144,11 +171,21 @@ async function isLoginAllowed(
     )
       .bind(ip)
       .run();
-
-    return true;
   } catch (err) {
-    console.error("isLoginAllowed error:", err);
-    return true;
+    console.error("recordFailedLoginAttempt error:", err);
+  }
+}
+
+async function clearLoginAttempts(
+  c: Context<{ Bindings: Env }>,
+): Promise<void> {
+  try {
+    const ip = getClientIp(c);
+    await c.env.DB.prepare("DELETE FROM login_attempts WHERE ip = ?")
+      .bind(ip)
+      .run();
+  } catch (err) {
+    console.error("clearLoginAttempts error:", err);
   }
 }
 
@@ -462,6 +499,7 @@ export async function handleLogin(
       }>();
 
     if (!user) {
+      await recordFailedLoginAttempt(c);
       logAuthEvent(c, "login_failed", { email: normalizedEmail, reason: "user_not_found" });
       c.status(401);
       return c.json({ error: "Invalid credentials." });
@@ -483,6 +521,7 @@ export async function handleLogin(
 
     const isPasswordValid = await verifyPassword(password, user.password_hash);
     if (!isPasswordValid) {
+      await recordFailedLoginAttempt(c);
       const newAttempts = (user.failed_login_attempts || 0) + 1;
       const shouldLock = newAttempts >= MAX_LOGIN_ATTEMPTS;
       const lockedUntil = shouldLock
@@ -542,6 +581,7 @@ export async function handleLogin(
       },
     ]);
 
+    await clearLoginAttempts(c);
     logAuthEvent(c, "login_success", { userId: user.id, email: user.email });
 
     c.status(200);
@@ -711,10 +751,11 @@ export async function handleForgotPassword(
 
     logAuthEvent(c, "password_reset_requested", { userId: user.id, email: user.email });
 
+    const isProd = c.env.ENVIRONMENT === "production";
     c.status(200);
     return c.json({
       message: "Password reset instructions have been sent to your email.",
-      resetToken,
+      ...(isProd ? {} : { resetToken }),
     });
   } catch (err: unknown) {
     const error = err as Error;
@@ -874,20 +915,38 @@ export async function handleDeleteAccount(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {
   try {
-    const payload = c.get("jwtPayload") as { sub: string } | undefined;
+    const payload = c.get("jwtPayload") as { sub: string; jti?: string } | undefined;
     if (!payload || !payload.sub) {
       c.status(401);
       return c.json({ error: "Unauthorized" });
     }
 
+    // Deactivate trading bot DO if TRADING_BOT namespace is available
+    if (c.env.TRADING_BOTS) {
+      try {
+        const botId = c.env.TRADING_BOTS.idFromName(payload.sub);
+        const bot = c.env.TRADING_BOTS.get(botId);
+        await bot.fetch("http://bot/deactivate");
+      } catch (botErr) {
+        console.warn("Failed to deactivate bot on account deletion:", botErr);
+      }
+    }
+
     const now = new Date().toISOString();
+    const jti = payload.jti || crypto.randomUUID();
+
     await runTransaction(c, [
       {
         sql: "UPDATE users SET is_deleted = 1, deleted_at = ?, status = 'DELETED' WHERE id = ? AND is_deleted = 0",
         bindings: [now, payload.sub],
       },
+      {
+        sql: "INSERT OR IGNORE INTO jwt_blacklist (jti, user_id, expires_at) VALUES (?, ?, ?)",
+        bindings: [jti, payload.sub, Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7],
+      },
     ]);
 
+    markTokenRevokedInCache(jti);
     await revokeAllUserRefreshTokens(c, payload.sub);
 
     logAuthEvent(c, "account_deleted", { userId: payload.sub });

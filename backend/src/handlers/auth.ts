@@ -2,6 +2,7 @@
 import { sign, verify } from "hono/jwt";
 import { Context } from "hono";
 import { Env } from "../index";
+import { LruTtlCache } from "../infrastructure/cache/LruTtlCache";
 
 const ITERATIONS = 100000;
 const HASH_ALGORITHM = "SHA-256";
@@ -298,11 +299,16 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | null 
   }
 }
 
-// In-memory cache for revoked and validated JTIs within Worker isolate (optimization)
-const revokedJtiCache = new Map<string, number>(); // jti -> expiresAt (timestamp)
-const validJtiCache = new Map<string, number>();   // jti -> cachedUntil (timestamp)
-const JTI_CACHE_TTL_MS = 60 * 1000;                // 60-second in-memory validity cache for read-only polling
-const REVOKED_CACHE_TTL_MS = 15 * 60 * 1000;       // 15-minute revoked cache
+// Bounded in-memory caches for revoked and validated JTIs within Worker isolate (Phase 2 optimization)
+const revokedJtiCache = new LruTtlCache<string, number>(5000, 15 * 60 * 1000); // 15-minute revoked cache
+const validJtiCache = new LruTtlCache<string, number>(10000, 60 * 1000);       // 60-second in-memory validity cache
+const JTI_CACHE_TTL_MS = 60 * 1000;
+const REVOKED_CACHE_TTL_MS = 15 * 60 * 1000;
+
+export function __resetJtiCachesForTests(): void {
+  revokedJtiCache.clear();
+  validJtiCache.clear();
+}
 
 export function markTokenRevokedInCache(jti: string): void {
   validJtiCache.delete(jti);
@@ -325,7 +331,7 @@ export async function isTokenRevoked(
 
   // 1. Fast path: check revoked cache
   const revokedExpiry = revokedJtiCache.get(jti);
-  if (revokedExpiry) {
+  if (revokedExpiry !== null) {
     if (now < revokedExpiry) {
       return true; // Token is known to be revoked
     } else {
@@ -336,7 +342,7 @@ export async function isTokenRevoked(
   // 2. Fast path for read-only endpoints: check valid cache (optimization to reduce D1 reads)
   if (!options?.failClosed) {
     const validUntil = validJtiCache.get(jti);
-    if (validUntil && now < validUntil) {
+    if (validUntil !== null && now < validUntil) {
       return false; // Token is known to be valid in this isolate
     }
   }

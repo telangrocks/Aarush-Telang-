@@ -4,6 +4,7 @@ import { StrategyContext } from '../context/StrategyContext';
 import { IStrategy } from '../interfaces/IStrategy';
 import { EvaluationResult } from '../dto/EvaluationResult';
 import { MarketDataEngine } from '../market-data/MarketDataEngine';
+import { MarketSnapshot } from '../market-data/MarketSnapshot';
 import { Timeframe } from '../market-data/Timeframe';
 import { StrategyRegistry } from '../strategies/StrategyRegistry';
 import { MetricsEngine } from '../../telemetry/MetricsEngine';
@@ -16,6 +17,7 @@ export class StrategyOrchestrator {
   private stateMachine: EngineStateMachine;
   private marketDataEngine: MarketDataEngine | null = null;
   private logger = new StructuredLogger();
+  private lastSnapshot: MarketSnapshot | null = null;
 
   constructor() {
     this.stateMachine = new EngineStateMachine();
@@ -23,6 +25,10 @@ export class StrategyOrchestrator {
 
   public setMarketDataEngine(engine: MarketDataEngine): void {
     this.marketDataEngine = engine;
+  }
+
+  public getLastSnapshot(): MarketSnapshot | null {
+    return this.lastSnapshot;
   }
 
   public async executeCycle(
@@ -93,6 +99,7 @@ export class StrategyOrchestrator {
       }
 
       const snapshot = await this.marketDataEngine.getSnapshot(symbol, targetTimeframes, candleLimit);
+      this.lastSnapshot = snapshot;
       
       this.stateMachine.transition(EngineState.EVALUATING);
       

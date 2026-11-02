@@ -5,6 +5,9 @@ export interface CacheEntry<V> {
 
 export class LruTtlCache<K, V> {
   private cache = new Map<K, CacheEntry<V>>();
+  private hits = 0;
+  private misses = 0;
+  private evictions = 0;
 
   constructor(
     private readonly maxCapacity: number = 50,
@@ -18,6 +21,7 @@ export class LruTtlCache<K, V> {
       const oldestKey = this.cache.keys().next().value;
       if (oldestKey !== undefined) {
         this.cache.delete(oldestKey);
+        this.evictions++;
       }
     }
 
@@ -28,13 +32,18 @@ export class LruTtlCache<K, V> {
 
   public get(key: K): V | null {
     const entry = this.cache.get(key);
-    if (!entry) return null;
-
-    if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
+    if (!entry) {
+      this.misses++;
       return null;
     }
 
+    if (Date.now() > entry.expiresAt) {
+      this.cache.delete(key);
+      this.misses++;
+      return null;
+    }
+
+    this.hits++;
     // Refresh LRU order
     this.cache.delete(key);
     this.cache.set(key, entry);
@@ -51,6 +60,20 @@ export class LruTtlCache<K, V> {
 
   public clear(): void {
     this.cache.clear();
+  }
+
+  public keys(): IterableIterator<K> {
+    return this.cache.keys();
+  }
+
+  public getStats() {
+    return {
+      hits: this.hits,
+      misses: this.misses,
+      evictions: this.evictions,
+      size: this.cache.size,
+      maxCapacity: this.maxCapacity,
+    };
   }
 
   public size(): number {

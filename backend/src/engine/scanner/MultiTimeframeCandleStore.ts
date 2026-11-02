@@ -58,6 +58,10 @@ export class MultiTimeframeCandleStore {
     tf: ScannerTimeframe,
     forceRefresh: boolean = false
   ): Promise<StoredCandleSeries> {
+    if (this.cache.size > 200) {
+      this.purgeExpired();
+    }
+
     const key = this.getCacheKey(symbol, tf);
     const cached = this.cache.get(key);
 
@@ -66,7 +70,7 @@ export class MultiTimeframeCandleStore {
     }
 
     try {
-      const limit = Math.min(this.maxCandlesPerTimeframe, 70);
+      const limit = Math.max(1, this.maxCandlesPerTimeframe);
 
       const fetchFn = async () => {
         if (typeof (this.provider as any).fetchCandles === 'function') {

@@ -5,6 +5,7 @@ import { BreakoutStrategy } from './breakout/BreakoutStrategy';
 import { MeanReversionStrategy } from './mean-reversion/MeanReversionStrategy';
 import { VWAPStrategy } from './vwap/VWAPStrategy';
 import { StrategyManifest } from './StrategyManifest';
+import { LruTtlCache } from '../../infrastructure/cache/LruTtlCache';
 
 import { DEFAULT_SCALPER_CONFIG } from './scalper-v2/ScalperV2Config';
 import { DEFAULT_MOMENTUM_CONFIG } from './momentum/MomentumConfig';
@@ -197,7 +198,7 @@ export class StrategyRegistry {
     return this.strategies;
   }
 
-  private strategyCache = new Map<string, IStrategy>();
+  private strategyCache = new LruTtlCache<string, IStrategy>(200, 15 * 60 * 1000);
 
   public clearCache(): void {
     this.strategyCache.clear();
@@ -207,8 +208,9 @@ export class StrategyRegistry {
     const normalizedId = this.normalizeStrategyId(id);
     const cacheKey = `${normalizedId}:${JSON.stringify(configOverrides || {})}`;
 
-    if (this.strategyCache.has(cacheKey)) {
-      return this.strategyCache.get(cacheKey);
+    const cached = this.strategyCache.get(cacheKey);
+    if (cached) {
+      return cached;
     }
 
     let strategy: IStrategy | undefined;
@@ -227,4 +229,3 @@ export class StrategyRegistry {
     return strategy;
   }
 }
-

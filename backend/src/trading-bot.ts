@@ -605,6 +605,10 @@ export class TradingBot {
   state: DurableObjectState;
   env: Env;
   private isExecutingTrade = false;
+  private isExecutingTradeAt = 0;
+  private lastAccountBalance: number | null = null;
+  private lastBalanceFetchedAt = 0;
+  private lastD1PositionCheckAt = 0;
   private orchestrator: StrategyOrchestrator;
   private engineApi: EngineAPIService;
   private lastHeartbeatTimestamp = 0;
@@ -622,6 +626,8 @@ export class TradingBot {
 
   public invalidateCredentialsCache(): void {
     this.cachedCredentials = null;
+    this.lastAccountBalance = null;
+    this.lastBalanceFetchedAt = 0;
   }
 
   public getSignalLifecycleManager(): SignalLifecycleManager {
@@ -881,7 +887,6 @@ export class TradingBot {
       await runInTxn(this.state.storage);
     }
     this.runtimeState.activeIntents.set(cleanId, committed);
-    await this.state.storage.put(key, committed);
     return committed;
   }
 
@@ -899,11 +904,15 @@ export class TradingBot {
     const cleanId = id.startsWith('intent:protection:') ? id.slice('intent:protection:'.length) : id;
     const key = `intent:protection:${cleanId}`;
     const snapshot = { ...intent };
-    await this.state.storage.transaction(async (txn) => {
-      await txn.put(key, snapshot);
-    });
+    const hasTxnProtection = typeof (this.state.storage as any).transaction === 'function';
+    if (hasTxnProtection) {
+      await (this.state.storage as any).transaction(async (txn: any) => {
+        await txn.put(key, snapshot);
+      });
+    } else {
+      await this.state.storage.put(key, snapshot);
+    }
     this.protectionIntents.set(cleanId, snapshot);
-    await this.state.storage.put(key, snapshot);
     return snapshot;
   }
 
@@ -913,28 +922,40 @@ export class TradingBot {
     const cleanId = id.startsWith('intent:close:') ? id.slice('intent:close:'.length) : id;
     const key = `intent:close:${cleanId}`;
     const snapshot = { ...intent };
-    await this.state.storage.transaction(async (txn) => {
-      await txn.put(key, snapshot);
-    });
+    const hasTxnClose = typeof (this.state.storage as any).transaction === 'function';
+    if (hasTxnClose) {
+      await (this.state.storage as any).transaction(async (txn: any) => {
+        await txn.put(key, snapshot);
+      });
+    } else {
+      await this.state.storage.put(key, snapshot);
+    }
     this.closeIntents.set(cleanId, snapshot);
-    await this.state.storage.put(key, snapshot);
     return snapshot;
   }
 
   private async setUnprotectedExposureLock(lock: UnprotectedExposureLock): Promise<void> {
-    await this.state.storage.transaction(async (txn) => {
-      await txn.put('lock:unprotectedExposure', lock);
-    });
+    const hasTxnLock = typeof (this.state.storage as any).transaction === 'function';
+    if (hasTxnLock) {
+      await (this.state.storage as any).transaction(async (txn: any) => {
+        await txn.put('lock:unprotectedExposure', lock);
+      });
+    } else {
+      await this.state.storage.put('lock:unprotectedExposure', lock);
+    }
     this.unprotectedExposureLock = lock;
-    await this.state.storage.put('lock:unprotectedExposure', lock);
   }
 
   private async clearUnprotectedExposureLock(): Promise<void> {
-    await this.state.storage.transaction(async (txn) => {
-      await txn.delete('lock:unprotectedExposure');
-    });
+    const hasTxnClear = typeof (this.state.storage as any).transaction === 'function';
+    if (hasTxnClear) {
+      await (this.state.storage as any).transaction(async (txn: any) => {
+        await txn.delete('lock:unprotectedExposure');
+      });
+    } else {
+      await this.state.storage.delete('lock:unprotectedExposure');
+    }
     this.unprotectedExposureLock = null;
-    await this.state.storage.delete('lock:unprotectedExposure');
   }
 
   public async syncPositionToActivePositions(positionData: any): Promise<void> {
@@ -1041,6 +1062,11 @@ export class TradingBot {
     // Reconstruct memory state from durable storage safely
     this.state.blockConcurrencyWhile(async () => {
       this.isExecutingTrade = (await this.state.storage.get('isExecutingTrade')) || false;
+      this.isExecutingTradeAt = (await this.state.storage.get('isExecutingTradeAt')) || 0;
+      if (this.isExecutingTrade && this.isExecutingTradeAt > 0 && Date.now() - this.isExecutingTradeAt > 60_000) {
+        this.isExecutingTrade = false;
+        await this.state.storage.put('isExecutingTrade', false);
+      }
       const scanCurrent = await this.state.storage.get('scan:current') as any;
       if (scanCurrent && scanCurrent.status === 'RUNNING') {
         await this.state.storage.put({
@@ -1279,6 +1305,18 @@ export class TradingBot {
       case '/reload-credentials': {
         this.invalidateCredentialsCache();
         return new Response(JSON.stringify({ success: true, message: 'Credentials cache invalidated.' }), { status: 200 });
+      }
+
+      case '/exchange-invalidated': {
+        this.invalidateCredentialsCache();
+        this.lastAccountBalance = null;
+        this.lastBalanceFetchedAt = 0;
+        if (this.runtimeState.isActive) {
+          this.runtimeState.isActive = false;
+          await this.state.storage.put('isActive', false);
+          await this.state.storage.put('tradeActive', false);
+        }
+        return new Response(JSON.stringify({ success: true, message: 'Exchange invalidated: credentials purged and bot deactivated.' }), { status: 200 });
       }
 
       case '/scanner-state': {
@@ -1688,11 +1726,19 @@ export class TradingBot {
         console.log(`[DIAGNOSTIC] [STAGE: EXECUTE_TRADE_VALIDATION_PASSED] timestamp=${new Date().toISOString()}`);
 
         if (this.isExecutingTrade) {
-          return new Response(JSON.stringify({ error: 'A trade execution is already in progress.' }), { status: 409 });
+          if (this.isExecutingTradeAt > 0 && Date.now() - this.isExecutingTradeAt > 60_000) {
+            console.warn('[TradingBot] Stale trade execution lock detected (>60s). Auto-recovering lock.');
+            this.isExecutingTrade = false;
+            await this.state.storage.put('isExecutingTrade', false);
+          } else {
+            return new Response(JSON.stringify({ error: 'A trade execution is already in progress.' }), { status: 409 });
+          }
         }
 
         this.isExecutingTrade = true;
+        this.isExecutingTradeAt = Date.now();
         await this.state.storage.put('isExecutingTrade', true);
+        await this.state.storage.put('isExecutingTradeAt', this.isExecutingTradeAt);
 
         try {
           const userId: string | undefined = this.runtimeState.userId;
@@ -3250,6 +3296,7 @@ export class TradingBot {
           }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         } finally {
           this.isExecutingTrade = false;
+          this.isExecutingTradeAt = 0;
           await this.state.storage.put('isExecutingTrade', false);
         }
       }
@@ -4348,6 +4395,44 @@ export class TradingBot {
     return false;
   }
 
+  private getEarliestSafetyWorkDueTime(): number {
+    const now = Date.now();
+    let earliest = now + 5000;
+
+    let hasOtherSafetyWork = Boolean(this.runtimeState.pendingPositionSync) || this.unprotectedExposureLock !== null;
+    if (!hasOtherSafetyWork) {
+      for (const val of this.runtimeState.activeIntents.values()) {
+        const intent = val as any;
+        const isUnresolved =
+          ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent?.status) ||
+          (intent?.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent?.flatnessAffirmativelyVerified);
+        if (isUnresolved) {
+          hasOtherSafetyWork = true;
+          break;
+        }
+      }
+    }
+
+    if (!hasOtherSafetyWork && this.closeIntents.size > 0) {
+      let minCloseRetry = Infinity;
+      for (const closeIntent of this.closeIntents.values()) {
+        if (['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING'].includes(closeIntent?.status)) {
+          const retryAt = Number(closeIntent?.nextRetryAt || 0);
+          if (retryAt > now) {
+            minCloseRetry = Math.min(minCloseRetry, retryAt);
+          } else {
+            minCloseRetry = now + 5000;
+          }
+        }
+      }
+      if (minCloseRetry < Infinity && minCloseRetry > now) {
+        earliest = Math.max(now + 5000, minCloseRetry);
+      }
+    }
+
+    return earliest;
+  }
+
   private async hasActiveExposure(): Promise<boolean> {
     if (this.hasPendingSafetyWork()) return true;
 
@@ -5138,7 +5223,8 @@ export class TradingBot {
 
         // Isolate recovery alarm subrequests from normal strategy evaluation and position monitoring
         if (recoveryWorkExecuted || this.hasPendingSafetyWork()) {
-          await this.state.storage.setAlarm(Date.now() + 5000);
+          const dueTime = this.getEarliestSafetyWorkDueTime();
+          await this.state.storage.setAlarm(dueTime);
           return;
         }
 
@@ -5202,10 +5288,18 @@ export class TradingBot {
               this.orchestrator.setMarketDataEngine(dataEngine);
 
               const strategyConfig = this.runtimeState.strategyConfig as Record<string, any> | undefined;
-              const balanceResult = await adapter.fetchBalance().catch(() => null);
-              const accountBalance = extractUsdtBalance(balanceResult);
-              this.runtimeState.lastAccountBalance = accountBalance;
-              await this.state.storage.put('lastAccountBalance', accountBalance);
+              const nowBal = Date.now();
+              let accountBalance = this.lastAccountBalance;
+              if (accountBalance === null || nowBal - this.lastBalanceFetchedAt > 60_000) {
+                const balanceResult = await adapter.fetchBalance().catch(() => null);
+                accountBalance = extractUsdtBalance(balanceResult);
+                this.lastAccountBalance = accountBalance;
+                this.lastBalanceFetchedAt = nowBal;
+                if (this.runtimeState.lastAccountBalance !== accountBalance) {
+                  this.runtimeState.lastAccountBalance = accountBalance;
+                  await this.state.storage.put('lastAccountBalance', accountBalance);
+                }
+              }
 
               const registry = StrategyRegistry.getInstance();
               const normalizedId = registry.normalizeStrategyId(strategy);
@@ -5264,7 +5358,6 @@ export class TradingBot {
                     sink: this.telemetrySink
                   });
                   const currentState = this.orchestrator.getCurrentState();
-                  await this.state.storage.put('engineState', currentState);
 
                   const snapshot = await dataEngine.getSnapshot(currentSymbol, cycleTimeframes, cycleCandleLimit);
 
@@ -5823,8 +5916,14 @@ export class TradingBot {
                         // Synchronous Pre-Persistence Concurrency & Lifecycle Re-Verification
                         // Protects the single Durable Object execution context against in-flight state mutations across prior await points.
                         if (this.isExecutingTrade) {
-                          console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: trade execution is currently in progress.`);
-                          break;
+                          if (this.isExecutingTradeAt > 0 && Date.now() - this.isExecutingTradeAt > 60_000) {
+                            console.warn(`[TradingBot] Stale trade execution lock detected in alarm loop (>60s). Auto-recovering lock.`);
+                            this.isExecutingTrade = false;
+                            await this.state.storage.put('isExecutingTrade', false);
+                          } else {
+                            console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: trade execution is currently in progress.`);
+                            break;
+                          }
                         }
                         if (this.unprotectedExposureLock) {
                           console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: active unprotected exposure lock on ${this.unprotectedExposureLock.symbol}.`);
@@ -5960,7 +6059,6 @@ export class TradingBot {
                         );
                         console.log(`[SIGNAL_LIFECYCLE_SHADOW] ${JSON.stringify(comparison)}`);
                       }
-                      await this.state.storage.put('signal_lifecycle_state', this.signalLifecycleManager.getState()).catch(() => {});
                     }
                   } catch (shadowErr) {
                     console.error('[SIGNAL_LIFECYCLE_SHADOW_ERROR] Non-blocking shadow error:', shadowErr);
@@ -5969,6 +6067,14 @@ export class TradingBot {
                   console.error(`[trading-bot] Strategy cycle failed for candidate ${currentSymbol}:`, candidateErr?.message || candidateErr);
                   // Candidate failure isolated - continue to next candidate
                 }
+              }
+
+              // Persist engineState and signal_lifecycle_state once per 15s cycle outside the multi-symbol loop
+              if (this.orchestrator) {
+                await this.state.storage.put('engineState', this.orchestrator.getCurrentState()).catch(() => {});
+              }
+              if (this.signalLifecycleManager) {
+                await this.state.storage.put('signal_lifecycle_state', this.signalLifecycleManager.getState()).catch(() => {});
               }
             }
           }
@@ -5988,7 +6094,8 @@ export class TradingBot {
       this.isAlarmRunning = false;
       const isActive = this.runtimeState.isActive;
       if (recoveryWorkExecuted || this.hasPendingSafetyWork()) {
-        await this.state.storage.setAlarm(Date.now() + 5000);
+        const dueTime = this.getEarliestSafetyWorkDueTime();
+        await this.state.storage.setAlarm(dueTime);
       } else if (isActive) {
         await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS);
       } else if (await this.hasActiveExposure()) {
@@ -6015,17 +6122,29 @@ export class TradingBot {
           ? this.runtimeState.activePositions
           : (((await this.state.storage.get('activePositions')) as any[]) || []);
 
+      const isFlatLocally =
+        (!activePositions || activePositions.length === 0) &&
+        (!this.runtimeState.activeIntents || this.runtimeState.activeIntents.size === 0) &&
+        (!this.closeIntents || this.closeIntents.size === 0) &&
+        !this.runtimeState.pendingPositionSync;
+
       let d1Rows: any[] = [];
-      try {
-        const d1Res = await this.env.DB.prepare(
-          "SELECT * FROM trade_positions WHERE user_id = ? AND status IN ('OPEN', 'PENDING_ENTRY')"
-        )
-          .bind(userId)
-          .all<any>();
-        if (Array.isArray(d1Res?.results)) {
-          d1Rows = d1Res.results;
-        }
-      } catch (_) {}
+      const nowCheck = Date.now();
+      const shouldQueryD1 = !isFlatLocally || (nowCheck - this.lastD1PositionCheckAt > 300_000);
+
+      if (shouldQueryD1) {
+        try {
+          const d1Res = await this.env.DB.prepare(
+            "SELECT * FROM trade_positions WHERE user_id = ? AND status IN ('OPEN', 'PENDING_ENTRY')"
+          )
+            .bind(userId)
+            .all<any>();
+          this.lastD1PositionCheckAt = nowCheck;
+          if (Array.isArray(d1Res?.results)) {
+            d1Rows = d1Res.results;
+          }
+        } catch (_) {}
+      }
 
       const mergedById = new Map<string, any>();
       for (const pos of activePositions) {

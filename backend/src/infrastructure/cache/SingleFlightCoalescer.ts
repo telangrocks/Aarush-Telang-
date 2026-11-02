@@ -14,6 +14,8 @@
  */
 export class SingleFlightCoalescer<T> {
   private readonly inFlight = new Map<string, { promise: Promise<T>; subscribers: number }>();
+  private totalFlights = 0;
+  private coalescedFollowers = 0;
 
   /**
    * Executes `fn` once per active flight for `key`, coalescing concurrent callers onto the same Promise.
@@ -22,9 +24,11 @@ export class SingleFlightCoalescer<T> {
     const existing = this.inFlight.get(key);
     if (existing) {
       existing.subscribers += 1;
+      this.coalescedFollowers += 1;
       return existing.promise;
     }
 
+    this.totalFlights += 1;
     let settled = false;
     let flightPromise!: Promise<T>;
 
@@ -71,6 +75,17 @@ export class SingleFlightCoalescer<T> {
    */
   public getActiveCount(): number {
     return this.inFlight.size;
+  }
+
+  /**
+   * Returns cumulative coalescing statistics.
+   */
+  public getStats() {
+    return {
+      totalFlights: this.totalFlights,
+      coalescedFollowers: this.coalescedFollowers,
+      activeCount: this.inFlight.size,
+    };
   }
 
   /**

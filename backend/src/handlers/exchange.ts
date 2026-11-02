@@ -20,18 +20,27 @@ import {
   type MarketOpportunity,
 } from "../engine/scanner";
 import { SingleFlightCoalescer } from "../infrastructure/cache/SingleFlightCoalescer";
+import { LruTtlCache } from "../infrastructure/cache/LruTtlCache";
+import { PublicMarketDataService } from "../infrastructure/market-data/PublicMarketDataService";
 import { isExcludedAsset } from "../domain/trading/AssetClassification";
 import { PriceNormalizer } from "../utils/PriceNormalizer";
 import { extractUsdtBalance } from "../utils/balance";
 
-const DISCOVERY_CACHE = new Map<string, { timestamp: number, data: any }>();
-const CACHE_TTL_MS = 60000;
+const DISCOVERY_CACHE = new LruTtlCache<string, any[]>(500, 30000);
+const CACHE_TTL_MS = 30000;
 const SHARED_OPPORTUNITY_CACHE = new Map<string, { timestamp: number; data: ScannerScanResult }>();
 const OPPORTUNITY_CACHE = SHARED_OPPORTUNITY_CACHE;
 const OPPORTUNITY_CACHE_TTL_MS = 30000;
 const PUBLIC_OPPORTUNITY_MAX_CANDIDATES = 8;
 const PUBLIC_CANDLE_STORE_DEPTH = 70;
 const OPPORTUNITY_SINGLE_FLIGHT = new SingleFlightCoalescer<ScannerScanResult>();
+const USER_EXCHANGE_ROUTING_CACHE = new LruTtlCache<string, {
+  exchange_name: string | null;
+  exchange_environment: string | null;
+  exchange_region: string | null;
+}>(5000, 60000);
+const TICKER_CACHE = new LruTtlCache<string, any>(200, 2000); // 2s TTL
+const KLINES_CACHE = new LruTtlCache<string, any>(200, 15000); // 15s TTL
 
 interface ScopedPublicCandleStoreEntry {
   adapter: any;
@@ -124,6 +133,11 @@ export function __resetPublicOpportunityStateForTests(): void {
   SHARED_OPPORTUNITY_CACHE.clear();
   OPPORTUNITY_SINGLE_FLIGHT.clear();
   PUBLIC_CANDLE_STORE_REGISTRY.clear();
+  DISCOVERY_CACHE.clear();
+  USER_EXCHANGE_ROUTING_CACHE.clear();
+  TICKER_CACHE.clear();
+  KLINES_CACHE.clear();
+  PublicMarketDataService.getInstance().clearCaches();
 }
 
 export function __getPublicOpportunityDiagnosticsForTests(): {
@@ -157,7 +171,7 @@ export function isPermanentAuthFailure(code: string): boolean {
   );
 }
 
-function selectBoundedDiscoveryMarkets(
+export function selectBoundedDiscoveryMarkets(
   markets: any[],
   tickers: any[],
   userAllocation: number | null,
@@ -264,7 +278,8 @@ export async function invalidateExchangeConnection(
     .bind(failureCode, userId)
     .run();
 
-  // 2. In-Memory Provider & Discovery/Opportunity Cache Eviction (Second)
+  // 2. In-Memory Provider & Discovery/Opportunity/Routing Cache Eviction (Second)
+  USER_EXCHANGE_ROUTING_CACHE.delete(userId);
   for (const k of Array.from(DISCOVERY_CACHE.keys())) {
     if (k.startsWith(`${userId}_`)) DISCOVERY_CACHE.delete(k);
   }
@@ -711,6 +726,8 @@ export async function handleConnectExchange(
       await ExchangeManager.disconnectProvider(exchangeName, providerConfig);
     } catch (_) {}
 
+    USER_EXCHANGE_ROUTING_CACHE.delete(userId);
+
     return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: normEnv, region: resolvedRegion });
   } catch (e: unknown) {
     const classified = classifyException(e, exchangeNameForLog);
@@ -887,9 +904,10 @@ export async function handleGetExchangeBalances(
             password: decryptedPassphrase,
             region: resolveCanonicalRoutingRegion(user.exchange_region),
           });
-        } catch (err) {
-          console.warn(`[exchange-balance] ProviderPool eviction warning for user ${userId}:`, err);
-        }
+        } catch (_) {}
+      }
+      if (userId) {
+        USER_EXCHANGE_ROUTING_CACHE.delete(userId);
       }
       c.status(422);
     } else {
@@ -996,25 +1014,30 @@ export async function handleGetPersonalizedMarketCandidates(
     const userId = payload.sub;
     console.log(`[DIAGNOSTIC] Stage 1: JWT verified for userId=${userId}`);
 
-    // Stage 2: User loaded
+    // Stage 2: User loaded (with routing cache)
     currentStage = "2. User loaded";
-    let user: any = null;
-    try {
-      user = await c.env.DB.prepare(
-        "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
-      )
-        .bind(userId)
-        .first();
-    } catch (dbErr: any) {
-      console.error("[DIAGNOSTIC] Stage 2 EXCEPTION: Database query failed:", dbErr?.message, dbErr?.stack);
-      c.status(500);
-      return c.json({
-        success: false,
-        stage: "2. User loaded",
-        error: dbErr?.message || String(dbErr),
-        constructor: dbErr?.constructor?.name || "DatabaseError",
-        stack: dbErr?.stack || String(dbErr)
-      });
+    let user = USER_EXCHANGE_ROUTING_CACHE.get(userId);
+    if (!user) {
+      try {
+        user = await c.env.DB.prepare(
+          "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?",
+        )
+          .bind(userId)
+          .first();
+        if (user && user.exchange_name) {
+          USER_EXCHANGE_ROUTING_CACHE.set(userId, { exchange_name: user.exchange_name, exchange_environment: user.exchange_environment, exchange_region: user.exchange_region });
+        }
+      } catch (dbErr: any) {
+        console.error("[DIAGNOSTIC] Stage 2 EXCEPTION: Database query failed:", dbErr?.message, dbErr?.stack);
+        c.status(500);
+        return c.json({
+          success: false,
+          stage: "2. User loaded",
+          error: dbErr?.message || String(dbErr),
+          constructor: dbErr?.constructor?.name || "DatabaseError",
+          stack: dbErr?.stack || String(dbErr)
+        });
+      }
     }
 
     if (!user) {
@@ -1051,9 +1074,9 @@ export async function handleGetPersonalizedMarketCandidates(
 
     const cacheKey = `${userId}_${user.exchange_name}_${user.exchange_environment}_${userAllocation !== null ? String(userAllocation) : 'default'}`;
     const cached = DISCOVERY_CACHE.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    if (cached) {
       console.log(`[DIAGNOSTIC] Cache hit for ${cacheKey}`);
-      return c.json(cached.data);
+      return c.json(cached);
     }
 
     // Stage 3.5: Authoritative DO Scanner State Query (CP-CONF-001)
@@ -1074,7 +1097,7 @@ export async function handleGetPersonalizedMarketCandidates(
 
             if (candidates.length > 0 || userAllocation !== null) {
               console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully from DO (${candidates.length} items)`);
-              DISCOVERY_CACHE.set(cacheKey, { timestamp: Date.now(), data: candidates });
+              DISCOVERY_CACHE.set(cacheKey, candidates);
               return c.json(candidates);
             }
           }
@@ -1084,81 +1107,36 @@ export async function handleGetPersonalizedMarketCandidates(
       }
     }
 
-    // Stage 4: Secret decrypted
+    // Stage 4: Secret omitted/not configured (Public Market Discovery requires 0 credential decryption)
     currentStage = "4. Secret decrypted";
-    let cleanKey: string | undefined = undefined;
-    if (user.exchange_api_key_encrypted && user.exchange_api_key_iv && c.env.ENCRYPTION_KEY) {
-      try {
-        const decryptedKey = await decrypt(
-          { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
-          c.env.ENCRYPTION_KEY
-        );
-        cleanKey = cleanCredential(decryptedKey);
-      } catch (decKeyErr: any) {
-        console.warn("[DIAGNOSTIC] API key decryption failed:", decKeyErr?.message);
-      }
-    }
+    console.log("[DIAGNOSTIC] Stage 4: Secret omitted/not configured");
 
-    let cleanSecret: string | undefined = undefined;
-    if (user.exchange_api_secret_encrypted && user.exchange_api_secret_iv && c.env.ENCRYPTION_KEY) {
-      try {
-        const decrypted = await decrypt(
-          { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt },
-          c.env.ENCRYPTION_KEY
-        );
-        cleanSecret = cleanCredential(decrypted);
-        console.log("[DIAGNOSTIC] Stage 4: Secret decrypted successfully");
-      } catch (decErr: any) {
-        console.warn("[DIAGNOSTIC] Stage 4 EXCEPTION: Secret decryption failed, proceeding unauthenticated:", decErr?.message);
-      }
-    } else {
-      console.log("[DIAGNOSTIC] Stage 4: Secret omitted/not configured");
-    }
-
-    // Stage 5: CCXT client created
+    // Stage 5: CCXT client created (Anonymous Provider)
     currentStage = "5. CCXT client created";
-    let adapter: any = null;
-    try {
-      adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-        environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
-        apiKey: cleanKey,
-        secret: cleanSecret,
-        region: resolveCanonicalRoutingRegion(user.exchange_region),
-      });
+    console.log(`[DIAGNOSTIC] Stage 5: CCXT client created for provider=${user.exchange_name}`);
 
-      console.log(`[DIAGNOSTIC] Stage 5: CCXT client created for provider=${user.exchange_name}`);
-    } catch (provErr: any) {
-      console.error("[EXCHANGE_PROVIDER_ERROR] Provider creation failed:", provErr?.message);
-      const classified = classifyException(provErr, user.exchange_name, correlationId);
-      c.status(400);
-      return c.json({
-        success: false,
-        code: classified.code,
-        message: classified.friendlyMessage,
-        hint: classified.hint,
-        version: classified.version || "1.0",
-        correlationId,
-      });
-    }
-
-    // Stage 6: fetchBalance completed
+    // Stage 6: fetchBalance skipped (no API credentials required)
     currentStage = "6. fetchBalance completed";
-    try {
-      if (cleanKey && cleanSecret) {
-        await adapter.fetchBalance();
-        console.log("[DIAGNOSTIC] Stage 6: fetchBalance completed successfully");
-      } else {
-        console.log("[DIAGNOSTIC] Stage 6: fetchBalance skipped (no API credentials)");
-      }
-    } catch (balErr: any) {
-      console.warn("[DIAGNOSTIC] Stage 6 WARNING: fetchBalance threw exception, proceeding:", balErr?.message);
-    }
+    console.log("[DIAGNOSTIC] Stage 6: fetchBalance skipped (no API credentials)");
 
-    // Stage 7: fetchTickers completed
+    // Stage 7: fetchTickers completed via PublicMarketDataService & anonymous adapter
     currentStage = "7. fetchTickers completed";
+    const exchangeName = (user.exchange_name || "bybit") as ExchangeName;
+    const environment = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
+    const region = resolveCanonicalRoutingRegion(user.exchange_region);
+    const publicService = PublicMarketDataService.getInstance();
+    const publicAdapter = await ExchangeManager.getProvider(exchangeName, {
+      environment,
+      region,
+    });
+
     let markets: any[] = [];
     try {
-      markets = await adapter.fetchMarkets();
+      if (c.env.PUBLIC_MARKET_COORDINATOR) {
+        markets = await publicService.getMarkets(c.env, exchangeName, environment, region);
+      } else {
+        markets = await publicAdapter.fetchMarkets();
+      }
     } catch (mErr: any) {
       console.error("[DIAGNOSTIC] Stage 7 WARNING: fetchMarkets threw exception:", mErr?.message);
     }
@@ -1175,11 +1153,13 @@ export async function handleGetPersonalizedMarketCandidates(
     // Filter out inactive/delisted markets before ticker ingestion
     const activeMarkets = markets.filter((m: any) => m.active !== false);
 
-    // Execute bulk ticker fetch to prevent O(N) subrequest limits (Phase 6 architecture fix)
+    // Execute bulk ticker fetch using PublicMarketDataService or direct adapter
     const rawTickers: any[] = [];
     try {
-      const allTickers = await adapter.fetchTickers(activeMarkets.map((m: any) => m.symbol));
-      const tickerMap = new Map<string, any>(allTickers.map((t: any) => [t.symbol, t]));
+      const allTickers = c.env.PUBLIC_MARKET_COORDINATOR
+        ? await publicService.getTickers(c.env, exchangeName, environment, region)
+        : await publicAdapter.fetchTickers(activeMarkets.map((m: any) => m.symbol));
+      const tickerMap = new Map<string, any>(allTickers.map((t: any) => [t.symbol || t.pairName, t]));
 
       for (const m of activeMarkets) {
         const t = tickerMap.get(m.symbol);
@@ -1188,21 +1168,23 @@ export async function handleGetPersonalizedMarketCandidates(
           continue;
         }
 
-        const px = typeof t?.last?.toNumber === 'function' ? t.last.toNumber() : (typeof t?.last === 'number' ? t.last : 0);
+        const px = typeof t?.last?.toNumber === 'function' ? t.last.toNumber() : (typeof t?.last === 'number' ? t.last : (typeof t?.price === 'number' ? t.price : 0));
         if (!px || px <= 0 || isNaN(px)) {
           console.warn(`[DIAGNOSTIC] Stage 7: Invalid or missing spot price for ${m.symbol}, skipping symbol.`);
           continue;
         }
-        const bidPx = typeof t?.bid?.toNumber === 'function' ? t.bid.toNumber() : (typeof t?.bid === 'number' && t.bid > 0 ? t.bid : (t?.info?.bid1Price ? parseFloat(t.info.bid1Price) || px : px));
-        const askPx = typeof t?.ask?.toNumber === 'function' ? t.ask.toNumber() : (typeof t?.ask === 'number' && t.ask > 0 ? t.ask : (t?.info?.ask1Price ? parseFloat(t.info.ask1Price) || px : px));
-        const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : 0);
-        const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : (vol * px));
-        const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (typeof t?.high === 'number' ? t.high : px);
-        const low = typeof t?.low?.toNumber === 'function' ? t.low.toNumber() : (typeof t?.low === 'number' ? t.low : px);
+        const bidPx = typeof t?.bid?.toNumber === 'function' ? t.bid.toNumber() : (typeof t?.bid === 'number' && t.bid > 0 ? t.bid : (t?._bid || (t?.info?.bid1Price ? parseFloat(t.info.bid1Price) || px : px)));
+        const askPx = typeof t?.ask?.toNumber === 'function' ? t.ask.toNumber() : (typeof t?.ask === 'number' && t.ask > 0 ? t.ask : (t?._ask || (t?.info?.ask1Price ? parseFloat(t.info.ask1Price) || px : px)));
+        const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : (typeof t?.volume24h === 'number' ? t.volume24h : 0));
+        const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : (typeof t?.quoteVolume24h === 'number' ? t.quoteVolume24h : (vol * px)));
+        const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (typeof t?.high === 'number' ? t.high : (typeof t?.highPrice24h === 'number' ? t.highPrice24h : px));
+        const low = typeof t?.low?.toNumber === 'function' ? t.low.toNumber() : (typeof t?.low === 'number' ? t.low : (typeof t?.lowPrice24h === 'number' ? t.lowPrice24h : px));
 
         let chg = 0;
         if (typeof (t as any)?.percentage === 'number' && !isNaN((t as any).percentage)) {
           chg = (t as any).percentage;
+        } else if (typeof (t as any)?.priceChangePercent24h === 'number') {
+          chg = (t as any).priceChangePercent24h;
         } else if (typeof (t as any)?.info?.priceChangePercent !== 'undefined') {
           chg = parseFloat((t as any).info.priceChangePercent) || 0;
         } else if (typeof (t as any)?.info?.changeRate !== 'undefined') {
@@ -1273,12 +1255,16 @@ export async function handleGetPersonalizedMarketCandidates(
     const boundedMarkets = selectBoundedDiscoveryMarkets(activeMarkets, tickers, userAllocation, 8);
     if (boundedMarkets.length === 0) {
       console.log(`[DIAGNOSTIC] Stage 9: 0 eligible markets after bounded pre-selection (universe=${activeMarkets.length}, budget=${userAllocation ?? 'default'}). Returning empty array without scanner invocation.`);
-      DISCOVERY_CACHE.set(cacheKey, { timestamp: Date.now(), data: [] });
+      DISCOVERY_CACHE.set(cacheKey, []);
       return c.json([]);
     }
 
     try {
-      const scanner = new MarketOpportunityScanner(adapter as any);
+      const publicAdapter = await ExchangeManager.getProvider(exchangeName, {
+        environment,
+        region,
+      });
+      const scanner = new MarketOpportunityScanner(publicAdapter as any);
       const scanResult = await scanner.scan({
         markets: boundedMarkets,
         tickers,
@@ -1303,7 +1289,6 @@ export async function handleGetPersonalizedMarketCandidates(
       if (scanResult.topOpportunities && scanResult.topOpportunities.length > 0) {
         console.log(`[DIAGNOSTIC] Stage 9: MarketOpportunityScanner produced ${scanResult.topOpportunities.length} opportunities (${scanResult.allQualifiedOpportunities.length} total qualified)`);
         const mapped = mapScanResultToCandidates(scanResult, tickers);
-        // Exclude degraded candidates to prevent exposing degraded market data as valid trading setups
         candidates = mapped.filter((c: any) => c.opportunityState !== 'DATA_DEGRADED');
       } else {
         console.log(`[DIAGNOSTIC] Stage 9: 0 usable opportunities discovered (screenedCount=${scanResult?.screenedCount ?? 0}). Returning empty candidates list.`);
@@ -1326,7 +1311,7 @@ export async function handleGetPersonalizedMarketCandidates(
     currentStage = "10. response serialized";
     console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully (${candidates.length} items)`);
     
-    DISCOVERY_CACHE.set(cacheKey, { timestamp: Date.now(), data: candidates });
+    DISCOVERY_CACHE.set(cacheKey, candidates);
     return c.json(candidates);
 
   } catch (fatalErr: any) {
@@ -1577,9 +1562,17 @@ export async function handleGetTicker(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
+    const normEnv = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
+    const normReg = resolveCanonicalRoutingRegion(user.exchange_region);
+    const tickerCacheKey = `${user.exchange_name}:${normEnv}:${normReg}:${symbol}`;
+    const cachedTicker = TICKER_CACHE.get(tickerCacheKey);
+    if (cachedTicker) {
+      return c.json(cachedTicker);
+    }
+
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
-      region: resolveCanonicalRoutingRegion(user.exchange_region),
+      environment: normEnv,
+      region: normReg,
     });
 
     const ticker = await adapter.fetchTicker(symbol);
@@ -1598,7 +1591,7 @@ export async function handleGetTicker(
     const priceChange24h = Number.isFinite(rawChange) ? rawChange : 0;
     const priceChangePercent24h = Number.isFinite(rawPct) ? rawPct : 0;
 
-    return c.json({
+    const result = {
       symbol: ticker.symbol,
       price: price,
       volume24h: ticker.volume.toNumber(),
@@ -1613,7 +1606,10 @@ export async function handleGetTicker(
       tickSize: null,
       lotSize: null,
       timestamp: new Date().toISOString(),
-    });
+    };
+    TICKER_CACHE.set(tickerCacheKey, result);
+
+    return c.json(result);
   } catch (e: unknown) {
     const error = e as Error;
     c.status(500);
@@ -1648,12 +1644,21 @@ export async function handleGetKlines(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
+    const normEnv = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
+    const normReg = resolveCanonicalRoutingRegion(user.exchange_region);
+    const klinesCacheKey = `${user.exchange_name}:${normEnv}:${normReg}:${symbol}:${interval}:${limit}`;
+    const cachedKlines = KLINES_CACHE.get(klinesCacheKey);
+    if (cachedKlines) {
+      return c.json(cachedKlines);
+    }
+
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
-      region: resolveCanonicalRoutingRegion(user.exchange_region),
+      environment: normEnv,
+      region: normReg,
     });
 
     const klines = await adapter.fetchKlines(symbol, interval, limit);
+    KLINES_CACHE.set(klinesCacheKey, klines);
 
     return c.json(klines);
   } catch (e: unknown) {
@@ -1833,20 +1838,22 @@ export async function handleGetTechnicalAnalysis(
       metadata: { reasoning: ['Evaluation pending initial cycle'] }
     };
 
-    let snapshot: any;
-    try {
-      snapshot = await dataEngine.getSnapshot(symbol, manifest.supportedTimeframes || ['5m']);
-    } catch (snapErr: unknown) {
-      new StructuredLogger().warn(`[TechnicalAnalysis] getSnapshot fallback for ${symbol}`, { error: String(snapErr) });
-      snapshot = {
-        symbol,
-        timestamp: Date.now(),
-        currentPrice: ticker.last.toNumber(),
-        volume24h: ticker.volume.toNumber(),
-        quoteVolume24h: ticker.quoteVolume.toNumber(),
-        candles: { '1m': [], '3m': [], '5m': [], '15m': [], '30m': [], '1h': [], '4h': [] },
-        metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: ticker.high.toNumber(), lowPrice24h: ticker.low.toNumber() },
-      };
+    let snapshot: any = orchestrator.getLastSnapshot();
+    if (!snapshot || snapshot.symbol !== symbol) {
+      try {
+        snapshot = await dataEngine.getSnapshot(symbol, manifest.supportedTimeframes || ['5m']);
+      } catch (snapErr: unknown) {
+        new StructuredLogger().warn(`[TechnicalAnalysis] getSnapshot fallback for ${symbol}`, { error: String(snapErr) });
+        snapshot = {
+          symbol,
+          timestamp: Date.now(),
+          currentPrice: ticker.last.toNumber(),
+          volume24h: ticker.volume.toNumber(),
+          quoteVolume24h: ticker.quoteVolume.toNumber(),
+          candles: { '1m': [], '3m': [], '5m': [], '15m': [], '30m': [], '1h': [], '4h': [] },
+          metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: ticker.high.toNumber(), lowPrice24h: ticker.low.toNumber() },
+        };
+      }
     }
 
     const snapshotDto = AnalysisSnapshotMapper.map(evalResult, manifest, snapshot, 'PREVIEW', false);

@@ -31,11 +31,23 @@ preview_database_id = "15f49e2f-08bf-4dc5-8ec5-0860429fc0c4"
 migrations_dir = "migrations"
 
 [durable_objects]
-bindings = [{ name = "TRADING_BOTS", class_name = "TradingBot" }]
+bindings = [
+  { name = "TRADING_BOTS", class_name = "TradingBot" },
+  { name = "PUBLIC_MARKET_COORDINATOR", class_name = "PublicMarketDataCoordinator" }
+]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["TradingBot"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PublicMarketDataCoordinator"]
+
+# Observability configuration
+[observability]
+enabled = true
+head_sampling_rate = 0.1
 
 # Explicitly clear any orphan cron schedules to prevent scheduled() handler exceptions
 [triggers]

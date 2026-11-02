@@ -1,4 +1,5 @@
 // src/utils/crypto.ts
+import { LruTtlCache } from "./infrastructure/cache/LruTtlCache";
 
 export function cleanCredential(val: string | undefined | null): string {
   if (!val) return "";
@@ -9,7 +10,36 @@ export function cleanCredential(val: string | undefined | null): string {
     .trim();
 }
 
-async function getKey(secret: string, salt: BufferSource): Promise<CryptoKey> {
+const DERIVED_KEY_CACHE = new LruTtlCache<string, CryptoKey>(500, 15 * 60 * 1000);
+
+export function __resetDerivedKeyCacheForTests(): void {
+  DERIVED_KEY_CACHE.clear();
+}
+
+export function __getDerivedKeyCacheStatsForTests() {
+  return DERIVED_KEY_CACHE.getStats();
+}
+
+function getSaltKey(secret: string, salt: BufferSource): string {
+  let saltStr: string;
+  if (salt instanceof Uint8Array) {
+    saltStr = btoa(Array.from(salt).map(b => String.fromCharCode(b)).join(''));
+  } else if (ArrayBuffer.isView(salt)) {
+    const bytes = new Uint8Array(salt.buffer, salt.byteOffset, salt.byteLength);
+    saltStr = btoa(Array.from(bytes).map(b => String.fromCharCode(b)).join(''));
+  } else if (salt instanceof ArrayBuffer) {
+    saltStr = btoa(Array.from(new Uint8Array(salt)).map(b => String.fromCharCode(b)).join(''));
+  } else {
+    saltStr = String(salt);
+  }
+  return `${secret.length}:${secret}:${saltStr}`;
+}
+
+export async function getKey(secret: string, salt: BufferSource): Promise<CryptoKey> {
+  const cacheKey = getSaltKey(secret, salt);
+  const cached = DERIVED_KEY_CACHE.get(cacheKey);
+  if (cached) return cached;
+
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
@@ -17,13 +47,15 @@ async function getKey(secret: string, salt: BufferSource): Promise<CryptoKey> {
     false,
     ['deriveKey'],
   );
-  return crypto.subtle.deriveKey(
+  const derived = await crypto.subtle.deriveKey(
     { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
     true,
     ['encrypt', 'decrypt'],
   );
+  DERIVED_KEY_CACHE.set(cacheKey, derived);
+  return derived;
 }
 
 export async function encrypt(text: string, secret: string): Promise<{ iv: string; encrypted: string; salt: string }> {
@@ -65,4 +97,3 @@ export async function decrypt(encryptedData: { iv: string; encrypted: string; sa
 
   return new TextDecoder().decode(decryptedContent);
 }
-

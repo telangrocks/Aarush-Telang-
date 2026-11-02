@@ -52,6 +52,7 @@ import { handleRegisterFcmToken } from "./handlers/notifications";
 
 import { isTokenRevoked } from "./handlers/auth";
 import { chatWithKimiK3 } from "./services/kimi";
+import { LruTtlCache } from "./infrastructure/cache/LruTtlCache";
 
 export interface Env {
   DB: D1Database;
@@ -66,6 +67,7 @@ export interface Env {
   GLOBAL_TRADING_HALT?: string;
   FCM_PRIVATE_KEY?: string;
   TRADING_BOTS: DurableObjectNamespace;
+  PUBLIC_MARKET_COORDINATOR?: DurableObjectNamespace;
   /** Workers AI binding — used to call Moonshot AI Kimi K3 (moonshotai/kimi-k3). Optional so non-AI routes/tests don't require it. */
   AI?: Ai;
   ENVIRONMENT?: string;
@@ -152,8 +154,11 @@ app.get("/health", (c) => {
   });
 });
 
-app.use("/api/*", async (c, next) => {
-  if (c.req.method === "POST" && jsonEndpoints.includes(c.req.path)) {
+app.use("*", async (c, next) => {
+  if (
+    c.req.method === "POST" &&
+    jsonEndpoints.some((ep) => c.req.path.endsWith(ep))
+  ) {
     const contentType = c.req.header("content-type");
     if (!contentType || !contentType.includes("application/json")) {
       c.status(415);
@@ -166,7 +171,14 @@ app.use("/api/*", async (c, next) => {
   await next();
 });
 
+const DB_STATUS_CACHE = new LruTtlCache<string, { status: string; message: string; tablesChecked: string[] }>(5, 60_000);
+
 app.get("/db-status", async (c) => {
+  const cached = DB_STATUS_CACHE.get("status");
+  if (cached) {
+    return c.json(cached);
+  }
+
   try {
     await c.env.DB.prepare("SELECT 1").run();
     const requiredTables = [
@@ -203,37 +215,44 @@ app.get("/db-status", async (c) => {
       });
     }
 
-    return c.json({
+    const result = {
       status: "ok",
       message: "Database connection successful",
       tablesChecked: requiredTables,
-    });
-  } catch (e) {
-    console.error("DB connection failed:", e);
+    };
+    DB_STATUS_CACHE.set("status", result);
+    return c.json(result);
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error("Database connection check failed:", error);
     c.status(500);
-    return c.json({ status: "error", message: "Database connection failed" });
+    return c.json({
+      status: "error",
+      message: "Database connection failed",
+      details: error.message,
+    });
   }
 });
 
-// ==========================================
-// PUBLIC API ROUTES
-// ==========================================
-app.post("/api/register", handleRegister);
-app.post("/api/resend-verification", handleResendVerification);
-app.get("/api/verify-email", handleVerifyEmail);
-app.post("/api/login", handleLogin);
+// Chat with Kimi K3 (moonshotai/kimi-k3 via Workers AI)
+app.post("/api/chat", async (c) => {
+  try {
+    const body = await c.req.json<any>();
+    if (!c.env.AI) {
+      c.status(503);
+      return c.json({ error: "AI service binding unavailable" });
+    }
+    const result = await chatWithKimiK3(c.env.AI, body);
+    return c.json(result);
+  } catch (err: any) {
+    c.status(500);
+    return c.json({ error: err?.message || String(err) });
+  }
+});
 
-// ==========================================
-// PROTECTED API ROUTES
-// ==========================================
+// User routes (some are public, some need JWT)
 const api = new Hono<{ Bindings: Env }>();
 
-// JWT Middleware with proper error handling.
-// NOTE: Hono applies sub-app (`api`) middleware to the parent app as well, so
-// this guard would otherwise run on every /api/* route. Explicitly skip the
-// public auth routes (login, register, email verification, and exchange credential
-// validation, which runs before a user is authenticated) so they remain
-// publicly accessible while everything else requires a valid JWT.
 const PUBLIC_AUTH_PATHS = new Set([
   "/api/register",
   "/api/login",
@@ -276,7 +295,16 @@ api.use("*", async (c, next) => {
     c.status(401);
     return c.json({ error: "Invalid token type. Access token required." });
   }
-  const isHighStakes = c.req.path.includes("/execute-trade") || c.req.path.includes("/credentials") || c.req.path.includes("/password");
+  const isHighStakes =
+    c.req.path.includes("/execute-trade") ||
+    c.req.path.includes("/credentials") ||
+    c.req.path.includes("/password") ||
+    c.req.path.includes("/exchange/connect") ||
+    c.req.path.includes("/trading-bot/activate") ||
+    c.req.path.includes("/trading-bot/deactivate") ||
+    c.req.path.includes("/account") ||
+    c.req.path.includes("/set-pin") ||
+    c.req.path.includes("/mfa/disable");
   try {
     if (payload?.jti && await isTokenRevoked(c, payload.jti, { failClosed: isHighStakes })) {
       c.status(401);
@@ -311,130 +339,93 @@ api.post("/watchlist", async (c) => {
   const userId = payload.sub;
   const { token_id } = await c.req.json<{ token_id: string }>();
 
+  if (!token_id) {
+    c.status(400);
+    return c.json({ error: "token_id is required" });
+  }
+
+  const id = crypto.randomUUID();
+  const added_at = new Date().toISOString();
+
   await c.env.DB.prepare(
     "INSERT INTO watchlist (id, user_id, token_id, added_at) VALUES (?, ?, ?, ?)",
   )
-    .bind(crypto.randomUUID(), userId, token_id, new Date().toISOString())
+    .bind(id, userId, token_id, added_at)
     .run();
 
-  return c.json({ success: true, token_id });
+  return c.json({ success: true, id, token_id });
 });
 
 api.delete("/watchlist/:id", async (c) => {
   const payload = c.get("jwtPayload") as { sub: string };
   const userId = payload.sub;
-  const itemId = c.req.param("id");
+  const id = c.req.param("id");
 
-  await c.env.DB.prepare("DELETE FROM watchlist WHERE id = ? AND user_id = ?")
-    .bind(itemId, userId)
+  await c.env.DB.prepare(
+    "DELETE FROM watchlist WHERE id = ? AND user_id = ?",
+  )
+    .bind(id, userId)
     .run();
 
   return c.json({ success: true });
 });
 
+// Exchange Routes
 api.post("/exchange/validate", handleValidateExchange);
-
 api.post("/exchange/connect", handleConnectExchange);
 api.get("/exchange/status", handleGetExchangeStatus);
 api.get("/exchange/balance", handleGetExchangeBalances);
 
+// Market Discovery Routes
 api.get("/market/candidates", handleGetPersonalizedMarketCandidates);
 api.get("/market/opportunities", handleGetMarketOpportunities);
-
-api.get("/strategies", handleGetStrategies);
-
+api.get("/market/strategies", handleGetStrategies);
+api.post("/market/technical-analysis", handleGetTechnicalAnalysis);
 api.get("/market/ticker", handleGetTicker);
 api.get("/market/klines", handleGetKlines);
 
-api.post("/market/technical-analysis", handleGetTechnicalAnalysis);
-
+// Trading Bot Execution & Monitoring Routes
 api.post("/trading-bot/activate", handleActivateTradingBot);
 api.get("/trading-bot/status", handleGetTradingBotStatus);
 api.get("/trading-bot/analysis-status", handleGetAnalysisStatus);
 api.post("/trading-bot/execute-trade", handleExecuteTrade);
 api.post("/trading-bot/mock-trade", handleMockTrade);
-// /deactivate and /stop-trade are both used by the Android client:
-// /deactivate = stop the bot session; /stop-trade = close an open position
 api.post("/trading-bot/deactivate", handleDeactivateTradingBot);
-api.post("/trading-bot/stop-trade", handleStopTradingBot);
+api.post("/trading-bot/stop", handleStopTradingBot);
 api.get("/trading-bot/alerts", handleGetBotAlerts);
-api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
+api.post("/trading-bot/alerts/:alertId/ack", handleAcknowledgeAlert);
 api.get("/trading-bot/execution-status/:positionId", handleGetExecutionStatus);
-api.post("/trading-bot/trigger-alert", handleTriggerManualTradeAlert);
+api.post("/trading-bot/manual-alert", handleTriggerManualTradeAlert);
 
-
-
+// FCM token registration for push notifications
 api.post("/fcm/register", handleRegisterFcmToken);
 api.delete("/fcm/register", handleDeleteFcmToken);
 
-
-// ==========================================
-// AI — Kimi K3 (Cloudflare Workers AI)
-// ==========================================
-api.post("/ai/kimi", async (c) => {
-  const { messages, system, temperature, max_tokens } = await c.req.json<{
-    messages: { role: "system" | "user" | "assistant"; content: string }[];
-    system?: string;
-    temperature?: number;
-    max_tokens?: number;
-  }>();
-  if (!Array.isArray(messages) || messages.length === 0) {
-    c.status(400);
-    return c.json({ error: "Field 'messages' must be a non-empty array." });
-  }
-  if (!c.env.AI) {
-    c.status(503);
-    return c.json({ error: "AI binding is not configured on this Worker." });
-  }
-  try {
-    const result = await chatWithKimiK3(c.env.AI, { messages, system, temperature, max_tokens });
-    return c.json(result);
-  } catch (err) {
-    console.error("Kimi K3 invocation failed:", err);
-    c.status(502);
-    return c.json({ error: "Kimi K3 invocation failed", detail: err instanceof Error ? err.message : String(err) });
-  }
-});
-
-// Simple test endpoint: body { "prompt": "..." } -> Kimi K3 response.
-api.post("/ai/kimi/test", async (c) => {
-  const { prompt } = await c.req.json<{ prompt?: string }>();
-  if (!prompt || typeof prompt !== "string") {
-    c.status(400);
-    return c.json({ error: "Field 'prompt' (string) is required." });
-  }
-  if (!c.env.AI) {
-    c.status(503);
-    return c.json({ error: "AI binding is not configured on this Worker." });
-  }
-  try {
-    const result = await chatWithKimiK3(c.env.AI, {
-      messages: [{ role: "user", content: prompt }],
-    });
-    return c.json(result);
-  } catch (err) {
-    console.error("Kimi K3 test invocation failed:", err);
-    c.status(502);
-    return c.json({ error: "Kimi K3 invocation failed", detail: err instanceof Error ? err.message : String(err) });
-  }
-});
-
+// Authentication Routes
+api.post("/register", handleRegister);
+api.post("/login", handleLogin);
+api.post("/resend-verification", handleResendVerification);
+api.get("/verify-email", handleVerifyEmail);
 api.post("/logout", handleLogout);
-api.post("/refresh", handleRefresh);
 api.post("/forgot-password", handleForgotPassword);
 api.post("/reset-password", handleResetPassword);
-
+api.post("/refresh", handleRefresh);
 api.delete("/account", handleDeleteAccount);
+
+// Device management routes
 api.post("/devices", handleRegisterDevice);
 api.get("/devices", handleListDevices);
 api.delete("/devices/:id", handleRemoveDevice);
+
+// MFA routes
 api.post("/mfa/enable", handleEnableMfa);
 api.post("/mfa/disable", handleDisableMfa);
-api.post("/set-pin", handleSetPin);
 
-app.post("/api/verify-pin", handleVerifyPin);
-app.post("/api/reset-pin", handleRequestPinReset);
-app.post("/api/confirm-pin-reset", handleConfirmPinReset);
+// PIN routes
+api.post("/set-pin", handleSetPin);
+api.post("/verify-pin", handleVerifyPin);
+api.post("/reset-pin", handleRequestPinReset);
+api.post("/confirm-pin-reset", handleConfirmPinReset);
 
 app.route("/api", api);
 
@@ -460,4 +451,5 @@ app.notFound((c) => {
 });
 
 export { TradingBot } from "./trading-bot";
+export { PublicMarketDataCoordinator } from "./infrastructure/market-data/PublicMarketDataCoordinator";
 export interface Env { USE_NEW_ENGINE?: string; }
