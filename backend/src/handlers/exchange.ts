@@ -10,15 +10,133 @@ import { analyzeMarket } from "../market-analysis";
 import { normalizeEnvironment as normEnvUtil, isEnvironmentSupported, getSupportedEnvironmentsList, CanonicalEnvironment } from "../utils/environment";
 import { normalizeRegion, resolveCanonicalRoutingRegion } from "../utils/region";
 import { WebCryptoSigner } from "../infrastructure/crypto/WebCryptoSigner";
-import { MarketOpportunityScanner, ExecutionEligibilityGate, type ScannerScanResult, type MarketOpportunity } from "../engine/scanner";
+import {
+  MarketOpportunityScanner,
+  ExecutionEligibilityGate,
+  MultiTimeframeCandleStore,
+  DEFAULT_SCANNER_CONFIG,
+  type ScannerConfig,
+  type ScannerScanResult,
+  type MarketOpportunity,
+} from "../engine/scanner";
+import { SingleFlightCoalescer } from "../infrastructure/cache/SingleFlightCoalescer";
 import { isExcludedAsset } from "../domain/trading/AssetClassification";
 import { PriceNormalizer } from "../utils/PriceNormalizer";
 import { extractUsdtBalance } from "../utils/balance";
 
 const DISCOVERY_CACHE = new Map<string, { timestamp: number, data: any }>();
 const CACHE_TTL_MS = 60000;
-const OPPORTUNITY_CACHE = new Map<string, { timestamp: number; data: ScannerScanResult }>();
+const SHARED_OPPORTUNITY_CACHE = new Map<string, { timestamp: number; data: ScannerScanResult }>();
+const OPPORTUNITY_CACHE = SHARED_OPPORTUNITY_CACHE;
 const OPPORTUNITY_CACHE_TTL_MS = 30000;
+const PUBLIC_OPPORTUNITY_MAX_CANDIDATES = 8;
+const PUBLIC_CANDLE_STORE_DEPTH = 70;
+const OPPORTUNITY_SINGLE_FLIGHT = new SingleFlightCoalescer<ScannerScanResult>();
+
+interface ScopedPublicCandleStoreEntry {
+  adapter: any;
+  store: MultiTimeframeCandleStore;
+}
+
+const PUBLIC_CANDLE_STORE_REGISTRY = new Map<string, ScopedPublicCandleStoreEntry>();
+
+function deepFreezeObject<T>(obj: T): T {
+  if (obj === null || typeof obj !== "object" || Object.isFrozen(obj)) {
+    return obj;
+  }
+  Object.freeze(obj);
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      deepFreezeObject(obj[i]);
+    }
+  } else {
+    for (const key of Object.keys(obj as Record<string, unknown>)) {
+      deepFreezeObject((obj as Record<string, unknown>)[key]);
+    }
+  }
+  return obj;
+}
+
+export function buildPublicOpportunityCacheKey(
+  exchangeName: string,
+  environment: string,
+  region: string,
+  scannerConfig: ScannerConfig = DEFAULT_SCANNER_CONFIG,
+  maxCandidates: number = PUBLIC_OPPORTUNITY_MAX_CANDIDATES,
+  candleDepth: number = PUBLIC_CANDLE_STORE_DEPTH
+): string {
+  const canonicalExchange = (exchangeName || "bybit").toLowerCase().trim() || "bybit";
+  const canonicalEnv = (environment || "mainnet").toLowerCase().trim() || "mainnet";
+  const canonicalReg = (region || "india").toLowerCase().trim() || "india";
+  const configSignature = [
+    `b${maxCandidates}`,
+    `cd${candleDepth}`,
+    `turn${scannerConfig.minTurnover24hUsdt}`,
+    `spr${scannerConfig.maxSpreadPercent}`,
+    `rng${scannerConfig.minRange24hPercent}`,
+    `tfee${scannerConfig.takerFeePercent}`,
+    `mfee${scannerConfig.makerFeePercent}`,
+    `edge${scannerConfig.minNetEdgeRatio}`,
+    `slip${scannerConfig.slippageCoefficient}`,
+    `w${scannerConfig.weights.mtfAlignment}-${scannerConfig.weights.regimeAndStrategyFit}-${scannerConfig.weights.momentumAndVolume}-${scannerConfig.weights.costFeasibility}`,
+    `hys${scannerConfig.hysteresisScoreBuffer}`,
+    `lock${scannerConfig.rankLockDurationMs}`,
+    `exp${scannerConfig.staleOpportunityExpiryMs}`,
+    `disp${scannerConfig.displayLimit}`,
+  ].join("_");
+  return `pub_opps:${canonicalExchange}:${canonicalEnv}:${canonicalReg}:${configSignature}`;
+}
+
+function getOrCreateScopedPublicCandleStore(
+  storeKey: string,
+  publicAdapter: any,
+  maxCandles: number = PUBLIC_CANDLE_STORE_DEPTH
+): MultiTimeframeCandleStore {
+  const existing = PUBLIC_CANDLE_STORE_REGISTRY.get(storeKey);
+  if (existing) {
+    existing.adapter = publicAdapter;
+    return existing.store;
+  }
+
+  const holder: ScopedPublicCandleStoreEntry = {
+    adapter: publicAdapter,
+    store: null as unknown as MultiTimeframeCandleStore,
+  };
+
+  const delegatingPublicCandleProvider = {
+    fetchCandles: (symbol: string, tf: any, limit: number) => {
+      if (typeof holder.adapter?.fetchCandles === "function") {
+        return holder.adapter.fetchCandles(symbol, tf, limit);
+      }
+      if (typeof holder.adapter?.fetchKlines === "function") {
+        return holder.adapter.fetchKlines(symbol, tf, limit);
+      }
+      return Promise.resolve([]);
+    },
+  };
+
+  holder.store = new MultiTimeframeCandleStore(delegatingPublicCandleProvider as any, maxCandles);
+  PUBLIC_CANDLE_STORE_REGISTRY.set(storeKey, holder);
+  return holder.store;
+}
+
+export function __resetPublicOpportunityStateForTests(): void {
+  SHARED_OPPORTUNITY_CACHE.clear();
+  OPPORTUNITY_SINGLE_FLIGHT.clear();
+  PUBLIC_CANDLE_STORE_REGISTRY.clear();
+}
+
+export function __getPublicOpportunityDiagnosticsForTests(): {
+  sharedCacheKeys: string[];
+  candleStoreKeys: string[];
+  inFlightCount: number;
+} {
+  return {
+    sharedCacheKeys: Array.from(SHARED_OPPORTUNITY_CACHE.keys()),
+    candleStoreKeys: Array.from(PUBLIC_CANDLE_STORE_REGISTRY.keys()),
+    inFlightCount: OPPORTUNITY_SINGLE_FLIGHT.getActiveCount(),
+  };
+}
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment.
  * Returns null for unrecognized values.
@@ -1286,7 +1404,7 @@ export async function handleGetMarketOpportunities(
     let user: any = null;
     try {
       user = await c.env.DB.prepare(
-        "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?"
+        "SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?"
       )
         .bind(userId)
         .first();
@@ -1294,90 +1412,103 @@ export async function handleGetMarketOpportunities(
       console.warn("[DIAGNOSTIC] /market/opportunities DB query error, proceeding with default provider:", dbErr?.message);
     }
 
-    const exchangeName: ExchangeName = (user?.exchange_name as ExchangeName) || "bybit";
+    const rawExchangeName = typeof user?.exchange_name === "string" ? user.exchange_name.toLowerCase().trim() : "";
+    const exchangeName: ExchangeName = (rawExchangeName as ExchangeName) || "bybit";
     const environment = normalizeEnvironment(user?.exchange_environment) ?? "mainnet";
     const region = resolveCanonicalRoutingRegion(user?.exchange_region);
 
-    const cacheKey = `${userId}_${exchangeName}_${environment}_${region}`;
-    const cached = OPPORTUNITY_CACHE.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < OPPORTUNITY_CACHE_TTL_MS) {
-      console.log(`[DIAGNOSTIC] /market/opportunities cache hit for ${cacheKey}`);
-      return formatOpportunitiesResponse(c, cached.data);
-    }
-
-    let cleanKey: string | undefined = undefined;
-    if (user?.exchange_api_key_encrypted && user?.exchange_api_key_iv && c.env.ENCRYPTION_KEY) {
-      try {
-        const decryptedKey = await decrypt(
-          { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
-          c.env.ENCRYPTION_KEY
-        );
-        cleanKey = cleanCredential(decryptedKey);
-      } catch (e: any) {
-        console.warn("[DIAGNOSTIC] API key decryption failed:", e?.message);
-      }
-    }
-
-    let cleanSecret: string | undefined = undefined;
-    if (user?.exchange_api_secret_encrypted && user?.exchange_api_secret_iv && c.env.ENCRYPTION_KEY) {
-      try {
-        const decrypted = await decrypt(
-          { iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt },
-          c.env.ENCRYPTION_KEY
-        );
-        cleanSecret = cleanCredential(decrypted);
-      } catch (e: any) {
-        console.warn("[DIAGNOSTIC] API secret decryption failed:", e?.message);
-      }
-    }
-
-    const adapter = await ExchangeManager.getProvider(exchangeName, {
+    const publicCacheKey = buildPublicOpportunityCacheKey(
+      exchangeName,
       environment,
-      apiKey: cleanKey,
-      secret: cleanSecret,
       region,
+      DEFAULT_SCANNER_CONFIG,
+      PUBLIC_OPPORTUNITY_MAX_CANDIDATES,
+      PUBLIC_CANDLE_STORE_DEPTH
+    );
+
+    const cached = SHARED_OPPORTUNITY_CACHE.get(publicCacheKey);
+    if (cached && Date.now() - cached.timestamp < OPPORTUNITY_CACHE_TTL_MS) {
+      console.log(`[DIAGNOSTIC] /market/opportunities shared cache hit for ${publicCacheKey}`);
+      return formatOpportunitiesResponse(c, structuredClone(cached.data));
+    }
+
+    const scanResult = await OPPORTUNITY_SINGLE_FLIGHT.do(publicCacheKey, async () => {
+      const freshCached = SHARED_OPPORTUNITY_CACHE.get(publicCacheKey);
+      if (freshCached && Date.now() - freshCached.timestamp < OPPORTUNITY_CACHE_TTL_MS) {
+        return freshCached.data;
+      }
+
+      // Anonymous public exchange provider: credentials intentionally omitted for public market endpoints
+      const publicAdapter = await ExchangeManager.getProvider(exchangeName, {
+        environment,
+        region,
+      });
+
+      const markets = await publicAdapter.fetchMarkets();
+      const tickers = await publicAdapter.fetchTickers();
+      const boundedMarkets = selectBoundedDiscoveryMarkets(
+        markets || [],
+        tickers || [],
+        null,
+        PUBLIC_OPPORTUNITY_MAX_CANDIDATES
+      );
+
+      if (boundedMarkets.length === 0) {
+        const emptyScanResult: ScannerScanResult = {
+          timestamp: Date.now(),
+          executionDurationMs: 0,
+          universeSize: (markets || []).length,
+          eligibleCount: 0,
+          qualityCount: 0,
+          screenedCount: 0,
+          allQualifiedOpportunities: [],
+          topOpportunities: [],
+          telemetry: {} as any,
+        };
+        // Do not cache empty universe results globally across users so transient empty upstream lists can recover immediately
+        return deepFreezeObject(structuredClone(emptyScanResult));
+      }
+
+      const candleStoreKey = `${exchangeName}:${environment}:${region}:cd${PUBLIC_CANDLE_STORE_DEPTH}`;
+      const candleStore = getOrCreateScopedPublicCandleStore(
+        candleStoreKey,
+        publicAdapter,
+        PUBLIC_CANDLE_STORE_DEPTH
+      );
+
+      const scanner = new MarketOpportunityScanner(
+        publicAdapter as any,
+        DEFAULT_SCANNER_CONFIG,
+        candleStore
+      );
+      const result = await scanner.scan({ markets: boundedMarkets, tickers });
+
+      if (
+        !result ||
+        result.screenedCount === 0 ||
+        (result.allQualifiedOpportunities.length > 0 &&
+          result.allQualifiedOpportunities.every((o: any) => o.state === "DATA_DEGRADED"))
+      ) {
+        const degradedError: any = new Error("Market data temporarily degraded or unavailable during opportunity scan.");
+        degradedError.__isMarketDataDegraded = true;
+        throw degradedError;
+      }
+
+      const immutableResult = deepFreezeObject(structuredClone(result));
+      SHARED_OPPORTUNITY_CACHE.set(publicCacheKey, { timestamp: Date.now(), data: immutableResult });
+      return immutableResult;
     });
 
-    const markets = await adapter.fetchMarkets();
-    const tickers = await adapter.fetchTickers();
-    const boundedMarkets = selectBoundedDiscoveryMarkets(markets || [], tickers || [], null, 8);
-    if (boundedMarkets.length === 0) {
-      const emptyScanResult: ScannerScanResult = {
-        timestamp: Date.now(),
-        executionDurationMs: 0,
-        universeSize: (markets || []).length,
-        eligibleCount: 0,
-        qualityCount: 0,
-        screenedCount: 0,
-        allQualifiedOpportunities: [],
-        topOpportunities: [],
-        telemetry: {} as any,
-      };
-      OPPORTUNITY_CACHE.set(cacheKey, { timestamp: Date.now(), data: emptyScanResult });
-      return formatOpportunitiesResponse(c, emptyScanResult);
-    }
-
-    const scanner = new MarketOpportunityScanner(adapter as any);
-    const scanResult = await scanner.scan({ markets: boundedMarkets, tickers });
-
-    if (
-      !scanResult ||
-      scanResult.screenedCount === 0 ||
-      (scanResult.allQualifiedOpportunities.length > 0 &&
-        scanResult.allQualifiedOpportunities.every((o: any) => o.state === 'DATA_DEGRADED'))
-    ) {
+    return formatOpportunitiesResponse(c, structuredClone(scanResult));
+  } catch (fatalErr: any) {
+    if (fatalErr?.__isMarketDataDegraded) {
       c.status(503);
       return c.json({
         success: false,
-        code: 'MARKET_DATA_DEGRADED',
-        error: 'Market data temporarily degraded or unavailable during opportunity scan.',
+        code: "MARKET_DATA_DEGRADED",
+        error: "Market data temporarily degraded or unavailable during opportunity scan.",
       });
     }
-
-    OPPORTUNITY_CACHE.set(cacheKey, { timestamp: Date.now(), data: scanResult });
-
-    return formatOpportunitiesResponse(c, scanResult);
-  } catch (fatalErr: any) {
     console.error(`[DIAGNOSTIC] /market/opportunities FATAL EXCEPTION:`, fatalErr?.message, fatalErr?.stack);
     c.status(500);
     return c.json({
