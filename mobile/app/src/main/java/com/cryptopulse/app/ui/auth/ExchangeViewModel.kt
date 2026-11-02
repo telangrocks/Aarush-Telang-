@@ -789,13 +789,6 @@ class ExchangeViewModel @Inject constructor(
         tradeAlertManager.dismissOrExecuteAlert()
         stopLiveTicker()
 
-        com.cryptopulse.app.forensics.CidDiagnosticManager.logExchange(
-            exchangeId = "bybit",
-            action = "ORDER_SUBMIT",
-            status = "SUBMITTING",
-            orderType = "MARKET"
-        )
-
         viewModelScope.launch {
             val token = tokenManager.getToken()
             if (token != null) {
@@ -807,26 +800,6 @@ class ExchangeViewModel @Inject constructor(
                         val rejectionMsg = execResult.message.ifBlank { "Trade execution was rejected by exchange." }
                         _tradeError.value = rejectionMsg
                         _executionState.value = ExecutionUiState.Failed(rejectionMsg)
-                        try {
-                            com.cryptopulse.app.forensics.CidDiagnosticManager.logExecutionResultReceived(
-                                alertId = alertId,
-                                symbol = (if (execResult.symbol.isNotBlank()) execResult.symbol else symbol) ?: "",
-                                strategyId = strategy ?: "",
-                                signalType = side ?: "BUY",
-                                marketPrice = if (execResult.requestedEntryPrice > 0) execResult.requestedEntryPrice else entryPrice,
-                                entryPrice = null,
-                                stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else stopLoss,
-                                takeProfit = if (execResult.takeProfit > 0) execResult.takeProfit else takeProfit,
-                                rejectionReason = rejectionMsg,
-                                severity = com.cryptopulse.app.forensics.CidSeverity.WARN
-                            )
-                        } catch (_: Throwable) {}
-                        com.cryptopulse.app.forensics.CidDiagnosticManager.logExchange(
-                            exchangeId = "bybit",
-                            action = "ORDER_REJECTED",
-                            status = "FAILED",
-                            errorCode = rejectionMsg
-                        )
                         return@onSuccess
                     }
 
@@ -851,25 +824,6 @@ class ExchangeViewModel @Inject constructor(
                             stopLossPrice = finalResult.stopLoss,
                             takeProfitPrice = finalResult.takeProfit,
                         )
-                        try {
-                            com.cryptopulse.app.forensics.CidDiagnosticManager.logExecutionResultReceived(
-                                alertId = alertId,
-                                symbol = finalResult.symbol,
-                                strategyId = strategy ?: "",
-                                signalType = side ?: "BUY",
-                                marketPrice = finalResult.requestedEntryPrice,
-                                entryPrice = finalResult.actualFillPrice,
-                                stopLoss = finalResult.stopLoss,
-                                takeProfit = finalResult.takeProfit,
-                                rejectionReason = null,
-                                severity = com.cryptopulse.app.forensics.CidSeverity.INFO
-                            )
-                        } catch (_: Throwable) {}
-                        com.cryptopulse.app.forensics.CidDiagnosticManager.logExchange(
-                            exchangeId = "bybit",
-                            action = "ORDER_FILLED",
-                            status = "SUCCESS"
-                        )
                     } else {
                         val positionId = if (execResult.positionId.isNotBlank()) execResult.positionId else alertId
                         _executionState.value = ExecutionUiState.AwaitingFill(
@@ -878,20 +832,6 @@ class ExchangeViewModel @Inject constructor(
                             symbol = symbol ?: "",
                             side = side ?: "BUY"
                         )
-                        try {
-                            com.cryptopulse.app.forensics.CidDiagnosticManager.logExecutionResultReceived(
-                                alertId = alertId,
-                                symbol = if (execResult.symbol.isNotBlank()) execResult.symbol else (symbol ?: ""),
-                                strategyId = strategy ?: "",
-                                signalType = side ?: "BUY",
-                                marketPrice = if (execResult.requestedEntryPrice > 0) execResult.requestedEntryPrice else entryPrice,
-                                entryPrice = null,
-                                stopLoss = if (execResult.stopLoss > 0) execResult.stopLoss else stopLoss,
-                                takeProfit = if (execResult.takeProfit > 0) execResult.takeProfit else takeProfit,
-                                rejectionReason = null,
-                                severity = com.cryptopulse.app.forensics.CidSeverity.INFO
-                            )
-                        } catch (_: Throwable) {}
                         executionPollingJob?.cancel()
                         executionPollingJob = viewModelScope.launch {
                             var latestResult: com.cryptopulse.app.domain.models.TradeExecutionResult? = null
@@ -985,12 +925,6 @@ class ExchangeViewModel @Inject constructor(
                         _tradeError.value = errorMessage
                         _executionState.value = ExecutionUiState.Failed(errorMessage)
                     }
-                    com.cryptopulse.app.forensics.CidDiagnosticManager.logExchange(
-                        exchangeId = "bybit",
-                        action = if (_isUnknownState.value) "ORDER_UNKNOWN" else "ORDER_FAILED",
-                        status = if (_isUnknownState.value) "UNKNOWN" else "FAILED",
-                        errorCode = errorMessage
-                    )
                 }
             } else {
                 isProcessingTrade = false

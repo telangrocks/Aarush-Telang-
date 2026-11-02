@@ -433,12 +433,6 @@ fun TradeAlertScreen(
                                                         viewModel.executeCurrentTrade()
                                                     }
                                                 } else {
-                                                    try {
-                                                        com.cryptopulse.app.forensics.CidDiagnosticManager.logPopupAction(
-                                                            alertId = candidate.opportunityId ?: candidate.symbol,
-                                                            action = "DISMISSED"
-                                                        )
-                                                    } catch (_: Throwable) {}
                                                     viewModel.dismissCurrentAlert()
                                                     onBack()
                                                 }
@@ -452,12 +446,6 @@ fun TradeAlertScreen(
                                         TradeAlertCyberButton(
                                             text = "TRADE",
                                             onClick = {
-                                                try {
-                                                    com.cryptopulse.app.forensics.CidDiagnosticManager.logPopupAction(
-                                                        alertId = candidate.opportunityId ?: candidate.symbol,
-                                                        action = "CONFIRMED"
-                                                    )
-                                                } catch (_: Throwable) {}
                                                 viewModel.clearTradeError()
                                                 scope.launch {
                                                     viewModel.executeCurrentTrade()

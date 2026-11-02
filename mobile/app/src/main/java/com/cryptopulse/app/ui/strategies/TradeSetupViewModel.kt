@@ -238,14 +238,6 @@ class TradeSetupViewModel @Inject constructor(
         sessionRepository.setTradeSetupConfig(config)
         _uiState.update { it.copy(isLoading = false) }
 
-        try {
-            com.cryptopulse.app.forensics.CidDiagnosticManager.logBot(
-                symbol = candidate?.symbol,
-                strategyId = strategyId,
-                riskClassification = "TRADE_SETUP_CONFIRMED: tradeValueUsdt=$tradeAmount, TP_ATR=${currentState.atrTakeProfitMultiplier}, SL_ATR=${currentState.atrStopLossMultiplier}"
-            )
-        } catch (_: Throwable) {}
-
         return TradeSetupConfigResult.Success(config)
     }
 }

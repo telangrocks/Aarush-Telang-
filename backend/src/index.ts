@@ -52,7 +52,6 @@ import { handleRegisterFcmToken } from "./handlers/notifications";
 
 import { isTokenRevoked } from "./handlers/auth";
 import { chatWithKimiK3 } from "./services/kimi";
-import { handleStartCidSession, handlePostCidEvents, handleGetCidSession, handleListCidSessions } from "./handlers/cid";
 
 export interface Env {
   DB: D1Database;
@@ -368,13 +367,6 @@ api.post("/trading-bot/trigger-alert", handleTriggerManualTradeAlert);
 api.post("/fcm/register", handleRegisterFcmToken);
 api.delete("/fcm/register", handleDeleteFcmToken);
 
-// ==========================================
-// CID — Continuous Investigation & Diagnostics
-// ==========================================
-api.post("/cid/session/start", handleStartCidSession);
-api.post("/cid/events", handlePostCidEvents);
-api.get("/cid/sessions", handleListCidSessions);
-api.get("/cid/sessions/:id", handleGetCidSession);
 
 // ==========================================
 // AI — Kimi K3 (Cloudflare Workers AI)

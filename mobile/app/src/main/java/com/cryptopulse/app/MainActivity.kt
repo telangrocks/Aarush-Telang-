@@ -246,11 +246,6 @@ class MainActivity : FragmentActivity() {
                         currentNavController = navController
                         navController.addOnDestinationChangedListener { _, destination, _ ->
                             android.util.Log.d("Navigation", "[DIAGNOSTIC] Destination = ${destination.route}")
-                            com.cryptopulse.app.forensics.CidDiagnosticManager.logNavigation(
-                                fromRoute = null,
-                                toRoute = destination.route ?: "unknown",
-                                trigger = "NAV_CONTROLLER"
-                            )
                             val currentRoute = destination.route
                             val isInsideAuthFlow = currentRoute in setOf(
                                 "connect_exchange", "market_candidates", "trade_setup",

@@ -107,13 +107,6 @@ class BotRepositoryImpl @Inject constructor(
                 if (result.data.success) {
                     _committedStrategyId.value = strategy
                     _isBotActive.value = true
-                    try {
-                        com.cryptopulse.app.forensics.CidDiagnosticManager.logStrategyActivated(
-                            strategyId = strategy,
-                            symbol = primarySymbol,
-                            entryPrice = config?.entryPrice?.takeIf { it > 0.0 }
-                        )
-                    } catch (_: Throwable) {}
                     NetworkResult.Success(Unit)
                 } else {
                     NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception(result.data.message)))
@@ -351,8 +344,6 @@ class BotRepositoryImpl @Inject constructor(
                 pollingJob = scope.launch {
                     while (isActive) {
                         val result = botRemoteDataSource.getAnalysisStatus()
-                        com.cryptopulse.app.forensics.ShrikantTelang_ForensicCID.onAnalysisPollResult(result, _committedStrategyId.value)
-                        com.cryptopulse.app.forensics.CidDiagnosticManager.onAnalysisPollResult(result, _committedStrategyId.value)
                         when (result) {
                             is NetworkResult.Success -> {
                                 val dto = result.data

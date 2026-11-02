@@ -229,24 +229,6 @@ class TechnicalAnalysisViewModel @Inject constructor(
                     _isLoadingPreview.value = false
                     _explorationState.value = snapshot // Writes exclusively to explorationState
                     _previewError.value = null
-
-                    try {
-                        val signal = snapshot.tradingSignal
-                        val sigKey = "${targetStrategy}_${snapshot.symbol ?: symbol}_${signal?.type}_${snapshot.marketAnalysis?.confidenceScore}_${signal?.targetEntryPrice}"
-                        if (sigKey != lastEmittedSignalKey) {
-                            lastEmittedSignalKey = sigKey
-                            com.cryptopulse.app.forensics.CidDiagnosticManager.logSignalDisplayed(
-                                symbol = snapshot.symbol ?: symbol,
-                                strategyId = targetStrategy,
-                                signalType = signal?.type,
-                                marketPrice = signal?.signalPrice,
-                                entryPrice = signal?.targetEntryPrice ?: signal?.signalPrice,
-                                stopLoss = signal?.stopLoss,
-                                takeProfit = signal?.takeProfit,
-                                confidence = snapshot.marketAnalysis?.confidenceScore
-                            )
-                        }
-                    } catch (_: Throwable) {}
                 }
             }.onFailure { error ->
                 if (requestId == explorationRequestId) {

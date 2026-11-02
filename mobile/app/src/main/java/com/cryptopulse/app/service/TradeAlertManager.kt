@@ -156,17 +156,6 @@ open class TradeAlertManager @Inject constructor(
         val signalType = (alertData["signalType"] as? String) ?: (alertData["direction"] as? String) ?: (alertData["type"] as? String)
 
         TradeAlertLogger.log("ALERT_RECEIVED", "Symbol: $symbol, Entry: $entryPrice, AlertId: $alertId")
-        try {
-            com.cryptopulse.app.forensics.CidDiagnosticManager.logAlertReceived(
-                alertId = alertId,
-                symbol = symbol,
-                strategyId = strategyId,
-                signalType = signalType,
-                entryPrice = entryPrice,
-                stopLoss = stopLoss,
-                takeProfit = takeProfit
-            )
-        } catch (_: Throwable) {}
 
         // Mark as active in idempotency history
         handledAlertsCache[alertId] = "HARDWARE_ACTIVE"
@@ -289,16 +278,6 @@ open class TradeAlertManager @Inject constructor(
         if (_currentState.value == TradeAlertState.VOICE_PLAYING || _currentState.value == TradeAlertState.HARDWARE_SILENCED) {
             _currentState.value = TradeAlertState.USER_VIEWING_ALERT
             TradeAlertLogger.log("USER_VIEWING_ALERT", "User presented with Trade Alert UI")
-            try {
-                com.cryptopulse.app.forensics.CidDiagnosticManager.logLifecycle(
-                    component = "TradeAlertManager",
-                    eventName = "USER_VIEWING_ALERT",
-                    payload = com.cryptopulse.app.forensics.CidLifecyclePayload(
-                        eventType = "USER_VIEWING_ALERT",
-                        reason = "User presented with Trade Alert UI"
-                    )
-                )
-            } catch (_: Throwable) {}
         }
     }
 

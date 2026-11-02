@@ -217,13 +217,6 @@ object AppModule {
             .authenticator(TokenAuthenticator(tokenManager, authRepository))
             .addInterceptor(AuthInterceptor(tokenManager))
             .addInterceptor(RetryInterceptor())
-            .addInterceptor(
-                com.cryptopulse.app.forensics.ForensicNetworkInterceptor { endpoint, method, statusCode, durationMs, contentLength, error ->
-                    com.cryptopulse.app.forensics.ShrikantTelang_ForensicCID.onNetworkObserved(
-                        endpoint, method, statusCode, durationMs, contentLength, error
-                    )
-                }
-            )
 
         if (BuildConfig.DEBUG) {
             val loggingInterceptor = HttpLoggingInterceptor { message ->
@@ -309,12 +302,6 @@ object AppModule {
     @Singleton
     fun provideFcmApi(retrofit: Retrofit): FcmApi {
         return retrofit.create(FcmApi::class.java)
-    }
-
-    @Provides
-    @Singleton
-    fun provideCidService(retrofit: Retrofit): com.cryptopulse.app.data.api.CidService {
-        return retrofit.create(com.cryptopulse.app.data.api.CidService::class.java)
     }
 }
 
