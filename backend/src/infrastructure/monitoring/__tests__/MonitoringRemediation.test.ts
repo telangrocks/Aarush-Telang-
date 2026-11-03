@@ -658,7 +658,31 @@ describe('Phase 1 Monitoring Remediation Regression Suite', () => {
 
       const res: any = await handleAdminLogin(mockCtx);
       expect(res.status).toBe(401);
-      expect(res.body.message).toContain('Invalid administrative password');
+      expect(res.body.message).toContain('Invalid administrative credentials');
+    });
+
+    it('authenticates with master password even if mismatched adminKey is present in body', async () => {
+      const testPasswordHash = 'UbU+C9KZgTziLeDzBq68Hw==:Cs+IpUxQs/88Eq3sl4nrw/8DkippOveI37xsV4l0oHs=';
+      const mockCtx = {
+        header: vi.fn(),
+        req: {
+          raw: { headers: new Headers() },
+          header: vi.fn().mockReturnValue(null),
+          json: vi.fn().mockResolvedValue({ password: 'Trader@1984', adminKey: 'Trader@1984' })
+        },
+        env: {
+          DB: { prepare: vi.fn().mockReturnValue({ bind: vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({ success: true }) }) }) },
+          JWT_SECRET: 'test_jwt_secret_32_characters_long_min',
+          ADMIN_KEY: 'configured_secret_admin_key_123',
+          ADMIN_PASSWORD_HASH: testPasswordHash
+        },
+        json: vi.fn().mockImplementation((body, status) => ({ body, status: status || 200 }))
+      } as any;
+
+      const res: any = await handleAdminLogin(mockCtx);
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.token).toBeDefined();
     });
   });
 });

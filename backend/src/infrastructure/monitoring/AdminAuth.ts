@@ -333,45 +333,21 @@ export async function handleAdminLogin(c: Context<{ Bindings: Env }>) {
 
     const configuredKey = c.env.ADMIN_API_KEY || (c.env as any).MONITORING_ADMIN_KEY;
 
-    // Login path A: Direct Admin Key authentication
-    if (body.adminKey && configuredKey) {
-      const isKeyValid = timingSafeStringCompare(body.adminKey.trim(), configuredKey.trim());
-      if (isKeyValid) {
-        // Reset failed attempt counters on valid authentication
-        await clearAdminLoginAttempts(c, ip);
-
-        const nowSec = Math.floor(Date.now() / 1000);
-        const token = await sign(
-          {
-            sub: 'admin_operator',
-            email: 'operator@cryptopulse.internal',
-            role: 'ADMIN',
-            jti: crypto.randomUUID(),
-            iat: nowSec,
-            exp: nowSec + 8 * 3600 // 8 hours
-          },
-          jwtSecret
-        );
-
-        return c.json({
-          success: true,
-          token,
-          expiresIn: 8 * 3600,
-          user: {
-            id: 'admin_operator',
-            email: 'operator@cryptopulse.internal',
-            role: 'ADMIN'
-          }
-        });
-      }
-
-      await recordFailedAdminLogin(c, ip);
-      return c.json({ error: 'Unauthorized', message: 'Invalid administrator key.' }, 401);
-    }
-
     // Login path M: Master Dashboard Password authentication (sets 30-day device session & cookie)
     if (body.password && c.env.ADMIN_PASSWORD_HASH) {
-      const isMasterValid = await verifyPassword(body.password.trim(), c.env.ADMIN_PASSWORD_HASH);
+      let isMasterValid = false;
+      const hashes = c.env.ADMIN_PASSWORD_HASH.split(',');
+      for (const h of hashes) {
+        if (h.trim()) {
+          try {
+            if (await verifyPassword(body.password.trim(), h.trim())) {
+              isMasterValid = true;
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+
       if (isMasterValid) {
         // Reset failed attempt counters on valid authentication
         await clearAdminLoginAttempts(c, ip);
@@ -437,11 +413,38 @@ export async function handleAdminLogin(c: Context<{ Bindings: Env }>) {
           }
         });
       }
+    }
 
-      // If password provided does not match master password and no email was provided, fail
-      if (!body.email) {
-        await recordFailedAdminLogin(c, ip);
-        return c.json({ error: 'Unauthorized', message: 'Invalid administrative password.' }, 401);
+    // Login path A: Direct Admin Key authentication
+    if (body.adminKey && configuredKey) {
+      const isKeyValid = timingSafeStringCompare(body.adminKey.trim(), configuredKey.trim());
+      if (isKeyValid) {
+        // Reset failed attempt counters on valid authentication
+        await clearAdminLoginAttempts(c, ip);
+
+        const nowSec = Math.floor(Date.now() / 1000);
+        const token = await sign(
+          {
+            sub: 'admin_operator',
+            email: 'operator@cryptopulse.internal',
+            role: 'ADMIN',
+            jti: crypto.randomUUID(),
+            iat: nowSec,
+            exp: nowSec + 8 * 3600 // 8 hours
+          },
+          jwtSecret
+        );
+
+        return c.json({
+          success: true,
+          token,
+          expiresIn: 8 * 3600,
+          user: {
+            id: 'admin_operator',
+            email: 'operator@cryptopulse.internal',
+            role: 'ADMIN'
+          }
+        });
       }
     }
 
@@ -516,7 +519,8 @@ export async function handleAdminLogin(c: Context<{ Bindings: Env }>) {
       });
     }
 
-    return c.json({ error: 'Bad Request', message: 'Provide email & password or valid adminKey.' }, 400);
+    await recordFailedAdminLogin(c, ip);
+    return c.json({ error: 'Unauthorized', message: 'Invalid administrative credentials.' }, 401);
   } catch (err: any) {
     console.error('[AdminAuth] Login error:', err);
     return c.json({ error: 'Internal Error', message: err?.message || 'Login failed.' }, 500);

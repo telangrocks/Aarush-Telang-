@@ -335,8 +335,7 @@
           }
           tokenToUse = rawInput;
         } else {
-          // Path B: Input is Dashboard Password or Admin Key
-          // Submit both password and adminKey for seamless compatibility
+          // Path B: Input is Dashboard Password
           const loginRes = await fetch(`${apiUrl.replace(/\/+$/, '')}/api/admin/login`, {
             method: 'POST',
             credentials: 'include',
@@ -344,7 +343,7 @@
               'Content-Type': 'application/json',
               'X-CryptoPulse-Admin': '1'
             },
-            body: JSON.stringify({ password: rawInput, adminKey: rawInput })
+            body: JSON.stringify({ password: rawInput })
           });
 
           if (!loginRes.ok) {
