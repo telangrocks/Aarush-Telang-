@@ -290,7 +290,7 @@ api.use("*", async (c, next) => {
 });
 
 api.use("*", (c, next) => {
-  if (PUBLIC_AUTH_PATHS.has(c.req.path)) {
+  if (c.req.path.startsWith("/api/admin") || PUBLIC_AUTH_PATHS.has(c.req.path)) {
     return next();
   }
   const jwtMiddleware = jwt({
@@ -303,7 +303,7 @@ api.use("*", (c, next) => {
 });
 
 api.use("*", async (c, next) => {
-  if (PUBLIC_AUTH_PATHS.has(c.req.path)) {
+  if (c.req.path.startsWith("/api/admin") || PUBLIC_AUTH_PATHS.has(c.req.path)) {
     return next();
   }
   const payload = c.get("jwtPayload") as { sub: string; jti?: string; type?: string } | undefined;
