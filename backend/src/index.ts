@@ -61,7 +61,14 @@ import {
   handleGetQuotaStatus,
   handleReportClientIncident,
 } from "./handlers/admin-monitoring";
-import { adminAuthMiddleware, handleAdminLogin } from "./infrastructure/monitoring/AdminAuth";
+import {
+  adminAuthMiddleware,
+  handleAdminLogin,
+  handleCreateActivationToken,
+  handleActivateDevice,
+  handleRefreshDeviceSession,
+  handleRevokeDeviceSession,
+} from "./infrastructure/monitoring/AdminAuth";
 
 import { isTokenRevoked } from "./handlers/auth";
 import { chatWithKimiK3 } from "./services/kimi";
@@ -153,7 +160,19 @@ app.use("*", async (c, next) => {
     });
   }
   validateCorsOrigins(allowedOrigins);
-  const middleware = cors({ origin: allowedOrigins });
+  const middleware = cors({
+    origin: allowedOrigins,
+    credentials: true,
+    allowHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Admin-Key",
+      "X-CryptoPulse-Admin",
+      "X-Device-Session",
+      "X-Correlation-Id",
+    ],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  });
   return middleware(c, next);
 });
 
@@ -453,11 +472,15 @@ app.route("/api", api);
 // ==========================================
 const adminApi = new Hono<{ Bindings: Env }>();
 
-// Public admin login
+// Public admin login and device enrollment
 adminApi.post("/login", handleAdminLogin);
+adminApi.post("/activate-device", handleActivateDevice);
+adminApi.post("/session/refresh", handleRefreshDeviceSession);
+adminApi.post("/session/revoke", handleRevokeDeviceSession);
 
 // Protected monitoring endpoints (strictly guarded by adminAuthMiddleware)
 adminApi.use("/monitoring/*", adminAuthMiddleware);
+adminApi.post("/create-activation-token", adminAuthMiddleware, handleCreateActivationToken);
 
 adminApi.get("/monitoring/overview", handleGetFleetOverview);
 adminApi.get("/monitoring/users", handleGetUsersList);

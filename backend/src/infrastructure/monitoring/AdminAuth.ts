@@ -12,6 +12,7 @@
 
 import { Context, Next } from 'hono';
 import { verify, sign } from 'hono/jwt';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { Env } from '../../index';
 import { verifyPassword } from '../../handlers/auth';
 
@@ -27,11 +28,24 @@ export function timingSafeStringCompare(a: string, b: string): boolean {
   return diff === 0;
 }
 
+export async function sha256Hex(data: string): Promise<string> {
+  const enc = new TextEncoder();
+  const hashBuf = await crypto.subtle.digest('SHA-256', enc.encode(data));
+  const hashArr = Array.from(new Uint8Array(hashBuf));
+  return hashArr.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function generateSecureToken(bytes = 32): string {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 export interface AdminSession {
   userId: string;
   email: string;
   role: 'ADMIN';
-  authMethod: 'API_KEY' | 'JWT';
+  authMethod: 'API_KEY' | 'JWT' | 'DEVICE_SESSION';
 }
 
 export const ADMIN_LOGIN_MAX_ATTEMPTS = 5;
@@ -243,11 +257,46 @@ export async function adminAuthMiddleware(c: Context<{ Bindings: Env }>, next: N
     }
   }
 
-  // No admin key or token provided
+  // 3. Persistent Device Session (Cookie or Header)
+  let deviceSessionToken: string | undefined;
+  try {
+    if (c.req?.raw?.headers) {
+      deviceSessionToken = getCookie(c, 'cp_admin_device');
+    }
+  } catch (_) {
+    // Graceful fallback if c.req.raw is not provided in mock contexts
+  }
+  if (!deviceSessionToken) {
+    deviceSessionToken = c.req.header('x-device-session') || c.req.header('cookie')?.match(/cp_admin_device=([^;]+)/)?.[1];
+  }
+
+  if (deviceSessionToken && c.env.DB) {
+    try {
+      const tokenHash = await sha256Hex(deviceSessionToken.trim());
+      const row = await c.env.DB.prepare(
+        "SELECT session_id, device_name, expires_at, revoked_at FROM admin_device_sessions WHERE session_token_hash = ?"
+      ).bind(tokenHash).first<{ session_id: string; device_name: string; expires_at: number; revoked_at: number | null }>();
+
+      const now = Date.now();
+      if (row && row.revoked_at === null && now <= row.expires_at) {
+        c.set('adminSession' as any, {
+          userId: `device_${row.session_id.slice(0, 8)}`,
+          email: 'device@cryptopulse.internal',
+          role: 'ADMIN',
+          authMethod: 'DEVICE_SESSION'
+        });
+        return await next();
+      }
+    } catch (_) {
+      // Fall through to 401
+    }
+  }
+
+  // No admin key, token, or valid device session provided
   return c.json(
     {
       error: 'Unauthorized',
-      message: 'Authentication required. Provide a valid X-Admin-Key or admin Bearer token.'
+      message: 'Authentication required. Provide a valid X-Admin-Key, admin Bearer token, or authorized device session.'
     },
     401
   );
@@ -396,4 +445,306 @@ export async function handleAdminLogin(c: Context<{ Bindings: Env }>) {
     console.error('[AdminAuth] Login error:', err);
     return c.json({ error: 'Internal Error', message: err?.message || 'Login failed.' }, 500);
   }
+}
+
+/**
+ * Handler: Generate a single-use, 15-minute activation token for zero-touch device enrollment.
+ * Protected by adminAuthMiddleware.
+ */
+export async function handleCreateActivationToken(c: Context<{ Bindings: Env }>) {
+  if (!c.env.DB) {
+    return c.json({ error: 'Internal Error', message: 'D1 Database not available.' }, 500);
+  }
+
+  const rawToken = generateSecureToken(32);
+  const tokenHash = await sha256Hex(rawToken);
+  const tokenId = crypto.randomUUID();
+  const now = Date.now();
+  const expiresAt = now + 15 * 60 * 1000; // 15 minutes strict expiry
+
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO admin_activation_tokens (token_id, token_hash, expires_at, created_at)
+       VALUES (?, ?, ?, ?)`
+    ).bind(tokenId, tokenHash, expiresAt, now).run();
+
+    return c.json({
+      success: true,
+      activationToken: rawToken,
+      expiresAt,
+      expiresInSeconds: 900
+    });
+  } catch (err: any) {
+    console.error('[AdminAuth] Error creating activation token:', err);
+    return c.json({ error: 'Internal Error', message: 'Failed to create activation token.' }, 500);
+  }
+}
+
+/**
+ * Handler: One-click device activation.
+ * Validates single-use token, consumes it atomically, registers device session,
+ * and sets a Secure, HttpOnly, SameSite=None, Partitioned cookie.
+ */
+export async function handleActivateDevice(c: Context<{ Bindings: Env }>) {
+  if (!c.env.DB) {
+    return c.json({ error: 'Internal Error', message: 'D1 Database not available.' }, 500);
+  }
+
+  const csrfHeader = c.req.header('x-cryptopulse-admin');
+  if (!csrfHeader) {
+    return c.json({ error: 'Forbidden', message: 'CSRF security validation failed.' }, 403);
+  }
+
+  const body: { activationToken?: string; deviceName?: string } = (await c.req.json().catch(() => ({}))) as any;
+
+  if (!body.activationToken || typeof body.activationToken !== 'string') {
+    return c.json({ error: 'Bad Request', message: 'Missing activationToken.' }, 400);
+  }
+
+  const tokenHash = await sha256Hex(body.activationToken.trim());
+  const now = Date.now();
+
+  try {
+    const row = await c.env.DB.prepare(
+      `SELECT token_id, expires_at, used_at FROM admin_activation_tokens WHERE token_hash = ?`
+    ).bind(tokenHash).first<{ token_id: string; expires_at: number; used_at: number | null }>();
+
+    if (!row) {
+      return c.json({ error: 'Unauthorized', message: 'Invalid activation token.' }, 401);
+    }
+    if (row.used_at !== null) {
+      return c.json({ error: 'Unauthorized', message: 'Activation token has already been used.' }, 401);
+    }
+    if (now > row.expires_at) {
+      return c.json({ error: 'Unauthorized', message: 'Activation token has expired.' }, 401);
+    }
+
+    // Atomically consume token so it cannot be reused
+    const updateRes = await c.env.DB.prepare(
+      `UPDATE admin_activation_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL`
+    ).bind(now, tokenHash).run();
+
+    if (!updateRes.success || updateRes.meta?.changes === 0) {
+      return c.json({ error: 'Unauthorized', message: 'Activation token already consumed.' }, 401);
+    }
+
+    // Create persistent device session
+    const sessionToken = generateSecureToken(32);
+    const sessionTokenHash = await sha256Hex(sessionToken);
+    const sessionId = crypto.randomUUID();
+    const expiresAt = now + 30 * 24 * 60 * 60 * 1000; // 30-day rolling session
+    const ip = getAdminClientIp(c);
+    const deviceName = body.deviceName || 'Personal Browser';
+
+    await c.env.DB.prepare(
+      `INSERT INTO admin_device_sessions (
+         session_id, device_name, session_token_hash, ip_address, created_at, last_used_at, expires_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(sessionId, deviceName, sessionTokenHash, ip, now, now, expiresAt).run();
+
+    // Generate 8-hour access JWT
+    const jwtSecret = c.env.JWT_SECRET;
+    const nowSec = Math.floor(now / 1000);
+    const accessToken = await sign(
+      {
+        sub: 'admin_device_owner',
+        email: 'operator@cryptopulse.internal',
+        role: 'ADMIN',
+        sessionId,
+        iss: 'cryptopulse-monitoring',
+        iat: nowSec,
+        exp: nowSec + 8 * 3600
+      },
+      jwtSecret,
+      'HS256'
+    );
+
+    // Set Secure, HttpOnly, SameSite=None, Partitioned cookie
+    try {
+      if (typeof c.header === 'function') {
+        setCookie(c, 'cp_admin_device', sessionToken, {
+          path: '/',
+          secure: true,
+          httpOnly: true,
+          sameSite: 'None',
+          partitioned: true,
+          maxAge: 30 * 24 * 3600
+        });
+      }
+    } catch (_) {}
+
+    return c.json({
+      success: true,
+      accessToken,
+      deviceToken: sessionToken,
+      expiresIn: 8 * 3600,
+      user: {
+        id: 'admin_device_owner',
+        email: 'operator@cryptopulse.internal',
+        role: 'ADMIN',
+        deviceName
+      }
+    });
+  } catch (err: any) {
+    console.error('[AdminAuth] Error activating device:', err);
+    return c.json({ error: 'Internal Error', message: 'Device activation failed.' }, 500);
+  }
+}
+
+/**
+ * Handler: Silent rolling session renewal.
+ * Validates persistent cookie or device session header, verifies non-revocation in D1,
+ * and rolls session forward 30 days while returning a fresh short-lived JWT.
+ */
+export async function handleRefreshDeviceSession(c: Context<{ Bindings: Env }>) {
+  if (!c.env.DB) {
+    return c.json({ error: 'Internal Error', message: 'D1 Database not available.' }, 500);
+  }
+
+  const csrfHeader = c.req.header('x-cryptopulse-admin');
+  if (!csrfHeader) {
+    return c.json({ error: 'Forbidden', message: 'CSRF security validation failed.' }, 403);
+  }
+
+  let tokenFromCookie: string | undefined;
+  try {
+    if (c.req?.raw?.headers) {
+      tokenFromCookie = getCookie(c, 'cp_admin_device');
+    }
+  } catch (_) {}
+
+  const tokenFromHeader = c.req.header('x-device-session') || c.req.header('cookie')?.match(/cp_admin_device=([^;]+)/)?.[1];
+  let tokenFromBody: string | undefined;
+
+  if (c.req.header('content-type')?.includes('application/json')) {
+    const body = await c.req.json().catch(() => ({}));
+    tokenFromBody = body?.deviceToken;
+  }
+
+  const rawSessionToken = tokenFromCookie || tokenFromHeader || tokenFromBody;
+  if (!rawSessionToken) {
+    return c.json({ error: 'Unauthorized', message: 'No device session found.' }, 401);
+  }
+
+  const tokenHash = await sha256Hex(rawSessionToken.trim());
+  const now = Date.now();
+
+  try {
+    const row = await c.env.DB.prepare(
+      `SELECT session_id, device_name, expires_at, revoked_at FROM admin_device_sessions WHERE session_token_hash = ?`
+    ).bind(tokenHash).first<{ session_id: string; device_name: string; expires_at: number; revoked_at: number | null }>();
+
+    if (!row || row.revoked_at !== null) {
+      try {
+        if (typeof c.header === 'function') {
+          c.header('Set-Cookie', 'cp_admin_device=; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=0', { append: true });
+        }
+      } catch (_) {}
+      return c.json({ error: 'Unauthorized', message: 'Device session has been revoked or does not exist.' }, 401);
+    }
+
+    if (now > row.expires_at) {
+      try {
+        if (typeof c.header === 'function') {
+          c.header('Set-Cookie', 'cp_admin_device=; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=0', { append: true });
+        }
+      } catch (_) {}
+      return c.json({ error: 'Unauthorized', message: 'Device session has expired.' }, 401);
+    }
+
+    // Roll forward session expiry by 30 days
+    const newExpiresAt = now + 30 * 24 * 60 * 60 * 1000;
+    await c.env.DB.prepare(
+      `UPDATE admin_device_sessions SET last_used_at = ?, expires_at = ? WHERE session_id = ?`
+    ).bind(now, newExpiresAt, row.session_id).run();
+
+    // Generate fresh 8-hour access JWT
+    const jwtSecret = c.env.JWT_SECRET;
+    const nowSec = Math.floor(now / 1000);
+    const accessToken = await sign(
+      {
+        sub: 'admin_device_owner',
+        email: 'operator@cryptopulse.internal',
+        role: 'ADMIN',
+        sessionId: row.session_id,
+        iss: 'cryptopulse-monitoring',
+        iat: nowSec,
+        exp: nowSec + 8 * 3600
+      },
+      jwtSecret,
+      'HS256'
+    );
+
+    // Refresh HttpOnly cookie
+    try {
+      if (typeof c.header === 'function') {
+        setCookie(c, 'cp_admin_device', rawSessionToken.trim(), {
+          path: '/',
+          secure: true,
+          httpOnly: true,
+          sameSite: 'None',
+          partitioned: true,
+          maxAge: 30 * 24 * 3600
+        });
+      }
+    } catch (_) {}
+
+    return c.json({
+      success: true,
+      accessToken,
+      deviceToken: rawSessionToken.trim(),
+      expiresIn: 8 * 3600,
+      user: {
+        id: 'admin_device_owner',
+        email: 'operator@cryptopulse.internal',
+        role: 'ADMIN',
+        deviceName: row.device_name
+      }
+    });
+  } catch (err: any) {
+    console.error('[AdminAuth] Error refreshing device session:', err);
+    return c.json({ error: 'Internal Error', message: 'Failed to refresh session.' }, 500);
+  }
+}
+
+/**
+ * Handler: Revoke active device session immediately.
+ */
+export async function handleRevokeDeviceSession(c: Context<{ Bindings: Env }>) {
+  if (!c.env.DB) {
+    return c.json({ error: 'Internal Error', message: 'D1 Database not available.' }, 500);
+  }
+
+  let tokenFromCookie: string | undefined;
+  try {
+    if (c.req?.raw?.headers) {
+      tokenFromCookie = getCookie(c, 'cp_admin_device');
+    }
+  } catch (_) {}
+
+  const tokenFromHeader = c.req.header('x-device-session') || c.req.header('cookie')?.match(/cp_admin_device=([^;]+)/)?.[1];
+  let tokenFromBody: string | undefined;
+
+  if (c.req.header('content-type')?.includes('application/json')) {
+    const body = await c.req.json().catch(() => ({}));
+    tokenFromBody = body?.deviceToken;
+  }
+
+  const rawSessionToken = tokenFromCookie || tokenFromHeader || tokenFromBody;
+  if (rawSessionToken) {
+    try {
+      const tokenHash = await sha256Hex(rawSessionToken.trim());
+      await c.env.DB.prepare(
+        `UPDATE admin_device_sessions SET revoked_at = ? WHERE session_token_hash = ?`
+      ).bind(Date.now(), tokenHash).run();
+    } catch (_) {}
+  }
+
+  try {
+    if (typeof c.header === 'function') {
+      c.header('Set-Cookie', 'cp_admin_device=; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=0', { append: true });
+    }
+  } catch (_) {}
+  return c.json({ success: true, message: 'Device session revoked successfully.' });
+  return c.json({ success: true, message: 'Device session revoked successfully.' });
 }

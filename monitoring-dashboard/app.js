@@ -115,6 +115,7 @@
     const url = `${state.apiUrl.replace(/\/+$/, '')}${endpoint}`;
     const headers = {
       'Content-Type': 'application/json',
+      'X-CryptoPulse-Admin': '1',
       ...(options.headers || {})
     };
 
@@ -122,7 +123,12 @@
       headers['Authorization'] = `Bearer ${state.jwtToken}`;
     }
 
-    const res = await fetch(url, { ...options, headers });
+    const deviceToken = localStorage.getItem('cp_device_session');
+    if (deviceToken) {
+      headers['X-Device-Session'] = deviceToken;
+    }
+
+    const res = await fetch(url, { ...options, credentials: 'include', headers });
     if (res.status === 401 || res.status === 403) {
       handleUnauthorized();
       throw new Error(`Authentication failed (${res.status})`);
@@ -138,11 +144,11 @@
 
   function handleUnauthorized() {
     sessionStorage.removeItem('cp_monitoring_jwt');
-    sessionStorage.removeItem('cp_monitoring_admin_key'); // Purge legacy key if present
+    sessionStorage.removeItem('cp_monitoring_admin_key');
     state.jwtToken = '';
     el.app.classList.add('hidden');
     el.loginModal.classList.remove('hidden');
-    el.loginError.textContent = 'Session expired or unauthorized. Please authenticate.';
+    el.loginError.textContent = 'Session expired, revoked, or unauthorized. Please authenticate.';
     el.loginError.classList.remove('hidden');
     if (state.refreshTimer) {
       clearInterval(state.refreshTimer);
@@ -150,30 +156,153 @@
     }
   }
 
-  // Initialization
-  function init() {
-    el.apiUrlInput.value = state.apiUrl;
+  function enterAuthenticatedState(label) {
+    el.loginModal.classList.add('hidden');
+    el.app.classList.remove('hidden');
+    el.sessionUserId.textContent = label;
+    setupAutoRefresh();
+    refreshActiveTab();
+  }
 
-    // Check existing session token
+  async function handleActivationFlow(token) {
+    try {
+      el.loginError.classList.add('hidden');
+      el.loginModal.classList.remove('hidden');
+      const submitBtn = el.loginForm.querySelector('button[type="submit"]');
+      if (submitBtn) submitBtn.textContent = 'Enrolling Device...';
+
+      const res = await fetch(`${state.apiUrl.replace(/\/+$/, '')}/api/admin/activate-device`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CryptoPulse-Admin': '1'
+        },
+        body: JSON.stringify({
+          activationToken: token,
+          deviceName: navigator.userAgent.includes('Mobile') ? 'Mobile Browser' : 'Personal Browser'
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Activation failed with status ${res.status}`);
+      }
+
+      const data = await res.json();
+      state.jwtToken = data.accessToken;
+      sessionStorage.setItem('cp_monitoring_jwt', data.accessToken);
+      if (data.deviceToken) {
+        localStorage.setItem('cp_device_session', data.deviceToken);
+      }
+
+      enterAuthenticatedState(data.user?.deviceName || 'Authorized Device');
+      setupSessionRollingTimer();
+    } catch (err) {
+      console.error('[App] Device activation error:', err);
+      el.loginModal.classList.remove('hidden');
+      el.app.classList.add('hidden');
+      el.loginError.textContent = err.message || 'Activation failed. The link may have expired or was already used.';
+      el.loginError.classList.remove('hidden');
+    }
+  }
+
+  async function attemptSilentDeviceLogin() {
+    try {
+      const storedDeviceToken = localStorage.getItem('cp_device_session') || '';
+      const headers = {
+        'Content-Type': 'application/json',
+        'X-CryptoPulse-Admin': '1'
+      };
+      if (storedDeviceToken) {
+        headers['X-Device-Session'] = storedDeviceToken;
+      }
+
+      const res = await fetch(`${state.apiUrl.replace(/\/+$/, '')}/api/admin/session/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body: JSON.stringify({ deviceToken: storedDeviceToken })
+      });
+
+      if (!res.ok) {
+        throw new Error('No active device session');
+      }
+
+      const data = await res.json();
+      state.jwtToken = data.accessToken;
+      sessionStorage.setItem('cp_monitoring_jwt', data.accessToken);
+      if (data.deviceToken) {
+        localStorage.setItem('cp_device_session', data.deviceToken);
+      }
+
+      enterAuthenticatedState(data.user?.deviceName || 'Authorized Device');
+      setupSessionRollingTimer();
+    } catch (_) {
+      // Device session not present or revoked -> display manual login modal
+      el.loginModal.classList.remove('hidden');
+      el.app.classList.add('hidden');
+    }
+  }
+
+  function setupSessionRollingTimer() {
+    // Refresh session every 4 hours in the background
+    setInterval(async () => {
+      try {
+        const storedDeviceToken = localStorage.getItem('cp_device_session') || '';
+        const res = await fetch(`${state.apiUrl.replace(/\/+$/, '')}/api/admin/session/refresh`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CryptoPulse-Admin': '1',
+            ...(storedDeviceToken ? { 'X-Device-Session': storedDeviceToken } : {})
+          },
+          body: JSON.stringify({ deviceToken: storedDeviceToken })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          state.jwtToken = data.accessToken;
+          sessionStorage.setItem('cp_monitoring_jwt', data.accessToken);
+          if (data.deviceToken) {
+            localStorage.setItem('cp_device_session', data.deviceToken);
+          }
+        }
+      } catch (_) {}
+    }, 4 * 60 * 60 * 1000);
+  }
+
+  // Initialization
+  async function init() {
+    el.apiUrlInput.value = state.apiUrl;
+    bindEvents();
+    setupVisibilityHandler();
+
+    // 1. Check for one-time activation token in URL fragment (#activate=... or #bootstrap=...)
+    const hash = window.location.hash;
+    if (hash && (hash.includes('activate=') || hash.includes('bootstrap='))) {
+      const match = hash.match(/(?:activate|bootstrap)=([a-fA-F0-9]+)/);
+      // Immediately scrub the fragment from URL bar & history to prevent log/referrer leaks
+      window.history.replaceState(null, '', window.location.pathname);
+      if (match && match[1]) {
+        await handleActivationFlow(match[1]);
+        return;
+      }
+    }
+
+    // 2. Check for existing active JWT in sessionStorage
     if (state.jwtToken) {
       const claims = parseJwtClaims(state.jwtToken);
       const nowSec = Math.floor(Date.now() / 1000);
       if (claims && claims.exp && claims.exp > nowSec) {
-        el.loginModal.classList.add('hidden');
-        el.app.classList.remove('hidden');
-        el.sessionUserId.textContent = claims.sub || 'admin';
-        setupAutoRefresh();
-        refreshActiveTab();
-      } else {
-        handleUnauthorized();
+        enterAuthenticatedState(claims.sub || 'admin');
+        setupSessionRollingTimer();
+        return;
       }
-    } else {
-      el.loginModal.classList.remove('hidden');
-      el.app.classList.add('hidden');
     }
 
-    bindEvents();
-    setupVisibilityHandler();
+    // 3. Attempt silent auto-login using persistent HttpOnly cookie or device session
+    await attemptSilentDeviceLogin();
   }
 
   function bindEvents() {
@@ -246,9 +375,28 @@
       }
     });
 
-    // Logout
-    el.logoutBtn.addEventListener('click', () => {
-      handleUnauthorized();
+    // Logout & Device Session Revocation
+    el.logoutBtn.addEventListener('click', async () => {
+      if (confirm('Revoke this device session and sign out? You will need a new activation link or Admin API Key to reconnect.')) {
+        try {
+          const storedDeviceToken = localStorage.getItem('cp_device_session') || '';
+          await fetch(`${state.apiUrl.replace(/\/+$/, '')}/api/admin/session/revoke`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CryptoPulse-Admin': '1',
+              ...(storedDeviceToken ? { 'X-Device-Session': storedDeviceToken } : {})
+            },
+            body: JSON.stringify({ deviceToken: storedDeviceToken })
+          }).catch(() => {});
+        } finally {
+          localStorage.removeItem('cp_device_session');
+          sessionStorage.removeItem('cp_monitoring_jwt');
+          state.jwtToken = '';
+          handleUnauthorized();
+        }
+      }
     });
 
     // Navigation tab switching

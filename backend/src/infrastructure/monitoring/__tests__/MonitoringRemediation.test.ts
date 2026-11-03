@@ -17,7 +17,12 @@ import {
   recordFailedAdminLogin,
   clearAdminLoginAttempts,
   resetAdminRateLimiterForTesting,
-  ADMIN_LOGIN_MAX_ATTEMPTS
+  ADMIN_LOGIN_MAX_ATTEMPTS,
+  handleCreateActivationToken,
+  handleActivateDevice,
+  handleRefreshDeviceSession,
+  handleRevokeDeviceSession,
+  sha256Hex
 } from '../AdminAuth';
 import { MonitoringService } from '../MonitoringService';
 import { EVENT_PAYLOAD_ALLOWLIST, BackendDiagnosticSink } from '../../../telemetry/BackendDiagnosticSink';
@@ -377,6 +382,222 @@ describe('Phase 1 Monitoring Remediation Regression Suite', () => {
       expect(escapeHtml(attackEmail)).not.toContain('>');
       expect(escapeHtml(attackBotId)).not.toContain('<');
       expect(escapeHtml(attackBotId)).not.toContain('>');
+    });
+  });
+
+  describe('6. Zero-Manual-Login Device Session & Single-Use Activation', () => {
+    it('creates a 15-minute single-use activation token', async () => {
+      const mockDb = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnValue({
+            run: vi.fn().mockResolvedValue({ success: true })
+          })
+        })
+      };
+
+      const mockCtx = {
+        env: { DB: mockDb },
+        json: vi.fn().mockImplementation((body, status) => ({ body, status: status || 200 }))
+      } as any;
+
+      const res: any = await handleCreateActivationToken(mockCtx);
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.activationToken).toBeDefined();
+      expect(res.body.activationToken.length).toBe(64); // 32 bytes hex
+      expect(res.body.expiresInSeconds).toBe(900); // 15 minutes
+    });
+
+    it('rejects activation requests missing CSRF header (HTTP 403)', async () => {
+      const mockCtx = {
+        req: {
+          header: vi.fn().mockReturnValue(null), // No CSRF header
+          json: vi.fn().mockResolvedValue({ activationToken: 'test_token' })
+        },
+        env: { DB: {} },
+        json: vi.fn().mockImplementation((body, status) => ({ body, status: status || 200 }))
+      } as any;
+
+      const res: any = await handleActivateDevice(mockCtx);
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('Forbidden');
+    });
+
+    it('activates device on valid single-use token and rejects reuse', async () => {
+      let isUsed = false;
+      const mockDb = {
+        prepare: vi.fn().mockImplementation((sql: string) => ({
+          bind: vi.fn().mockImplementation((...args: any[]) => ({
+            first: vi.fn().mockImplementation(async () => {
+              if (sql.includes('SELECT token_id')) {
+                return {
+                  token_id: 'tok_1',
+                  expires_at: Date.now() + 600000,
+                  used_at: isUsed ? Date.now() - 1000 : null
+                };
+              }
+              return null;
+            }),
+            run: vi.fn().mockImplementation(async () => {
+              if (sql.includes('UPDATE admin_activation_tokens')) {
+                if (isUsed) return { success: true, meta: { changes: 0 } };
+                isUsed = true;
+                return { success: true, meta: { changes: 1 } };
+              }
+              return { success: true };
+            })
+          }))
+        }))
+      };
+
+      const mockCtx = {
+        header: vi.fn(),
+        req: {
+          raw: { headers: new Headers() },
+          header: vi.fn().mockImplementation((h: string) => {
+            if (h.toLowerCase() === 'x-cryptopulse-admin') return '1';
+            return null;
+          }),
+          json: vi.fn().mockResolvedValue({ activationToken: 'valid_token_123', deviceName: 'MacBook Pro' })
+        },
+        env: {
+          DB: mockDb,
+          JWT_SECRET: 'test_jwt_secret_32_characters_long_min'
+        },
+        json: vi.fn().mockImplementation((body, status) => ({ body, status: status || 200 }))
+      } as any;
+
+      // First activation attempt succeeds
+      const res1: any = await handleActivateDevice(mockCtx);
+      expect(res1.status).toBe(200);
+      expect(res1.body.success).toBe(true);
+      expect(res1.body.accessToken).toBeDefined();
+      expect(res1.body.deviceToken).toBeDefined();
+
+      // Second activation attempt with same token fails immediately (single-use invariant)
+      const res2: any = await handleActivateDevice(mockCtx);
+      expect(res2.status).toBe(401);
+      expect(res2.body.message).toContain('already been used');
+    });
+
+    it('refreshes active device session and rolls forward expiry', async () => {
+      let expiry = Date.now() + 100000;
+      const mockDb = {
+        prepare: vi.fn().mockImplementation((sql: string) => ({
+          bind: vi.fn().mockImplementation((...args: any[]) => ({
+            first: vi.fn().mockResolvedValue({
+              session_id: 'sess_99',
+              device_name: 'Personal Chrome',
+              expires_at: expiry,
+              revoked_at: null
+            }),
+            run: vi.fn().mockImplementation(async () => {
+              if (sql.includes('UPDATE admin_device_sessions')) {
+                expiry = args[1]; // newExpiresAt
+              }
+              return { success: true };
+            })
+          }))
+        }))
+      };
+
+      const mockCtx = {
+        header: vi.fn(),
+        req: {
+          raw: { headers: new Headers() },
+          header: vi.fn().mockImplementation((h: string) => {
+            if (h.toLowerCase() === 'x-cryptopulse-admin') return '1';
+            if (h.toLowerCase() === 'x-device-session') return 'my_device_session_token';
+            return null;
+          }),
+          json: vi.fn().mockResolvedValue({})
+        },
+        env: {
+          DB: mockDb,
+          JWT_SECRET: 'test_jwt_secret_32_characters_long_min'
+        },
+        json: vi.fn().mockImplementation((body, status) => ({ body, status: status || 200 }))
+      } as any;
+
+      const res: any = await handleRefreshDeviceSession(mockCtx);
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.accessToken).toBeDefined();
+      expect(expiry).toBeGreaterThan(Date.now() + 20 * 24 * 3600 * 1000);
+    });
+
+    it('rejects revoked device sessions immediately (HTTP 401)', async () => {
+      const mockDb = {
+        prepare: vi.fn().mockImplementation(() => ({
+          bind: vi.fn().mockImplementation(() => ({
+            first: vi.fn().mockResolvedValue({
+              session_id: 'sess_compromised',
+              device_name: 'Lost Phone',
+              expires_at: Date.now() + 100000,
+              revoked_at: Date.now() - 5000 // Revoked!
+            }),
+            run: vi.fn().mockResolvedValue({ success: true })
+          }))
+        }))
+      };
+
+      const mockCtx = {
+        header: vi.fn(),
+        req: {
+          raw: { headers: new Headers() },
+          header: vi.fn().mockImplementation((h: string) => {
+            if (h.toLowerCase() === 'x-cryptopulse-admin') return '1';
+            if (h.toLowerCase() === 'x-device-session') return 'revoked_token_abc';
+            return null;
+          }),
+          json: vi.fn().mockResolvedValue({})
+        },
+        env: {
+          DB: mockDb,
+          JWT_SECRET: 'test_jwt_secret_32_characters_long_min'
+        },
+        json: vi.fn().mockImplementation((body, status) => ({ body, status: status || 200 }))
+      } as any;
+
+      const res: any = await handleRefreshDeviceSession(mockCtx);
+      expect(res.status).toBe(401);
+      expect(res.body.message).toContain('revoked');
+    });
+
+    it('marks device session revoked in D1 upon logout', async () => {
+      let revokedSet = false;
+      const mockDb = {
+        prepare: vi.fn().mockImplementation((sql: string) => ({
+          bind: vi.fn().mockImplementation(() => ({
+            run: vi.fn().mockImplementation(async () => {
+              if (sql.includes('UPDATE admin_device_sessions SET revoked_at')) {
+                revokedSet = true;
+              }
+              return { success: true };
+            })
+          }))
+        }))
+      };
+
+      const mockCtx = {
+        header: vi.fn(),
+        req: {
+          raw: { headers: new Headers() },
+          header: vi.fn().mockImplementation((h: string) => {
+            if (h.toLowerCase() === 'x-cryptopulse-admin') return '1';
+            if (h.toLowerCase() === 'x-device-session') return 'session_to_revoke';
+            return null;
+          }),
+          json: vi.fn().mockResolvedValue({})
+        },
+        env: { DB: mockDb },
+        json: vi.fn().mockImplementation((body, status) => ({ body, status: status || 200 }))
+      } as any;
+
+      const res: any = await handleRevokeDeviceSession(mockCtx);
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(revokedSet).toBe(true);
     });
   });
 });
