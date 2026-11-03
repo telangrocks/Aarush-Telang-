@@ -599,5 +599,66 @@ describe('Phase 1 Monitoring Remediation Regression Suite', () => {
       expect(res.body.success).toBe(true);
       expect(revokedSet).toBe(true);
     });
+
+    it('authenticates with master dashboard password, creating 30-day device session', async () => {
+      let insertedSession = false;
+      const mockDb = {
+        prepare: vi.fn().mockImplementation((sql: string) => ({
+          bind: vi.fn().mockImplementation(() => ({
+            run: vi.fn().mockImplementation(async () => {
+              if (sql.includes('INSERT INTO admin_device_sessions')) {
+                insertedSession = true;
+              }
+              return { success: true };
+            })
+          }))
+        }))
+      };
+
+      const testPasswordHash = 'UbU+C9KZgTziLeDzBq68Hw==:Cs+IpUxQs/88Eq3sl4nrw/8DkippOveI37xsV4l0oHs=';
+      const mockCtx = {
+        header: vi.fn(),
+        req: {
+          raw: { headers: new Headers() },
+          header: vi.fn().mockReturnValue(null),
+          json: vi.fn().mockResolvedValue({ password: 'Trader@1984' })
+        },
+        env: {
+          DB: mockDb,
+          JWT_SECRET: 'test_jwt_secret_32_characters_long_min',
+          ADMIN_PASSWORD_HASH: testPasswordHash
+        },
+        json: vi.fn().mockImplementation((body, status) => ({ body, status: status || 200 }))
+      } as any;
+
+      const res: any = await handleAdminLogin(mockCtx);
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.token).toBeDefined();
+      expect(res.body.deviceToken).toBeDefined();
+      expect(insertedSession).toBe(true);
+    });
+
+    it('rejects incorrect master dashboard password (HTTP 401)', async () => {
+      const testPasswordHash = 'UbU+C9KZgTziLeDzBq68Hw==:Cs+IpUxQs/88Eq3sl4nrw/8DkippOveI37xsV4l0oHs=';
+      const mockCtx = {
+        header: vi.fn(),
+        req: {
+          raw: { headers: new Headers() },
+          header: vi.fn().mockReturnValue(null),
+          json: vi.fn().mockResolvedValue({ password: 'WrongPassword' })
+        },
+        env: {
+          DB: {},
+          JWT_SECRET: 'test_jwt_secret_32_characters_long_min',
+          ADMIN_PASSWORD_HASH: testPasswordHash
+        },
+        json: vi.fn().mockImplementation((body, status) => ({ body, status: status || 200 }))
+      } as any;
+
+      const res: any = await handleAdminLogin(mockCtx);
+      expect(res.status).toBe(401);
+      expect(res.body.message).toContain('Invalid administrative password');
+    });
   });
 });

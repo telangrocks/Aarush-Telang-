@@ -18,15 +18,15 @@
       </div>
       <form id="login-form">
         <div class="form-group">
-          <label for="admin-key-input">Admin API Key or Bearer Token</label>
-          <input type="password" id="admin-key-input" placeholder="Enter X-Admin-Key or Token" required autocomplete="off">
+          <label for="admin-password-input">Dashboard Password</label>
+          <input type="password" id="admin-password-input" placeholder="Enter password..." required autocomplete="current-password">
         </div>
-        <div class="form-group">
+        <div class="form-group hidden" id="api-url-group">
           <label for="api-url-input">Backend API Origin</label>
           <input type="text" id="api-url-input" value="https://crypto-pulse-backend.telangrocks.workers.dev">
         </div>
         <div id="login-error" class="error-banner hidden"></div>
-        <button type="submit" class="btn btn-primary btn-block">Authenticate Session</button>
+        <button type="submit" class="btn btn-primary btn-block">Login</button>
       </form>
     </div>
   </div>

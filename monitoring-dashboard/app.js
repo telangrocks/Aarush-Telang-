@@ -27,6 +27,7 @@
   const el = {
     loginModal: document.getElementById('login-modal'),
     loginForm: document.getElementById('login-form'),
+    adminPasswordInput: document.getElementById('admin-password-input'),
     adminKeyInput: document.getElementById('admin-key-input'),
     apiUrlInput: document.getElementById('api-url-input'),
     loginError: document.getElementById('login-error'),
@@ -306,11 +307,12 @@
   }
 
   function bindEvents() {
-    // Login form: Authenticate via POST /api/admin/login and receive short-lived JWT
+    // Login form: Authenticate via POST /api/admin/login with Dashboard Password or Admin Key
     el.loginForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const rawInput = el.adminKeyInput.value.trim();
-      const apiUrl = el.apiUrlInput.value.trim();
+      const inputEl = el.adminPasswordInput || el.adminKeyInput;
+      const rawInput = inputEl ? inputEl.value.trim() : '';
+      const apiUrl = el.apiUrlInput ? el.apiUrlInput.value.trim() : state.apiUrl;
 
       if (!rawInput) return;
 
@@ -319,10 +321,12 @@
 
       try {
         el.loginError.classList.add('hidden');
+        const submitBtn = el.loginForm.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.textContent = 'Signing in...';
 
         let tokenToUse = '';
 
-        // Path A: Input is already an admin Bearer JWT
+        // Path A: Input is an admin Bearer JWT
         if (rawInput.startsWith('eyJ') && rawInput.split('.').length === 3) {
           const claims = parseJwtClaims(rawInput);
           const nowSec = Math.floor(Date.now() / 1000);
@@ -331,11 +335,16 @@
           }
           tokenToUse = rawInput;
         } else {
-          // Path B: Input is Admin Key — exchange for short-lived JWT via POST /api/admin/login
+          // Path B: Input is Dashboard Password or Admin Key
+          // Submit both password and adminKey for seamless compatibility
           const loginRes = await fetch(`${apiUrl.replace(/\/+$/, '')}/api/admin/login`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ adminKey: rawInput })
+            credentials: 'include',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CryptoPulse-Admin': '1'
+            },
+            body: JSON.stringify({ password: rawInput, adminKey: rawInput })
           });
 
           if (!loginRes.ok) {
@@ -348,30 +357,29 @@
             throw new Error('Backend did not return an administrative session token.');
           }
           tokenToUse = loginData.token;
+
+          if (loginData.deviceToken) {
+            localStorage.setItem('cp_device_session', loginData.deviceToken);
+          }
         }
 
-        // Store ONLY the short-lived JWT (never the permanent master key)
+        // Store short-lived JWT in session
         state.jwtToken = tokenToUse;
         sessionStorage.setItem('cp_monitoring_jwt', tokenToUse);
         sessionStorage.removeItem('cp_monitoring_admin_key');
 
-        const claims = parseJwtClaims(tokenToUse);
-        el.sessionUserId.textContent = claims?.sub || 'operator';
+        if (inputEl) inputEl.value = ''; // Clear secret from DOM input
 
-        // Validate token by fetching overview
-        await apiFetch('/api/admin/monitoring/overview');
-
-        // Transition UI
-        el.loginModal.classList.add('hidden');
-        el.app.classList.remove('hidden');
-        el.adminKeyInput.value = ''; // Clear secret from DOM input
-        setupAutoRefresh();
-        refreshActiveTab();
+        enterAuthenticatedState('Authorized Device');
+        setupSessionRollingTimer();
       } catch (err) {
         el.loginError.textContent = err.message || 'Authentication failed. Check credentials.';
         el.loginError.classList.remove('hidden');
         sessionStorage.removeItem('cp_monitoring_jwt');
         state.jwtToken = '';
+      } finally {
+        const submitBtn = el.loginForm.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.textContent = 'Login';
       }
     });
 

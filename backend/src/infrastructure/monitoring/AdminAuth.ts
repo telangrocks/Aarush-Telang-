@@ -369,6 +369,82 @@ export async function handleAdminLogin(c: Context<{ Bindings: Env }>) {
       return c.json({ error: 'Unauthorized', message: 'Invalid administrator key.' }, 401);
     }
 
+    // Login path M: Master Dashboard Password authentication (sets 30-day device session & cookie)
+    if (body.password && c.env.ADMIN_PASSWORD_HASH) {
+      const isMasterValid = await verifyPassword(body.password.trim(), c.env.ADMIN_PASSWORD_HASH);
+      if (isMasterValid) {
+        // Reset failed attempt counters on valid authentication
+        await clearAdminLoginAttempts(c, ip);
+
+        const now = Date.now();
+        const nowSec = Math.floor(now / 1000);
+        const sessionId = crypto.randomUUID();
+        const sessionTokenBytes = new Uint8Array(32);
+        crypto.getRandomValues(sessionTokenBytes);
+        const sessionToken = Array.from(sessionTokenBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        const sessionTokenHash = await sha256Hex(sessionToken);
+        const expiresAt = now + 30 * 24 * 60 * 60 * 1000;
+
+        if (c.env.DB) {
+          try {
+            await c.env.DB.prepare(
+              `INSERT INTO admin_device_sessions (session_id, device_name, session_token_hash, ip_address, created_at, last_used_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`
+            ).bind(sessionId, 'Personal Browser', sessionTokenHash, ip, now, now, expiresAt).run();
+          } catch (dbErr) {
+            console.error('[AdminAuth] Error storing device session:', dbErr);
+          }
+        }
+
+        // Set Secure, HttpOnly, SameSite=None, Partitioned cookie
+        try {
+          if (typeof c.header === 'function') {
+            setCookie(c, 'cp_admin_device', sessionToken, {
+              path: '/',
+              secure: true,
+              httpOnly: true,
+              sameSite: 'None',
+              partitioned: true,
+              maxAge: 30 * 24 * 3600
+            });
+          }
+        } catch (_) {}
+
+        const token = await sign(
+          {
+            sub: 'admin_operator',
+            email: 'operator@cryptopulse.internal',
+            role: 'ADMIN',
+            sessionId,
+            jti: crypto.randomUUID(),
+            iat: nowSec,
+            exp: nowSec + 8 * 3600 // 8 hours
+          },
+          jwtSecret,
+          'HS256'
+        );
+
+        return c.json({
+          success: true,
+          token,
+          deviceToken: sessionToken,
+          expiresIn: 8 * 3600,
+          user: {
+            id: 'admin_operator',
+            email: 'operator@cryptopulse.internal',
+            role: 'ADMIN',
+            deviceName: 'Personal Browser'
+          }
+        });
+      }
+
+      // If password provided does not match master password and no email was provided, fail
+      if (!body.email) {
+        await recordFailedAdminLogin(c, ip);
+        return c.json({ error: 'Unauthorized', message: 'Invalid administrative password.' }, 401);
+      }
+    }
+
     // Login path B: User Email & Password authentication with admin authorization
     if (body.email && body.password) {
       const email = body.email.trim().toLowerCase();

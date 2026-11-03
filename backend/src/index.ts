@@ -94,6 +94,7 @@ export interface Env {
   SIGNAL_MANAGER_MODE?: string;
   ADMIN_API_KEY?: string;
   ADMIN_EMAILS?: string;
+  ADMIN_PASSWORD_HASH?: string;
 }
 
 function validateEnv(env: Env): void {
