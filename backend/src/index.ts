@@ -49,6 +49,19 @@ import {
   handleTriggerManualTradeAlert,
 } from "./handlers/exchange";
 import { handleRegisterFcmToken } from "./handlers/notifications";
+import {
+  handleGetFleetOverview,
+  handleGetUsersList,
+  handleGetBotFleet,
+  handleGetIncidents,
+  handleGetIncidentDetail,
+  handleUpdateIncidentStatus,
+  handleGetBotTimeline,
+  handleGetComponentHealth,
+  handleGetQuotaStatus,
+  handleReportClientIncident,
+} from "./handlers/admin-monitoring";
+import { adminAuthMiddleware, handleAdminLogin } from "./infrastructure/monitoring/AdminAuth";
 
 import { isTokenRevoked } from "./handlers/auth";
 import { chatWithKimiK3 } from "./services/kimi";
@@ -71,6 +84,9 @@ export interface Env {
   /** Workers AI binding — used to call Moonshot AI Kimi K3 (moonshotai/kimi-k3). Optional so non-AI routes/tests don't require it. */
   AI?: Ai;
   ENVIRONMENT?: string;
+  SIGNAL_MANAGER_MODE?: string;
+  ADMIN_API_KEY?: string;
+  ADMIN_EMAILS?: string;
 }
 
 function validateEnv(env: Env): void {
@@ -427,7 +443,34 @@ api.post("/verify-pin", handleVerifyPin);
 api.post("/reset-pin", handleRequestPinReset);
 api.post("/confirm-pin-reset", handleConfirmPinReset);
 
+// Client Diagnostic Telemetry (Authenticated Mobile & Web User Sessions)
+api.post("/client/telemetry", handleReportClientIncident);
+
 app.route("/api", api);
+
+// ==========================================
+// CENTRALIZED ADMIN MONITORING ROUTES
+// ==========================================
+const adminApi = new Hono<{ Bindings: Env }>();
+
+// Public admin login
+adminApi.post("/login", handleAdminLogin);
+
+// Protected monitoring endpoints (strictly guarded by adminAuthMiddleware)
+adminApi.use("/monitoring/*", adminAuthMiddleware);
+
+adminApi.get("/monitoring/overview", handleGetFleetOverview);
+adminApi.get("/monitoring/users", handleGetUsersList);
+adminApi.get("/monitoring/bots", handleGetBotFleet);
+adminApi.get("/monitoring/incidents", handleGetIncidents);
+adminApi.get("/monitoring/incidents/:id", handleGetIncidentDetail);
+adminApi.patch("/monitoring/incidents/:id/status", handleUpdateIncidentStatus);
+adminApi.get("/monitoring/timeline", handleGetBotTimeline);
+adminApi.get("/monitoring/health", handleGetComponentHealth);
+adminApi.get("/monitoring/quotas", handleGetQuotaStatus);
+adminApi.post("/monitoring/report-incident", handleReportClientIncident);
+
+app.route("/api/admin", adminApi);
 
 export default app;
 

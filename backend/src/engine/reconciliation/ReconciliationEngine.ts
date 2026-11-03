@@ -1,6 +1,7 @@
 import { IExchangeProvider } from '../../exchanges/IExchangeProvider';
 import { EconomicIntent } from '../wal/WalTypes';
 import { UnifiedError } from '../../exchanges/models/UnifiedError';
+import { BackendDiagnosticSink } from '../../telemetry/BackendDiagnosticSink';
 
 export class ReconciliationEngine {
   private static readonly RECON_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
@@ -42,7 +43,8 @@ export class ReconciliationEngine {
   public static async reconcile(
     adapter: IExchangeProvider,
     intent: EconomicIntent,
-    currentTimeMs: number
+    currentTimeMs: number,
+    telemetryContext?: { userId?: string; sink?: BackendDiagnosticSink }
   ): Promise<EconomicIntent> {
     const validStates = ['UNKNOWN', 'RECONCILIATION_PENDING', 'INTENT_PERSISTED', 'DISPATCHED', 'PARTIALLY_FILLED'];
     if (!validStates.includes(intent.status)) {
@@ -202,10 +204,48 @@ export class ReconciliationEngine {
           } else {
             console.warn(`[RECONCILIATION] Retaining protection on ${intent.symbol}: affirmative flatness not proven (flat=${isPositionFlat}, noOpenOrders=${hasNoOpenOrders})`);
             intent.status = isPositionFlat ? 'UNKNOWN' : 'PARTIALLY_FILLED';
+            if (telemetryContext?.sink) {
+              telemetryContext.sink.emit({
+                userId: telemetryContext.userId || 'system',
+                category: 'SAFETY',
+                component: 'ReconciliationEngine',
+                eventName: 'RECONCILIATION_MISMATCH',
+                severity: 'WARN',
+                correlationId: intent.intentId,
+                symbol: intent.symbol,
+                payload: {
+                  intentId: intent.intentId,
+                  symbol: intent.symbol,
+                  reason: `Affirmative flatness not proven (flat=${isPositionFlat}, noOpenOrders=${hasNoOpenOrders})`,
+                  retryCount: intent.reconciliationAttemptCount,
+                  reconciliationStatus: intent.status,
+                  errorCode: 'RECONCILIATION_MISMATCH'
+                }
+              });
+            }
           }
         } catch (evidenceErr: any) {
           console.warn(`[RECONCILIATION] Evidence query failed for ${intent.symbol}, failing closed:`, evidenceErr?.message || evidenceErr);
           intent.status = 'UNKNOWN';
+          if (telemetryContext?.sink) {
+            telemetryContext.sink.emit({
+              userId: telemetryContext.userId || 'system',
+              category: 'SAFETY',
+              component: 'ReconciliationEngine',
+              eventName: 'RECONCILIATION_MISMATCH',
+              severity: 'WARN',
+              correlationId: intent.intentId,
+              symbol: intent.symbol,
+              payload: {
+                intentId: intent.intentId,
+                symbol: intent.symbol,
+                reason: `Evidence query failed, failing closed: ${evidenceErr?.message || String(evidenceErr)}`,
+                retryCount: intent.reconciliationAttemptCount,
+                reconciliationStatus: intent.status,
+                errorCode: 'RECONCILIATION_EVIDENCE_ERROR'
+              }
+            });
+          }
         }
       } else {
         intent.status = previousStatus === 'RECONCILIATION_PENDING' || previousStatus === 'UNKNOWN' ? 'UNKNOWN' : previousStatus;
@@ -217,6 +257,25 @@ export class ReconciliationEngine {
       }
       console.warn(`[RECONCILIATION] Exchange error for intent ${intent.intentId}:`, err.message);
       intent.status = previousStatus === 'RECONCILIATION_PENDING' || previousStatus === 'UNKNOWN' ? 'UNKNOWN' : previousStatus;
+      if (telemetryContext?.sink) {
+        telemetryContext.sink.emit({
+          userId: telemetryContext.userId || 'system',
+          category: 'SAFETY',
+          component: 'ReconciliationEngine',
+          eventName: 'RECONCILIATION_MISMATCH',
+          severity: 'WARN',
+          correlationId: intent.intentId,
+          symbol: intent.symbol,
+          payload: {
+            intentId: intent.intentId,
+            symbol: intent.symbol,
+            reason: `Exchange error during reconciliation: ${err?.message || String(err)}`,
+            retryCount: intent.reconciliationAttemptCount,
+            reconciliationStatus: intent.status,
+            errorCode: (err instanceof UnifiedError ? err.code : 'EXCHANGE_ERROR') || 'EXCHANGE_ERROR'
+          }
+        });
+      }
     }
 
     return intent;

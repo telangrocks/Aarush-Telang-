@@ -1538,7 +1538,10 @@ export class TradingBot {
               });
 
               if (intentObj) {
-                await ReconciliationEngine.reconcile(provider, intentObj, Date.now());
+                await ReconciliationEngine.reconcile(provider, intentObj, Date.now(), {
+                  userId: userId || this.runtimeState.userId,
+                  sink: this.telemetrySink,
+                });
                 await this.persistIntentSnapshot(positionId, intentObj);
 
                 if (intentObj.status === 'FILLED' || intentObj.status === 'PARTIALLY_FILLED') {
@@ -2755,7 +2758,12 @@ export class TradingBot {
                   console.warn(`[DIAGNOSTIC] [STAGE: MARKET_ORDER_UNVERIFIED] Market order ${intentObj.intentId} returned unverified/open status with 0 fill. Running immediate reconciliation.`);
 
                   try {
-                    const reconciled = await ReconciliationEngine.reconcile(writeProvider, { ...intentObj }, Date.now());
+                    const reconciled = await ReconciliationEngine.reconcile(
+                      writeProvider,
+                      { ...intentObj },
+                      Date.now(),
+                      { userId, sink: this.telemetrySink }
+                    );
                     await this.persistIntentSnapshot(intentObj.intentId, reconciled || intentObj);
                   } catch (reconErr: any) {
                     console.warn(`[DIAGNOSTIC] Immediate reconciliation failed for unverified market order ${intentObj.intentId}:`, reconErr?.message);
@@ -2854,7 +2862,12 @@ export class TradingBot {
                   console.warn(`[DIAGNOSTIC] [STAGE: UNKNOWN_STATE] Ambiguous/network failure after dispatch for ${intentObj.intentId}. Transitioning to UNKNOWN and running immediate reconciliation.`);
 
                   try {
-                    const reconciled = await ReconciliationEngine.reconcile(writeProvider, { ...intentObj }, Date.now());
+                    const reconciled = await ReconciliationEngine.reconcile(
+                      writeProvider,
+                      { ...intentObj },
+                      Date.now(),
+                      { userId, sink: this.telemetrySink }
+                    );
                     await this.persistIntentSnapshot(intentObj.intentId, reconciled || intentObj);
                   } catch (reconErr: any) {
                     console.warn(`[DIAGNOSTIC] Immediate reconciliation failed for ${intentObj.intentId}:`, reconErr?.message);
@@ -3244,6 +3257,26 @@ export class TradingBot {
               });
 
               if (!protCheck.verified) {
+                this.telemetrySink.emit({
+                  userId: snapshot.userId,
+                  category: 'SAFETY',
+                  component: 'TradingBot',
+                  eventName: protCheck.emergencyClosed ? 'PROTECTION_ERROR' : 'UNPROTECTED_EXPOSURE',
+                  severity: 'CRITICAL',
+                  correlationId: target.id,
+                  symbol: snapshot.symbol,
+                  strategyId: snapshot.strategy,
+                  payload: {
+                    alertId: target.id,
+                    positionId: target.id,
+                    symbol: snapshot.symbol,
+                    side: snapshot.side,
+                    errorCode: protCheck.emergencyClosed ? 'EXPOSURE_CLOSED_UNPROTECTED' : 'UNPROTECTED_EXPOSURE_LOCK',
+                    message: protCheck.message,
+                    closeIntentId: protCheck.closeIntentId || undefined,
+                  }
+                });
+
                 if (protCheck.emergencyClosed) {
                   return new Response(
                     JSON.stringify({
@@ -4796,7 +4829,12 @@ export class TradingBot {
             continue;
           }
 
-          const reconciledIntent: any = await ReconciliationEngine.reconcile(adapter, walIntent, Date.now());
+          const reconciledIntent: any = await ReconciliationEngine.reconcile(
+            adapter,
+            walIntent,
+            Date.now(),
+            { userId, sink: this.telemetrySink }
+          );
           const savedWal = await this.persistIntentSnapshot(rowId, reconciledIntent || walIntent);
           if (savedWal.status === 'FAILED' && Number(savedWal.actualExecutedQuantity || 0) === 0) {
             await this.env.DB.prepare(
@@ -4993,7 +5031,12 @@ export class TradingBot {
                   console.log(`[RECONCILIATION] Sweeping intent ${intent.intentId} in state ${intent.status}`);
                   const reconciled: any = isFilledMissingProtection
                     ? { ...intent }
-                    : await ReconciliationEngine.reconcile(adapter, { ...intent }, Date.now());
+                    : await ReconciliationEngine.reconcile(
+                        adapter,
+                        { ...intent },
+                        Date.now(),
+                        { userId, sink: this.telemetrySink }
+                      );
 
                   const isCleanTermination =
                     (reconciled?.status === 'FAILED' && Number(reconciled.actualExecutedQuantity || 0) === 0) ||
@@ -5117,6 +5160,24 @@ export class TradingBot {
                     if (!(resolvedTickSize > 0)) {
                       // Fail closed: keep intent in RECONCILIATION_PENDING and lock exposure until authoritative tickSize can be fetched
                       const nowMs = Date.now();
+                      this.telemetrySink.emit({
+                        userId,
+                        category: 'SAFETY',
+                        component: 'TradingBot',
+                        eventName: 'UNPROTECTED_EXPOSURE',
+                        severity: 'CRITICAL',
+                        correlationId: savedIntent.intentId,
+                        symbol: savedIntent.symbol,
+                        payload: {
+                          alertId: savedIntent.intentId,
+                          positionId: savedIntent.intentId,
+                          symbol: savedIntent.symbol,
+                          side: (savedIntent.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+                          errorCode: 'UNPROTECTED_EXPOSURE_LOCK',
+                          message: `Authoritative tickSize unavailable during alarm recovery for ${savedIntent.symbol}`,
+                          closeIntentId: `close_${savedIntent.intentId}`,
+                        }
+                      });
                       await this.setUnprotectedExposureLock({
                         positionId: savedIntent.intentId,
                         alertId: savedIntent.intentId,

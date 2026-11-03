@@ -13,6 +13,9 @@
  * - Background persistence: uses Cloudflare Durable Object state.waitUntil() or executionCtx.waitUntil().
  */
 
+import { MonitoringService } from '../infrastructure/monitoring/MonitoringService';
+import { BotLifecycleStage } from '../infrastructure/monitoring/MonitoringEvent';
+
 export type BotTelemetryCategory =
   | 'SCANNER'
   | 'CYCLE'
@@ -55,7 +58,10 @@ export const EVENT_PAYLOAD_ALLOWLIST: Record<string, readonly string[]> = {
   ALERT_CREATED: ['alertId', 'side', 'signalPrice', 'stopLoss', 'takeProfit', 'confidenceScore'],
   FCM_DISPATCH_RESULT: ['alertId', 'success', 'transport', 'httpStatus', 'errorCode'],
   EXECUTION_REQUEST: ['alertId', 'clientOrderId', 'symbol', 'side', 'orderType', 'entryIntent'],
-  BYBIT_RESULT: ['success', 'orderId', 'orderStatus', 'resultCode']
+  BYBIT_RESULT: ['success', 'orderId', 'orderStatus', 'resultCode'],
+  PROTECTION_ERROR: ['alertId', 'positionId', 'symbol', 'side', 'errorCode', 'message', 'closeIntentId'],
+  UNPROTECTED_EXPOSURE: ['alertId', 'positionId', 'symbol', 'side', 'errorCode', 'message', 'closeIntentId'],
+  RECONCILIATION_MISMATCH: ['intentId', 'symbol', 'reason', 'retryCount', 'reconciliationStatus', 'errorCode']
 };
 
 export class BackendDiagnosticSink {
@@ -173,6 +179,40 @@ export class BackendDiagnosticSink {
       } else {
         console.log(`[DIAGNOSTIC] [${normalizedEvent.category}] ${normalizedEvent.eventName}: ${payloadStr}`);
       }
+
+      // Forward to Centralized Monitoring Service (Fail-safe, non-blocking)
+      try {
+        const monitoring = MonitoringService.getInstance();
+        const sevMap: Record<string, 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL'> = {
+          DEBUG: 'INFO',
+          INFO: 'INFO',
+          WARN: 'WARNING',
+          ERROR: 'ERROR',
+          CRITICAL: 'CRITICAL'
+        };
+        monitoring.recordEvent(
+          {
+            id: normalizedEvent.id,
+            timestamp: normalizedEvent.timestamp,
+            severity: sevMap[normalizedEvent.severity || 'INFO'] || 'INFO',
+            source: 'BOT',
+            component: normalizedEvent.component,
+            eventType: normalizedEvent.eventName,
+            userId: normalizedEvent.userId,
+            correlationId: normalizedEvent.correlationId || normalizedEvent.cycleId || undefined,
+            lifecycleStage: BackendDiagnosticSink.mapToBotLifecycleStage(normalizedEvent.category, normalizedEvent.eventName),
+            errorCode: (normalizedEvent.payload?.errorCode as string) || (normalizedEvent.payload?.gate as string) || undefined,
+            message: `${normalizedEvent.category} - ${normalizedEvent.eventName}`,
+            evidence: normalizedEvent.payload
+          },
+          {
+            db: this.db,
+            waitUntil: this.waitUntilFn || undefined
+          }
+        );
+      } catch (_) {
+        // Absolute isolation
+      }
     } catch (_) {
       // Intentionally swallowed: Diagnostics must NEVER compromise engine execution
     }
@@ -287,5 +327,23 @@ export class BackendDiagnosticSink {
    */
   public async flushSyncForTesting(): Promise<void> {
     this.buffer.length = 0;
+  }
+
+  /**
+   * Deterministically maps telemetry category and event name to one of 17 standard lifecycle stages.
+   */
+  public static mapToBotLifecycleStage(category: string, eventName: string): BotLifecycleStage {
+    if (eventName === 'FINAL_DISPATCH_GATE') return 'TRADE_VALIDATION';
+    if (eventName === 'RECONCILIATION_MISMATCH') return 'WAL_RECONCILIATION';
+    if (eventName === 'CIRCUIT_BREAKER' || eventName === 'UNPROTECTED_EXPOSURE') return 'CIRCUIT_BREAKER';
+    if (eventName === 'PROTECTION_ERROR' || eventName === 'PROTECTION_PLACED') return 'PROTECTION_PLACEMENT';
+    if (category === 'CYCLE') return 'POSITION_MONITORING';
+    if (category === 'STRATEGY') return 'STRATEGY_EVALUATION';
+    if (category === 'RISK') return 'RISK_VALIDATION';
+    if (category === 'SAFETY') return 'TRADE_VALIDATION';
+    if (category === 'EXECUTION') return 'EXCHANGE_ORDER_SUBMISSION';
+    if (category === 'EXCHANGE') return 'ORDER_ACKNOWLEDGEMENT';
+    if (category === 'ALERT') return 'ORDER_PREPARATION';
+    return 'POSITION_MONITORING';
   }
 }
