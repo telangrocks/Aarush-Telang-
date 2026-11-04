@@ -1,38 +1,53 @@
 package com.cryptopulse.app.ui.auth
 
+import com.cryptopulse.app.core.dispatcher.DispatcherProvider
 import com.cryptopulse.app.core.network.NetworkResult
+import com.cryptopulse.app.core.network.safeApiCall
+import com.cryptopulse.app.data.api.dto.market.response.KlineDto
+import com.cryptopulse.app.data.api.dto.market.response.MarketCandidateDto
+import com.cryptopulse.app.data.api.dto.market.response.TickerResponseDto
+import com.cryptopulse.app.data.datasource.remote.market.MarketRemoteDataSource
+import com.cryptopulse.app.data.repository.MarketRepositoryImpl
 import com.cryptopulse.app.domain.models.BalanceItem
 import com.cryptopulse.app.domain.models.ExchangeStatus
 import com.cryptopulse.app.domain.repository.ExchangeRepository
 import com.cryptopulse.app.core.error.NetworkError
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import okhttp3.Headers
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import retrofit2.Response
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ExchangeBalanceTest {
 
     private lateinit var viewModel: ExchangeViewModel
     private lateinit var exchangeRepository: FakeExchangeRepository
+    private lateinit var marketRepository: FakeMarketRepositoryMinimal
     private val testDispatcher = UnconfinedTestDispatcher()
 
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         exchangeRepository = FakeExchangeRepository()
+        marketRepository = FakeMarketRepositoryMinimal()
         
         // Use a minimal approach - we only care about fetchBalances calling exchangeRepository.getBalances()
         // and updating _balances state.
         viewModel = ExchangeViewModel(
             appContext = FakeContextMinimal(),
             exchangeRepository = exchangeRepository,
-            marketRepository = FakeMarketRepositoryMinimal(),
+            marketRepository = marketRepository,
             technicalAnalysisRepository = FakeTechnicalAnalysisRepositoryMinimal(),
             botRepository = FakeBotRepositoryMinimal(),
             fcmRepository = FakeFcmRepositoryMinimal(),
@@ -67,6 +82,105 @@ class ExchangeBalanceTest {
         assertEquals(errorMessage, viewModel.balancesError.value)
         assertNull(viewModel.balances.value)
     }
+
+    @Test
+    fun `fetchMarketCandidates distinguishes backend NO_ELIGIBLE_MARKETS from NO_TECHNICAL_OPPORTUNITIES without hardcoded dollar thresholds`() {
+        // 1. Even with a $4 budget (< $5), if backend reports NO_TECHNICAL_OPPORTUNITIES, UI state does NOT claim budget is insufficient
+        marketRepository.candidatesResult = NetworkResult.Success(
+            emptyList(),
+            headers = mapOf("X-Empty-Reason" to "NO_TECHNICAL_OPPORTUNITIES", "X-Eligible-Market-Count" to "3")
+        )
+        viewModel.fetchMarketCandidates(4.0)
+        val stateTechEmpty = viewModel.marketDataState.value as MarketDataUiState.Empty
+        assertEquals("NO_TECHNICAL_OPPORTUNITIES", stateTechEmpty.emptyReason)
+        assertTrue(stateTechEmpty.message.contains("strategy criteria"))
+        assertFalse(stateTechEmpty.message.contains("Please increase your budget"))
+
+        // 2. When backend authoritatively reports NO_ELIGIBLE_MARKETS, UI state reports budget ineligibility
+        marketRepository.candidatesResult = NetworkResult.Success(
+            emptyList(),
+            headers = mapOf("X-Empty-Reason" to "NO_ELIGIBLE_MARKETS", "X-Eligible-Market-Count" to "0")
+        )
+        viewModel.fetchMarketCandidates(4.0)
+        val stateBudgetEmpty = viewModel.marketDataState.value as MarketDataUiState.Empty
+        assertEquals("NO_ELIGIBLE_MARKETS", stateBudgetEmpty.emptyReason)
+        assertTrue(stateBudgetEmpty.message.contains("Please increase your budget"))
+
+        // 3. When backend/network fails, UI state transitions to Error (never Empty/budget message)
+        marketRepository.candidatesResult = NetworkResult.Error(
+            NetworkError.HttpError(503, "Market data temporarily degraded")
+        )
+        viewModel.fetchMarketCandidates(5000.0)
+        assertTrue(viewModel.marketDataState.value is MarketDataUiState.Error)
+    }
+
+    @Test
+    fun `safeApiCall and MarketRepositoryImpl propagate X-Empty-Reason and X-Eligible-Market-Count headers to ExchangeViewModel`() = runTest {
+        val testDispatchers = object : DispatcherProvider {
+            override val main: CoroutineDispatcher = testDispatcher
+            override val io: CoroutineDispatcher = testDispatcher
+            override val default: CoroutineDispatcher = testDispatcher
+            override val unconfined: CoroutineDispatcher = testDispatcher
+        }
+
+        var simulatedHeaders: Headers = Headers.headersOf(
+            "X-Empty-Reason", "NO_ELIGIBLE_MARKETS",
+            "X-Eligible-Market-Count", "0"
+        )
+
+        val remoteDataSource = object : MarketRemoteDataSource {
+            override suspend fun getMarketCandidates(budget: Double): NetworkResult<List<MarketCandidateDto>> =
+                safeApiCall {
+                    Response.success(emptyList<MarketCandidateDto>(), simulatedHeaders)
+                }
+
+            override suspend fun getKlines(symbol: String, interval: String, limit: Int): NetworkResult<List<KlineDto>> =
+                NetworkResult.Success(emptyList())
+
+            override suspend fun getTicker(symbol: String): NetworkResult<TickerResponseDto> =
+                NetworkResult.Error(NetworkError.Unknown(Exception("unused")))
+        }
+
+        val realMarketRepository = MarketRepositoryImpl(remoteDataSource, testDispatchers)
+
+        // 1. Verify safeApiCall + MarketRepositoryImpl extract and preserve headers for NO_ELIGIBLE_MARKETS
+        val repoResultBudget = realMarketRepository.getCandidates(4.0) as NetworkResult.Success
+        assertEquals("NO_ELIGIBLE_MARKETS", repoResultBudget.headers["X-Empty-Reason"])
+        assertEquals("0", repoResultBudget.headers["X-Eligible-Market-Count"])
+
+        val vmWithRealRepo = ExchangeViewModel(
+            appContext = FakeContextMinimal(),
+            exchangeRepository = exchangeRepository,
+            marketRepository = realMarketRepository,
+            technicalAnalysisRepository = FakeTechnicalAnalysisRepositoryMinimal(),
+            botRepository = FakeBotRepositoryMinimal(),
+            fcmRepository = FakeFcmRepositoryMinimal(),
+            tokenManager = FakeTokenManagerMinimal(),
+            exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+            sessionRepository = FakeTradeSessionRepositoryMinimal(),
+            tradeAlertManager = FakeTradeAlertManagerMinimal()
+        )
+
+        vmWithRealRepo.fetchMarketCandidates(4.0)
+        val uiBudgetEmpty = vmWithRealRepo.marketDataState.value as MarketDataUiState.Empty
+        assertEquals("NO_ELIGIBLE_MARKETS", uiBudgetEmpty.emptyReason)
+        assertTrue(uiBudgetEmpty.message.contains("Please increase your budget"))
+
+        // 2. Verify safeApiCall + MarketRepositoryImpl extract and preserve headers for NO_TECHNICAL_OPPORTUNITIES
+        simulatedHeaders = Headers.headersOf(
+            "X-Empty-Reason", "NO_TECHNICAL_OPPORTUNITIES",
+            "X-Eligible-Market-Count", "12"
+        )
+        val repoResultTech = realMarketRepository.getCandidates(25.0) as NetworkResult.Success
+        assertEquals("NO_TECHNICAL_OPPORTUNITIES", repoResultTech.headers["X-Empty-Reason"])
+        assertEquals("12", repoResultTech.headers["X-Eligible-Market-Count"])
+
+        vmWithRealRepo.fetchMarketCandidates(25.0)
+        val uiTechEmpty = vmWithRealRepo.marketDataState.value as MarketDataUiState.Empty
+        assertEquals("NO_TECHNICAL_OPPORTUNITIES", uiTechEmpty.emptyReason)
+        assertTrue(uiTechEmpty.message.contains("strategy criteria"))
+        assertFalse(uiTechEmpty.message.contains("Please increase your budget"))
+    }
 }
 
 // ── Minimal Fakes ────────────────────────────────────────────────────────────
@@ -84,8 +198,9 @@ class FakeExchangeRepository : ExchangeRepository {
 }
 
 class FakeMarketRepositoryMinimal : com.cryptopulse.app.domain.repository.MarketRepository {
-    override suspend fun getCandidates(budget: Double): NetworkResult<List<com.cryptopulse.app.domain.models.MarketCandidate>> = NetworkResult.Success(emptyList())
-    override suspend fun getCandidates(): NetworkResult<List<com.cryptopulse.app.domain.models.MarketCandidate>> = NetworkResult.Success(emptyList())
+    var candidatesResult: NetworkResult<List<com.cryptopulse.app.domain.models.MarketCandidate>> = NetworkResult.Success(emptyList())
+    override suspend fun getCandidates(budget: Double): NetworkResult<List<com.cryptopulse.app.domain.models.MarketCandidate>> = candidatesResult
+    override suspend fun getCandidates(): NetworkResult<List<com.cryptopulse.app.domain.models.MarketCandidate>> = candidatesResult
     override suspend fun getTicker(symbol: String): NetworkResult<com.cryptopulse.app.domain.models.Ticker> = NetworkResult.Error(NetworkError.Unknown(Exception()))
     override suspend fun getKlines(symbol: String, interval: String, limit: Int): NetworkResult<List<com.cryptopulse.app.domain.models.Kline>> = NetworkResult.Success(emptyList())
 }

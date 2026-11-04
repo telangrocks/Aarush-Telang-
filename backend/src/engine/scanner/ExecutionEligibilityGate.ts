@@ -81,7 +81,7 @@ export class ExecutionEligibilityGate {
       };
     }
 
-    if (params.maxOrderQty === undefined || params.maxOrderQty === null || !Number.isFinite(params.maxOrderQty) || params.maxOrderQty <= 0) {
+    if (params.maxOrderQty !== undefined && params.maxOrderQty !== null && (!Number.isFinite(params.maxOrderQty) || params.maxOrderQty <= 0)) {
       return {
         isExecutable: false,
         rawQty: 0,
@@ -122,14 +122,16 @@ export class ExecutionEligibilityGate {
     // rawQty = tradeAmountUsdt / currentPrice
     const rawQtyBN = tradeAmountBN.dividedBy(priceBN);
 
-    // Apply exchange maximum quantity constraint before step-size quantization
+    // Apply exchange maximum quantity constraint before step-size quantization (if specified)
     let effectiveRawQtyBN = rawQtyBN;
     let wasClampedToMax = false;
     const maxOrderQty = params.maxOrderQty;
-    const maxOrderQtyBN = new BigNumber(maxOrderQty);
-    if (rawQtyBN.isGreaterThan(maxOrderQtyBN)) {
-      effectiveRawQtyBN = maxOrderQtyBN;
-      wasClampedToMax = true;
+    if (maxOrderQty !== undefined && maxOrderQty !== null && Number.isFinite(maxOrderQty) && maxOrderQty > 0) {
+      const maxOrderQtyBN = new BigNumber(maxOrderQty);
+      if (rawQtyBN.isGreaterThan(maxOrderQtyBN)) {
+        effectiveRawQtyBN = maxOrderQtyBN;
+        wasClampedToMax = true;
+      }
     }
 
     // steps = floor(effectiveRawQty / qtyStep)

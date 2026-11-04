@@ -175,7 +175,8 @@ export function selectBoundedDiscoveryMarkets(
   markets: any[],
   tickers: any[],
   userAllocation: number | null,
-  maxCandidates: number = 8
+  maxCandidates: number = 8,
+  orderType: string = 'ALL'
 ): any[] {
   const tickerMap = new Map<string, any>();
   for (const t of tickers) {
@@ -200,6 +201,22 @@ export function selectBoundedDiscoveryMarkets(
     return Number.isFinite(n) ? n : fallback;
   };
 
+  const parseOptionalCeiling = (primary: any, secondary: any, tertiary: any): { present: boolean; valid: boolean; value?: number } => {
+    const src = (primary !== undefined && primary !== null && String(primary).trim() !== '')
+      ? primary
+      : ((secondary !== undefined && secondary !== null && String(secondary).trim() !== '')
+        ? secondary
+        : ((tertiary !== undefined && tertiary !== null && String(tertiary).trim() !== '') ? tertiary : undefined));
+    if (src === undefined) {
+      return { present: false, valid: true, value: undefined };
+    }
+    const n = typeof src?.toNumber === 'function' ? src.toNumber() : Number(src);
+    if (!Number.isFinite(n) || n <= 0) {
+      return { present: true, valid: false, value: n };
+    }
+    return { present: true, valid: true, value: n };
+  };
+
   for (const m of markets) {
     if (!m || m.active === false) continue;
     const cat = String(m.category || 'linear').toLowerCase();
@@ -218,18 +235,40 @@ export function selectBoundedDiscoveryMarkets(
     const px = toNum(t.last ?? t.price, 0);
     if (!(px > 0)) continue;
 
+    const normalizedOrderType = String(orderType || 'ALL').toUpperCase();
+    const limitMax = parseOptionalCeiling(t.maxQty, m?.limits?.amount?.max, m?.info?.lotSizeFilter?.maxOrderQty);
+    const mktMax = parseOptionalCeiling(t.marketMaxQty, m?.limits?.marketAmount?.max, m?.info?.lotSizeFilter?.maxMktOrderQty);
+    if (normalizedOrderType === 'LIMIT') {
+      if (!limitMax.valid) continue;
+    } else if (normalizedOrderType === 'MARKET') {
+      if (!mktMax.valid) continue;
+    } else {
+      if (!limitMax.valid || !mktMax.valid) continue;
+    }
+
     if (userAllocation !== null && userAllocation > 0) {
       const qtyStep = toNum(t.qtyStep ?? m?.precision?.amount, 0);
       const minOrderQty = toNum(t.minOrderQty ?? m?.limits?.amount?.min, 0);
       const minNotional = toNum(t.minNotional ?? m?.limits?.cost?.min, 0);
-      const maxOrderQty = toNum(t.maxQty ?? m?.limits?.amount?.max ?? m?.info?.lotSizeFilter?.maxOrderQty, 0);
+      let applicableMax: number | undefined = undefined;
+      if (normalizedOrderType === 'LIMIT') {
+        applicableMax = limitMax.present ? limitMax.value : undefined;
+      } else if (normalizedOrderType === 'MARKET') {
+        applicableMax = mktMax.present ? mktMax.value : undefined;
+      } else if (limitMax.present && mktMax.present) {
+        applicableMax = Math.min(limitMax.value!, mktMax.value!);
+      } else if (limitMax.present) {
+        applicableMax = limitMax.value!;
+      } else if (mktMax.present) {
+        applicableMax = mktMax.value!;
+      }
       const elig = ExecutionEligibilityGate.evaluate({
         tradeAmountUsdt: userAllocation,
         currentPrice: px,
         qtyStep: qtyStep > 0 ? qtyStep : 0,
         minOrderQty: minOrderQty > 0 ? minOrderQty : 0,
         minNotional: minNotional > 0 ? minNotional : 0,
-        maxOrderQty: maxOrderQty > 0 ? maxOrderQty : undefined,
+        maxOrderQty: applicableMax,
       });
       if (!elig.isExecutable) continue;
     }
@@ -1071,18 +1110,27 @@ export async function handleGetPersonalizedMarketCandidates(
     const queryBudget = c.req.query("budget");
     const parsedBudget = queryBudget ? parseFloat(queryBudget) : null;
     const userAllocation = (parsedBudget !== null && !isNaN(parsedBudget) && parsedBudget > 0) ? parsedBudget : null;
+    const queryOrderType = String(c.req.query("orderType") || "ALL").toUpperCase();
+    const canonicalExchange = String(user.exchange_name || "bybit").toLowerCase();
+    const canonicalEnv = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
+    const canonicalRegion = resolveCanonicalRoutingRegion(user.exchange_region);
 
-    const cacheKey = `${userId}_${user.exchange_name}_${user.exchange_environment}_${userAllocation !== null ? String(userAllocation) : 'default'}`;
-    const cached = DISCOVERY_CACHE.get(cacheKey);
-    if (cached) {
-      console.log(`[DIAGNOSTIC] Cache hit for ${cacheKey}`);
-      return c.json(cached);
+    const baseCacheKey = `${userId}_${canonicalExchange}_${canonicalEnv}_${canonicalRegion}_${queryOrderType}_${userAllocation !== null ? String(userAllocation) : 'default'}`;
+    if (userAllocation === null) {
+      const cached = DISCOVERY_CACHE.get(baseCacheKey);
+      if (cached && cached.length > 0) {
+        console.log(`[DIAGNOSTIC] Cache hit for ${baseCacheKey}`);
+        if (typeof c.header === 'function') {
+          c.header("X-Eligible-Market-Count", String(cached.length));
+        }
+        return c.json(cached);
+      }
     }
 
     // Stage 3.5: Authoritative DO Scanner State Query (CP-CONF-001)
-    // Directly query user's TradingBot DO for its authoritative scanner state before doing any expensive local work.
-    // Handles warm cached scan (<5ms), active in-flight scan, or cold discovery scan in the DO without redundant Worker CCXT overhead.
-    if (c.env.TRADING_BOTS) {
+    // Directly query user's TradingBot DO for its authoritative scanner state before doing any expensive local work
+    // when no custom budget filter is overriding discovery eligibility.
+    if (c.env.TRADING_BOTS && userAllocation === null) {
       try {
         const botId = c.env.TRADING_BOTS.idFromName(userId);
         const bot = c.env.TRADING_BOTS.get(botId);
@@ -1095,9 +1143,12 @@ export async function handleGetPersonalizedMarketCandidates(
             console.log(`[DIAGNOSTIC] Stage 3.5: Retrieved authoritative DO scanner state: universeSize=${scanResult.universeSize}, eligible=${scanResult.eligibleCount}, top=${scanResult.topOpportunities?.length || 0}`);
             const candidates = mapScanResultToCandidates(scanResult);
 
-            if (candidates.length > 0 || userAllocation !== null) {
+            if (candidates.length > 0) {
               console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully from DO (${candidates.length} items)`);
-              DISCOVERY_CACHE.set(cacheKey, candidates);
+              DISCOVERY_CACHE.set(baseCacheKey, candidates);
+              if (typeof c.header === 'function') {
+                c.header("X-Eligible-Market-Count", String(scanResult.eligibleCount ?? candidates.length));
+              }
               return c.json(candidates);
             }
           }
@@ -1210,6 +1261,16 @@ export async function handleGetPersonalizedMarketCandidates(
           return null;
         };
 
+        const extractOptionalMaxConstraint = (legacyVal: any, bybitVal: any): number | null => {
+          if (legacyVal !== undefined && legacyVal !== null && String(legacyVal).trim() !== '') {
+            return typeof legacyVal?.toNumber === 'function' ? legacyVal.toNumber() : Number(legacyVal);
+          }
+          if (bybitVal !== undefined && bybitVal !== null && String(bybitVal).trim() !== '') {
+            return Number(bybitVal);
+          }
+          return null;
+        };
+
         rawTickers.push({
           symbol: m.base || (m.symbol ? m.symbol.split('/')[0] : "BTC"),
           pairName: m.symbol || "BTC/USDT",
@@ -1229,7 +1290,8 @@ export async function handleGetPersonalizedMarketCandidates(
           tickSize: extractConstraint(m?.precision?.price, m?.info?.priceFilter?.tickSize),
           minPrice: extractConstraint(m?.limits?.price?.min, m?.info?.priceFilter?.minPrice),
           maxPrice: extractConstraint(m?.limits?.price?.max, m?.info?.priceFilter?.maxPrice),
-          maxQty: extractConstraint(m?.limits?.amount?.max, m?.info?.lotSizeFilter?.maxOrderQty),
+          maxQty: extractOptionalMaxConstraint(m?.limits?.amount?.max, m?.info?.lotSizeFilter?.maxOrderQty),
+          marketMaxQty: extractOptionalMaxConstraint(m?.limits?.marketAmount?.max, m?.info?.lotSizeFilter?.maxMktOrderQty),
         });
       }
     } catch (tErr: any) {
@@ -1252,13 +1314,40 @@ export async function handleGetPersonalizedMarketCandidates(
     
     // Stage 9: Opportunity discovery and candidate evaluation (Fallback Path)
     let candidates: any[] = [];
-    const boundedMarkets = selectBoundedDiscoveryMarkets(activeMarkets, tickers, userAllocation, 8);
+    const boundedMarkets = selectBoundedDiscoveryMarkets(activeMarkets, tickers, userAllocation, 8, queryOrderType);
     if (boundedMarkets.length === 0) {
       console.log(`[DIAGNOSTIC] Stage 9: 0 eligible markets after bounded pre-selection (universe=${activeMarkets.length}, budget=${userAllocation ?? 'default'}). Returning empty array without scanner invocation.`);
-      DISCOVERY_CACHE.set(cacheKey, []);
+      if (typeof c.header === 'function') {
+        c.header("X-Empty-Reason", "NO_ELIGIBLE_MARKETS");
+        c.header("X-Eligible-Market-Count", "0");
+      }
       return c.json([]);
     }
 
+    const rulesSnapshotFingerprint = activeMarkets
+      .map((m: any) => `${m.symbol || m.id}:${m?.precision?.amount ?? m?.info?.lotSizeFilter?.qtyStep ?? ''}:${m?.limits?.amount?.min ?? m?.info?.lotSizeFilter?.minOrderQty ?? ''}:${m?.limits?.cost?.min ?? m?.info?.lotSizeFilter?.minNotionalValue ?? ''}:${m?.limits?.amount?.max ?? m?.info?.lotSizeFilter?.maxOrderQty ?? ''}:${m?.limits?.marketAmount?.max ?? m?.info?.lotSizeFilter?.maxMktOrderQty ?? ''}`)
+      .join('|');
+    const cacheKey = `${baseCacheKey}_${rulesSnapshotFingerprint}`;
+    const cachedWithRules = DISCOVERY_CACHE.get(cacheKey);
+    if (cachedWithRules && cachedWithRules.length > 0) {
+      const eligibleSymbolSet = new Set(boundedMarkets.map((m: any) => m.symbol));
+      const livePriceMap = new Map(tickers.map((t: any) => [t.pairName || `${t.symbol}/USDT`, t.price]));
+      const revalidatedCached = cachedWithRules
+        .filter((cand: any) => eligibleSymbolSet.has(cand.pairName || `${cand.symbol}/USDT`))
+        .map((cand: any) => {
+          const livePx = livePriceMap.get(cand.pairName || `${cand.symbol}/USDT`);
+          return typeof livePx === 'number' && livePx > 0 ? { ...cand, price: livePx } : cand;
+        });
+      if (revalidatedCached.length === cachedWithRules.length && revalidatedCached.length > 0) {
+        console.log(`[DIAGNOSTIC] Cache hit (live-eligibility revalidated) for ${cacheKey}`);
+        if (typeof c.header === 'function') {
+          c.header("X-Eligible-Market-Count", String(boundedMarkets.length));
+        }
+        return c.json(revalidatedCached);
+      }
+    }
+
+    let eligibleMarketCount = boundedMarkets.length;
     try {
       const publicAdapter = await ExchangeManager.getProvider(exchangeName, {
         environment,
@@ -1268,8 +1357,12 @@ export async function handleGetPersonalizedMarketCandidates(
       const scanResult = await scanner.scan({
         markets: boundedMarkets,
         tickers,
+        orderType: queryOrderType,
         ...(userAllocation !== null ? { tradeAmountUsdt: userAllocation } : {})
       });
+      if (typeof scanResult?.eligibleCount === 'number') {
+        eligibleMarketCount = scanResult.eligibleCount;
+      }
 
       if (
         !scanResult ||
@@ -1310,8 +1403,20 @@ export async function handleGetPersonalizedMarketCandidates(
     // Stage 10: response serialized
     currentStage = "10. response serialized";
     console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully (${candidates.length} items)`);
-    
-    DISCOVERY_CACHE.set(cacheKey, candidates);
+
+    if (typeof c.header === 'function') {
+      c.header("X-Eligible-Market-Count", String(eligibleMarketCount));
+      if (candidates.length === 0) {
+        c.header("X-Empty-Reason", eligibleMarketCount === 0 ? "NO_ELIGIBLE_MARKETS" : "NO_TECHNICAL_OPPORTUNITIES");
+      }
+    }
+
+    if (candidates.length > 0) {
+      DISCOVERY_CACHE.set(cacheKey, candidates);
+      if (userAllocation === null) {
+        DISCOVERY_CACHE.set(baseCacheKey, candidates);
+      }
+    }
     return c.json(candidates);
 
   } catch (fatalErr: any) {
@@ -2498,14 +2603,27 @@ export async function handleTriggerManualTradeAlert(
       : (parseFloat(rawQtyStep) || 0);
 
     const rawMinNotional = matchedMarket.limits?.cost?.min as any;
-    const rawMaxQty = (matchedMarket.limits?.amount?.max ?? (matchedMarket as any).info?.lotSizeFilter?.maxOrderQty) as any;
-    const maxOrderQty = typeof rawMaxQty?.toNumber === 'function' ? rawMaxQty.toNumber() : (typeof rawMaxQty === 'number' ? rawMaxQty : (parseFloat(rawMaxQty) || 0));
+    const parseOptionalMax = (primary: any, fallback: any): number | undefined => {
+      const src = (primary !== undefined && primary !== null && String(primary).trim() !== '')
+        ? primary
+        : ((fallback !== undefined && fallback !== null && String(fallback).trim() !== '') ? fallback : undefined);
+      if (src === undefined) return undefined;
+      return typeof src?.toNumber === 'function' ? src.toNumber() : Number(src);
+    };
+    const maxOrderQty = parseOptionalMax(matchedMarket.limits?.amount?.max, (matchedMarket as any).info?.lotSizeFilter?.maxOrderQty);
+    const marketMaxQty = parseOptionalMax((matchedMarket.limits as any)?.marketAmount?.max, (matchedMarket as any).info?.lotSizeFilter?.maxMktOrderQty);
     const minNotional = typeof rawMinNotional?.toNumber === 'function'
       ? rawMinNotional.toNumber()
       : (typeof rawMinNotional === 'number' ? rawMinNotional : (parseFloat(rawMinNotional) || 0));
 
     // Fail closed if required execution constraints cannot be verified
-    if (minOrderQty <= 0 || qtyStep <= 0 || minNotional <= 0 || maxOrderQty <= 0 || !Number.isFinite(maxOrderQty)) {
+    if (
+      minOrderQty <= 0 ||
+      qtyStep <= 0 ||
+      minNotional <= 0 ||
+      (maxOrderQty !== undefined && (!Number.isFinite(maxOrderQty) || maxOrderQty <= 0)) ||
+      (marketMaxQty !== undefined && (!Number.isFinite(marketMaxQty) || marketMaxQty <= 0))
+    ) {
       c.status(400);
       return c.json({
         success: false,
@@ -2517,10 +2635,15 @@ export async function handleTriggerManualTradeAlert(
           qtyStep,
           minOrderQty,
           minNotional,
-      maxOrderQty,
+          maxOrderQty,
+          marketMaxQty,
         }
       });
     }
+
+    const manualEntryIntent = (config?.entryIntent as any) || 'WAIT_FOR_PRICE';
+    const isMarketManualIntent = manualEntryIntent === 'IMMEDIATE' || manualEntryIntent === 'TRIGGER';
+    const applicableManualMaxOrderQty = isMarketManualIntent ? marketMaxQty : maxOrderQty;
 
     // Pre-Alert Execution Eligibility Gate for Manual Trade
     const eligibility = ExecutionEligibilityGate.evaluate({
@@ -2529,7 +2652,7 @@ export async function handleTriggerManualTradeAlert(
       qtyStep,
       minOrderQty,
       minNotional,
-      maxOrderQty,
+      maxOrderQty: applicableManualMaxOrderQty,
     });
 
     if (!eligibility.isExecutable) {

@@ -14,9 +14,11 @@ export interface Market {
   };
   limits: {
     amount: { min: BigNumber; max?: BigNumber };
+    marketAmount?: { min?: BigNumber; max?: BigNumber };
     price: { min: BigNumber; max?: BigNumber };
     cost: { min: BigNumber; max?: BigNumber };
   };
+  info?: any;
 }
 
 export interface Balance {
@@ -43,33 +45,42 @@ export interface Ticker {
 }
 
 export interface Position {
+  id?: string;
   symbol: string;
-  size: BigNumber;
+  timestamp?: number;
   side: 'long' | 'short';
+  size: BigNumber;
+  contracts?: BigNumber;
+  contractSize?: BigNumber;
   entryPrice: BigNumber;
+  markPrice: BigNumber;
+  notional?: BigNumber;
+  leverage: BigNumber;
   unrealizedPnl: BigNumber;
-  markPrice?: BigNumber;
-  leverage?: number;
   liquidationPrice?: BigNumber;
-  stopLoss?: BigNumber;
-  takeProfit?: BigNumber;
+  marginType?: 'isolated' | 'cross';
+  collateral?: BigNumber;
+  percentage?: number;
+  info?: any;
 }
 
 export interface Order {
   id: string;
   clientOrderId?: string;
-  symbol: string;
   timestamp: number;
-  status: 'open' | 'closed' | 'canceled' | 'rejected' | 'expired' | 'partially_filled';
-  side: 'buy' | 'sell';
-  type: 'limit' | 'market';
+  datetime?: string;
+  lastTradeTimestamp?: number;
+  status: 'open' | 'closed' | 'canceled' | 'expired' | 'rejected';
+  symbol: string;
+  type: 'limit' | 'market' | 'stop_loss' | 'stop_loss_limit' | 'take_profit' | 'take_profit_limit';
   timeInForce?: 'GTC' | 'IOC' | 'FOK' | 'PO';
-  price?: BigNumber;
+  side: 'buy' | 'sell';
+  price: BigNumber;
   average?: BigNumber;
   amount: BigNumber;
   filled: BigNumber;
   remaining: BigNumber;
-  cost?: BigNumber;
+  cost: BigNumber;
   fee?: {
     currency: string;
     cost: BigNumber;

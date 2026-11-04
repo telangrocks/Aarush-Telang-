@@ -195,4 +195,84 @@ describe('BybitAdapter V5 Unit Tests', () => {
       expect(capturedParams.stopLoss).toBe('67890.2'); // ceiled to tickSize 0.1 for SELL
     });
   });
+
+  describe('Authoritative Bybit Instrument Metadata Mapping', () => {
+    it('correctly maps minOrderQty, maxOrderQty, maxMktOrderQty, price limits, and info object', () => {
+      const rawItem = {
+        symbol: 'BTCUSDT',
+        baseCoin: 'BTC',
+        quoteCoin: 'USDT',
+        status: 'Trading',
+        priceFilter: {
+          tickSize: '0.10',
+          minPrice: '0.50',
+          maxPrice: '999999.00'
+        },
+        lotSizeFilter: {
+          minOrderQty: '0.001',
+          maxOrderQty: '100.000',
+          maxMktOrderQty: '50.000',
+          qtyStep: '0.001',
+          minNotionalValue: '5'
+        }
+      };
+
+      const market = (adapter as any).mapInstrumentToMarket(rawItem, 'linear');
+      expect(market.symbol).toBe('BTC/USDT');
+      expect(market.precision.amount).toBe(0.001);
+      expect(market.precision.price).toBe(0.1);
+      expect(market.limits.amount.min.toNumber()).toBe(0.001);
+      expect(market.limits.amount.max.toNumber()).toBe(100);
+      expect((market.limits as any).marketAmount?.max?.toNumber()).toBe(50);
+      expect(market.limits.price.min.toNumber()).toBe(0.5);
+      expect(market.limits.price.max.toNumber()).toBe(999999);
+      expect(market.limits.cost.min.toNumber()).toBe(5);
+      expect(market.info).toBe(rawItem);
+    });
+
+    it('preserves distinction between genuinely absent, explicit zero, negative, and malformed maximums', () => {
+      // 1. Genuinely absent
+      const itemAbsent = {
+        symbol: 'XRPUSDT',
+        baseCoin: 'XRP',
+        quoteCoin: 'USDT',
+        lotSizeFilter: { minOrderQty: '0.1', qtyStep: '0.1', minNotionalValue: '5' }
+      };
+      const marketAbsent = (adapter as any).mapInstrumentToMarket(itemAbsent, 'linear');
+      expect(marketAbsent.limits.amount.max).toBeUndefined();
+      expect((marketAbsent.limits as any).marketAmount?.max).toBeUndefined();
+
+      // 2. Explicit zero
+      const itemZero = {
+        symbol: 'XRPUSDT',
+        baseCoin: 'XRP',
+        quoteCoin: 'USDT',
+        lotSizeFilter: { minOrderQty: '0.1', qtyStep: '0.1', maxOrderQty: '0', maxMktOrderQty: '0' }
+      };
+      const marketZero = (adapter as any).mapInstrumentToMarket(itemZero, 'linear');
+      expect(marketZero.limits.amount.max.toNumber()).toBe(0);
+      expect((marketZero.limits as any).marketAmount?.max?.toNumber()).toBe(0);
+
+      // 3. Negative value
+      const itemNeg = {
+        symbol: 'XRPUSDT',
+        baseCoin: 'XRP',
+        quoteCoin: 'USDT',
+        lotSizeFilter: { minOrderQty: '0.1', qtyStep: '0.1', maxOrderQty: '-5' }
+      };
+      const marketNeg = (adapter as any).mapInstrumentToMarket(itemNeg, 'linear');
+      expect(marketNeg.limits.amount.max.toNumber()).toBe(-5);
+
+      // 4. Malformed value
+      const itemMalformed = {
+        symbol: 'XRPUSDT',
+        baseCoin: 'XRP',
+        quoteCoin: 'USDT',
+        lotSizeFilter: { minOrderQty: '0.1', qtyStep: '0.1', maxOrderQty: 'invalid', maxMktOrderQty: 'Infinity' }
+      };
+      const marketMalformed = (adapter as any).mapInstrumentToMarket(itemMalformed, 'linear');
+      expect(marketMalformed.limits.amount.max.isNaN()).toBe(true);
+      expect(marketMalformed.limits.marketAmount?.max?.isFinite()).toBe(false);
+    });
+  });
 });

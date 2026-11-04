@@ -284,6 +284,22 @@ fun MarketCandidatesScreen(
                     } else {
                         String.format(java.util.Locale.US, "%.2f", budget).trimEnd('0').trimEnd('.')
                     }
+                    val isBudgetIneligible = state.emptyReason.equals("NO_ELIGIBLE_MARKETS", ignoreCase = true)
+                    val emptyTitle = if (isBudgetIneligible) {
+                        "No Opportunities Within Your Budget"
+                    } else {
+                        "No Active Market Opportunities"
+                    }
+                    val defaultEmptyBody = if (isBudgetIneligible) {
+                        "No active exchange markets can construct a valid order within your $formattedBudget USDT budget under current exchange order constraints. Please increase your budget and try again."
+                    } else {
+                        "No eligible trading opportunities currently match the strategy criteria for active markets within your $formattedBudget USDT budget. Please try again shortly or adjust your trade setup."
+                    }
+                    val emptyButtonText = if (isBudgetIneligible) {
+                        "Increase Budget"
+                    } else {
+                        "Adjust Trade Setup"
+                    }
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -309,7 +325,7 @@ fun MarketCandidatesScreen(
                             )
                             Spacer(Modifier.height(14.dp))
                             Text(
-                                text = "No Opportunities Within Your Budget",
+                                text = emptyTitle,
                                 color = Color.White,
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold,
@@ -318,7 +334,7 @@ fun MarketCandidatesScreen(
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                text = "There are currently no eligible trading opportunities available within your $formattedBudget USDT trade budget. Please increase your budget and try again.",
+                                text = state.message.ifBlank { defaultEmptyBody },
                                 color = Color(0xFF94B0D0),
                                 fontSize = 14.sp,
                                 lineHeight = 20.sp,
@@ -327,7 +343,7 @@ fun MarketCandidatesScreen(
                             )
                             Spacer(Modifier.height(20.dp))
                             GradientButton(
-                                text = "Increase Budget",
+                                text = emptyButtonText,
                                 onClick = { onIncreaseBudget?.invoke() ?: onBack?.invoke() },
                                 leadingIcon = Icons.Default.Tune,
                                 modifier = Modifier.fillMaxWidth(0.75f).widthIn(max = 280.dp),
@@ -436,7 +452,7 @@ fun MarketCandidatesScreen(
                                 )
                                 Spacer(Modifier.height(14.dp))
                                 Text(
-                                    text = "No Opportunities Within Your Budget",
+                                    text = "No Active Market Opportunities",
                                     color = Color.White,
                                     fontSize = 18.sp,
                                     fontWeight = FontWeight.Bold,
@@ -445,7 +461,7 @@ fun MarketCandidatesScreen(
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    text = "There are currently no eligible trading opportunities available within your $formattedBudget USDT trade budget. Please increase your budget and try again.",
+                                    text = "No eligible trading opportunities currently match the strategy criteria for active markets within your $formattedBudget USDT budget. Please try again shortly or adjust your trade setup.",
                                     color = Color(0xFF94B0D0),
                                     fontSize = 14.sp,
                                     lineHeight = 20.sp,
@@ -454,7 +470,7 @@ fun MarketCandidatesScreen(
                                 )
                                 Spacer(Modifier.height(20.dp))
                                 GradientButton(
-                                    text = "Increase Budget",
+                                    text = "Adjust Trade Setup",
                                     onClick = { onIncreaseBudget?.invoke() ?: onBack?.invoke() },
                                     leadingIcon = Icons.Default.Tune,
                                     modifier = Modifier.fillMaxWidth(0.75f).widthIn(max = 280.dp),

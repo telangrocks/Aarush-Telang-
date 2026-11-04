@@ -2438,6 +2438,7 @@ export class TradingBot {
               let minNotional = 5;
               let minQty = 0;
               let maxQty: number | undefined = undefined;
+              let marketMaxQty: number | undefined = undefined;
               let priceLimitRatioX: number = 0.10;
               let priceLimitRatioY: number = 0.10;
               let hasAuthoritativeMetadata = false;
@@ -2459,14 +2460,20 @@ export class TradingBot {
                     const amtMin = matched.limits.amount.min as any;
                     minQty = typeof amtMin?.toNumber === 'function' ? amtMin.toNumber() : (typeof amtMin === 'number' ? amtMin : 0.00001);
                   }
+                  maxQty = undefined;
                   if (matched.limits?.amount?.max !== undefined && matched.limits?.amount?.max !== null) {
                     const amtMax = matched.limits.amount.max as any;
-                    const val = typeof amtMax?.toNumber === 'function' ? amtMax.toNumber() : (typeof amtMax === 'number' ? amtMax : parseFloat(String(amtMax)));
-                    if (Number.isFinite(val) && val > 0) maxQty = val;
+                    maxQty = typeof amtMax?.toNumber === 'function' ? amtMax.toNumber() : Number(amtMax);
+                  } else if ((matched as any).info?.lotSizeFilter?.maxOrderQty !== undefined && (matched as any).info?.lotSizeFilter?.maxOrderQty !== null && String((matched as any).info.lotSizeFilter.maxOrderQty).trim() !== '') {
+                    maxQty = Number((matched as any).info.lotSizeFilter.maxOrderQty);
                   }
-                  if (!maxQty && (matched as any).info?.lotSizeFilter?.maxOrderQty) {
-                    const parsed = parseFloat(String((matched as any).info.lotSizeFilter.maxOrderQty));
-                    if (Number.isFinite(parsed) && parsed > 0) maxQty = parsed;
+
+                  marketMaxQty = undefined;
+                  if ((matched.limits as any)?.marketAmount?.max !== undefined && (matched.limits as any)?.marketAmount?.max !== null) {
+                    const mktMax = (matched.limits as any).marketAmount.max as any;
+                    marketMaxQty = typeof mktMax?.toNumber === 'function' ? mktMax.toNumber() : Number(mktMax);
+                  } else if ((matched as any).info?.lotSizeFilter?.maxMktOrderQty !== undefined && (matched as any).info?.lotSizeFilter?.maxMktOrderQty !== null && String((matched as any).info.lotSizeFilter.maxMktOrderQty).trim() !== '') {
+                    marketMaxQty = Number((matched as any).info.lotSizeFilter.maxMktOrderQty);
                   }
                 }
               } catch (mErr: any) {
@@ -2476,8 +2483,11 @@ export class TradingBot {
               if (!hasAuthoritativeMetadata || tickSize <= 0) {
                 throw new Error(`Authoritative exchange metadata for ${orderSymbol} is unavailable. Cannot safely determine execution tick size.`);
               }
-              if (!maxQty || maxQty <= 0 || !Number.isFinite(maxQty)) {
-                throw new Error(`Authoritative exchange maximum order quantity (maxQty) for ${orderSymbol} is unavailable or invalid. Execution cannot safely proceed.`);
+              if (maxQty !== undefined && (!Number.isFinite(maxQty) || maxQty <= 0)) {
+                throw new Error(`Authoritative exchange maximum order quantity (maxQty) for ${orderSymbol} is invalid (${maxQty}). Execution cannot safely proceed.`);
+              }
+              if (marketMaxQty !== undefined && (!Number.isFinite(marketMaxQty) || marketMaxQty <= 0)) {
+                throw new Error(`Authoritative exchange market-order maximum quantity (marketMaxQty) for ${orderSymbol} is invalid (${marketMaxQty}). Execution cannot safely proceed.`);
               }
               activeTickSize = tickSize;
 
@@ -2525,6 +2535,7 @@ export class TradingBot {
                 minNotional: minNotional,
                 minQty: minQty,
                 maxQty: maxQty,
+                marketMaxQty: marketMaxQty,
                 stepSize: stepSize,
                 tickSize: tickSize,
                 minPrice: 0,
@@ -2603,10 +2614,12 @@ export class TradingBot {
               // Phase 3: Final Dispatch Safety Gate
               try {
                 const dispatchReferencePrice = orderType === 'MARKET' ? currentPrice : (targetPrice || currentPrice);
+                const applicableMaxQty = orderType === 'MARKET' ? marketMaxQty : maxQty;
                 FinalDispatchSafetyGate.validate(req, {
                   stepSize,
                   tickSize,
                   minQty,
+                  maxQty: applicableMaxQty,
                   minNotional,
                   maxExposure: maxPortfolioExposure,
                   currentExposure,
@@ -3455,6 +3468,7 @@ export class TradingBot {
         let minNotional = 5;
         let minQty = 0.00001;
         let maxQty: number | undefined = undefined;
+        let marketMaxQty: number | undefined = undefined;
 
         if (adapter) {
           try {
@@ -3477,12 +3491,15 @@ export class TradingBot {
               }
               if (matched.limits?.amount?.max !== undefined && matched.limits?.amount?.max !== null) {
                 const amtMax = matched.limits.amount.max as any;
-                const val = typeof amtMax?.toNumber === 'function' ? amtMax.toNumber() : (typeof amtMax === 'number' ? amtMax : parseFloat(String(amtMax)));
-                if (Number.isFinite(val) && val > 0) maxQty = val;
+                maxQty = typeof amtMax?.toNumber === 'function' ? amtMax.toNumber() : Number(amtMax);
+              } else if ((matched as any).info?.lotSizeFilter?.maxOrderQty !== undefined && (matched as any).info?.lotSizeFilter?.maxOrderQty !== null && String((matched as any).info.lotSizeFilter.maxOrderQty).trim() !== '') {
+                maxQty = Number((matched as any).info.lotSizeFilter.maxOrderQty);
               }
-              if (!maxQty && (matched as any).info?.lotSizeFilter?.maxOrderQty) {
-                const parsed = parseFloat(String((matched as any).info.lotSizeFilter.maxOrderQty));
-                if (Number.isFinite(parsed) && parsed > 0) maxQty = parsed;
+              if ((matched.limits as any)?.marketAmount?.max !== undefined && (matched.limits as any)?.marketAmount?.max !== null) {
+                const mktMax = (matched.limits as any).marketAmount.max as any;
+                marketMaxQty = typeof mktMax?.toNumber === 'function' ? mktMax.toNumber() : Number(mktMax);
+              } else if ((matched as any).info?.lotSizeFilter?.maxMktOrderQty !== undefined && (matched as any).info?.lotSizeFilter?.maxMktOrderQty !== null && String((matched as any).info.lotSizeFilter.maxMktOrderQty).trim() !== '') {
+                marketMaxQty = Number((matched as any).info.lotSizeFilter.maxMktOrderQty);
               }
             }
           } catch (mErr: any) {
@@ -3504,7 +3521,8 @@ export class TradingBot {
             quoteAsset: orderSymbol.split('/')[1] || 'USDT',
             minNotional,
             minQty,
-            maxQty: (typeof maxQty === 'number' && maxQty > 0) ? maxQty : 0,
+            maxQty,
+            marketMaxQty,
             stepSize,
             tickSize,
             minPrice: 0,
@@ -5822,6 +5840,7 @@ export class TradingBot {
                         let minOrderQty: number | undefined;
                         let minNotional: number | undefined;
                         let maxOrderQty: number | undefined;
+                        let marketMaxQty: number | undefined;
 
                         if (matchedMarket) {
                           if (typeof matchedMarket.precision?.amount === 'number' && matchedMarket.precision.amount > 0) {
@@ -5845,12 +5864,16 @@ export class TradingBot {
 
                           if (matchedMarket.limits?.amount?.max !== undefined && matchedMarket.limits?.amount?.max !== null) {
                             const maxA = matchedMarket.limits.amount.max as any;
-                            const val = typeof maxA?.toNumber === 'function' ? maxA.toNumber() : (typeof maxA === 'number' ? maxA : parseFloat(String(maxA)));
-                            if (Number.isFinite(val) && val > 0) maxOrderQty = val;
+                            maxOrderQty = typeof maxA?.toNumber === 'function' ? maxA.toNumber() : Number(maxA);
+                          } else if ((matchedMarket as any).info?.lotSizeFilter?.maxOrderQty !== undefined && (matchedMarket as any).info?.lotSizeFilter?.maxOrderQty !== null && String((matchedMarket as any).info.lotSizeFilter.maxOrderQty).trim() !== '') {
+                            maxOrderQty = Number((matchedMarket as any).info.lotSizeFilter.maxOrderQty);
                           }
-                          if (!maxOrderQty && (matchedMarket as any).info?.lotSizeFilter?.maxOrderQty) {
-                            const parsed = parseFloat(String((matchedMarket as any).info.lotSizeFilter.maxOrderQty));
-                            if (Number.isFinite(parsed) && parsed > 0) maxOrderQty = parsed;
+
+                          if ((matchedMarket.limits as any)?.marketAmount?.max !== undefined && (matchedMarket.limits as any)?.marketAmount?.max !== null) {
+                            const mktMax = (matchedMarket.limits as any).marketAmount.max as any;
+                            marketMaxQty = typeof mktMax?.toNumber === 'function' ? mktMax.toNumber() : Number(mktMax);
+                          } else if ((matchedMarket as any).info?.lotSizeFilter?.maxMktOrderQty !== undefined && (matchedMarket as any).info?.lotSizeFilter?.maxMktOrderQty !== null && String((matchedMarket as any).info.lotSizeFilter.maxMktOrderQty).trim() !== '') {
+                            marketMaxQty = Number((matchedMarket as any).info.lotSizeFilter.maxMktOrderQty);
                           }
                         }
 
@@ -5874,9 +5897,12 @@ export class TradingBot {
                           break; // Ticker-wide failure -> stop evaluating further strategies for this ticker
                         }
 
-                        if (!maxOrderQty || maxOrderQty <= 0 || !Number.isFinite(maxOrderQty)) {
-                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'MAX_QTY_UNAVAILABLE' };
-                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit maxOrderQty unavailable.`);
+                        if (
+                          (maxOrderQty !== undefined && (!Number.isFinite(maxOrderQty) || maxOrderQty <= 0)) ||
+                          (marketMaxQty !== undefined && (!Number.isFinite(marketMaxQty) || marketMaxQty <= 0))
+                        ) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'MAX_QTY_INVALID' };
+                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit maxOrderQty/marketMaxQty invalid (maxOrderQty=${maxOrderQty}, marketMaxQty=${marketMaxQty}).`);
                           this.telemetrySink.emit({
                             userId,
                             category: 'SAFETY',
@@ -5888,7 +5914,7 @@ export class TradingBot {
                             strategyId: result.strategyId,
                             payload: {
                               passed: false,
-                              gate: 'MAX_QTY_UNAVAILABLE'
+                              gate: 'MAX_QTY_INVALID'
                             }
                           });
                           break; // Ticker-wide failure -> stop evaluating further strategies for this ticker
@@ -5896,6 +5922,8 @@ export class TradingBot {
 
                         const resolvedMinOrderQty = (minOrderQty !== undefined && minOrderQty > 0) ? minOrderQty : stepSize;
                         const resolvedMinNotional = (minNotional !== undefined && minNotional > 0) ? minNotional : 5.0;
+                        const isLimitAlert = alertTargetPrice !== undefined && alertTargetPrice > 0;
+                        const applicableAlertMaxOrderQty = isLimitAlert ? maxOrderQty : marketMaxQty;
 
                         const eligibility = ExecutionEligibilityGate.evaluate({
                           tradeAmountUsdt: size,
@@ -5903,7 +5931,7 @@ export class TradingBot {
                           qtyStep: stepSize,
                           minOrderQty: resolvedMinOrderQty,
                           minNotional: resolvedMinNotional,
-                          maxOrderQty: maxOrderQty,
+                          maxOrderQty: applicableAlertMaxOrderQty,
                         });
 
                         if (!eligibility.isExecutable) {

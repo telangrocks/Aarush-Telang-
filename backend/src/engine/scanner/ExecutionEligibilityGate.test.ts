@@ -313,8 +313,9 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
         minNotional: 5,
         maxOrderQty: undefined as any,
       });
-      expect(undefinedMax.isExecutable).toBe(false);
-      expect(undefinedMax.rejectionReason).toContain('Invalid exchange maximum order quantity');
+      expect(undefinedMax.isExecutable).toBe(true);
+      expect(undefinedMax.quantizedQty).toBe(10);
+      expect(undefinedMax.wasClampedToMax).toBe(false);
 
       const nanMax = ExecutionEligibilityGate.evaluate({
         tradeAmountUsdt: 100,
@@ -326,6 +327,17 @@ describe('ExecutionEligibilityGate (Unit Tests)', () => {
       });
       expect(nanMax.isExecutable).toBe(false);
       expect(nanMax.rejectionReason).toContain('Invalid exchange maximum order quantity');
+
+      const infMax = ExecutionEligibilityGate.evaluate({
+        tradeAmountUsdt: 100,
+        currentPrice: 10,
+        qtyStep: 1,
+        minOrderQty: 1,
+        minNotional: 5,
+        maxOrderQty: Infinity,
+      });
+      expect(infMax.isExecutable).toBe(false);
+      expect(infMax.rejectionReason).toContain('Invalid exchange maximum order quantity');
     });
 
     it('rejects when clamped quantity drops below minOrderQty', () => {
@@ -482,9 +494,15 @@ describe('MarketOpportunityScanner Stage 2 Execution Eligibility Integration', (
     expect(result.eligibleCount).toBe(2);
     // Both pass quality screening (turnover/spread/range)
     expect(result.qualityCount).toBe(2);
-    // BTC is rejected by post-Top-25 budget gate; XRP passes
+    // BTC is rejected by budget gate; XRP passes
     expect(result.allQualifiedOpportunities.map(o => o.symbol)).not.toContain('BTC/USDT');
     expect(result.allQualifiedOpportunities.map(o => o.symbol)).toContain('XRP/USDT');
+
+    // Proof via Spy: fetchCandles was NEVER called for ineligible BTC/USDT, but WAS called for eligible XRP/USDT
+    const fetchCandlesMock = mockProvider.fetchCandles as any;
+    const candleSymbolsCalled = fetchCandlesMock.mock.calls.map((call: any[]) => call[0]);
+    expect(candleSymbolsCalled).not.toContain('BTC/USDT');
+    expect(candleSymbolsCalled).toContain('XRP/USDT');
   });
 
   it('strictly enforces canonical pipeline ordering: Quality Filter -> Affordability Eligibility -> Turnover Sort -> Top 25', async () => {

@@ -29,7 +29,8 @@ export interface SymbolTradingRules {
   quoteAsset: string;
   minNotional: number;
   minQty: number;
-  maxQty: number;
+  maxQty?: number;
+  marketMaxQty?: number;
   stepSize: number;
   tickSize: number;
   minPrice: number;

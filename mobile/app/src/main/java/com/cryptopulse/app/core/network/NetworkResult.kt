@@ -4,7 +4,10 @@ import com.cryptopulse.app.core.error.NetworkError
 import com.cryptopulse.app.domain.models.DomainException
 
 sealed interface NetworkResult<out T> {
-    data class Success<out T>(val data: T) : NetworkResult<T>
+    data class Success<out T>(
+        val data: T,
+        val headers: Map<String, String> = emptyMap()
+    ) : NetworkResult<T>
     data class Error(val error: NetworkError) : NetworkResult<Nothing>
 }
 

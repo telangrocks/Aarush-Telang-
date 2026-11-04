@@ -76,7 +76,7 @@ export class MarketOpportunityScanner {
   /**
    * Executes a complete discovery cycle across the entire eligible market universe.
    */
-  public async scan(options?: { markets?: any[]; tickers?: any[]; tradeAmountUsdt?: number }): Promise<ScannerScanResult> {
+  public async scan(options?: { markets?: any[]; tickers?: any[]; tradeAmountUsdt?: number; orderType?: string }): Promise<ScannerScanResult> {
     const startTime = performance.now();
     const cycleTimestamp = Date.now();
     const cycleId = crypto.randomUUID();
@@ -190,7 +190,7 @@ export class MarketOpportunityScanner {
       const isPrime = rejectionReasons.length === 0 && spreadPercent <= 0.05 && turnover >= 5_000_000;
       const isAcceptable = rejectionReasons.length === 0;
 
-      const grade = isPrime ? 'PRIME' : isAcceptable ? 'ACCEPTABLE' : 'REJECTED';
+      let grade: 'PRIME' | 'ACCEPTABLE' | 'REJECTED' = isPrime ? 'PRIME' : isAcceptable ? 'ACCEPTABLE' : 'REJECTED';
 
       const pctVal = typeof t.percentage?.toNumber === 'function' 
         ? t.percentage.toNumber() 
@@ -207,14 +207,49 @@ export class MarketOpportunityScanner {
                   : 0)))));
       const cleanPriceChangePercent24h = Number.isFinite(pctVal) ? pctVal : 0;
 
-      let maxOrderQty: number | undefined;
-      if (m.limits?.amount?.max !== undefined && m.limits?.amount?.max !== null) {
-        const val = typeof m.limits.amount.max?.toNumber === 'function' ? m.limits.amount.max.toNumber() : Number(m.limits.amount.max);
-        if (Number.isFinite(val) && val > 0) maxOrderQty = val;
-      }
-      if (!maxOrderQty && (m as any).info?.lotSizeFilter?.maxOrderQty) {
-        const parsed = parseFloat(String((m as any).info.lotSizeFilter.maxOrderQty));
-        if (Number.isFinite(parsed) && parsed > 0) maxOrderQty = parsed;
+      const parseOptionalCeiling = (primary: any, secondary: any): { present: boolean; valid: boolean; value?: number } => {
+        const src = (primary !== undefined && primary !== null && String(primary).trim() !== '')
+          ? primary
+          : ((secondary !== undefined && secondary !== null && String(secondary).trim() !== '') ? secondary : undefined);
+        if (src === undefined) return { present: false, valid: true, value: undefined };
+        const n = typeof src?.toNumber === 'function' ? src.toNumber() : Number(src);
+        if (!Number.isFinite(n) || n <= 0) return { present: true, valid: false, value: n };
+        return { present: true, valid: true, value: n };
+      };
+      const normalizedOrderType = String(options?.orderType || 'ALL').toUpperCase();
+      const limitMax = parseOptionalCeiling(m.limits?.amount?.max, (m as any).info?.lotSizeFilter?.maxOrderQty);
+      const mktMax = parseOptionalCeiling((m.limits as any)?.marketAmount?.max, (m as any).info?.lotSizeFilter?.maxMktOrderQty);
+      let maxOrderQty: number | undefined = undefined;
+      if (normalizedOrderType === 'LIMIT') {
+        if (!limitMax.valid) {
+          maxOrderQty = limitMax.value;
+          rejectionReasons.push('INVALID_MAX_ORDER_QTY');
+          grade = 'REJECTED';
+        } else if (limitMax.present) {
+          maxOrderQty = limitMax.value!;
+        }
+      } else if (normalizedOrderType === 'MARKET') {
+        if (!mktMax.valid) {
+          maxOrderQty = mktMax.value;
+          rejectionReasons.push('INVALID_MAX_ORDER_QTY');
+          grade = 'REJECTED';
+        } else if (mktMax.present) {
+          maxOrderQty = mktMax.value!;
+        }
+      } else if (!limitMax.valid) {
+        maxOrderQty = limitMax.value;
+        rejectionReasons.push('INVALID_MAX_ORDER_QTY');
+        grade = 'REJECTED';
+      } else if (!mktMax.valid) {
+        maxOrderQty = mktMax.value;
+        rejectionReasons.push('INVALID_MAX_ORDER_QTY');
+        grade = 'REJECTED';
+      } else if (limitMax.present && mktMax.present) {
+        maxOrderQty = Math.min(limitMax.value!, mktMax.value!);
+      } else if (limitMax.present) {
+        maxOrderQty = limitMax.value!;
+      } else if (mktMax.present) {
+        maxOrderQty = mktMax.value!;
       }
 
       const quality: MarketQualityAssessment = {

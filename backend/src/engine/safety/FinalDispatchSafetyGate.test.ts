@@ -139,4 +139,100 @@ describe('FinalDispatchSafetyGate Unit Tests', () => {
       })
     ).not.toThrow();
   });
+
+  describe('Maximum Order Quantity Gate (Check 1b) — MARKET and LIMIT across valid, invalid, and absent states', () => {
+    it.each(['market', 'limit'] as const)(
+      'allows %s order when amount is within or equal to valid maxQty',
+      (orderType) => {
+        const reqWithin: any = {
+          symbol: 'SOL/USDT',
+          side: 'buy',
+          type: orderType,
+          amount: new BigNumber(10),
+          ...(orderType === 'limit' ? { price: new BigNumber(20) } : {}),
+        };
+        expect(() =>
+          FinalDispatchSafetyGate.validate(reqWithin, {
+            ...baseConstraints,
+            referencePrice: 20,
+            maxQty: 50,
+          })
+        ).not.toThrow();
+
+        const reqBoundary: any = {
+          ...reqWithin,
+          amount: new BigNumber(50),
+        };
+        expect(() =>
+          FinalDispatchSafetyGate.validate(reqBoundary, {
+            ...baseConstraints,
+            referencePrice: 20,
+            maxQty: 50,
+          })
+        ).not.toThrow();
+      }
+    );
+
+    it.each(['market', 'limit'] as const)(
+      'rejects %s order when amount exceeds valid maxQty',
+      (orderType) => {
+        const req: any = {
+          symbol: 'SOL/USDT',
+          side: 'buy',
+          type: orderType,
+          amount: new BigNumber(60),
+          ...(orderType === 'limit' ? { price: new BigNumber(20) } : {}),
+        };
+        expect(() =>
+          FinalDispatchSafetyGate.validate(req, {
+            ...baseConstraints,
+            referencePrice: 20,
+            maxQty: 50,
+          })
+        ).toThrow('Quantity 60 exceeds maximum 50');
+      }
+    );
+
+    it.each(['market', 'limit'] as const)(
+      'fails closed for %s order when maxQty is explicitly zero, negative, NaN, or Infinity',
+      (orderType) => {
+        const req: any = {
+          symbol: 'SOL/USDT',
+          side: 'buy',
+          type: orderType,
+          amount: new BigNumber(10),
+          ...(orderType === 'limit' ? { price: new BigNumber(20) } : {}),
+        };
+        for (const invalidMax of [0, -10, NaN, Infinity, -Infinity]) {
+          expect(() =>
+            FinalDispatchSafetyGate.validate(req, {
+              ...baseConstraints,
+              referencePrice: 20,
+              maxQty: invalidMax,
+            })
+          ).toThrow(`Exchange maximum order quantity (${invalidMax}) is invalid`);
+        }
+      }
+    );
+
+    it.each(['market', 'limit'] as const)(
+      'safely allows %s order when maxQty is undefined (genuinely absent optional metadata)',
+      (orderType) => {
+        const req: any = {
+          symbol: 'SOL/USDT',
+          side: 'buy',
+          type: orderType,
+          amount: new BigNumber(100),
+          ...(orderType === 'limit' ? { price: new BigNumber(20) } : {}),
+        };
+        expect(() =>
+          FinalDispatchSafetyGate.validate(req, {
+            ...baseConstraints,
+            referencePrice: 20,
+            maxQty: undefined,
+          })
+        ).not.toThrow();
+      }
+    );
+  });
 });

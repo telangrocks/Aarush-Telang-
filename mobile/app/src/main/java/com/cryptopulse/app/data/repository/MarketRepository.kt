@@ -20,7 +20,7 @@ class MarketRepositoryImpl @Inject constructor(
 
     override suspend fun getCandidates(budget: Double): NetworkResult<List<MarketCandidate>> = withContext(dispatcherProvider.io) {
         when (val result = marketRemoteDataSource.getMarketCandidates(budget)) {
-            is NetworkResult.Success -> NetworkResult.Success(result.data.map { it.toDomain() })
+            is NetworkResult.Success -> NetworkResult.Success(result.data.map { it.toDomain() }, result.headers)
             is NetworkResult.Error -> result
         }
     }

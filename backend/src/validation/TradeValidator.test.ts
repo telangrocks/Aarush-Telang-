@@ -334,13 +334,13 @@ describe("TradeValidator TypeScript Unit Tests", () => {
         expect(res.errorMessage).toContain("Fresh confirmation is required");
       });
 
-      it("fails closed when authoritative maxQty metadata is missing, undefined, null, zero, NaN, or negative", () => {
+      it("fails closed when authoritative maxQty metadata is explicitly invalid (zero, NaN, negative, or Infinity)", () => {
         const invalidRulesList = [
-          { ...mock1000PepeRules, maxQty: undefined as any },
-          { ...mock1000PepeRules, maxQty: null as any },
           { ...mock1000PepeRules, maxQty: 0 },
           { ...mock1000PepeRules, maxQty: NaN },
           { ...mock1000PepeRules, maxQty: -100 },
+          { ...mock1000PepeRules, maxQty: Infinity },
+          { ...mock1000PepeRules, maxQty: -Infinity },
         ];
 
         for (const badRules of invalidRulesList) {
@@ -348,7 +348,7 @@ describe("TradeValidator TypeScript Unit Tests", () => {
             {
               symbol: "1000PEPEUSDT",
               entryPrice: 0.004962,
-              quantity: 1000,
+              quantity: 2000,
               isApprovedQuantity: true,
             },
             badRules
@@ -356,8 +356,106 @@ describe("TradeValidator TypeScript Unit Tests", () => {
 
           expect(res.isValid).toBe(false);
           expect(res.errorCode).toBe(ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE);
-          expect(res.errorMessage).toContain("unavailable or invalid");
+          expect(res.errorMessage).toContain("invalid");
         }
+      });
+
+      it("fails closed when authoritative marketMaxQty metadata is explicitly invalid (zero, NaN, negative, or Infinity) without falling back to maxQty", () => {
+        const invalidMarketRulesList = [
+          { ...mock1000PepeRules, maxQty: 1000000, marketMaxQty: 0 },
+          { ...mock1000PepeRules, maxQty: 1000000, marketMaxQty: -5 },
+          { ...mock1000PepeRules, maxQty: 1000000, marketMaxQty: NaN },
+          { ...mock1000PepeRules, maxQty: 1000000, marketMaxQty: Infinity },
+          { ...mock1000PepeRules, maxQty: 1000000, marketMaxQty: -Infinity },
+        ];
+
+        for (const badRules of invalidMarketRulesList) {
+          const res = TradeValidator.validate(
+            {
+              symbol: "1000PEPEUSDT",
+              orderType: "MARKET",
+              entryPrice: 0.004962,
+              tradeValueUsdt: 100,
+            },
+            badRules
+          );
+
+          expect(res.isValid).toBe(false);
+          expect(res.errorCode).toBe(ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE);
+          expect(res.errorMessage).toContain("marketMaxQty");
+        }
+      });
+
+      it("independently enforces marketMaxQty for MARKET orders and maxQty for LIMIT orders without cross-contamination", () => {
+        const dualMaxRules: SymbolTradingRules = {
+          ...mock1000PepeRules,
+          maxQty: 1000000,      // LIMIT max = 1,000,000
+          marketMaxQty: 200000, // MARKET max = 200,000
+        };
+
+        // 1. MARKET order with $2,500 at $0.005 (raw = 500,000) -> clamped to marketMaxQty (200,000)
+        const mktRes = TradeValidator.validate(
+          {
+            symbol: "1000PEPEUSDT",
+            orderType: "MARKET",
+            entryPrice: 0.005,
+            tradeValueUsdt: 2500,
+          },
+          dualMaxRules
+        );
+        expect(mktRes.isValid).toBe(true);
+        expect(mktRes.quantizedQuantity).toBe(200000);
+        expect(mktRes.wasClampedToMax).toBe(true);
+
+        // 2. LIMIT order with $2,500 at $0.005 (raw = 500,000) -> uses maxQty (1,000,000), NOT clamped to marketMaxQty
+        const limitRes = TradeValidator.validate(
+          {
+            symbol: "1000PEPEUSDT",
+            orderType: "LIMIT",
+            entryPrice: 0.005,
+            tradeValueUsdt: 2500,
+          },
+          dualMaxRules
+        );
+        expect(limitRes.isValid).toBe(true);
+        expect(limitRes.quantizedQuantity).toBe(500000);
+        expect(limitRes.wasClampedToMax).toBe(false);
+
+        // 3. MARKET order when marketMaxQty is undefined (absent) -> does NOT fall back to maxQty
+        const onlyLimitMaxRules: SymbolTradingRules = {
+          ...mock1000PepeRules,
+          maxQty: 200000,
+          marketMaxQty: undefined,
+        };
+        const unconstrainedMktRes = TradeValidator.validate(
+          {
+            symbol: "1000PEPEUSDT",
+            orderType: "MARKET",
+            entryPrice: 0.005,
+            tradeValueUsdt: 2500,
+          },
+          onlyLimitMaxRules
+        );
+        expect(unconstrainedMktRes.isValid).toBe(true);
+        expect(unconstrainedMktRes.quantizedQuantity).toBe(500000);
+        expect(unconstrainedMktRes.wasClampedToMax).toBe(false);
+      });
+
+      it("safely accepts unconstrained orders when maxQty metadata is omitted/undefined", () => {
+        const unconstrainedRules = { ...mock1000PepeRules, maxQty: undefined };
+        const res = TradeValidator.validate(
+          {
+            symbol: "1000PEPEUSDT",
+            entryPrice: 0.004962,
+            quantity: 2000, // notional = 2000 * 0.004962 = ~9.92 USDT >= minNotional 5
+            isApprovedQuantity: true,
+          },
+          unconstrainedRules
+        );
+
+        expect(res.isValid).toBe(true);
+        expect(res.quantizedQuantity).toBe(2000);
+        expect(res.wasClampedToMax).toBe(false);
       });
     });
   });

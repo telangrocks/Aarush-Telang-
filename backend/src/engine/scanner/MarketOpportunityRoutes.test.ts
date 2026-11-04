@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { handleGetMarketOpportunities, handleGetPersonalizedMarketCandidates, mapScanResultToCandidates } from '../../handlers/exchange';
+import { sign } from 'hono/jwt';
+import app from '../../index';
+import { handleGetMarketOpportunities, handleGetPersonalizedMarketCandidates, handleTriggerManualTradeAlert, mapScanResultToCandidates, selectBoundedDiscoveryMarkets } from '../../handlers/exchange';
+import { BybitAdapter } from '../../infrastructure/exchange/adapters/BybitAdapter';
+import { TradeValidator } from '../../validation/TradeValidator';
+import { FinalDispatchSafetyGate } from '../safety/FinalDispatchSafetyGate';
+import { TradingBot } from '../../trading-bot';
+import { encrypt } from '../../crypto';
+import BigNumber from 'bignumber.js';
 import { ExchangeManager } from '../../exchanges/ExchangeManager';
 import { IExchangeProvider } from '../../exchanges/IExchangeProvider';
 import { ICandleProvider } from '../../infrastructure/exchange/types';
@@ -28,6 +36,7 @@ function generateFreshCandles(timeframe: ScannerTimeframe, count: number = 50, t
 
 describe('Market Opportunity Endpoints (Phase 2)', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -904,6 +913,825 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       success: false,
       code: 'MARKET_DATA_DEGRADED',
       error: 'Market data temporarily degraded or unavailable during discovery scan.',
+    });
+  });
+
+  describe('selectBoundedDiscoveryMarkets — Maximum Selection & Invalid Metadata Semantics', () => {
+    const baseTicker = (symbol: string, price = 1.0) => ({
+      symbol,
+      pairName: symbol,
+      last: price,
+      price,
+      bid: price * 0.9999,
+      ask: price * 1.0001,
+      quoteVolume: 20_000_000,
+      high: price * 1.03,
+      low: price * 0.97,
+    });
+
+    const baseMarket = (symbol: string, overrides: any = {}) => ({
+      id: symbol.replace('/', ''),
+      symbol,
+      base: symbol.split('/')[0],
+      quote: 'USDT',
+      active: true,
+      category: 'linear',
+      contractType: 'LinearPerpetual',
+      precision: { price: 0.001, amount: 1 },
+      limits: {
+        amount: { min: 1 },
+        cost: { min: 5 },
+      },
+      ...overrides,
+    });
+
+    it('1. handles both maxima present (enforces tighter ceiling when clamping against minNotional)', () => {
+      // Price = $1.0, budget = $100, minNotional = $50.
+      // Market A: maxOrderQty = 1000, maxMktOrderQty = 60 -> clamped to 60 ($60 >= $50) -> ELIGIBLE
+      // Market B: maxOrderQty = 1000, maxMktOrderQty = 30 -> clamped to 30 ($30 < $50 minNotional) -> REJECTED
+      const mA = baseMarket('AAA/USDT', {
+        limits: { amount: { min: 1, max: 1000 }, marketAmount: { max: 60 }, cost: { min: 50 } },
+      });
+      const mB = baseMarket('BBB/USDT', {
+        limits: { amount: { min: 1, max: 1000 }, marketAmount: { max: 30 }, cost: { min: 50 } },
+      });
+      const resAll = selectBoundedDiscoveryMarkets([mA, mB], [baseTicker('AAA/USDT'), baseTicker('BBB/USDT')], 100);
+      expect(resAll.map(m => m.symbol)).toEqual(['AAA/USDT']);
+
+      // When orderType = 'LIMIT', Market B uses maxOrderQty = 1000 and is ELIGIBLE
+      const resLimit = selectBoundedDiscoveryMarkets([mA, mB], [baseTicker('AAA/USDT'), baseTicker('BBB/USDT')], 100, 8, 'LIMIT');
+      expect(resLimit.map(m => m.symbol)).toEqual(['AAA/USDT', 'BBB/USDT']);
+    });
+
+    it('2. handles only the LIMIT maximum present (does not discard market when marketMaxQty is absent)', () => {
+      const m = baseMarket('LIMONLY/USDT', {
+        limits: { amount: { min: 1, max: 500 }, cost: { min: 5 } },
+      });
+      const res = selectBoundedDiscoveryMarkets([m], [baseTicker('LIMONLY/USDT')], 25);
+      expect(res.map(x => x.symbol)).toEqual(['LIMONLY/USDT']);
+    });
+
+    it('3. handles only the MARKET maximum present (does not discard market when maxOrderQty is absent)', () => {
+      const m = baseMarket('MKTONLY/USDT', {
+        limits: { amount: { min: 1 }, marketAmount: { max: 500 }, cost: { min: 5 } },
+      });
+      const res = selectBoundedDiscoveryMarkets([m], [baseTicker('MKTONLY/USDT')], 25);
+      expect(res.map(x => x.symbol)).toEqual(['MKTONLY/USDT']);
+    });
+
+    it('4. handles both maxima absent (treats absent optional maxima as no published upper bound)', () => {
+      const m = baseMarket('NOMAX/USDT', {
+        limits: { amount: { min: 1 }, cost: { min: 5 } },
+      });
+      const res = selectBoundedDiscoveryMarkets([m], [baseTicker('NOMAX/USDT')], 25);
+      expect(res.map(x => x.symbol)).toEqual(['NOMAX/USDT']);
+    });
+
+    it('5. rejects when either maximum is explicitly zero (never treats 0 as absent or falls back to the other maximum)', () => {
+      const mZeroLimit = baseMarket('ZEROLIM/USDT', {
+        limits: { amount: { min: 1, max: 0 }, marketAmount: { max: 500 }, cost: { min: 5 } },
+      });
+      const mZeroMkt = baseMarket('ZEROMKT/USDT', {
+        limits: { amount: { min: 1, max: 500 }, marketAmount: { max: 0 }, cost: { min: 5 } },
+      });
+      const res = selectBoundedDiscoveryMarkets(
+        [mZeroLimit, mZeroMkt],
+        [baseTicker('ZEROLIM/USDT'), baseTicker('ZEROMKT/USDT')],
+        25
+      );
+      expect(res).toEqual([]);
+    });
+
+    it('6. rejects when either maximum is negative, NaN, or infinite', () => {
+      const markets = [
+        baseMarket('NEGLIM/USDT', { limits: { amount: { min: 1, max: -5 }, marketAmount: { max: 500 }, cost: { min: 5 } } }),
+        baseMarket('NEGMKT/USDT', { limits: { amount: { min: 1, max: 500 }, marketAmount: { max: -10 }, cost: { min: 5 } } }),
+        baseMarket('NANLIM/USDT', { limits: { amount: { min: 1, max: NaN }, marketAmount: { max: 500 }, cost: { min: 5 } } }),
+        baseMarket('NANMKT/USDT', { limits: { amount: { min: 1, max: 500 }, marketAmount: { max: NaN }, cost: { min: 5 } } }),
+        baseMarket('INFLIM/USDT', { limits: { amount: { min: 1, max: Infinity }, marketAmount: { max: 500 }, cost: { min: 5 } } }),
+        baseMarket('INFMKT/USDT', { limits: { amount: { min: 1, max: 500 }, marketAmount: { max: -Infinity }, cost: { min: 5 } } }),
+      ];
+      const tickers = markets.map(m => baseTicker(m.symbol));
+      const res = selectBoundedDiscoveryMarkets(markets, tickers, 25);
+      expect(res).toEqual([]);
+    });
+  });
+
+  describe('Budget Eligibility Boundary, Cache Isolation & Empty-Reason Header Verification', () => {
+    it('filters out ineligible markets BEFORE candle fetching and TA in handleGetPersonalizedMarketCandidates and sets X-Empty-Reason headers accurately', async () => {
+      const mockMarkets = [
+        {
+          id: 'BTCUSDT',
+          symbol: 'BTC/USDT',
+          base: 'BTC',
+          quote: 'USDT',
+          active: true,
+          category: 'linear',
+          contractType: 'LinearPerpetual',
+          precision: { price: 0.1, amount: 0.001 },
+          limits: { amount: { min: 0.001, max: 100 }, marketAmount: { max: 50 }, cost: { min: 5 } }, // 0.001 * 76870 = $76.87 min
+        },
+        {
+          id: 'DOGEUSDT',
+          symbol: 'DOGE/USDT',
+          base: 'DOGE',
+          quote: 'USDT',
+          active: true,
+          category: 'linear',
+          contractType: 'LinearPerpetual',
+          precision: { price: 0.00001, amount: 1 },
+          limits: { amount: { min: 1, max: 1000000 }, marketAmount: { max: 500000 }, cost: { min: 5 } }, // $5 min notional
+        },
+      ];
+      const mockTickers = [
+        { symbol: 'BTC/USDT', last: 76870, bid: 76865, ask: 76875, quoteVolume: 100_000_000, high: 78500, low: 75000 },
+        { symbol: 'DOGE/USDT', last: 0.12, bid: 0.1199, ask: 0.1201, quoteVolume: 40_000_000, high: 0.125, low: 0.115 },
+      ];
+
+      const fetchCandlesSpy = vi.fn().mockImplementation((_sym: string, tf: string) =>
+        Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL'))
+      );
+
+      const mockAdapter = {
+        fetchMarkets: vi.fn().mockResolvedValue(mockMarkets),
+        fetchTickers: vi.fn().mockResolvedValue(mockTickers),
+        fetchCandles: fetchCandlesSpy,
+      } as unknown as IExchangeProvider & ICandleProvider;
+
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
+
+      const mockDb = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnValue({
+            first: vi.fn().mockResolvedValue({
+              exchange_name: 'bybit',
+              exchange_environment: 'mainnet',
+            }),
+          }),
+        }),
+      };
+
+      // Case A: Budget = $10 -> BTC/USDT ($76.87 min) is excluded before candle fetch; only DOGE/USDT reaches fetchCandles & TA
+      const headersA: Record<string, string> = {};
+      const ctxA = {
+        get: vi.fn().mockReturnValue({ sub: 'user-boundary-test' }),
+        env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
+        status: vi.fn(),
+        header: vi.fn().mockImplementation((k: string, v: string) => { headersA[k] = v; }),
+        json: vi.fn().mockImplementation((data) => data),
+        req: { query: vi.fn().mockImplementation((k: string) => (k === 'budget' ? '10' : undefined)) },
+      } as any;
+
+      const resA = await handleGetPersonalizedMarketCandidates(ctxA) as any;
+      expect(resA.map((c: any) => c.pairName)).toEqual(['DOGE/USDT']);
+      const candleSymbolsCalled = new Set(fetchCandlesSpy.mock.calls.map((c: any[]) => c[0]));
+      expect(candleSymbolsCalled.has('BTC/USDT')).toBe(false);
+      expect(candleSymbolsCalled.has('DOGE/USDT')).toBe(true);
+      expect(headersA['X-Eligible-Market-Count']).toBe('1');
+
+      // Case B: Budget = $3 -> No markets eligible ($5 minNotional). Returns [] with X-Empty-Reason: NO_ELIGIBLE_MARKETS and 0 new candle calls
+      fetchCandlesSpy.mockClear();
+      const headersB: Record<string, string> = {};
+      const ctxB = {
+        get: vi.fn().mockReturnValue({ sub: 'user-boundary-test' }),
+        env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
+        status: vi.fn(),
+        header: vi.fn().mockImplementation((k: string, v: string) => { headersB[k] = v; }),
+        json: vi.fn().mockImplementation((data) => data),
+        req: { query: vi.fn().mockImplementation((k: string) => (k === 'budget' ? '3' : undefined)) },
+      } as any;
+
+      const resB = await handleGetPersonalizedMarketCandidates(ctxB) as any;
+      expect(resB).toEqual([]);
+      expect(fetchCandlesSpy).not.toHaveBeenCalled();
+      expect(headersB['X-Empty-Reason']).toBe('NO_ELIGIBLE_MARKETS');
+      expect(headersB['X-Eligible-Market-Count']).toBe('0');
+
+      // Case C: Empty result was NOT cached -> if market rules change so DOGE minNotional becomes $2, re-running with budget = $3 immediately succeeds
+      mockMarkets[1].limits.cost.min = 2;
+      const headersC: Record<string, string> = {};
+      const ctxC = {
+        get: vi.fn().mockReturnValue({ sub: 'user-boundary-test' }),
+        env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
+        status: vi.fn(),
+        header: vi.fn().mockImplementation((k: string, v: string) => { headersC[k] = v; }),
+        json: vi.fn().mockImplementation((data) => data),
+        req: { query: vi.fn().mockImplementation((k: string) => (k === 'budget' ? '3' : undefined)) },
+      } as any;
+
+      const resC = await handleGetPersonalizedMarketCandidates(ctxC) as any;
+      expect(resC.map((c: any) => c.pairName)).toEqual(['DOGE/USDT']);
+      expect(headersC['X-Eligible-Market-Count']).toBe('1');
+    });
+
+    it('proves complete end-to-end propagation: Bybit V5 response -> BybitAdapter.mapInstrumentToMarket() -> SymbolTradingRules -> TradeValidator -> FinalDispatchSafetyGate', () => {
+      const adapter = new BybitAdapter();
+      const mapFn = (adapter as any).mapInstrumentToMarket.bind(adapter);
+
+      // 1. Both maxOrderQty and maxMktOrderQty present and distinct
+      const bybitRawItem = {
+        symbol: '1000PEPEUSDT',
+        baseCoin: '1000PEPE',
+        quoteCoin: 'USDT',
+        status: 'Trading',
+        contractType: 'LinearPerpetual',
+        priceFilter: { tickSize: '0.000001', minPrice: '0.000001', maxPrice: '10.0' },
+        lotSizeFilter: {
+          minOrderQty: '100',
+          qtyStep: '100',
+          maxOrderQty: '1000000',
+          maxMktOrderQty: '250000',
+          minNotionalValue: '5',
+        },
+      };
+
+      const market = mapFn(bybitRawItem, 'linear');
+      expect(market.limits.amount.max?.toNumber()).toBe(1000000);
+      expect(market.limits.marketAmount?.max?.toNumber()).toBe(250000);
+
+      const rules = {
+        schemaVersion: '2.0' as const,
+        symbol: market.symbol,
+        exchange: 'bybit',
+        baseAsset: market.base,
+        quoteAsset: market.quote,
+        minNotional: market.limits.cost.min.toNumber(),
+        minQty: market.limits.amount.min.toNumber(),
+        maxQty: market.limits.amount.max?.toNumber(),
+        marketMaxQty: market.limits.marketAmount?.max?.toNumber(),
+        stepSize: market.precision.amount,
+        tickSize: market.precision.price,
+        minPrice: market.limits.price.min.toNumber(),
+        maxPrice: market.limits.price.max?.toNumber() ?? 999999999,
+        contractSize: 1,
+        lastUpdated: Date.now(),
+      };
+
+      // MARKET order uses marketMaxQty (250,000)
+      const mktVal = TradeValidator.validate(
+        { symbol: market.symbol, orderType: 'MARKET', entryPrice: 0.005, tradeValueUsdt: 2500 },
+        rules
+      );
+      expect(mktVal.isValid).toBe(true);
+      expect(mktVal.quantizedQuantity).toBe(250000);
+
+      // FinalDispatchSafetyGate with MARKET ceiling (250,000) accepts 250,000 and rejects 300,000
+      expect(() =>
+        FinalDispatchSafetyGate.validate(
+          { symbol: market.symbol, side: 'buy', type: 'market', amount: new BigNumber(250000) } as any,
+          { stepSize: rules.stepSize, tickSize: rules.tickSize, minQty: rules.minQty, maxQty: rules.marketMaxQty, minNotional: rules.minNotional, referencePrice: 0.005 }
+        )
+      ).not.toThrow();
+      expect(() =>
+        FinalDispatchSafetyGate.validate(
+          { symbol: market.symbol, side: 'buy', type: 'market', amount: new BigNumber(300000) } as any,
+          { stepSize: rules.stepSize, tickSize: rules.tickSize, minQty: rules.minQty, maxQty: rules.marketMaxQty, minNotional: rules.minNotional, referencePrice: 0.005 }
+        )
+      ).toThrow('exceeds maximum 250000');
+
+      // LIMIT order uses maxQty (1,000,000)
+      const limitVal = TradeValidator.validate(
+        { symbol: market.symbol, orderType: 'LIMIT', entryPrice: 0.005, tradeValueUsdt: 2500 },
+        rules
+      );
+      expect(limitVal.isValid).toBe(true);
+      expect(limitVal.quantizedQuantity).toBe(500000);
+
+      // 2. Invalid maxMktOrderQty ("0") is preserved as 0 (not converted to undefined) and fails closed
+      const invalidRawItem = {
+        ...bybitRawItem,
+        lotSizeFilter: { ...bybitRawItem.lotSizeFilter, maxMktOrderQty: '0' },
+      };
+      const invalidMarket = mapFn(invalidRawItem, 'linear');
+      expect(invalidMarket.limits.marketAmount?.max?.toNumber()).toBe(0);
+      const invalidVal = TradeValidator.validate(
+        { symbol: invalidMarket.symbol, orderType: 'MARKET', entryPrice: 0.005, tradeValueUsdt: 50 },
+        { ...rules, marketMaxQty: invalidMarket.limits.marketAmount?.max?.toNumber() }
+      );
+      expect(invalidVal.isValid).toBe(false);
+    });
+
+    it('proves cache isolation across budgets, orderTypes, environments, and market-rule snapshots', async () => {
+      const mockMarkets = [
+        {
+          id: 'DOGEUSDT',
+          symbol: 'DOGE/USDT',
+          base: 'DOGE',
+          quote: 'USDT',
+          active: true,
+          category: 'linear',
+          contractType: 'LinearPerpetual',
+          precision: { price: 0.0001, amount: 1 },
+          limits: { amount: { min: 1, max: 1000 }, marketAmount: { max: 40 }, cost: { min: 50 } },
+        },
+      ];
+      const mockTickers = [
+        { symbol: 'DOGE/USDT', last: 1.0, bid: 0.9999, ask: 1.0001, quoteVolume: 30_000_000, high: 1.03, low: 0.97 },
+      ];
+
+      const fetchCandlesSpy = vi.fn().mockImplementation((_sym: string, tf: string) =>
+        Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL'))
+      );
+
+      const mockAdapter = {
+        fetchMarkets: vi.fn().mockResolvedValue(mockMarkets),
+        fetchTickers: vi.fn().mockResolvedValue(mockTickers),
+        fetchCandles: fetchCandlesSpy,
+      } as unknown as IExchangeProvider & ICandleProvider;
+
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
+
+      let currentEnv = 'mainnet';
+      const mockDb = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnValue({
+            first: vi.fn().mockImplementation(async () => ({
+              exchange_name: 'bybit',
+              exchange_environment: currentEnv,
+            })),
+          }),
+        }),
+      };
+
+      const makeCtx = (params: Record<string, string | undefined>) => ({
+        get: vi.fn().mockReturnValue({ sub: 'user-cache-iso' }),
+        env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
+        status: vi.fn(),
+        header: vi.fn(),
+        json: vi.fn().mockImplementation((data) => data),
+        req: { query: vi.fn().mockImplementation((k: string) => params[k]) },
+      } as any);
+
+      // 1. orderType=LIMIT with budget=100 -> uses maxOrderQty=1000 ($100 >= $50 minNotional) -> 1 candidate
+      const resLimit = await handleGetPersonalizedMarketCandidates(makeCtx({ budget: '100', orderType: 'LIMIT' })) as any;
+      expect(resLimit).toHaveLength(1);
+
+      // 2. orderType=MARKET with same budget=100 -> uses marketMaxQty=40 ($40 < $50 minNotional) -> MUST NOT reuse LIMIT cache -> returns []
+      const resMarket = await handleGetPersonalizedMarketCandidates(makeCtx({ budget: '100', orderType: 'MARKET' })) as any;
+      expect(resMarket).toEqual([]);
+
+      // 3. Different environment (demo) -> does not reuse mainnet cache
+      currentEnv = 'demo';
+      fetchCandlesSpy.mockClear();
+      const ctxDemo = {
+        ...makeCtx({ budget: '100', orderType: 'LIMIT' }),
+        get: vi.fn().mockReturnValue({ sub: 'user-cache-iso-demo' }),
+      };
+      const resDemo = await handleGetPersonalizedMarketCandidates(ctxDemo) as any;
+      expect(resDemo).toHaveLength(1);
+      expect(fetchCandlesSpy).toHaveBeenCalled();
+
+      // 4. Stale price invalidation: if live price spikes so minQty * price > budget while exchange rules are unchanged, cache CANNOT return the now-ineligible candidate
+      mockMarkets[0].limits.amount.min = 80; // minOrderQty = 80 DOGE
+      mockTickers[0].last = 1.0; // 80 * $1.00 = $80 <= $100 budget -> eligible
+      const ctxPriceSpike = {
+        ...makeCtx({ budget: '100', orderType: 'LIMIT' }),
+        get: vi.fn().mockReturnValue({ sub: 'user-cache-price-spike' }),
+      };
+      const resBeforeSpike = await handleGetPersonalizedMarketCandidates(ctxPriceSpike) as any;
+      expect(resBeforeSpike).toHaveLength(1);
+
+      // Live price moves to $1.50 -> 80 * $1.50 = $120 > $100 budget (exchange rules unchanged)
+      mockTickers[0].last = 1.5;
+      const ctxAfterSpike = {
+        ...makeCtx({ budget: '100', orderType: 'LIMIT' }),
+        get: vi.fn().mockReturnValue({ sub: 'user-cache-price-spike' }),
+      };
+      const resAfterSpike = await handleGetPersonalizedMarketCandidates(ctxAfterSpike) as any;
+      expect(resAfterSpike).toEqual([]);
+      expect(ctxAfterSpike.header).toHaveBeenCalledWith('X-Empty-Reason', 'NO_ELIGIBLE_MARKETS');
+      expect(ctxAfterSpike.header).toHaveBeenCalledWith('X-Eligible-Market-Count', '0');
+    });
+
+    it('proves ineligible markets and invalid metadata cannot reach alert notifications (handleTriggerManualTradeAlert) or final dispatch (TradingBot.executeOpportunity), and changed rules/prices trigger revalidation rejection', async () => {
+      const botFetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }));
+      const mockDb = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnValue({
+            first: vi.fn().mockResolvedValue({
+              exchange_name: 'bybit',
+              exchange_environment: 'demo',
+              exchange_api_key: 'plain-key',
+            }),
+          }),
+        }),
+      };
+
+      let currentMarketRule: any = {
+        id: 'BTCUSDT',
+        symbol: 'BTC/USDT',
+        base: 'BTC',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        precision: { price: 0.1, amount: 0.001 },
+        limits: { amount: { min: 0.001, max: 100 }, marketAmount: { max: 50 }, cost: { min: 5 } },
+      };
+
+      const mockAdapter = {
+        fetchMarket: vi.fn().mockImplementation(async () => currentMarketRule),
+        fetchMarkets: vi.fn().mockImplementation(async () => [currentMarketRule]),
+        fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTC/USDT', last: new BigNumber(76870) }),
+        createOrder: vi.fn(),
+      };
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
+
+      const makeAlertCtx = (body: any) => ({
+        get: vi.fn().mockReturnValue({ sub: 'user-alert-boundary' }),
+        env: {
+          DB: mockDb,
+          ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          TRADING_BOTS: {
+            idFromName: vi.fn().mockReturnValue('bot-id'),
+            get: vi.fn().mockReturnValue({ fetch: botFetchSpy }),
+          },
+        },
+        status: vi.fn(),
+        json: vi.fn().mockImplementation((d) => d),
+        req: { json: vi.fn().mockResolvedValue(body) },
+      } as any);
+
+      // 1. Ineligible market ($10 budget for BTC at $76,870) is blocked BEFORE registering alert or sending notification
+      const ineligibleRes = await handleTriggerManualTradeAlert(
+        makeAlertCtx({
+          symbol: 'BTC/USDT',
+          strategy: 'ScalperV2',
+          config: { positionSize: 10, entryPrice: 76870, stopLoss: 100, takeProfit: 200, side: 'BUY', entryIntent: 'IMMEDIATE' },
+        })
+      ) as any;
+      expect(ineligibleRes.code).toBe('EXECUTION_INELIGIBLE');
+      expect(botFetchSpy).not.toHaveBeenCalled();
+
+      // 2. Explicit invalid marketMaxQty (0) is blocked with INVALID_EXCHANGE_RULES BEFORE registering alert
+      currentMarketRule = {
+        ...currentMarketRule,
+        limits: { amount: { min: 0.001, max: 100 }, marketAmount: { max: 0 }, cost: { min: 5 } },
+      };
+      const invalidMaxRes = await handleTriggerManualTradeAlert(
+        makeAlertCtx({
+          symbol: 'BTC/USDT',
+          strategy: 'ScalperV2',
+          config: { positionSize: 500, entryPrice: 76870, stopLoss: 100, takeProfit: 200, side: 'BUY', entryIntent: 'IMMEDIATE' },
+        })
+      ) as any;
+      expect(invalidMaxRes.code).toBe('INVALID_EXCHANGE_RULES');
+      expect(botFetchSpy).not.toHaveBeenCalled();
+
+      // 3. Final dispatch revalidation in TradingBot.executeOpportunity rejects if exchange rules or prices change approvedQuantity or violate marketMaxQty
+      const encKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+      const encApi = await encrypt('test-api-key', encKey);
+      const encSec = await encrypt('test-api-secret', encKey);
+
+      const storageMap = new Map<string, any>();
+      storageMap.set('userId', 'user-exec-boundary');
+      storageMap.set('isActive', true);
+      storageMap.set('lastAccountBalance', 10000);
+      const alertObj = {
+        id: 'alert-revalidate-1',
+        symbol: 'DOGE/USDT',
+        side: 'BUY',
+        strategy: 'ScalperV2',
+        signalPrice: 1.0,
+        targetEntryPrice: 1.0,
+        entryPrice: 1.0,
+        entryIntent: 'IMMEDIATE',
+        stopLoss: 0.9,
+        takeProfit: 1.2,
+        positionSize: 50,
+        requestedBudget: 50,
+        quantity: 50, // Approved when stepSize was 1 and marketMaxQty was 100
+        status: 'pending',
+        source: 'MANUAL',
+        timestamp: new Date().toISOString(),
+        timeframe: '5m',
+      };
+      storageMap.set('alerts', [alertObj]);
+
+      const mockStorage: any = {
+        get: vi.fn().mockImplementation((k: string) => Promise.resolve(storageMap.get(k))),
+        put: vi.fn().mockImplementation((k: string, v: any) => {
+          storageMap.set(k, v);
+          return Promise.resolve();
+        }),
+        delete: vi.fn(),
+        list: vi.fn().mockResolvedValue(new Map()),
+        transaction: vi.fn().mockImplementation(async (cb: any) => cb(mockStorage)),
+      };
+
+      const botDb = {
+        prepare: vi.fn().mockImplementation((sql: string) => {
+          if (sql.includes('PRAGMA table_info')) {
+            return {
+              all: vi.fn().mockResolvedValue({
+                results: [{ name: 'target_entry_price' }, { name: 'entry_status' }],
+              }),
+            };
+          }
+          if (sql.includes('FROM users')) {
+            return {
+              bind: vi.fn().mockReturnValue({
+                first: vi.fn().mockResolvedValue({
+                  exchange_name: 'bybit',
+                  exchange_environment: 'demo',
+                  exchange_api_key_iv: encApi.iv,
+                  exchange_api_key_encrypted: encApi.encrypted,
+                  exchange_api_key_salt: encApi.salt,
+                  exchange_api_secret_iv: encSec.iv,
+                  exchange_api_secret_encrypted: encSec.encrypted,
+                  exchange_api_secret_salt: encSec.salt,
+                }),
+              }),
+            };
+          }
+          return {
+            bind: vi.fn().mockReturnValue({
+              all: vi.fn().mockResolvedValue({ results: [] }),
+              run: vi.fn().mockResolvedValue({}),
+              first: vi.fn().mockResolvedValue(null),
+            }),
+            all: vi.fn().mockResolvedValue({ results: [] }),
+          };
+        }),
+      };
+
+      // Exchange rule changed before dispatch: marketMaxQty dropped to 30 (< approvedQuantity 50)
+      currentMarketRule = {
+        id: 'DOGEUSDT',
+        symbol: 'DOGE/USDT',
+        base: 'DOGE',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        precision: { price: 0.01, amount: 1 },
+        limits: { amount: { min: 1, max: 1000 }, marketAmount: { max: 30 }, cost: { min: 5 } },
+      };
+      mockAdapter.fetchTicker = vi.fn().mockResolvedValue({ symbol: 'DOGE/USDT', last: new BigNumber(1.0) });
+
+      let blockPromise: Promise<any> | null = null;
+      const bot = new TradingBot(
+        {
+          storage: mockStorage,
+          blockConcurrencyWhile: (fn: any) => {
+            blockPromise = fn();
+            return blockPromise;
+          },
+        } as any,
+        { DB: botDb, ENCRYPTION_KEY: encKey } as any
+      );
+      if (blockPromise) await blockPromise;
+
+      const execResp = await bot.fetch(
+        new Request('http://bot/execute-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ alertId: 'alert-revalidate-1', entryIntent: 'IMMEDIATE' }),
+        })
+      );
+      const execBody = await execResp.json() as any;
+      expect(execBody.success).toBe(false);
+      expect(execBody.message).toContain('Approved order quantity (50) exceeds exchange maximum order quantity (30)');
+      // Order was NEVER dispatched to exchange
+      expect(mockAdapter.createOrder).not.toHaveBeenCalled();
+
+      // 8. Verify trading-bot.ts final-dispatch call path passes marketMaxQty for MARKET and maxQty for LIMIT to FinalDispatchSafetyGate.validate
+      const safetyGateSpy = vi.spyOn(FinalDispatchSafetyGate, 'validate');
+      mockAdapter.createOrder = vi.fn().mockResolvedValue({
+        id: 'order-dispatch-1',
+        symbol: 'DOGE/USDT',
+        type: 'market',
+        side: 'buy',
+        amount: new BigNumber(50),
+        price: new BigNumber(1.0),
+        filled: new BigNumber(50),
+        remaining: new BigNumber(0),
+        status: 'closed',
+      });
+
+      const makeBotInstance = async (alertsList: any[]) => {
+        storageMap.delete('activePositions');
+        storageMap.delete('currentPosition');
+        storageMap.delete('activeExecutionLease');
+        for (const k of [...storageMap.keys()]) {
+          if (k.startsWith('intent:')) storageMap.delete(k);
+        }
+        storageMap.set('alerts', alertsList);
+        let initPromise: Promise<any> | null = null;
+        const b = new TradingBot(
+          {
+            storage: mockStorage,
+            blockConcurrencyWhile: (fn: any) => {
+              initPromise = fn();
+              return initPromise;
+            },
+          } as any,
+          { DB: botDb, ENCRYPTION_KEY: encKey } as any
+        );
+        if (initPromise) await initPromise;
+        return b;
+      };
+
+      // 8a. MARKET order (entryIntent: 'IMMEDIATE') passes marketMaxQty (80), NOT maxQty (1000)
+      currentMarketRule = {
+        id: 'DOGEUSDT',
+        symbol: 'DOGE/USDT',
+        base: 'DOGE',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        precision: { price: 0.01, amount: 1 },
+        limits: { amount: { min: 1, max: 1000 }, marketAmount: { max: 80 }, cost: { min: 5 } },
+      };
+      const botMkt = await makeBotInstance([
+        {
+          ...alertObj,
+          id: 'alert-mkt-1',
+          entryIntent: 'IMMEDIATE',
+          status: 'pending',
+        },
+      ]);
+
+      await botMkt.fetch(
+        new Request('http://bot/execute-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ alertId: 'alert-mkt-1', entryIntent: 'IMMEDIATE' }),
+        })
+      );
+      expect(safetyGateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ symbol: 'DOGE/USDT', type: 'market' }),
+        expect.objectContaining({ maxQty: 80 })
+      );
+
+      // 8b. LIMIT order (entryIntent: 'WAIT_FOR_PRICE') passes maxQty (1000), NOT marketMaxQty (80)
+      safetyGateSpy.mockClear();
+      const botLim = await makeBotInstance([
+        {
+          ...alertObj,
+          id: 'alert-lim-1',
+          entryIntent: 'WAIT_FOR_PRICE',
+          targetEntryPrice: 0.99,
+          entryPrice: 0.99,
+          status: 'pending',
+        },
+      ]);
+
+      await botLim.fetch(
+        new Request('http://bot/execute-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ alertId: 'alert-lim-1', entryIntent: 'WAIT_FOR_PRICE' }),
+        })
+      );
+      expect(safetyGateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ symbol: 'DOGE/USDT', type: 'limit' }),
+        expect.objectContaining({ maxQty: 1000 })
+      );
+
+      // 8c. Absent optional maximum (undefined) is passed through as undefined and allowed by FinalDispatchSafetyGate
+      safetyGateSpy.mockClear();
+      currentMarketRule = {
+        id: 'DOGEUSDT',
+        symbol: 'DOGE/USDT',
+        base: 'DOGE',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        precision: { price: 0.01, amount: 1 },
+        limits: { amount: { min: 1, max: undefined }, marketAmount: { max: undefined }, cost: { min: 5 } },
+      };
+      const botAbsent = await makeBotInstance([
+        {
+          ...alertObj,
+          id: 'alert-absent-max-1',
+          entryIntent: 'IMMEDIATE',
+          status: 'pending',
+        },
+      ]);
+
+      await botAbsent.fetch(
+        new Request('http://bot/execute-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ alertId: 'alert-absent-max-1', entryIntent: 'IMMEDIATE' }),
+        })
+      );
+      expect(safetyGateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ symbol: 'DOGE/USDT', type: 'market' }),
+        expect.objectContaining({ maxQty: undefined })
+      );
+    });
+
+    it('exposes X-Empty-Reason and X-Eligible-Market-Count via Access-Control-Expose-Headers on /api/market/candidates while preserving CORS and JWT auth', async () => {
+      const jwtSecret = 'test-jwt-secret-32-chars-minimum!!';
+      const validToken = await sign({ sub: 'user-cors-test', type: 'access', exp: Math.floor(Date.now() / 1000) + 3600 }, jwtSecret);
+      const env: any = {
+        ALLOWED_ORIGINS: 'https://app.cryptopulse.test',
+        JWT_SECRET: jwtSecret,
+        ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        RESEND_API_KEY: 're_test_key',
+        DB: {
+          prepare: vi.fn().mockReturnValue({
+            bind: vi.fn().mockReturnValue({
+              first: vi.fn().mockResolvedValue({
+                id: 'user-cors-test',
+                exchange_name: 'bybit',
+                exchange_environment: 'mainnet',
+              }),
+              all: vi.fn().mockResolvedValue({ results: [] }),
+            }),
+          }),
+        },
+      };
+
+      // 1. Unauthenticated request is rejected with 401 even from allowed origin
+      const unauthResp = await app.fetch(
+        new Request('http://localhost/api/market/candidates?budget=4', {
+          method: 'GET',
+          headers: { Origin: 'https://app.cryptopulse.test' },
+        }),
+        env
+      );
+      expect(unauthResp.status).toBe(401);
+
+      // 2. Authenticated request with NO_ELIGIBLE_MARKETS returns exposed headers
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue({
+        fetchMarkets: vi.fn().mockResolvedValue([
+          {
+            id: 'BTCUSDT',
+            symbol: 'BTC/USDT',
+            base: 'BTC',
+            quote: 'USDT',
+            active: true,
+            category: 'linear',
+            contractType: 'LinearPerpetual',
+            precision: { price: 0.1, amount: 0.001 },
+            limits: { amount: { min: 0.001, max: 100 }, marketAmount: { max: 50 }, cost: { min: 5 } },
+          },
+        ]),
+        fetchTickers: vi.fn().mockResolvedValue([
+          { symbol: 'BTC/USDT', last: new BigNumber(70000), quoteVolume: new BigNumber(500000000) },
+        ]),
+      } as any);
+
+      const noEligibleResp = await app.fetch(
+        new Request('http://localhost/api/market/candidates?budget=4', {
+          method: 'GET',
+          headers: {
+            Origin: 'https://app.cryptopulse.test',
+            Authorization: `Bearer ${validToken}`,
+          },
+        }),
+        env
+      );
+      expect(noEligibleResp.status).toBe(200);
+      expect(noEligibleResp.headers.get('Access-Control-Allow-Origin')).toBe('https://app.cryptopulse.test');
+      const exposedHeaders = noEligibleResp.headers.get('Access-Control-Expose-Headers') || '';
+      expect(exposedHeaders).toContain('X-Empty-Reason');
+      expect(exposedHeaders).toContain('X-Eligible-Market-Count');
+      expect(noEligibleResp.headers.get('X-Empty-Reason')).toBe('NO_ELIGIBLE_MARKETS');
+      expect(noEligibleResp.headers.get('X-Eligible-Market-Count')).toBe('0');
+
+      // 2b. Authenticated request with NO_TECHNICAL_OPPORTUNITIES returns exposed headers
+      vi.spyOn(MarketOpportunityScanner.prototype, 'scan').mockResolvedValueOnce({
+        opportunities: [],
+        diagnostics: {
+          totalUniverseCount: 1,
+          eligibleCount: 1,
+          qualityFilteredCount: 1,
+          technicalQualifiedCount: 0,
+          finalSelectedCount: 0,
+          scanDurationMs: 5,
+          rejectionReasons: {},
+        },
+      } as any);
+      const noTechResp = await app.fetch(
+        new Request('http://localhost/api/market/candidates?budget=100', {
+          method: 'GET',
+          headers: {
+            Origin: 'https://app.cryptopulse.test',
+            Authorization: `Bearer ${validToken}`,
+          },
+        }),
+        env
+      );
+      expect(noTechResp.status).toBe(200);
+      expect(noTechResp.headers.get('Access-Control-Expose-Headers') || '').toContain('X-Empty-Reason');
+      expect(noTechResp.headers.get('Access-Control-Expose-Headers') || '').toContain('X-Eligible-Market-Count');
+      expect(noTechResp.headers.get('X-Empty-Reason')).toBe('NO_TECHNICAL_OPPORTUNITIES');
+      expect(noTechResp.headers.get('X-Eligible-Market-Count')).toBe('1');
+
+      // 3. Disallowed origin does not receive Access-Control-Allow-Origin for that origin
+      const disallowedOriginResp = await app.fetch(
+        new Request('http://localhost/api/market/candidates?budget=4', {
+          method: 'GET',
+          headers: {
+            Origin: 'https://evil.example.com',
+            Authorization: `Bearer ${validToken}`,
+          },
+        }),
+        env
+      );
+      expect(disallowedOriginResp.headers.get('Access-Control-Allow-Origin')).not.toBe('https://evil.example.com');
     });
   });
 });

@@ -46,7 +46,10 @@ sealed interface MarketDataUiState {
     object Idle : MarketDataUiState
     object Loading : MarketDataUiState
     data class Success(val candidates: List<MarketCandidate>) : MarketDataUiState
-    data class Empty(val message: String) : MarketDataUiState
+    data class Empty(
+        val message: String,
+        val emptyReason: String? = null
+    ) : MarketDataUiState
     data class Error(val message: String, val hint: String? = null) : MarketDataUiState
 }
 
@@ -456,8 +459,24 @@ class ExchangeViewModel @Inject constructor(
                 if (distinctUiList.isEmpty()) {
                     _selectedCandidate.value = null
                     _candidatesError.value = null
-                    val emptyMsg = "No opportunities within your budget."
-                    _marketDataState.value = MarketDataUiState.Empty(emptyMsg)
+                    val emptyReason = (result as? NetworkResult.Success)?.headers?.entries
+                        ?.firstOrNull { it.key.equals("X-Empty-Reason", ignoreCase = true) }
+                        ?.value
+                    val isBudgetIneligible = emptyReason.equals("NO_ELIGIBLE_MARKETS", ignoreCase = true)
+                    val formattedBudget = if (budget % 1.0 == 0.0) {
+                        budget.toInt().toString()
+                    } else {
+                        String.format(java.util.Locale.US, "%.2f", budget).trimEnd('0').trimEnd('.')
+                    }
+                    val emptyMsg = if (isBudgetIneligible) {
+                        "No active exchange markets can construct a valid order within your $formattedBudget USDT budget under current exchange order constraints. Please increase your budget and try again."
+                    } else {
+                        "No eligible trading opportunities currently match the strategy criteria for active markets within your $formattedBudget USDT budget. Please try again shortly or adjust your trade setup."
+                    }
+                    _marketDataState.value = MarketDataUiState.Empty(
+                        message = emptyMsg,
+                        emptyReason = emptyReason
+                    )
                 } else {
                     _marketDataState.value = MarketDataUiState.Success(distinctUiList)
                 }

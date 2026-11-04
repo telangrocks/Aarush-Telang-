@@ -13,6 +13,7 @@ export class FinalDispatchSafetyGate {
       stepSize: number;
       tickSize: number;
       minQty: number;
+      maxQty?: number;
       minNotional: number;
       maxExposure?: number;
       currentExposure?: number;
@@ -30,9 +31,18 @@ export class FinalDispatchSafetyGate {
       throw new UnifiedError('Invalid price in payload', 'RISK_GATE_REJECTED');
     }
 
-    // 2. Minimums
+    // 2. Minimums and Maximums
     if (payload.amount.lt(constraints.minQty)) {
       throw new UnifiedError(`Quantity ${payload.amount.toString()} is below minimum ${constraints.minQty}`, 'RISK_GATE_REJECTED');
+    }
+
+    if (constraints.maxQty !== undefined && constraints.maxQty !== null) {
+      if (!Number.isFinite(constraints.maxQty) || constraints.maxQty <= 0) {
+        throw new UnifiedError(`Exchange maximum order quantity (${constraints.maxQty}) is invalid`, 'RISK_GATE_REJECTED');
+      }
+      if (payload.amount.gt(constraints.maxQty)) {
+        throw new UnifiedError(`Quantity ${payload.amount.toString()} exceeds maximum ${constraints.maxQty}`, 'RISK_GATE_REJECTED');
+      }
     }
 
     const effectivePrice = (payload.price && !payload.price.isNaN() && payload.price.gt(0))

@@ -644,14 +644,38 @@ export class BybitAdapter extends BaseExchangeAdapter {
     const priceStepStr = item.priceFilter?.tickSize;
     const amountStepStr = item.lotSizeFilter?.qtyStep || item.lotSizeFilter?.basePrecision;
     const minAmountStr = item.lotSizeFilter?.minOrderQty;
+    const maxAmountStr = item.lotSizeFilter?.maxOrderQty;
+    const maxMktAmountStr = item.lotSizeFilter?.maxMktOrderQty;
     const minPriceStr = item.priceFilter?.minPrice;
+    const maxPriceStr = item.priceFilter?.maxPrice;
     const minNotionalStr = item.lotSizeFilter?.minNotionalValue || item.lotSizeFilter?.minOrderAmt;
 
     const priceStep = priceStepStr !== undefined ? parseFloat(priceStepStr) : 0;
     const amountStep = amountStepStr !== undefined ? parseFloat(amountStepStr) : 0;
     const minAmount = minAmountStr !== undefined ? parseFloat(minAmountStr) : 0;
+    const hasMaxAmount = maxAmountStr !== undefined && maxAmountStr !== null && String(maxAmountStr).trim() !== '';
+    const hasMaxMktAmount = maxMktAmountStr !== undefined && maxMktAmountStr !== null && String(maxMktAmountStr).trim() !== '';
+    const maxAmount = hasMaxAmount ? Number(maxAmountStr) : undefined;
+    const maxMktAmount = hasMaxMktAmount ? Number(maxMktAmountStr) : undefined;
     const minPrice = minPriceStr !== undefined ? parseFloat(minPriceStr) : 0;
+    const maxPrice = maxPriceStr !== undefined ? parseFloat(maxPriceStr) : undefined;
     const minNotional = minNotionalStr !== undefined ? parseFloat(minNotionalStr) : 0;
+
+    const limits: any = {
+      amount: {
+        min: new BigNumber(minAmount),
+        ...(maxAmount !== undefined ? { max: new BigNumber(maxAmount) } : {})
+      },
+      price: {
+        min: new BigNumber(minPrice),
+        ...(maxPrice !== undefined ? { max: new BigNumber(maxPrice) } : {})
+      },
+      cost: { min: new BigNumber(minNotional) },
+    };
+
+    if (maxMktAmount !== undefined) {
+      limits.marketAmount = { max: new BigNumber(maxMktAmount) };
+    }
 
     return {
       id: item.symbol,
@@ -661,13 +685,10 @@ export class BybitAdapter extends BaseExchangeAdapter {
       category: item._category || category,
       active: item.status === 'Trading',
       precision: { price: priceStep, amount: amountStep },
-      limits: {
-        amount: { min: new BigNumber(minAmount) },
-        price: { min: new BigNumber(minPrice) },
-        cost: { min: new BigNumber(minNotional) },
-      },
+      limits,
       priceLimitRatioX: item.priceLimitRatioX ? parseFloat(item.priceLimitRatioX) : undefined,
       priceLimitRatioY: item.priceLimitRatioY ? parseFloat(item.priceLimitRatioY) : undefined,
+      info: item,
     } as any;
   }
 

@@ -53,7 +53,6 @@ class ExchangeViewModelTradeAlertLifecycleTest {
             "positionSize" to 500.0,
             "strategy" to "ScalperV2",
             "side" to "BUY",
-            "quantity" to 0.005,
             "quantity" to 0.005
         )
         viewModel.setPendingAlert(alertData)
@@ -78,7 +77,8 @@ class ExchangeViewModelTradeAlertLifecycleTest {
             "takeProfit" to 98000.0,
             "positionSize" to 500.0,
             "strategy" to "ScalperV2",
-            "side" to "BUY"
+            "side" to "BUY",
+            "quantity" to 0.005
         )
         viewModel.setPendingAlert(alertData)
 

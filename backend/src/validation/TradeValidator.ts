@@ -53,14 +53,25 @@ export class TradeValidator {
       return res;
     }
 
-    if (rules.maxQty === undefined || rules.maxQty === null || !Number.isFinite(rules.maxQty) || rules.maxQty <= 0) {
+    if (rules.maxQty !== undefined && rules.maxQty !== null && (!Number.isFinite(rules.maxQty) || rules.maxQty <= 0)) {
       const res = {
         isValid: false,
         errorCode: ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE,
-        errorMessage: `Authoritative exchange maximum order quantity (maxQty) for '${rules.symbol}' is unavailable or invalid. Execution cannot safely proceed.`,
+        errorMessage: `Authoritative exchange maximum order quantity (maxQty) for '${rules.symbol}' is invalid (${rules.maxQty}). Execution cannot safely proceed.`,
         metrics: { durationMs: performance.now() - startTime, stepReached: 1 },
       };
       console.log('[DIAGNOSTIC] Exit TradeValidator.validate() (maxQty metadata failure):', JSON.stringify(res));
+      return res;
+    }
+
+    if (rules.marketMaxQty !== undefined && rules.marketMaxQty !== null && (!Number.isFinite(rules.marketMaxQty) || rules.marketMaxQty <= 0)) {
+      const res = {
+        isValid: false,
+        errorCode: ValidationErrorReason.EXCHANGE_METADATA_UNAVAILABLE,
+        errorMessage: `Authoritative exchange market-order maximum quantity (marketMaxQty) for '${rules.symbol}' is invalid (${rules.marketMaxQty}). Execution cannot safely proceed.`,
+        metrics: { durationMs: performance.now() - startTime, stepReached: 1 },
+      };
+      console.log('[DIAGNOSTIC] Exit TradeValidator.validate() (marketMaxQty metadata failure):', JSON.stringify(res));
       return res;
     }
 
@@ -166,29 +177,35 @@ export class TradeValidator {
     }
 
     // 4.5. Maximum Quantity Constraint Enforcement
-    const maxQtyBN = new BigNumber(rules.maxQty);
+    const isMarketOrder = params.orderType?.toUpperCase() === 'MARKET';
+    const applicableMax = isMarketOrder ? rules.marketMaxQty : rules.maxQty;
+
+    const hasMaxQtyConstraint = applicableMax !== undefined && applicableMax !== null;
+    const maxQtyBN = hasMaxQtyConstraint ? new BigNumber(applicableMax) : null;
     let clampedQtyBN = rawQtyBN;
     let wasClampedToMax = false;
 
-    if (isApprovedQuantityValidation) {
-      // If verifying an already approved quantity, DO NOT silently modify it!
-      // If the approved quantity exceeds maxQty, fail closed and require fresh confirmation.
-      if (rawQtyBN.isGreaterThan(maxQtyBN)) {
-        return {
-          isValid: false,
-          errorCode: ValidationErrorReason.MAX_QTY_FAILED,
-          errorMessage: `Approved order quantity (${rawQtyBN.toFixed()}) exceeds exchange maximum order quantity (${maxQtyBN.toFixed()}). Fresh confirmation is required.`,
-          quantizedQuantity: rawQtyBN.toNumber(),
-          postRoundingNotional: rawQtyBN.multipliedBy(entryPriceBN).toNumber(),
-          wasClampedToMax: true,
-          metrics: { durationMs: performance.now() - startTime, stepReached: 4.5 },
-        };
-      }
-    } else {
-      // During initial sizing (budget -> quantity), clamp raw quantity to exchange maximum limit before step-size quantization
-      if (rawQtyBN.isGreaterThan(maxQtyBN)) {
-        clampedQtyBN = maxQtyBN;
-        wasClampedToMax = true;
+    if (maxQtyBN) {
+      if (isApprovedQuantityValidation) {
+        // If verifying an already approved quantity, DO NOT silently modify it!
+        // If the approved quantity exceeds maxQty, fail closed and require fresh confirmation.
+        if (rawQtyBN.isGreaterThan(maxQtyBN)) {
+          return {
+            isValid: false,
+            errorCode: ValidationErrorReason.MAX_QTY_FAILED,
+            errorMessage: `Approved order quantity (${rawQtyBN.toFixed()}) exceeds exchange maximum order quantity (${maxQtyBN.toFixed()}). Fresh confirmation is required.`,
+            quantizedQuantity: rawQtyBN.toNumber(),
+            postRoundingNotional: rawQtyBN.multipliedBy(entryPriceBN).toNumber(),
+            wasClampedToMax: true,
+            metrics: { durationMs: performance.now() - startTime, stepReached: 4.5 },
+          };
+        }
+      } else {
+        // During initial sizing (budget -> quantity), clamp raw quantity to exchange maximum limit before step-size quantization
+        if (rawQtyBN.isGreaterThan(maxQtyBN)) {
+          clampedQtyBN = maxQtyBN;
+          wasClampedToMax = true;
+        }
       }
     }
 
@@ -227,7 +244,7 @@ export class TradeValidator {
       };
     }
 
-    if (maxQtyBN.isGreaterThan(0) && roundedQtyBN.isGreaterThan(maxQtyBN)) {
+    if (maxQtyBN && maxQtyBN.isGreaterThan(0) && roundedQtyBN.isGreaterThan(maxQtyBN)) {
       return {
         isValid: false,
         errorCode: ValidationErrorReason.MAX_QTY_FAILED,

@@ -22,7 +22,10 @@ suspend fun <T> safeApiCall(apiCall: suspend () -> retrofit2.Response<T>): Netwo
         if (response.isSuccessful) {
             val body = response.body()
             if (body != null) {
-                NetworkResult.Success(body)
+                val responseHeaders = response.headers().names().associateWith { name ->
+                    response.headers()[name].orEmpty()
+                }
+                NetworkResult.Success(body, responseHeaders)
             } else {
                 NetworkResult.Error(NetworkError.Unknown(Exception("Empty response body")))
             }

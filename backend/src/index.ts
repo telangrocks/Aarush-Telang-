@@ -172,6 +172,10 @@ app.use("*", async (c, next) => {
       "X-Device-Session",
       "X-Correlation-Id",
     ],
+    exposeHeaders: [
+      "X-Empty-Reason",
+      "X-Eligible-Market-Count",
+    ],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
   return middleware(c, next);
