@@ -17,9 +17,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import okhttp3.Headers
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -34,10 +36,11 @@ class ExchangeBalanceTest {
     private lateinit var viewModel: ExchangeViewModel
     private lateinit var exchangeRepository: FakeExchangeRepository
     private lateinit var marketRepository: FakeMarketRepositoryMinimal
-    private val testDispatcher = UnconfinedTestDispatcher()
+    private lateinit var testDispatcher: kotlinx.coroutines.test.TestDispatcher
 
     @Before
     fun setup() {
+        testDispatcher = UnconfinedTestDispatcher()
         Dispatchers.setMain(testDispatcher)
         exchangeRepository = FakeExchangeRepository()
         marketRepository = FakeMarketRepositoryMinimal()
@@ -56,6 +59,11 @@ class ExchangeBalanceTest {
             sessionRepository = FakeTradeSessionRepositoryMinimal(),
             tradeAlertManager = FakeTradeAlertManagerMinimal()
         )
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
     }
 
     @Test

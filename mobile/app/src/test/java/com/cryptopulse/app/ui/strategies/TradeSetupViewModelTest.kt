@@ -11,6 +11,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import org.junit.After
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.Assert.*
@@ -23,7 +25,7 @@ class TradeSetupViewModelTest {
     private lateinit var viewModel: TradeSetupViewModel
     private lateinit var sessionRepository: FakeTradeSessionRepository
     private lateinit var exchangeRepository: FakeExchangeRepository
-    private val testDispatcher = UnconfinedTestDispatcher()
+    private lateinit var testDispatcher: kotlinx.coroutines.test.TestDispatcher
 
     private val testCandidate = MarketCandidate(
         symbol = "BTCUSDT",
@@ -40,10 +42,16 @@ class TradeSetupViewModelTest {
 
     @Before
     fun setup() {
+        testDispatcher = UnconfinedTestDispatcher()
         Dispatchers.setMain(testDispatcher)
         sessionRepository = FakeTradeSessionRepository()
         exchangeRepository = FakeExchangeRepository()
         viewModel = TradeSetupViewModel(sessionRepository, exchangeRepository)
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
     }
 
     @Test

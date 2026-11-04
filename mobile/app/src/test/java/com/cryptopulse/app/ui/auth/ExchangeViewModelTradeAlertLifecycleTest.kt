@@ -9,7 +9,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
+import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -20,10 +22,11 @@ class ExchangeViewModelTradeAlertLifecycleTest {
     private lateinit var viewModel: ExchangeViewModel
     private lateinit var fakeBotRepo: FakeTrackingBotRepository
     private lateinit var fakeAlertManager: FakeTrackingTradeAlertManager
-    private val testDispatcher = UnconfinedTestDispatcher()
+    private lateinit var testDispatcher: kotlinx.coroutines.test.TestDispatcher
 
     @Before
     fun setup() {
+        testDispatcher = UnconfinedTestDispatcher()
         Dispatchers.setMain(testDispatcher)
         fakeBotRepo = FakeTrackingBotRepository()
         fakeAlertManager = FakeTrackingTradeAlertManager()
@@ -40,6 +43,12 @@ class ExchangeViewModelTradeAlertLifecycleTest {
             sessionRepository = FakeTradeSessionRepositoryMinimal(),
             tradeAlertManager = fakeAlertManager
         )
+    }
+
+    @After
+    fun tearDown() {
+        viewModel.stopLiveTicker()
+        Dispatchers.resetMain()
     }
 
     @Test

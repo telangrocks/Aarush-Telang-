@@ -232,7 +232,10 @@ class AuthViewModelTest {
                 exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
                 fcmRepository = fakeFcmRepo,
                 tokenManager = fakeTokenManager
-            )
+            ).apply {
+                ioDispatcher = testDispatcher
+                firebaseTokenResolver = { null }
+            }
             viewModel.email = "test@example.com"
             viewModel.password = "ValidPass123!"
 
@@ -261,7 +264,10 @@ class AuthViewModelTest {
                 exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
                 fcmRepository = fakeFcmRepo,
                 tokenManager = fakeTokenManager
-            )
+            ).apply {
+                ioDispatcher = testDispatcher
+                firebaseTokenResolver = { null }
+            }
             viewModel.email = "test@example.com"
             viewModel.password = "ValidPass123!"
             viewModel.confirmPassword = "ValidPass123!"
@@ -291,7 +297,10 @@ class AuthViewModelTest {
                 exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
                 fcmRepository = fakeFcmRepo,
                 tokenManager = fakeTokenManager
-            )
+            ).apply {
+                ioDispatcher = testDispatcher
+                firebaseTokenResolver = { null }
+            }
             viewModel.email = "test@example.com"
             viewModel.password = "ValidPass123!"
 
@@ -323,7 +332,10 @@ class AuthViewModelTest {
                 exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
                 fcmRepository = fakeFcmRepo,
                 tokenManager = fakeTokenManager
-            )
+            ).apply {
+                ioDispatcher = testDispatcher
+                firebaseTokenResolver = { null }
+            }
             viewModel.email = "test@example.com"
             viewModel.password = "ValidPass123!"
 
@@ -352,7 +364,10 @@ class AuthViewModelTest {
                 exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
                 fcmRepository = fakeFcmRepo,
                 tokenManager = fakeTokenManager
-            )
+            ).apply {
+                ioDispatcher = testDispatcher
+                firebaseTokenResolver = { null }
+            }
             viewModel.email = "test@example.com"
             viewModel.password = "ValidPass123!"
 

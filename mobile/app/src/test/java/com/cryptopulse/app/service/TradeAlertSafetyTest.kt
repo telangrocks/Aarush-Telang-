@@ -20,11 +20,11 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class TradeAlertSafetyTest {
 
-    private val testDispatcher = StandardTestDispatcher()
-    private val testScope = TestScope(testDispatcher)
+    private lateinit var testDispatcher: kotlinx.coroutines.test.TestDispatcher
 
     @Before
     fun setUp() {
+        testDispatcher = StandardTestDispatcher()
         Dispatchers.setMain(testDispatcher)
     }
 

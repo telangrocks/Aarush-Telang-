@@ -28,10 +28,11 @@ import com.cryptopulse.app.data.mapper.bot.toDomain
 @OptIn(ExperimentalCoroutinesApi::class)
 class TechnicalAnalysisViewModelTest {
 
-    private val testDispatcher = StandardTestDispatcher()
+    private lateinit var testDispatcher: TestDispatcher
 
     @Before
     fun setUp() {
+        testDispatcher = StandardTestDispatcher()
         Dispatchers.setMain(testDispatcher)
     }
 

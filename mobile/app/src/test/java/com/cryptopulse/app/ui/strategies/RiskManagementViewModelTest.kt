@@ -9,8 +9,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -21,14 +23,20 @@ class RiskManagementViewModelTest {
     private lateinit var viewModel: RiskManagementViewModel
     private lateinit var sessionRepository: FakeTradeSessionRepositoryForRisk
     private lateinit var strategyRepository: FakeStrategyRepositoryForRisk
-    private val testDispatcher = UnconfinedTestDispatcher()
+    private lateinit var testDispatcher: kotlinx.coroutines.test.TestDispatcher
 
     @Before
     fun setup() {
+        testDispatcher = UnconfinedTestDispatcher()
         Dispatchers.setMain(testDispatcher)
         sessionRepository = FakeTradeSessionRepositoryForRisk()
         strategyRepository = FakeStrategyRepositoryForRisk()
         viewModel = RiskManagementViewModel(sessionRepository, strategyRepository)
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
     }
 
     @Test

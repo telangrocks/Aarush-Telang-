@@ -23,10 +23,11 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class TechnicalAnalysisActivationFixTest {
 
-    private val testDispatcher = StandardTestDispatcher()
+    private lateinit var testDispatcher: TestDispatcher
 
     @Before
     fun setUp() {
+        testDispatcher = StandardTestDispatcher()
         Dispatchers.setMain(testDispatcher)
     }
 
