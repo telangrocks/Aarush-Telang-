@@ -47,6 +47,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.cryptopulse.app.R
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.cryptopulse.app.ui.auth.ExchangeUiState
 import com.cryptopulse.app.ui.auth.ExchangeViewModel
 import com.cryptopulse.app.ui.components.LocalOnLogout
@@ -57,9 +59,13 @@ import com.cryptopulse.app.ui.theme.*
 fun ConnectExchangeScreen(
     navController: NavController,
     viewModel: ExchangeViewModel = hiltViewModel(LocalContext.current as ComponentActivity),
-    exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager = com.cryptopulse.app.data.local.ExchangeConnectionManager(LocalContext.current.applicationContext),
+    exchangeConnectionManager: com.cryptopulse.app.data.local.ExchangeConnectionManager? = null,
     isChangingApiKeys: Boolean = false,
 ) {
+    val context = LocalContext.current.applicationContext
+    val actualExchangeConnectionManager = remember(exchangeConnectionManager, context) {
+        exchangeConnectionManager ?: com.cryptopulse.app.data.local.ExchangeConnectionManager(context)
+    }
     Log.d("VM_CHECK", "[DIAGNOSTIC] ConnectExchangeScreen ExchangeViewModel hash=${System.identityHashCode(viewModel)}")
     Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Screen ViewModel: ${System.identityHashCode(viewModel)}")
 
@@ -111,7 +117,9 @@ fun ConnectExchangeScreen(
             // Stay on Connect Exchange screen; do not redirect and do NOT call viewModel.resetState().
             return@LaunchedEffect
         }
-        val (isConnected, _, _) = exchangeConnectionManager.getConnectionInfo()
+        val (isConnected, _, _) = withContext(Dispatchers.IO) {
+            actualExchangeConnectionManager.getConnectionInfo()
+        }
         Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Initial connection check: isConnected=$isConnected")
         if (isConnected && !hasNavigatedToSetup) {
             if (navController.currentDestination?.route == "connect_exchange") {

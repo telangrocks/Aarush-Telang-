@@ -420,6 +420,7 @@ api.get("/exchange/balance", handleGetExchangeBalances);
 api.get("/market/candidates", handleGetPersonalizedMarketCandidates);
 api.get("/market/opportunities", handleGetMarketOpportunities);
 api.get("/market/strategies", handleGetStrategies);
+api.get("/strategies", handleGetStrategies); // backward-compatible alias for older APK versions
 api.post("/market/technical-analysis", handleGetTechnicalAnalysis);
 api.get("/market/ticker", handleGetTicker);
 api.get("/market/klines", handleGetKlines);

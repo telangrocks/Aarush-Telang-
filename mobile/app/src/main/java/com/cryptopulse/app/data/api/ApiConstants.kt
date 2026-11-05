@@ -15,6 +15,7 @@ object ApiConstants {
     const val MARKET_KLINES = "/api/market/klines"
     const val MARKET_TICKER = "/api/market/ticker"
     const val MARKET_TECHNICAL_ANALYSIS = "/api/market/technical-analysis"
+    const val MARKET_STRATEGIES = "/api/market/strategies"
 
     const val BOT_ACTIVATE = "/api/trading-bot/activate"
     const val BOT_DEACTIVATE = "/api/trading-bot/deactivate"

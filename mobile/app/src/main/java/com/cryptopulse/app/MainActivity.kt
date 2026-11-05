@@ -420,7 +420,6 @@ class MainActivity : FragmentActivity() {
                                 }
                                 val exchangeViewModel = sharedExchangeViewModel
                                 val tradeSetupViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TradeSetupViewModel>(parentEntry)
-                                val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
                                 val selectedCandidate by exchangeViewModel.selectedCandidate.collectAsState(initial = null)
                                 val candidates by exchangeViewModel.candidates.collectAsState(initial = emptyList())
                                 val balances by exchangeViewModel.balances.collectAsState()
@@ -445,7 +444,7 @@ class MainActivity : FragmentActivity() {
                                     list.find { it.asset.equals(quoteAsset, ignoreCase = true) }?.free ?: 0.0
                                 }
 
-                                val isRefreshingBalance = balances == null && balancesError == null
+                                val isRefreshingBalance by exchangeViewModel.isRefreshingBalances.collectAsState()
                                 TradeSetupScreen(
                                     candidate = candidate,
                                     balance = primaryBalance,
@@ -467,7 +466,7 @@ class MainActivity : FragmentActivity() {
                                     viewModel = tradeSetupViewModel,
                                     onRefresh = {
                                         if (!isRefreshingBalance) {
-                                            exchangeViewModel.fetchBalances()
+                                            exchangeViewModel.fetchBalances(force = true)
                                             exchangeViewModel.fetchTicker()
                                         }
                                     },

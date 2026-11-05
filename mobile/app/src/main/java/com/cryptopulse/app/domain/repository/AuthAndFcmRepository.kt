@@ -12,4 +12,5 @@ interface AuthRepository {
 
 interface FcmRepository {
     suspend fun registerToken(token: String): NetworkResult<Unit>
+    fun clearRegistrationState() {} // default no-op for test fakes
 }

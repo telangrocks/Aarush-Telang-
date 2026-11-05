@@ -247,9 +247,27 @@ export function selectBoundedDiscoveryMarkets(
     }
 
     if (userAllocation !== null && userAllocation > 0) {
-      const qtyStep = toNum(t.qtyStep ?? m?.precision?.amount, 0);
-      const minOrderQty = toNum(t.minOrderQty ?? m?.limits?.amount?.min, 0);
-      const minNotional = toNum(t.minNotional ?? m?.limits?.cost?.min, 0);
+      const parseRequiredConstraint = (primary: any, secondary: any): { present: boolean; valid: boolean; value: number } => {
+        const src = (primary !== undefined && primary !== null && String(primary).trim() !== '')
+          ? primary
+          : ((secondary !== undefined && secondary !== null && String(secondary).trim() !== '') ? secondary : undefined);
+        if (src === undefined) return { present: false, valid: true, value: 0 };
+        const n = typeof src?.toNumber === 'function' ? src.toNumber() : Number(src);
+        if (!Number.isFinite(n) || n <= 0) return { present: true, valid: false, value: n };
+        return { present: true, valid: true, value: n };
+      };
+
+      const stepCheck = parseRequiredConstraint(t.qtyStep, m?.precision?.amount);
+      const minQtyCheck = parseRequiredConstraint(t.minOrderQty, m?.limits?.amount?.min);
+      const minNotionalCheck = parseRequiredConstraint(t.minNotional, m?.limits?.cost?.min);
+
+      if (!stepCheck.valid || !minQtyCheck.valid || !minNotionalCheck.valid) {
+        continue;
+      }
+
+      const qtyStep = stepCheck.present ? stepCheck.value : toNum(t.qtyStep ?? m?.precision?.amount, 0);
+      const minOrderQty = minQtyCheck.present ? minQtyCheck.value : toNum(t.minOrderQty ?? m?.limits?.amount?.min, 0);
+      const minNotional = minNotionalCheck.present ? minNotionalCheck.value : toNum(t.minNotional ?? m?.limits?.cost?.min, 0);
       let applicableMax: number | undefined = undefined;
       if (normalizedOrderType === 'LIMIT') {
         applicableMax = limitMax.present ? limitMax.value : undefined;
@@ -1219,17 +1237,64 @@ export async function handleGetPersonalizedMarketCandidates(
           continue;
         }
 
-        const px = typeof t?.last?.toNumber === 'function' ? t.last.toNumber() : (typeof t?.last === 'number' ? t.last : (typeof t?.price === 'number' ? t.price : 0));
-        if (!px || px <= 0 || isNaN(px)) {
+        // parseNumericField: handles BigNumber, number, numeric string (from JSON serialization)
+        const parseNumericField = (val: any): { present: boolean; valid: boolean; value: number } => {
+          if (val === undefined || val === null || (typeof val === 'string' && val.trim() === '')) {
+            return { present: false, valid: true, value: 0 };
+          }
+          if (typeof val?.toNumber === 'function') {
+            const n = val.toNumber();
+            return Number.isFinite(n) ? { present: true, valid: true, value: n } : { present: true, valid: false, value: NaN };
+          }
+          const n = Number(val);
+          return Number.isFinite(n) ? { present: true, valid: true, value: n } : { present: true, valid: false, value: NaN };
+        };
+
+        // Last price: check t.last, t.price, t.info?.lastPrice in priority order
+        const lastField = parseNumericField(t?.last);
+        const priceField = parseNumericField(t?.price ?? t?.info?.lastPrice);
+        const pxSource = lastField.present ? lastField : priceField;
+        if (!pxSource.present || !pxSource.valid || pxSource.value <= 0) {
           console.warn(`[DIAGNOSTIC] Stage 7: Invalid or missing spot price for ${m.symbol}, skipping symbol.`);
           continue;
         }
-        const bidPx = typeof t?.bid?.toNumber === 'function' ? t.bid.toNumber() : (typeof t?.bid === 'number' && t.bid > 0 ? t.bid : (t?._bid || (t?.info?.bid1Price ? parseFloat(t.info.bid1Price) || px : px)));
-        const askPx = typeof t?.ask?.toNumber === 'function' ? t.ask.toNumber() : (typeof t?.ask === 'number' && t.ask > 0 ? t.ask : (t?._ask || (t?.info?.ask1Price ? parseFloat(t.info.ask1Price) || px : px)));
-        const vol = typeof t?.volume?.toNumber === 'function' ? t.volume.toNumber() : (typeof t?.volume === 'number' ? t.volume : (typeof t?.volume24h === 'number' ? t.volume24h : 0));
-        const qVol = typeof t?.quoteVolume?.toNumber === 'function' ? t.quoteVolume.toNumber() : (typeof t?.quoteVolume === 'number' ? t.quoteVolume : (typeof t?.quoteVolume24h === 'number' ? t.quoteVolume24h : (vol * px)));
-        const high = typeof t?.high?.toNumber === 'function' ? t.high.toNumber() : (typeof t?.high === 'number' ? t.high : (typeof t?.highPrice24h === 'number' ? t.highPrice24h : px));
-        const low = typeof t?.low?.toNumber === 'function' ? t.low.toNumber() : (typeof t?.low === 'number' ? t.low : (typeof t?.lowPrice24h === 'number' ? t.lowPrice24h : px));
+        const px = pxSource.value;
+
+        // bid/ask: if present, must be valid and > 0; if absent, fall back to px
+        const bidField = parseNumericField(t?.bid ?? t?._bid ?? t?.info?.bid1Price);
+        if (bidField.present && (!bidField.valid || bidField.value <= 0)) {
+          console.warn(`[DIAGNOSTIC] Stage 7: Malformed bid for ${m.symbol}, skipping symbol.`);
+          continue;
+        }
+        const bidPx = bidField.present ? bidField.value : px;
+
+        const askField = parseNumericField(t?.ask ?? t?._ask ?? t?.info?.ask1Price);
+        if (askField.present && (!askField.valid || askField.value <= 0)) {
+          console.warn(`[DIAGNOSTIC] Stage 7: Malformed ask for ${m.symbol}, skipping symbol.`);
+          continue;
+        }
+        const askPx = askField.present ? askField.value : px;
+
+        // volume/quoteVolume: if present, must be valid and >= 0
+        const volField = parseNumericField(t?.volume ?? t?.volume24h ?? t?.info?.volume24h);
+        if (volField.present && (!volField.valid || volField.value < 0)) {
+          console.warn(`[DIAGNOSTIC] Stage 7: Malformed volume for ${m.symbol}, skipping symbol.`);
+          continue;
+        }
+        const vol = volField.present ? volField.value : 0;
+
+        const qVolField = parseNumericField(t?.quoteVolume ?? t?.quoteVolume24h ?? t?.info?.turnover24h);
+        if (qVolField.present && (!qVolField.valid || qVolField.value < 0)) {
+          console.warn(`[DIAGNOSTIC] Stage 7: Malformed quoteVolume for ${m.symbol}, skipping symbol.`);
+          continue;
+        }
+        const qVol = qVolField.present ? qVolField.value : (vol * px);
+
+        // high/low: if absent, fall back to px
+        const highField = parseNumericField(t?.high ?? t?.highPrice24h ?? t?.info?.highPrice24h);
+        const high = (highField.present && highField.valid && highField.value > 0) ? highField.value : px;
+        const lowField = parseNumericField(t?.low ?? t?.lowPrice24h ?? t?.info?.lowPrice24h);
+        const low = (lowField.present && lowField.valid && lowField.value > 0) ? lowField.value : px;
 
         let chg = 0;
         if (typeof (t as any)?.percentage === 'number' && !isNaN((t as any).percentage)) {
@@ -1246,29 +1311,32 @@ export async function handleGetPersonalizedMarketCandidates(
         }
 
         const extractConstraint = (legacyVal: any, bybitVal: any): number | null => {
-          if (legacyVal !== undefined && legacyVal !== null) {
-            if (typeof legacyVal?.toNumber === 'function') {
-              const val = legacyVal.toNumber();
-              if (!isNaN(val)) return val;
-            } else if (typeof legacyVal === 'number' && !isNaN(legacyVal)) {
-              return legacyVal;
+          // Helper: parse BigNumber, number, or numeric string
+          const tryParse = (v: any): number | null => {
+            if (v === undefined || v === null || (typeof v === 'string' && v.trim() === '')) return null;
+            if (typeof v?.toNumber === 'function') {
+              const n = v.toNumber();
+              return Number.isFinite(n) ? n : null; // NaN/Infinity from BigNumber -> null (invalid)
             }
-          }
-          if (bybitVal !== undefined && bybitVal !== null) {
-            const parsed = Number(bybitVal);
-            if (!isNaN(parsed)) return parsed;
-          }
-          return null;
+            const n = Number(v);
+            return Number.isFinite(n) ? n : null;
+          };
+          const fromLegacy = tryParse(legacyVal);
+          if (fromLegacy !== null) return fromLegacy;
+          return tryParse(bybitVal);
         };
 
         const extractOptionalMaxConstraint = (legacyVal: any, bybitVal: any): number | null => {
-          if (legacyVal !== undefined && legacyVal !== null && String(legacyVal).trim() !== '') {
-            return typeof legacyVal?.toNumber === 'function' ? legacyVal.toNumber() : Number(legacyVal);
-          }
-          if (bybitVal !== undefined && bybitVal !== null && String(bybitVal).trim() !== '') {
-            return Number(bybitVal);
-          }
-          return null;
+          // Returns the numeric value (including 0 and negatives) if present, or null if absent.
+          // Callers (selectBoundedDiscoveryMarkets, ExecutionEligibilityGate) handle non-positive/NaN values as invalid.
+          const tryParsePresent = (v: any): number | null => {
+            if (v === undefined || v === null || (typeof v === 'string' && v.trim() === '')) return null;
+            if (typeof v?.toNumber === 'function') return v.toNumber(); // preserves NaN/0/-5 for downstream fail-closed logic
+            return Number(v); // preserves NaN for downstream rejection
+          };
+          const fromLegacy = tryParsePresent(legacyVal);
+          if (fromLegacy !== null) return fromLegacy;
+          return tryParsePresent(bybitVal);
         };
 
         rawTickers.push({
@@ -1277,11 +1345,18 @@ export async function handleGetPersonalizedMarketCandidates(
           category: m.category || 'linear',
           timestamp: typeof t?.timestamp === 'number' ? t.timestamp : Date.now(),
           price: px,
+          last: px,
+          bid: bidPx,
+          ask: askPx,
           _bid: bidPx,
           _ask: askPx,
+          volume: vol,
           volume24h: vol,
+          quoteVolume: qVol,
           quoteVolume24h: qVol,
+          high: high,
           highPrice24h: high,
+          low: low,
           lowPrice24h: low,
           priceChangePercent24h: chg,
           minNotional: extractConstraint(m?.limits?.cost?.min, m?.info?.lotSizeFilter?.minNotionalValue),
@@ -1353,7 +1428,10 @@ export async function handleGetPersonalizedMarketCandidates(
         environment,
         region,
       });
-      const scanner = new MarketOpportunityScanner(publicAdapter as any);
+      // Share the same scoped public candle store as handleGetMarketOpportunities to avoid redundant kline fetches
+      const candleStoreKey = `${exchangeName}:${environment}:${region}:cd${PUBLIC_CANDLE_STORE_DEPTH}`;
+      const sharedCandleStore = getOrCreateScopedPublicCandleStore(candleStoreKey, publicAdapter, PUBLIC_CANDLE_STORE_DEPTH);
+      const scanner = new MarketOpportunityScanner(publicAdapter as any, DEFAULT_SCANNER_CONFIG, sharedCandleStore);
       const scanResult = await scanner.scan({
         markets: boundedMarkets,
         tickers,

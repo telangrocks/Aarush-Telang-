@@ -92,6 +92,71 @@ class ExchangeBalanceTest {
     }
 
     @Test
+    fun `fetchBalances within TTL skips network fetch when force is false`() {
+        var currentTime = 100_000L
+        viewModel.clock = { currentTime }
+
+        val mockBalances = listOf(
+            BalanceItem(asset = "USDT", free = 500.0, locked = 0.0, total = 500.0)
+        )
+        exchangeRepository.balancesResult = NetworkResult.Success(mockBalances)
+
+        // First call triggers network
+        viewModel.fetchBalances()
+        assertEquals(1, exchangeRepository.fetchBalancesCallCount)
+        assertEquals(mockBalances, viewModel.balances.value)
+
+        // Advance clock by 5s (< 15s TTL)
+        currentTime += 5_000L
+        viewModel.fetchBalances(force = false)
+        // Count remains 1 (skipped)
+        assertEquals(1, exchangeRepository.fetchBalancesCallCount)
+
+        // Advance clock by 11s (> 15s TTL)
+        currentTime += 11_000L
+        viewModel.fetchBalances(force = false)
+        assertEquals(2, exchangeRepository.fetchBalancesCallCount)
+    }
+
+    @Test
+    fun `fetchBalances with force=true bypasses TTL and performs network fetch`() {
+        var currentTime = 100_000L
+        viewModel.clock = { currentTime }
+
+        val mockBalances = listOf(
+            BalanceItem(asset = "USDT", free = 500.0, locked = 0.0, total = 500.0)
+        )
+        exchangeRepository.balancesResult = NetworkResult.Success(mockBalances)
+
+        viewModel.fetchBalances()
+        assertEquals(1, exchangeRepository.fetchBalancesCallCount)
+
+        // Advance clock by only 1s, but call with force = true
+        currentTime += 1_000L
+        viewModel.fetchBalances(force = true)
+        assertEquals(2, exchangeRepository.fetchBalancesCallCount)
+    }
+
+    @Test
+    fun `fetchBalances failure sets isBalanceStale to true and clears balances`() {
+        val initialBalances = listOf(
+            BalanceItem(asset = "USDT", free = 500.0, locked = 0.0, total = 500.0)
+        )
+        exchangeRepository.balancesResult = NetworkResult.Success(initialBalances)
+        viewModel.fetchBalances()
+        assertFalse(viewModel.isBalanceStale.value)
+        assertEquals(initialBalances, viewModel.balances.value)
+
+        // Now failure happens
+        exchangeRepository.balancesResult = NetworkResult.Error(NetworkError.Unknown(Exception("Network error")))
+        viewModel.fetchBalances(force = true)
+
+        assertTrue(viewModel.isBalanceStale.value)
+        assertNull(viewModel.balances.value)
+        assertEquals("Network error", viewModel.balancesError.value)
+    }
+
+    @Test
     fun `fetchMarketCandidates distinguishes backend NO_ELIGIBLE_MARKETS from NO_TECHNICAL_OPPORTUNITIES without hardcoded dollar thresholds`() {
         // 1. Even with a $4 budget (< $5), if backend reports NO_TECHNICAL_OPPORTUNITIES, UI state does NOT claim budget is insufficient
         marketRepository.candidatesResult = NetworkResult.Success(
@@ -199,10 +264,14 @@ class FakeContextMinimal : android.content.ContextWrapper(null) {
 
 class FakeExchangeRepository : ExchangeRepository {
     var balancesResult: NetworkResult<List<BalanceItem>> = NetworkResult.Success(emptyList())
+    var fetchBalancesCallCount = 0
     override suspend fun validateKeys(exchangeName: String, apiKey: String, apiSecret: String, apiPassphrase: String?, environment: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun connectExchange(exchangeName: String, apiKey: String, apiSecret: String, apiPassphrase: String?, environment: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun getConnectionStatus(): NetworkResult<ExchangeStatus> = NetworkResult.Success(ExchangeStatus(true, "bybit", "demo", null))
-    override suspend fun getBalances(): NetworkResult<List<BalanceItem>> = balancesResult
+    override suspend fun getBalances(): NetworkResult<List<BalanceItem>> {
+        fetchBalancesCallCount++
+        return balancesResult
+    }
 }
 
 class FakeMarketRepositoryMinimal : com.cryptopulse.app.domain.repository.MarketRepository {

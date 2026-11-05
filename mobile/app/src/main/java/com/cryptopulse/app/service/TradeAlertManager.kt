@@ -240,10 +240,17 @@ open class TradeAlertManager @Inject constructor(
             }
         }
 
+        val hadActiveState = _currentState.value != TradeAlertState.IDLE ||
+            activeAlertData != null ||
+            hardwareTimeoutJob != null ||
+            alertId != null
+
         if (_currentState.value == TradeAlertState.VOICE_PLAYING || _currentState.value == TradeAlertState.ALERT_TRIGGERED) {
             _currentState.value = TradeAlertState.HARDWARE_SILENCED
         }
-        TradeAlertLogger.log("HARDWARE_SILENCED", "Hardware silenced. Alert data and trade opportunity preserved.")
+        if (hadActiveState) {
+            TradeAlertLogger.log("HARDWARE_SILENCED", "Hardware silenced. Alert data and trade opportunity preserved.")
+        }
     }
 
     /**
@@ -423,6 +430,11 @@ open class TradeAlertManager @Inject constructor(
      * Purges local active and DataStore alert state without representing a user cancellation.
      */
     fun clearStaleStartupAlert() {
+        if (_currentState.value == TradeAlertState.IDLE && activeAlertData == null && hardwareTimeoutJob == null) {
+            // Nothing active — skip silenceHardware to avoid spurious HARDWARE_SILENCED log
+            cancelSystemNotification()
+            return
+        }
         silenceHardware()
         cancelSystemNotification()
         activeAlertData = null

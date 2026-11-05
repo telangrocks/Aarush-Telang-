@@ -5,6 +5,6 @@ import retrofit2.Response
 import retrofit2.http.GET
 
 interface StrategyApi {
-    @GET("/api/strategies")
+    @GET(ApiConstants.MARKET_STRATEGIES)
     suspend fun getAvailableStrategies(): Response<StrategyDiscoveryResponseDto>
 }

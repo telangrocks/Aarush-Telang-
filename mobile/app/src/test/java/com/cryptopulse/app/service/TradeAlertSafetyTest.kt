@@ -200,6 +200,16 @@ class TradeAlertSafetyTest {
         assertNull(manager.getActiveAlert())
     }
 
+    @Test
+    fun testClearStaleStartupAlertWhenIdleRemainsIdleWithoutHardwareSilenced() = runTest(testDispatcher) {
+        val manager = TestableTradeAlertManager(dispatcher = testDispatcher)
+        assertEquals(TradeAlertState.IDLE, manager.currentState.value)
+        manager.clearStaleStartupAlert()
+        assertEquals(TradeAlertState.IDLE, manager.currentState.value)
+        assertEquals(0, manager.audioStartCount)
+        assertEquals(0, manager.vibrationStartCount)
+    }
+
     // ── Test 9: Persistent alert history suppresses hardware on app restart ─────
     @Test
     fun testProcessDeathReplayProtectionSuppressesHardware() = runTest(testDispatcher) {

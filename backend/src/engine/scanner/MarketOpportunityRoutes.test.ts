@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { sign } from 'hono/jwt';
 import app from '../../index';
-import { handleGetMarketOpportunities, handleGetPersonalizedMarketCandidates, handleTriggerManualTradeAlert, mapScanResultToCandidates, selectBoundedDiscoveryMarkets } from '../../handlers/exchange';
+import { handleGetMarketOpportunities, handleGetPersonalizedMarketCandidates, handleTriggerManualTradeAlert, mapScanResultToCandidates, selectBoundedDiscoveryMarkets, __resetPublicOpportunityStateForTests } from '../../handlers/exchange';
+import { PublicMarketDataCoordinator } from '../../infrastructure/market-data/PublicMarketDataCoordinator';
 import { BybitAdapter } from '../../infrastructure/exchange/adapters/BybitAdapter';
 import { TradeValidator } from '../../validation/TradeValidator';
 import { FinalDispatchSafetyGate } from '../safety/FinalDispatchSafetyGate';
@@ -15,20 +16,31 @@ import { ScannerTimeframe } from './MultiTimeframeCandleStore';
 import { CandleValidator } from '../../infrastructure/exchange/CandleValidator';
 import { MarketOpportunityScanner } from './MarketOpportunityScanner';
 
-function generateFreshCandles(timeframe: ScannerTimeframe, count: number = 50, trend: 'BULL' | 'BEAR' = 'BULL') {
+function generateFreshCandles(timeframe: ScannerTimeframe, count: number = 50, trend: 'BULL' | 'BEAR' = 'BULL', symbolOrPrice?: string | number) {
   const tfMs = CandleValidator.timeframeToMs(timeframe);
   const now = Date.now();
   const startTime = now - count * tfMs;
+  let ref = 100;
+  if (typeof symbolOrPrice === 'number' && symbolOrPrice > 0) {
+    ref = symbolOrPrice;
+  } else if (typeof symbolOrPrice === 'string') {
+    if (symbolOrPrice.includes('BTC')) ref = 50000;
+    else if (symbolOrPrice.includes('ETH')) ref = 3500;
+    else if (symbolOrPrice.includes('SOL')) ref = 150;
+    else if (symbolOrPrice.includes('DOGE')) ref = 0.1;
+    else ref = 100;
+  }
+  const barRange = ref * 0.02;
 
   return Array.from({ length: count }, (_, i) => {
-    const base = trend === 'BULL' ? 100 + i * 2 : 500 - i * 2;
+    const base = trend === 'BULL' ? ref + i * (barRange * 0.1) : ref - i * (barRange * 0.1);
     return {
       timestamp: startTime + i * tfMs,
       openTime: startTime + i * tfMs,
       open: base,
-      high: base + 3,
-      low: base - 3,
-      close: base + 1,
+      high: base + barRange,
+      low: base - barRange,
+      close: base + barRange * 0.5,
       volume: 10000,
     };
   });
@@ -36,6 +48,7 @@ function generateFreshCandles(timeframe: ScannerTimeframe, count: number = 50, t
 
 describe('Market Opportunity Endpoints (Phase 2)', () => {
   beforeEach(() => {
+    __resetPublicOpportunityStateForTests();
     vi.restoreAllMocks();
     vi.clearAllMocks();
   });
@@ -182,8 +195,8 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
     const mockAdapter = {
       fetchMarkets: vi.fn().mockResolvedValue(mockMarkets),
       fetchTickers: vi.fn().mockResolvedValue(mockTickers),
-      fetchCandles: vi.fn().mockImplementation((_sym: string, tf: string) => {
-        return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL'));
+      fetchCandles: vi.fn().mockImplementation((sym: string, tf: string) => {
+        return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL', sym));
       }),
     } as unknown as IExchangeProvider & ICandleProvider;
 
@@ -236,14 +249,14 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
     ];
     const mockTickers = [
       { symbol: 'ETH/USDT', last: 3500, bid: 3499, ask: 3501, quoteVolume: 50_000_000, high: 3600, low: 3400 },
-      { symbol: 'SOL/USDT', last: 150, bid: 149, ask: 151, quoteVolume: 25_000_000, high: 155, low: 145 },
+      { symbol: 'SOL/USDT', last: 150, bid: 149.95, ask: 150.05, quoteVolume: 25_000_000, high: 155, low: 145 },
     ];
 
     const mockAdapter = {
       fetchMarkets: vi.fn().mockResolvedValue(mockMarkets),
       fetchTickers: vi.fn().mockResolvedValue(mockTickers),
-      fetchCandles: vi.fn().mockImplementation((_sym: string, tf: string) => {
-        return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL'));
+      fetchCandles: vi.fn().mockImplementation((sym: string, tf: string) => {
+        return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL', sym));
       }),
     } as unknown as IExchangeProvider & ICandleProvider;
 
@@ -391,8 +404,8 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
     const mockAdapter = {
       fetchMarkets: vi.fn().mockResolvedValue(mockMarkets),
       fetchTickers: vi.fn().mockResolvedValue(mockTickers),
-      fetchCandles: vi.fn().mockImplementation((_sym: string, tf: string) => {
-        return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL'));
+      fetchCandles: vi.fn().mockImplementation((sym: string, tf: string) => {
+        return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL', sym));
       }),
     } as unknown as IExchangeProvider & ICandleProvider;
 
@@ -630,8 +643,8 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
     const mockAdapter = {
       fetchMarkets: vi.fn(),
       fetchTickers: vi.fn(),
-      fetchCandles: vi.fn().mockImplementation((_sym: string, tf: string) => {
-        return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL'));
+      fetchCandles: vi.fn().mockImplementation((sym: string, tf: string) => {
+        return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL', sym));
       }),
     };
     const mockScanner = new MarketOpportunityScanner(mockAdapter as any);
@@ -1732,6 +1745,384 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
         env
       );
       expect(disallowedOriginResp.headers.get('Access-Control-Allow-Origin')).not.toBe('https://evil.example.com');
+    });
+
+    it('proves budgeted discovery works seamlessly with both in-memory BigNumber values and JSON-serialized numeric strings across 10, 100, 1000 USDT budgets', async () => {
+      const mockMarkets = [
+        {
+          id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.1, amount: 0.001 },
+          limits: { amount: { min: 0.001, max: 100 }, cost: { min: 5 } },
+        },
+        {
+          id: 'ETHUSDT', symbol: 'ETH/USDT', base: 'ETH', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.01, amount: 0.01 },
+          limits: { amount: { min: 0.01, max: 1000 }, cost: { min: 5 } },
+        },
+        {
+          id: 'SOLUSDT', symbol: 'SOL/USDT', base: 'SOL', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.01, amount: 0.1 },
+          limits: { amount: { min: 0.1, max: 5000 }, cost: { min: 5 } },
+        },
+        {
+          id: 'DOGEUSDT', symbol: 'DOGE/USDT', base: 'DOGE', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.0001, amount: 10 },
+          limits: { amount: { min: 10, max: 1000000 }, cost: { min: 5 } },
+        },
+      ];
+
+      const bigNumberTickers = [
+        { symbol: 'BTC/USDT', last: new BigNumber(65000), bid: new BigNumber(64990), ask: new BigNumber(65010), quoteVolume: new BigNumber(200000000), high: new BigNumber(66000), low: new BigNumber(64000) },
+        { symbol: 'ETH/USDT', last: new BigNumber(3500), bid: new BigNumber(3495), ask: new BigNumber(3505), quoteVolume: new BigNumber(150000000), high: new BigNumber(3600), low: new BigNumber(3400) },
+        { symbol: 'SOL/USDT', last: new BigNumber(150), bid: new BigNumber(149.8), ask: new BigNumber(150.2), quoteVolume: new BigNumber(100000000), high: new BigNumber(155), low: new BigNumber(145) },
+        { symbol: 'DOGE/USDT', last: new BigNumber(0.1), bid: new BigNumber(0.0999), ask: new BigNumber(0.1001), quoteVolume: new BigNumber(50000000), high: new BigNumber(0.105), low: new BigNumber(0.095) },
+      ];
+
+      const jsonStringTickers = [
+        { symbol: 'BTC/USDT', last: '65000', bid: '64990', ask: '65010', quoteVolume: '200000000', high: '66000', low: '64000' },
+        { symbol: 'ETH/USDT', last: '3500', bid: '3495', ask: '3505', quoteVolume: '150000000', high: '3600', low: '3400' },
+        { symbol: 'SOL/USDT', last: '150', bid: '149.8', ask: '150.2', quoteVolume: '100000000', high: '155', low: '145' },
+        { symbol: 'DOGE/USDT', last: '0.1', bid: '0.0999', ask: '0.1001', quoteVolume: '50000000', high: '0.105', low: '0.095' },
+      ];
+
+      const eligible10_BN = selectBoundedDiscoveryMarkets(mockMarkets, bigNumberTickers, 10);
+      expect(eligible10_BN.map(m => m.symbol)).toEqual(['DOGE/USDT']);
+
+      const eligible100_BN = selectBoundedDiscoveryMarkets(mockMarkets, bigNumberTickers, 100);
+      expect(eligible100_BN.map(m => m.symbol)).toEqual(['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT']);
+
+      const eligible1000_BN = selectBoundedDiscoveryMarkets(mockMarkets, bigNumberTickers, 1000);
+      expect(eligible1000_BN.map(m => m.symbol)).toEqual(['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT']);
+
+      const eligible10_Str = selectBoundedDiscoveryMarkets(mockMarkets, jsonStringTickers, 10);
+      expect(eligible10_Str.map(m => m.symbol)).toEqual(['DOGE/USDT']);
+
+      const eligible100_Str = selectBoundedDiscoveryMarkets(mockMarkets, jsonStringTickers, 100);
+      expect(eligible100_Str.map(m => m.symbol)).toEqual(['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT']);
+
+      const eligible1000_Str = selectBoundedDiscoveryMarkets(mockMarkets, jsonStringTickers, 1000);
+      expect(eligible1000_Str.map(m => m.symbol)).toEqual(['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'DOGE/USDT']);
+    });
+
+    it('proves markets failing eligibility never reach technical analysis (fetchCandles is never invoked for ineligible markets)', async () => {
+      const mockMarkets = [
+        {
+          id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.1, amount: 0.001 },
+          limits: { amount: { min: 0.001, max: 100 }, cost: { min: 5 } },
+        },
+        {
+          id: 'DOGEUSDT', symbol: 'DOGE/USDT', base: 'DOGE', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.0001, amount: 10 },
+          limits: { amount: { min: 10, max: 1000000 }, cost: { min: 5 } },
+        },
+      ];
+      const mockTickers = [
+        { symbol: 'BTC/USDT', last: '65000', bid: '64990', ask: '65010', quoteVolume: '100000000', high: '66000', low: '64000' },
+        { symbol: 'DOGE/USDT', last: '0.1', bid: '0.0999', ask: '0.1001', quoteVolume: '50000000', high: '0.105', low: '0.095' },
+      ];
+
+      const fetchCandlesSpy = vi.fn().mockImplementation((_sym: string, tf: string) =>
+        Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, 60, 'BULL'))
+      );
+
+      const mockAdapter = {
+        fetchMarkets: vi.fn().mockResolvedValue(mockMarkets),
+        fetchTickers: vi.fn().mockResolvedValue(mockTickers),
+        fetchCandles: fetchCandlesSpy,
+      } as unknown as IExchangeProvider & ICandleProvider;
+
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
+
+      const mockDb = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnValue({
+            first: vi.fn().mockResolvedValue({ exchange_name: 'bybit', exchange_environment: 'mainnet' }),
+          }),
+        }),
+      };
+
+      const ctx = {
+        get: vi.fn().mockReturnValue({ sub: 'user-ta-isolation' }),
+        env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
+        status: vi.fn(),
+        header: vi.fn(),
+        json: vi.fn().mockImplementation((d) => d),
+        req: { query: vi.fn().mockImplementation((k: string) => (k === 'budget' ? '10' : undefined)) },
+      } as any;
+
+      const candidates = await handleGetPersonalizedMarketCandidates(ctx) as any;
+      expect(candidates.map((c: any) => c.pairName)).toEqual(['DOGE/USDT']);
+
+      const candleCalls = fetchCandlesSpy.mock.calls.map((c: any[]) => c[0]);
+      expect(candleCalls).toContain('DOGE/USDT');
+      expect(candleCalls).not.toContain('BTC/USDT');
+    });
+
+    it('proves malformed metadata (zero, negative, NaN) fails safely and rejects the market without throwing', () => {
+      const markets = [
+        {
+          id: 'ZERONOTIONAL', symbol: 'ZERONOTIONAL/USDT', base: 'ZERO', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.1, amount: 1 },
+          limits: { amount: { min: 1, max: 100 }, cost: { min: 0 } },
+        },
+        {
+          id: 'NEGNOTIONAL', symbol: 'NEGNOTIONAL/USDT', base: 'NEG', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.1, amount: 1 },
+          limits: { amount: { min: 1, max: 100 }, cost: { min: -5 } },
+        },
+        {
+          id: 'NANQTYSTEP', symbol: 'NANQTYSTEP/USDT', base: 'NAN', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.1, amount: NaN },
+          limits: { amount: { min: 1, max: 100 }, cost: { min: 5 } },
+        },
+      ];
+      const tickers = markets.map(m => ({ symbol: m.symbol, last: 10, bid: 9.99, ask: 10.01, quoteVolume: 10000000 }));
+      const result = selectBoundedDiscoveryMarkets(markets, tickers, 50);
+      expect(result).toEqual([]);
+    });
+
+    it('proves backward-compatible /api/strategies alias returns identical response to /api/market/strategies', async () => {
+      const jwtSecret = 'test-jwt-secret-32-chars-minimum!!';
+      const validToken = await sign({ sub: 'user-strat-test', type: 'access', exp: Math.floor(Date.now() / 1000) + 3600 }, jwtSecret);
+      const mockDb = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnValue({
+            first: vi.fn().mockResolvedValue({ id: 'user-strat-test' }),
+          }),
+        }),
+      };
+      const env: any = { DB: mockDb, ENCRYPTION_KEY: 'test-key', JWT_SECRET: jwtSecret, ALLOWED_ORIGINS: 'https://app.cryptopulse.test' };
+
+      const resMarket = await app.fetch(
+        new Request('http://localhost/api/market/strategies', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${validToken}` },
+        }),
+        env
+      );
+      expect(resMarket.status).toBe(200);
+      const dataMarket = await resMarket.json() as any;
+
+      const resAlias = await app.fetch(
+        new Request('http://localhost/api/strategies', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${validToken}` },
+        }),
+        env
+      );
+      expect(resAlias.status).toBe(200);
+      const dataAlias = await resAlias.json() as any;
+
+      expect(dataAlias).toEqual(dataMarket);
+      expect(dataAlias.version).toBe('2.0');
+      expect(Array.isArray(dataAlias.strategies)).toBe(true);
+      expect(dataAlias.strategies.length).toBeGreaterThan(0);
+    });
+
+    it('CRITICAL F-01: reproduces complete production data path through PUBLIC_MARKET_COORDINATOR DO, JSON serialization boundary, BigNumber/number/string types, realistic Bybit Linear metadata across 10, 100, 1000 USDT budgets, and candle store reuse', async () => {
+      __resetPublicOpportunityStateForTests();
+      const jwtSecret = 'test-jwt-secret-32-chars-minimum!!';
+      const validToken = await sign({ sub: 'user-e2e-do-verify', type: 'access', exp: Math.floor(Date.now() / 1000) + 3600 }, jwtSecret);
+
+      const realisticMarkets = [
+        {
+          id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.1, amount: 0.001 },
+          limits: { amount: { min: 0.001, max: 100 }, marketAmount: { max: 50 }, cost: { min: 5 } },
+        },
+        {
+          id: 'ETHUSDT', symbol: 'ETH/USDT', base: 'ETH', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.01, amount: 0.01 },
+          limits: { amount: { min: 0.01, max: 1000 }, marketAmount: { max: 500 }, cost: { min: 5 } },
+        },
+        {
+          id: 'SOLUSDT', symbol: 'SOL/USDT', base: 'SOL', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.01, amount: 0.1 },
+          limits: { amount: { min: 0.1, max: 5000 }, marketAmount: { max: 2000 }, cost: { min: 5 } },
+        },
+        {
+          id: 'DOGEUSDT', symbol: 'DOGE/USDT', base: 'DOGE', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.0001, amount: 10 },
+          limits: { amount: { min: 10, max: 1000000 }, marketAmount: { max: 500000 }, cost: { min: 5 } },
+        },
+        {
+          id: 'SUIUSDT', symbol: 'SUI/USDT', base: 'SUI', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.001, amount: 1 },
+          limits: { amount: { min: 1, max: 100000 }, marketAmount: { max: 50000 }, cost: { min: 5 } },
+        },
+        {
+          id: 'XRPUSDT', symbol: 'XRP/USDT', base: 'XRP', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.0001, amount: 10 },
+          limits: { amount: { min: 10, max: 200000 }, marketAmount: { max: 100000 }, cost: { min: 5 } },
+        },
+        {
+          id: 'PEPEUSDT', symbol: 'PEPE/USDT', base: 'PEPE', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual',
+          precision: { price: 0.0000001, amount: 100000 },
+          limits: { amount: { min: 100000, max: 1000000000 }, marketAmount: { max: 500000000 }, cost: { min: 5 } },
+        },
+      ];
+
+      // Raw exchange tickers mixing in-memory BigNumber instances, numeric strings, and native numbers
+      const mixedTickers = [
+        { symbol: 'BTC/USDT', last: new BigNumber(65000), bid: new BigNumber(64995), ask: new BigNumber(65005), quoteVolume: new BigNumber(500000000), high: new BigNumber(66000), low: new BigNumber(64000) },
+        { symbol: 'ETH/USDT', last: '3500', bid: '3498', ask: '3502', quoteVolume: '300000000', high: '3600', low: '3400' },
+        { symbol: 'SOL/USDT', last: 150, bid: 149.9, ask: 150.1, quoteVolume: 200000000, high: 155, low: 145 },
+        { symbol: 'DOGE/USDT', last: new BigNumber(0.1), bid: new BigNumber(0.09995), ask: new BigNumber(0.10005), quoteVolume: new BigNumber(150000000), high: new BigNumber(0.105), low: new BigNumber(0.095) },
+        { symbol: 'SUI/USDT', last: '2.0', bid: '1.999', ask: '2.001', quoteVolume: '120000000', high: '2.1', low: '1.9' },
+        { symbol: 'XRP/USDT', last: 0.50, bid: 0.4998, ask: 0.5002, quoteVolume: 100000000, high: 0.52, low: 0.48 },
+        { symbol: 'PEPE/USDT', last: '0.00001', bid: '0.00000999', ask: '0.00001001', quoteVolume: '90000000', high: '0.0000105', low: '0.0000095' },
+      ];
+
+      let klineCallCount = 0;
+      const klineRequestedSymbols = new Set<string>();
+
+      const mockExchangeAdapter = {
+        fetchMarkets: vi.fn().mockResolvedValue(realisticMarkets),
+        fetchTickers: vi.fn().mockResolvedValue(mixedTickers),
+        fetchKlines: vi.fn().mockImplementation((sym: string, tf: string, limit?: number) => {
+          klineCallCount++;
+          klineRequestedSymbols.add(sym);
+          const price = sym.includes('BTC') ? 65000 : sym.includes('ETH') ? 3500 : sym.includes('SOL') ? 150 : sym.includes('DOGE') ? 0.1 : sym.includes('SUI') ? 2.0 : sym.includes('XRP') ? 0.5 : 0.00001;
+          return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, limit || 60, 'BULL', price));
+        }),
+        fetchCandles: vi.fn().mockImplementation((sym: string, tf: string, limit?: number) => {
+          klineCallCount++;
+          klineRequestedSymbols.add(sym);
+          const price = sym.includes('BTC') ? 65000 : sym.includes('ETH') ? 3500 : sym.includes('SOL') ? 150 : sym.includes('DOGE') ? 0.1 : sym.includes('SUI') ? 2.0 : sym.includes('XRP') ? 0.5 : 0.00001;
+          return Promise.resolve(generateFreshCandles(tf as ScannerTimeframe, limit || 60, 'BULL', price));
+        }),
+      };
+
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockExchangeAdapter as any);
+
+      // Instantiate the actual PublicMarketDataCoordinator Durable Object
+      const mockStorage = { get: vi.fn(), put: vi.fn(), delete: vi.fn(), list: vi.fn() };
+      const mockState: any = { storage: mockStorage, blockConcurrencyWhile: (fn: any) => fn() };
+      const coordinator = new PublicMarketDataCoordinator(mockState, { ENVIRONMENT: 'production' } as any);
+
+      const mockCoordinatorNamespace = {
+        idFromName: (name: string) => ({ toString: () => name }),
+        get: (_id: any) => ({
+          fetch: (req: Request) => coordinator.fetch(req),
+        }),
+      };
+
+      const mockDb = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnValue({
+            first: vi.fn().mockResolvedValue({
+              id: 'user-e2e-do-verify',
+              exchange_name: 'bybit',
+              exchange_environment: 'mainnet',
+              exchange_region: 'india',
+            }),
+            all: vi.fn().mockResolvedValue({ results: [] }),
+          }),
+        }),
+      };
+
+      const env: any = {
+        DB: mockDb,
+        ENCRYPTION_KEY: 'test-key-32-chars-minimum-sample!!',
+        JWT_SECRET: jwtSecret,
+        ALLOWED_ORIGINS: 'https://app.cryptopulse.test',
+        PUBLIC_MARKET_COORDINATOR: mockCoordinatorNamespace,
+      };
+
+      // 1. Test Budget = 10 USDT
+      // Verification:
+      // BTC requires 0.001 * 65000 = 65 USDT > 10 (rejected: INSUFFICIENT_BUDGET)
+      // ETH requires 0.01 * 3500 = 35 USDT > 10 (rejected: INSUFFICIENT_BUDGET)
+      // SOL requires 0.1 * 150 = 15 USDT > 10 (rejected: INSUFFICIENT_BUDGET)
+      // DOGE requires max(5, 10 * 0.1) = 5 USDT <= 10 (eligible!)
+      // SUI requires max(5, 1 * 2) = 5 USDT <= 10 (eligible!)
+      // XRP requires max(5, 10 * 0.5) = 5 USDT <= 10 (eligible!)
+      // PEPE requires max(5, 100000 * 0.00001) = 5 USDT <= 10 (eligible!)
+      const resp10 = await app.fetch(
+        new Request('http://localhost/api/market/candidates?budget=10', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${validToken}`, Origin: 'https://app.cryptopulse.test' },
+        }),
+        env
+      );
+      expect(resp10.status).toBe(200);
+      expect(resp10.headers.get('X-Eligible-Market-Count')).toBe('4');
+      const candidates10 = await resp10.json() as any[];
+      expect(candidates10.length).toBeGreaterThan(0);
+      const symbols10 = candidates10.map((c: any) => c.pairName);
+      expect(symbols10).toContain('DOGE/USDT');
+      expect(symbols10).not.toContain('BTC/USDT');
+      expect(symbols10).not.toContain('ETH/USDT');
+      expect(symbols10).not.toContain('SOL/USDT');
+
+      // Verify that candidate prices are correctly parsed numbers (not NaN or null or string)
+      for (const cand of candidates10) {
+        expect(typeof cand.price).toBe('number');
+        expect(cand.price).toBeGreaterThan(0);
+        expect(Number.isFinite(cand.price)).toBe(true);
+      }
+
+      // Record kline call count after first scan
+      const klineCallsAfter10 = klineCallCount;
+      expect(klineCallsAfter10).toBeGreaterThan(0);
+
+      // 2. Test Cache & Candle Store Reuse on repeat request with same budget
+      const resp10Repeat = await app.fetch(
+        new Request('http://localhost/api/market/candidates?budget=10', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${validToken}`, Origin: 'https://app.cryptopulse.test' },
+        }),
+        env
+      );
+      expect(resp10Repeat.status).toBe(200);
+      expect(resp10Repeat.headers.get('X-Eligible-Market-Count')).toBe('4');
+      // No extra kline calls were made due to cache/shared candle store
+      expect(klineCallCount).toBe(klineCallsAfter10);
+
+      // 3. Test Budget = 100 USDT
+      // All 7 markets are eligible!
+      const resp100 = await app.fetch(
+        new Request('http://localhost/api/market/candidates?budget=100', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${validToken}`, Origin: 'https://app.cryptopulse.test' },
+        }),
+        env
+      );
+      expect(resp100.status).toBe(200);
+      expect(resp100.headers.get('X-Eligible-Market-Count')).toBe('7');
+      const candidates100 = await resp100.json() as any[];
+      expect(candidates100.length).toBeGreaterThan(0);
+      const symbols100 = candidates100.map((c: any) => c.pairName);
+      expect(symbols100).toContain('BTC/USDT');
+      expect(symbols100).toContain('ETH/USDT');
+      expect(symbols100).toContain('SOL/USDT');
+      expect(symbols100).toContain('DOGE/USDT');
+
+      // 4. Test Budget = 1,000 USDT
+      // All 7 markets are eligible!
+      const resp1000 = await app.fetch(
+        new Request('http://localhost/api/market/candidates?budget=1000', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${validToken}`, Origin: 'https://app.cryptopulse.test' },
+        }),
+        env
+      );
+      expect(resp1000.status).toBe(200);
+      expect(resp1000.headers.get('X-Eligible-Market-Count')).toBe('7');
+      const candidates1000 = await resp1000.json() as any[];
+      expect(candidates1000.length).toBeGreaterThan(0);
+
+      // 5. Test MARKET vs LIMIT orderType maximum constraints
+      const marketQueryResp = await app.fetch(
+        new Request('http://localhost/api/market/candidates?budget=100&orderType=MARKET', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${validToken}`, Origin: 'https://app.cryptopulse.test' },
+        }),
+        env
+      );
+      expect(marketQueryResp.status).toBe(200);
+      expect(marketQueryResp.headers.get('X-Eligible-Market-Count')).toBe('7');
     });
   });
 });

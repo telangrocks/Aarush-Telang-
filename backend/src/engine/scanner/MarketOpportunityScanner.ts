@@ -173,9 +173,28 @@ export class MarketOpportunityScanner {
 
       const rejectionReasons: string[] = [];
 
-      const qtyStep = m.precision?.amount || 0.00001;
-      const minOrderQty = typeof m.limits?.amount?.min?.toNumber === 'function' ? m.limits.amount.min.toNumber() : Number(m.limits?.amount?.min || 0);
-      const minNotionalUsdt = typeof m.limits?.cost?.min?.toNumber === 'function' ? m.limits.cost.min.toNumber() : Number(m.limits?.cost?.min || 5);
+      const parseFieldConstraint = (v: any): { present: boolean; valid: boolean; value: number } => {
+        if (v === undefined || v === null || (typeof v === 'string' && v.trim() === '')) {
+          return { present: false, valid: true, value: 0 };
+        }
+        const n = typeof v?.toNumber === 'function' ? v.toNumber() : Number(v);
+        if (!Number.isFinite(n) || n <= 0) {
+          return { present: true, valid: false, value: n };
+        }
+        return { present: true, valid: true, value: n };
+      };
+
+      const qtyStepCheck = parseFieldConstraint(m.precision?.amount);
+      const minQtyCheck = parseFieldConstraint(m.limits?.amount?.min);
+      const minNotionalCheck = parseFieldConstraint(m.limits?.cost?.min);
+
+      if (!qtyStepCheck.valid || !minQtyCheck.valid || !minNotionalCheck.valid) {
+        rejectionReasons.push('INVALID_EXCHANGE_RULES');
+      }
+
+      const qtyStep = qtyStepCheck.present ? qtyStepCheck.value : 0.00001;
+      const minOrderQty = minQtyCheck.present ? minQtyCheck.value : 0;
+      const minNotionalUsdt = minNotionalCheck.present ? minNotionalCheck.value : 5;
 
       if (turnover < this.config.minTurnover24hUsdt) {
         rejectionReasons.push(`Turnover $${turnover.toFixed(0)} < $${this.config.minTurnover24hUsdt}`);
@@ -400,9 +419,9 @@ export class MarketOpportunityScanner {
             // ─────────────────────────────────────────────────────────────────
             // STAGE 6: Analytical Cost & Execution Feasibility
             // ─────────────────────────────────────────────────────────────────
-            const px = typeof ticker.last?.toNumber === 'function' ? ticker.last.toNumber() : Number(ticker.last || 1);
-            const bid = typeof ticker.bid?.toNumber === 'function' ? ticker.bid.toNumber() : px;
-            const ask = typeof ticker.ask?.toNumber === 'function' ? ticker.ask.toNumber() : px;
+            const px = typeof ticker.last?.toNumber === 'function' ? ticker.last.toNumber() : Number(ticker.last ?? ticker.price ?? 0);
+            const bid = typeof ticker.bid?.toNumber === 'function' ? ticker.bid.toNumber() : Number(ticker.bid ?? ticker._bid ?? px);
+            const ask = typeof ticker.ask?.toNumber === 'function' ? ticker.ask.toNumber() : Number(ticker.ask ?? ticker._ask ?? px);
 
             // Strategy-specific expected target: e.g. 2.0x 15m ATR expressed as %
             const atr14_15m = this.calculateATRSimple(candles15m, 14);

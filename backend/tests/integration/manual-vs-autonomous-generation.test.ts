@@ -3,7 +3,7 @@ import BigNumber from 'bignumber.js';
 import { TradingBot, TradeAlert } from '../../src/trading-bot';
 import { BybitAdapter } from '../../src/infrastructure/exchange/adapters/BybitAdapter';
 import { ExchangeOrchestrator } from '../../src/infrastructure/orchestrator/ExchangeOrchestrator';
-import { handleExecuteTrade, handleTriggerManualTradeAlert, handleGetPersonalizedMarketCandidates, invalidateExchangeConnection } from '../../src/handlers/exchange';
+import { handleExecuteTrade, handleTriggerManualTradeAlert, handleGetPersonalizedMarketCandidates, invalidateExchangeConnection, __resetPublicOpportunityStateForTests } from '../../src/handlers/exchange';
 
 vi.mock('../../src/crypto', () => ({
   decrypt: vi.fn().mockResolvedValue('mocked_secret_key')
@@ -2217,7 +2217,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         contractType: 'LinearPerpetual',
         active: true,
         precision: { price: 0.01, amount: 0.1 },
-        limits: { cost: { min: 5 }, amount: { min: 0.1, max: 1000 } },
+        limits: { cost: { min: idx === 1 ? 50 : 5 }, amount: { min: 0.1, max: 1000 } },
       };
     });
 
@@ -2309,11 +2309,18 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
 
     // Cache invalidation: invalidateExchangeConnection evicts user-disc-1 entries
     await invalidateExchangeConnection(mockEnv.DB, 'user-disc-1', 'INVALID_API_KEY');
+    const realNow = Date.now();
+    const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 20_000);
     const callsAfterInvalidation = klineCalls;
-    await handleGetPersonalizedMarketCandidates(makeContext('user-disc-1', '25'));
-    expect(klineCalls).toBeGreaterThan(callsAfterInvalidation);
+    try {
+      await handleGetPersonalizedMarketCandidates(makeContext('user-disc-1', '25'));
+      expect(klineCalls).toBeGreaterThan(callsAfterInvalidation);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
 
     // Degraded 503: when kline fetches fail for all candidates (screenedCount === 0), returns HTTP 503 without caching
+    __resetPublicOpportunityStateForTests();
     mockAdapter.fetchKlines.mockRejectedValue(new Error('Bybit 429 rate limit'));
     const degradedResp = await handleGetPersonalizedMarketCandidates(makeContext('user-disc-degraded', '50'));
     expect(degradedResp.status).toBe(503);

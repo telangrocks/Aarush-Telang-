@@ -243,6 +243,13 @@ class ExchangeViewModel @Inject constructor(
     private val _balancesError = MutableStateFlow<String?>(null)
     val balancesError: StateFlow<String?> = _balancesError
 
+    private var lastBalancesFetchTimeMs: Long = 0L
+    internal var clock: () -> Long = { System.currentTimeMillis() }
+    private val _isRefreshingBalances = MutableStateFlow(false)
+    val isRefreshingBalances: StateFlow<Boolean> = _isRefreshingBalances.asStateFlow()
+    private val _isBalanceStale = MutableStateFlow(false)
+    val isBalanceStale: StateFlow<Boolean> = _isBalanceStale.asStateFlow()
+
     fun clearCandidatesError() { _candidatesError.value = null }
     fun clearAnalysisError() { _analysisError.value = null }
     fun clearTradeError() {
@@ -514,6 +521,9 @@ class ExchangeViewModel @Inject constructor(
         _analysisError.value = null
         _tradeError.value = null
         _botError.value = null
+        lastBalancesFetchTimeMs = 0L
+        _isRefreshingBalances.value = false
+        _isBalanceStale.value = false
         viewModelScope.launch {
             exchangeConnectionManager.clearConnection()
         }
@@ -637,18 +647,31 @@ class ExchangeViewModel @Inject constructor(
         }
     }
 
-    fun fetchBalances() {
+    fun fetchBalances(force: Boolean = false) {
         val activeEnv = _formState.value.environment
+        // Skip fetch if data is fresh and not forced
+        if (!force && _balances.value != null && _balancesError.value == null &&
+            (clock() - lastBalancesFetchTimeMs) < BALANCE_FRESHNESS_TTL_MS) {
+            Log.d(TAG, "[DIAGNOSTIC] fetchBalances skipped: data is fresh for environment: $activeEnv")
+            return
+        }
         Log.d(TAG, "[DIAGNOSTIC] fetchBalances triggered for environment: $activeEnv")
-        _balances.value = null // Set to loading state
+        _isRefreshingBalances.value = true
+        // Do NOT wipe _balances.value here — keep stale data visible during refresh
         viewModelScope.launch {
             exchangeRepository.getBalances().onSuccess { body ->
                 Log.d(TAG, "[DIAGNOSTIC] fetchBalances Success: count=${body.size}")
                 _balances.value = body
                 _balancesError.value = null
+                _isBalanceStale.value = false
+                lastBalancesFetchTimeMs = clock()
+                _isRefreshingBalances.value = false
             }.onFailure { e ->
                 Log.e(TAG, "[DIAGNOSTIC] fetchBalances Failure: ${e.message}", e)
                 _balancesError.value = e.message ?: "Network error"
+                _isBalanceStale.value = true
+                _isRefreshingBalances.value = false
+                _balances.value = null
             }
         }
     }
@@ -978,6 +1001,7 @@ class ExchangeViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "ExchangeViewModel"
+        private const val BALANCE_FRESHNESS_TTL_MS = 15_000L
     }
 }
 

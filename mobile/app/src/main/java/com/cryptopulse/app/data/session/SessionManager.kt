@@ -7,6 +7,7 @@ import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import com.cryptopulse.app.data.local.TokenManager
 import com.cryptopulse.app.domain.repository.AuthRepository
 import com.cryptopulse.app.domain.repository.BotRepository
+import com.cryptopulse.app.domain.repository.FcmRepository
 import com.cryptopulse.app.domain.repository.StrategyRepository
 import com.cryptopulse.app.domain.repository.TradeSessionRepository
 import com.cryptopulse.app.service.BackgroundMonitoringService
@@ -24,7 +25,8 @@ class SessionManager @Inject constructor(
     private val exchangeConnectionManager: ExchangeConnectionManager,
     private val strategyRepository: StrategyRepository,
     private val tokenManager: TokenManager,
-    private val dispatcherProvider: DispatcherProvider
+    private val dispatcherProvider: DispatcherProvider,
+    private val fcmRepository: FcmRepository? = null
 ) {
     private val isLoggingOut = AtomicBoolean(false)
 
@@ -68,7 +70,14 @@ class SessionManager @Inject constructor(
                 Log.w("SessionManager", "Error clearing session caches", e)
             }
 
-            // 5. Notify backend of auth logout (best-effort)
+            // 5. Reset FCM registration state so next login re-registers the token
+            try {
+                fcmRepository?.clearRegistrationState()
+            } catch (e: Exception) {
+                Log.w("SessionManager", "Error clearing FCM registration state", e)
+            }
+
+            // 6. Notify backend of auth logout (best-effort)
             try {
                 withTimeoutOrNull(2000L) {
                     authRepository.logout()
@@ -77,7 +86,7 @@ class SessionManager @Inject constructor(
                 Log.w("SessionManager", "Exception notifying backend of logout", e)
             }
 
-            // 6. Mandatory local token wipe (guaranteed to execute)
+            // 7. Mandatory local token wipe (guaranteed to execute)
             tokenManager.clearTokens()
             Log.i("SessionManager", "Local authentication tokens wiped successfully")
         } finally {
