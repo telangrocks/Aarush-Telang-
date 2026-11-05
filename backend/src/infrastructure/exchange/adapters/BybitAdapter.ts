@@ -272,7 +272,16 @@ export class BybitAdapter extends BaseExchangeAdapter {
         const retCode = parsed.retCode ?? parsed.ret_code ?? status;
 
         // Auto-recovery on timestamp drift (disabled for non-idempotent order mutations)
-        if (isPrivate && !isRetry && !isOrderMutation && (retCode === 10003 || (retCode === 10002 && (String(parsed.retMsg).toLowerCase().includes('timestamp') || String(parsed.retMsg).toLowerCase().includes('recv_window'))))) {
+        const isTimestampDrift =
+          retCode === 10002 ||
+          (retCode !== 10003 && retCode !== 10004 && retCode !== 10005 && (
+            String(parsed.retMsg).toLowerCase().includes('recv_window') ||
+            String(parsed.retMsg).toLowerCase().includes('recv window') ||
+            String(parsed.retMsg).toLowerCase().includes('recvwindow') ||
+            String(parsed.retMsg).toLowerCase().includes('server timestamp')
+          ));
+
+        if (isPrivate && !isRetry && !isOrderMutation && isTimestampDrift) {
           await this.fetchServerTimeOffset(true);
           return this.makeRequest(method, path, params, isPrivate, true);
         }
@@ -325,7 +334,16 @@ export class BybitAdapter extends BaseExchangeAdapter {
         const msgVal = json.retMsg ?? json.ret_msg;
 
         // Auto-recovery on timestamp drift (disabled for non-idempotent order mutations)
-        if (isPrivate && !isRetry && !isOrderMutation && (codeVal === 10003 || (codeVal === 10002 && (String(msgVal).toLowerCase().includes('timestamp') || String(msgVal).toLowerCase().includes('recv_window'))))) {
+        const isTimestampDrift =
+          codeVal === 10002 ||
+          (codeVal !== 10003 && codeVal !== 10004 && codeVal !== 10005 && (
+            String(msgVal).toLowerCase().includes('recv_window') ||
+            String(msgVal).toLowerCase().includes('recv window') ||
+            String(msgVal).toLowerCase().includes('recvwindow') ||
+            String(msgVal).toLowerCase().includes('server timestamp')
+          ));
+
+        if (isPrivate && !isRetry && !isOrderMutation && isTimestampDrift) {
           await this.fetchServerTimeOffset(true);
           return this.makeRequest(method, path, params, isPrivate, true);
         }
@@ -789,7 +807,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
         leverage: parseFloat(p.leverage || '1'),
         stopLoss: p.stopLoss && Number(p.stopLoss) > 0 ? new BigNumber(p.stopLoss) : undefined,
         takeProfit: p.takeProfit && Number(p.takeProfit) > 0 ? new BigNumber(p.takeProfit) : undefined,
-        positionIdx: Number(p.positionIdx ?? 0),
+        positionIdx: (p.positionIdx !== undefined && p.positionIdx !== null && p.positionIdx !== '')
+          ? Number(p.positionIdx)
+          : undefined,
         category: reqCategory,
       } as any);
     }
@@ -823,15 +843,25 @@ export class BybitAdapter extends BaseExchangeAdapter {
       side: isBuy ? 'Buy' : 'Sell',
       orderType: isLimit ? 'Limit' : 'Market',
       qty: qtyStr,
-      timeInForce: order.timeInForce || 'GTC',
     };
+
+    if (isLimit) {
+      params.timeInForce = order.timeInForce || 'GTC';
+    }
 
     if (category === 'spot' && !isLimit) {
       params.marketUnit = 'baseCoin';
     }
 
+    const tickSizeBN = (order as any).params?.tickSize ? new BigNumber((order as any).params.tickSize) : null;
+    const priceDecimals = tickSizeBN && !tickSizeBN.isZero() ? Math.max(0, tickSizeBN.decimalPlaces() ?? 2) : 4;
+
     if ((order as any).triggerPrice) {
-      const triggerBN = new BigNumber((order as any).triggerPrice);
+      let triggerBN = new BigNumber((order as any).triggerPrice);
+      if (tickSizeBN && !tickSizeBN.isZero()) {
+        const roundMode = isBuy ? BigNumber.ROUND_CEIL : BigNumber.ROUND_FLOOR;
+        triggerBN = triggerBN.dividedBy(tickSizeBN).integerValue(roundMode).multipliedBy(tickSizeBN);
+      }
       params.triggerPrice = triggerBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
       params.triggerBy = (order as any).triggerBy || 'LastPrice';
       if ((order as any).triggerDirection) {
@@ -855,18 +885,19 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
 
     if (isLimit && order.price) {
-      const priceBN = new BigNumber(order.price);
+      let priceBN = new BigNumber(order.price);
+      if (tickSizeBN && !tickSizeBN.isZero()) {
+        const roundMode = isBuy ? BigNumber.ROUND_FLOOR : BigNumber.ROUND_CEIL;
+        priceBN = priceBN.dividedBy(tickSizeBN).integerValue(roundMode).multipliedBy(tickSizeBN);
+      }
       params.price = priceBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
     }
 
     if ((order as any).takeProfit) {
       let tpBN = new BigNumber((order as any).takeProfit);
-      if ((order as any).params?.tickSize) {
-        const tickBN = new BigNumber((order as any).params.tickSize);
-        if (!tickBN.isZero()) {
-          const roundMode = isBuy ? BigNumber.ROUND_CEIL : BigNumber.ROUND_FLOOR;
-          tpBN = tpBN.dividedBy(tickBN).integerValue(roundMode).multipliedBy(tickBN);
-        }
+      if (tickSizeBN && !tickSizeBN.isZero()) {
+        const roundMode = isBuy ? BigNumber.ROUND_CEIL : BigNumber.ROUND_FLOOR;
+        tpBN = tpBN.dividedBy(tickSizeBN).integerValue(roundMode).multipliedBy(tickSizeBN);
       }
       params.takeProfit = tpBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
       if (category !== 'spot') {
@@ -877,12 +908,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
     if ((order as any).stopLoss) {
       let slBN = new BigNumber((order as any).stopLoss);
-      if ((order as any).params?.tickSize) {
-        const tickBN = new BigNumber((order as any).params.tickSize);
-        if (!tickBN.isZero()) {
-          const roundMode = isBuy ? BigNumber.ROUND_FLOOR : BigNumber.ROUND_CEIL;
-          slBN = slBN.dividedBy(tickBN).integerValue(roundMode).multipliedBy(tickBN);
-        }
+      if (tickSizeBN && !tickSizeBN.isZero()) {
+        const roundMode = isBuy ? BigNumber.ROUND_FLOOR : BigNumber.ROUND_CEIL;
+        slBN = slBN.dividedBy(tickSizeBN).integerValue(roundMode).multipliedBy(tickSizeBN);
       }
       params.stopLoss = slBN.toFixed(8).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1');
       if (category !== 'spot') {
@@ -896,7 +924,13 @@ export class BybitAdapter extends BaseExchangeAdapter {
     }
 
     if (category === 'linear' && params.positionIdx === undefined) {
-      params.positionIdx = 0;
+      if ((order as any).positionIdx !== undefined) {
+        params.positionIdx = (order as any).positionIdx;
+      } else if ((order as any).params?.positionIdx !== undefined) {
+        params.positionIdx = (order as any).params.positionIdx;
+      } else {
+        params.positionIdx = 0;
+      }
     }
 
     const beforeDispatchHook =
@@ -1152,6 +1186,7 @@ export class BybitAdapter extends BaseExchangeAdapter {
     return list.map((item: any) => ({
       id: item.execId,
       orderId: item.orderId,
+      orderLinkId: item.orderLinkId || '',
       symbol: this.normalizeSymbol(item.symbol).canonicalSymbol,
       side: item.side.toLowerCase() as 'buy' | 'sell',
       price: new BigNumber(item.execPrice || 0),

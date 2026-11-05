@@ -72,7 +72,7 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
           ];
           return list.find(m => m.symbol === sym || m.id === sym.replace('/', '')) || null;
         }),
-        fetchPositions: vi.fn().mockResolvedValue([]),
+        fetchPositions: vi.fn().mockImplementation(async (cat, sym, zero) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
         createOrder: vi.fn().mockResolvedValue({
           id: 'ord-mock-123',
           status: 'closed',

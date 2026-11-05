@@ -276,7 +276,7 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
 
       vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue({
         fetchTicker: vi.fn().mockResolvedValue({ last: 88.07 }),
-        fetchPositions: vi.fn().mockResolvedValue([]),
+        fetchPositions: vi.fn().mockImplementation(async (cat, sym, zero) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: new BigNumber(0) }] : [])),
         fetchBalance: vi.fn().mockResolvedValue([
           { currency: 'USDT', free: new BigNumber(1000), total: new BigNumber(1000) }
         ]),

@@ -527,8 +527,8 @@ const ALLOWED_WAL_TRANSITIONS: Record<string, ReadonlySet<string>> = {
   PARTIALLY_FILLED: new Set(['PARTIALLY_FILLED', 'FILLED', 'FAILED']),
   FILLED: new Set(['FILLED', 'COMPLETED']),
   COMPLETED: new Set(['COMPLETED']),
-  FAILED: new Set(['FAILED', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED']),
-  ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION: new Set(['ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED', 'FAILED']),
+  FAILED: new Set(['FAILED', 'INTENT_PERSISTED', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED']),
+  ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION: new Set(['ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION', 'INTENT_PERSISTED', 'DISPATCHED', 'PARTIALLY_FILLED', 'FILLED', 'FAILED']),
 };
 
 const EMERGENCY_CLOSE_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 300_000] as const;
@@ -815,21 +815,28 @@ export class TradingBot {
     if (!allowed || !allowed.has(newStatus)) {
       return false;
     }
-    if (existing.dispatchedAt !== undefined && newStatus === 'INTENT_PERSISTED') {
+    const isNewAttempt = Number(nextIntent.attemptNumber || 1) > Number(existing.attemptNumber || 1);
+    if (existing.dispatchedAt !== undefined && newStatus === 'INTENT_PERSISTED' && !isNewAttempt) {
       return false;
     }
     if (oldStatus === 'INTENT_PERSISTED' && (newStatus === 'UNKNOWN' || newStatus === 'RECONCILIATION_PENDING' || newStatus === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION')) {
       return false;
     }
     if (oldStatus === 'FAILED') {
+      if (newStatus === 'INTENT_PERSISTED') {
+        return Number(existing.actualExecutedQuantity || 0) === 0;
+      }
       if (existing.dispatchedAt === undefined) {
-        return newStatus === 'FAILED';
+        return newStatus === 'FAILED' || newStatus === 'INTENT_PERSISTED';
       }
       if (newStatus !== 'FAILED') {
         return !existing.actualOrderId && Boolean(nextIntent.actualOrderId);
       }
     }
     if (oldStatus === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && newStatus !== 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION') {
+      if (newStatus === 'INTENT_PERSISTED') {
+        return Number(existing.actualExecutedQuantity || 0) === 0;
+      }
       return Boolean(nextIntent.actualOrderId);
     }
     if (oldStatus === 'PARTIALLY_FILLED' && newStatus === 'FAILED' && Number(existing.actualExecutedQuantity || 0) > 0) {
@@ -850,29 +857,33 @@ export class TradingBot {
         const allowStatus = this.canTransitionIntentStatus(existing, nextIntent);
         const resolvedStatus = allowStatus ? (nextIntent.status || existing.status) : existing.status;
 
-        const prevQty = new BigNumber(existing.actualExecutedQuantity || 0);
+        const isNewAttempt = Number(nextIntent.attemptNumber || 1) > Number(existing.attemptNumber || 1);
+        const prevQty = isNewAttempt ? new BigNumber(0) : new BigNumber(existing.actualExecutedQuantity || 0);
         const nextQty = new BigNumber(nextIntent.actualExecutedQuantity || 0);
-        const maxQty = nextQty.gt(prevQty) ? nextIntent.actualExecutedQuantity : existing.actualExecutedQuantity;
+        const maxQty = nextQty.gt(prevQty) ? nextIntent.actualExecutedQuantity : (isNewAttempt ? (nextIntent.actualExecutedQuantity || 0) : existing.actualExecutedQuantity);
 
         const nextFillPx = new BigNumber(nextIntent.actualFillPrice || 0);
-        const resolvedFillPrice = nextFillPx.gt(0) ? nextIntent.actualFillPrice : existing.actualFillPrice;
+        const resolvedFillPrice = nextFillPx.gt(0) ? nextIntent.actualFillPrice : (isNewAttempt ? null : existing.actualFillPrice);
 
         committed = {
           ...existing,
           ...nextIntent,
           intentId: existing.intentId || nextIntent.intentId || cleanId,
           status: resolvedStatus,
-          dispatchedAt: existing.dispatchedAt ?? nextIntent.dispatchedAt,
-          actualOrderId: nextIntent.actualOrderId || existing.actualOrderId,
+          dispatchedAt: isNewAttempt ? nextIntent.dispatchedAt : (existing.dispatchedAt ?? nextIntent.dispatchedAt),
+          actualOrderId: isNewAttempt ? nextIntent.actualOrderId : (nextIntent.actualOrderId || existing.actualOrderId),
+          terminalReason: isNewAttempt ? nextIntent.terminalReason : (nextIntent.terminalReason || existing.terminalReason),
           actualExecutedQuantity: maxQty,
           actualFillPrice: resolvedFillPrice,
-          slOrderId: nextIntent.slOrderId || existing.slOrderId,
-          tpOrderId: nextIntent.tpOrderId || existing.tpOrderId,
-          reconciliationAttemptCount: Math.max(
+          slOrderId: isNewAttempt ? nextIntent.slOrderId : (nextIntent.slOrderId || existing.slOrderId),
+          tpOrderId: isNewAttempt ? nextIntent.tpOrderId : (nextIntent.tpOrderId || existing.tpOrderId),
+          attemptNumber: nextIntent.attemptNumber || existing.attemptNumber || 1,
+          attemptHistory: nextIntent.attemptHistory || existing.attemptHistory || [],
+          reconciliationAttemptCount: isNewAttempt ? 0 : Math.max(
             Number(existing.reconciliationAttemptCount ?? 0),
             Number(nextIntent.reconciliationAttemptCount ?? 0)
           ),
-          reconciliationAttempts: Math.max(
+          reconciliationAttempts: isNewAttempt ? 0 : Math.max(
             Number(existing.reconciliationAttempts ?? 0),
             Number(nextIntent.reconciliationAttempts ?? 0)
           ),
@@ -1799,18 +1810,16 @@ export class TradingBot {
             );
           }
 
-          // Strict WAL Evidence Gate: If any WAL intent already exists for this alertId (or alert is already in 'submitted' state), reject duplicate dispatch with HTTP 409
-          if (existingIntentForAlert || completedAlert) {
-            const walStatus = existingIntentForAlert?.status || completedAlert?.status;
-            console.warn(`[SAFETY GATE] Duplicate dispatch blocked for alertId ${alertId}. Existing status: ${walStatus}`);
+          if (existingIntentForAlert && ['FILLED', 'COMPLETED'].includes(existingIntentForAlert.status)) {
+            console.warn(`[SAFETY GATE] Duplicate dispatch blocked for filled alertId ${alertId}.`);
             return new Response(
               JSON.stringify({
                 success: false,
                 code: 'DUPLICATE_DISPATCH_BLOCKED',
                 error: 'DUPLICATE_DISPATCH_BLOCKED',
-                message: `Execution already recorded in WAL for alert ${alertId} (status: ${walStatus}).`,
-                orderId: existingIntentForAlert?.actualOrderId || alertId,
-                status: walStatus,
+                message: `Execution already recorded in WAL for alert ${alertId} (status: ${existingIntentForAlert.status}).`,
+                orderId: existingIntentForAlert.actualOrderId || alertId,
+                status: existingIntentForAlert.status,
               }),
               { status: 409, headers: { 'Content-Type': 'application/json' } }
             );
@@ -1825,6 +1834,84 @@ export class TradingBot {
               }),
               { status: 409, headers: { 'Content-Type': 'application/json' } }
             );
+          }
+
+          // Active In-Flight Dispatch Gate: reject duplicate dispatch if order is currently active
+          if (existingIntentForAlert && ['INTENT_PERSISTED', 'PENDING', 'DISPATCHING', 'DISPATCHED', 'OPEN', 'PARTIALLY_FILLED'].includes(existingIntentForAlert.status)) {
+            const walStatus = existingIntentForAlert.status;
+            console.warn(`[SAFETY GATE] Duplicate dispatch blocked for alertId ${alertId}. Existing status: ${walStatus}`);
+            return new Response(
+              JSON.stringify({
+                success: false,
+                code: 'DUPLICATE_DISPATCH_BLOCKED',
+                error: 'DUPLICATE_DISPATCH_BLOCKED',
+                message: `Execution already recorded in WAL for alert ${alertId} (status: ${walStatus}).`,
+                orderId: existingIntentForAlert?.actualOrderId || alertId,
+                status: walStatus,
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Ambiguous Exchange Outcome Gate: reject retry until reconciliation settles state
+          if (existingIntentForAlert && ['UNKNOWN', 'RECONCILIATION_PENDING'].includes(existingIntentForAlert.status)) {
+            console.warn(`[SAFETY GATE] Retry blocked for alertId ${alertId} due to ambiguous execution state (${existingIntentForAlert.status}).`);
+            return new Response(
+              JSON.stringify({
+                success: false,
+                code: 'RECONCILIATION_REQUIRED',
+                error: 'EXECUTION_OUTCOME_AMBIGUOUS',
+                message: `Previous execution attempt outcome is ambiguous for alert ${alertId} (status: ${existingIntentForAlert.status}). Automatic reconciliation is pending.`,
+                orderId: existingIntentForAlert.actualOrderId || alertId,
+                status: existingIntentForAlert.status,
+              }),
+              { status: 423, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Verified Non-Execution Failure: Authorize Safe Retry
+          let isRetryAttempt = false;
+          let retryAttemptNumber = 1;
+          let retryAttemptHistory: any[] = [];
+          let retryClientOrderId: string | null = null;
+
+          if (existingIntentForAlert && (existingIntentForAlert.status === 'FAILED' || existingIntentForAlert.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION')) {
+            const prevFilledQty = Number(existingIntentForAlert.actualExecutedQuantity || 0);
+            if (prevFilledQty > 0) {
+              return new Response(
+                JSON.stringify({
+                  success: false,
+                  code: 'PARTIAL_FILL_LOCK',
+                  error: 'DUPLICATE_DISPATCH_BLOCKED',
+                  message: `Cannot retry alert ${alertId}: previous attempt partially filled ${prevFilledQty} units.`,
+                  orderId: existingIntentForAlert.actualOrderId || alertId,
+                  status: existingIntentForAlert.status,
+                }),
+                { status: 409, headers: { 'Content-Type': 'application/json' } }
+              );
+            }
+
+            isRetryAttempt = true;
+            const prevAttemptNum = Number(existingIntentForAlert.attemptNumber || 1);
+            retryAttemptNumber = prevAttemptNum + 1;
+            retryAttemptHistory = Array.isArray(existingIntentForAlert.attemptHistory)
+              ? [...existingIntentForAlert.attemptHistory]
+              : [];
+            retryAttemptHistory.push({
+              attemptNumber: prevAttemptNum,
+              intentId: existingIntentForAlert.intentId || alertId,
+              clientOrderId: existingIntentForAlert.payloadSnapshot?.clientOrderId || alertId,
+              actualOrderId: existingIntentForAlert.actualOrderId || null,
+              status: existingIntentForAlert.status,
+              terminalReason: existingIntentForAlert.terminalReason || 'PREVIOUS_ATTEMPT_FAILED',
+              dispatchedAt: existingIntentForAlert.dispatchedAt,
+              failedAt: existingIntentForAlert.updatedAt || Date.now(),
+            });
+
+            const cleanAlertId = alertId.replace(/-/g, '');
+            const suffix = `_r${retryAttemptNumber}`;
+            retryClientOrderId = `${cleanAlertId.slice(0, 36 - suffix.length)}${suffix}`;
+            console.log(`[SAFETY GATE] Authorizing safe retry attempt #${retryAttemptNumber} for alertId ${alertId}. New clientOrderId: ${retryClientOrderId}`);
           }
 
           // Strict Symbol Validation: If requestBody provides a symbol, it must match the alert symbol
@@ -2023,7 +2110,7 @@ export class TradingBot {
                 ? `${rawSymbol.slice(0, -4)}/USDT`
                 : `${rawSymbol}/USDT`);
           const normalizedOrderSymbol = this.normalizeSymbol(orderSymbol);
-          const clientOrderId = target.id;
+          const clientOrderId = isRetryAttempt && retryClientOrderId ? retryClientOrderId : target.id;
 
           // Normalized-Ticker Atomic WAL Pre-Reservation Gate (Single Active Trade/Intent Invariant)
           let preReservationConflict: { status: number; body: any } | null = null;
@@ -2047,11 +2134,13 @@ export class TradingBot {
 
             for (const intent of intentsToCheck) {
               const isUnresolvedIntent =
-                ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent.status) ||
+                ['INTENT_PERSISTED', 'DISPATCHING', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent.status) ||
                 (intent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent.flatnessAffirmativelyVerified);
 
               if (
                 intent.intentId !== target.id &&
+                intent.intentId !== clientOrderId &&
+                intent.alertId !== target.id &&
                 this.normalizeSymbol(intent.symbol) === normalizedOrderSymbol &&
                 isUnresolvedIntent
               ) {
@@ -2094,7 +2183,10 @@ export class TradingBot {
 
             // 3. Atomically persist initial reservation intent
             reservationIntent = {
-              intentId: target.id,
+              intentId: clientOrderId,
+              alertId: target.id,
+              attemptNumber: retryAttemptNumber,
+              attemptHistory: retryAttemptHistory,
               version: Date.now(),
               symbol: orderSymbol,
               timeframe: target.timeframe,
@@ -2110,7 +2202,13 @@ export class TradingBot {
             };
 
             await txn.put(`intent:order:${target.id}`, reservationIntent);
+            if (clientOrderId !== target.id) {
+              await txn.put(`intent:order:${clientOrderId}`, reservationIntent);
+            }
             this.runtimeState.activeIntents.set(target.id, reservationIntent);
+            if (clientOrderId !== target.id) {
+              this.runtimeState.activeIntents.set(clientOrderId, reservationIntent);
+            }
           });
 
           if (preReservationConflict) {
@@ -2125,6 +2223,9 @@ export class TradingBot {
               reservationIntent.status = 'FAILED';
               reservationIntent.terminalReason = reason;
               await this.persistIntentSnapshot(target.id, reservationIntent);
+              if (clientOrderId !== target.id) {
+                await this.persistIntentSnapshot(clientOrderId, reservationIntent);
+              }
               target.status = 'failed';
               const currentAlerts = ((await this.state.storage.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
               const idx = currentAlerts.findIndex(a => a.id === target.id);
@@ -2194,6 +2295,46 @@ export class TradingBot {
 
             console.log(`[DIAGNOSTIC] [STAGE: PENDING_ALERT_FOUND] targetAlertId=${target.id} symbol=${orderSymbol} side=${side} positionSize=${target.positionSize}`);
 
+            // Blocker 1: Exchange-side reconciliation before authorizing retry whenever dispatch may have occurred
+            if (isRetryAttempt && existingIntentForAlert && existingIntentForAlert.dispatchedAt !== undefined) {
+              console.log(`[SAFETY GATE] Prior attempt ${existingIntentForAlert.intentId} had dispatchedAt=${existingIntentForAlert.dispatchedAt}. Reconciling against exchange before authorizing retry...`);
+              let reconIntent: any = { ...existingIntentForAlert };
+              try {
+                reconIntent = await ReconciliationEngine.reconcile(
+                  adapter,
+                  reconIntent,
+                  Date.now(),
+                  { userId, sink: this.telemetrySink }
+                );
+              } catch (reconErr: any) {
+                console.error(`[SAFETY GATE: FATAL] Exchange reconciliation failed for prior attempt ${existingIntentForAlert.intentId}:`, reconErr?.message);
+                await releasePreReservation('RECONCILIATION_FAILED');
+                return new Response(JSON.stringify({
+                  success: false,
+                  code: 'RECONCILIATION_REQUIRED',
+                  error: 'EXECUTION_OUTCOME_AMBIGUOUS',
+                  message: `Cannot safely retry alert ${target.id}. Exchange reconciliation for prior attempt failed (${reconErr?.message || 'Exchange unreachable'}). Retry blocked to prevent duplicate orders.`
+                }), { status: 423 });
+              }
+
+              const reconQty = Number(reconIntent.actualExecutedQuantity || 0);
+              const isAcceptedOrActive = ['FILLED', 'PARTIALLY_FILLED', 'DISPATCHED'].includes(reconIntent.status) || reconQty > 0 || Boolean(reconIntent.actualOrderId);
+              if (isAcceptedOrActive) {
+                console.error(`[SAFETY GATE: LEVEL_2] Prior attempt ${existingIntentForAlert.intentId} was active or filled on exchange (status: ${reconIntent.status}, orderId: ${reconIntent.actualOrderId}, qty: ${reconQty}). Blocking retry duplicate.`);
+                await this.persistIntentSnapshot(existingIntentForAlert.intentId, reconIntent);
+                await this.persistIntentSnapshot(target.id, reconIntent);
+                await releasePreReservation('ORDER_ALREADY_EXISTS_ON_EXCHANGE');
+                return new Response(JSON.stringify({
+                  success: false,
+                  code: 'DUPLICATE_DISPATCH_BLOCKED',
+                  error: 'ORDER_EXISTS_ON_EXCHANGE',
+                  message: `Execution already active or filled on exchange for alert ${target.id} (orderId: ${reconIntent.actualOrderId}, status: ${reconIntent.status}). Duplicate order blocked.`,
+                  orderId: reconIntent.actualOrderId,
+                  status: reconIntent.status,
+                }), { status: 409 });
+              }
+            }
+
             // Phase 3: Strict Concurrency Check (Cases 5 & 6)
             // Mathematically prevents executing a new intent for a symbol if an unresolved intent already exists for it.
             const existingIntents = this.runtimeState.activeIntents;
@@ -2203,7 +2344,13 @@ export class TradingBot {
                 ['INTENT_PERSISTED', 'DISPATCHED', 'UNKNOWN', 'RECONCILIATION_PENDING', 'PARTIALLY_FILLED'].includes(intent.status) ||
                 (intent.status === 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION' && !intent.flatnessAffirmativelyVerified);
 
-              if (intent.intentId !== target.id && this.normalizeSymbol(intent.symbol) === normalizedOrderSymbol && isUnresolvedIntent) {
+              if (
+                intent.intentId !== target.id &&
+                intent.intentId !== clientOrderId &&
+                intent.alertId !== target.id &&
+                this.normalizeSymbol(intent.symbol) === normalizedOrderSymbol &&
+                isUnresolvedIntent
+              ) {
                   console.error(`[SAFETY_GATE: LEVEL_2] Rejected concurrent entry: Intent ${intent.intentId} is unresolved (${intent.status}) for ${orderSymbol}.`);
                   await releasePreReservation('CONCURRENT_EXECUTION_BLOCKED');
                   return new Response(JSON.stringify({
@@ -2404,12 +2551,13 @@ export class TradingBot {
           let limitPrice: number | undefined = undefined;
           let triggerPrice: number | undefined = undefined;
           let triggerDirection: 1 | 2 | undefined = undefined;
-          let timeInForce: 'GTC' | 'IOC' = 'GTC';
+          let timeInForce: 'GTC' | 'IOC' | undefined = undefined;
           let executionSnapshot: TradeExecutionSnapshot | null = null;
           let activeTickSize = 0;
           let activeWriteProvider: any = adapter;
           let activeRawOrder: any = null;
           let matchedCategory: string | undefined = undefined;
+          let verifiedPositionIdx = 0;
 
           try {
             if (adapter) {
@@ -2424,12 +2572,12 @@ export class TradingBot {
               } else if (entryIntent === 'IMMEDIATE') {
                 orderType = 'MARKET';
                 limitPrice = undefined;
-                timeInForce = 'IOC';
+                timeInForce = undefined;
               } else if (entryIntent === 'TRIGGER') {
                 orderType = 'MARKET';
                 triggerPrice = targetPrice;
                 triggerDirection = triggerPrice >= currentPrice ? 1 : 2;
-                timeInForce = 'GTC';
+                timeInForce = undefined;
               }
 
               const positionSizeUsdt = Number(target.positionSize);
@@ -2593,16 +2741,108 @@ export class TradingBot {
               });
               activeWriteProvider = writeProvider;
 
+              // Discover verified account position mode (One-Way: 0, Hedge: 1 for Buy / 2 for Sell)
+              // Authoritative Position Mode Discovery & Fail-Closed Validation (F-09)
+              verifiedPositionIdx = 0;
+              const isContractCategory = (matchedCategory || 'linear') === 'linear' || (matchedCategory || 'linear') === 'inverse';
+
+              if (isContractCategory) {
+                if (!writeProvider || typeof (writeProvider as any).fetchPositions !== 'function') {
+                  const modeErrMsg = `Exchange provider does not support fetchPositions for ${orderSymbol}; position mode cannot be established.`;
+                  console.error(`[SAFETY GATE] Order submission refused: ${modeErrMsg}`);
+                  const unverifiedErr: any = new Error(modeErrMsg);
+                  unverifiedErr.isPositionModeUnverified = true;
+                  unverifiedErr.code = 'POSITION_MODE_UNVERIFIED';
+                  unverifiedErr.details = { symbol: orderSymbol, reason: 'PROVIDER_UNSUPPORTED' };
+                  throw unverifiedErr;
+                }
+
+                let symbolPositions: any[];
+                try {
+                  symbolPositions = await (writeProvider as any).fetchPositions(matchedCategory || 'linear', orderSymbol, true);
+                } catch (posModeErr: any) {
+                  const modeErrMsg = `Exchange query failure during position mode discovery for ${orderSymbol}: ${posModeErr?.message || String(posModeErr)}`;
+                  console.error(`[SAFETY GATE] Order submission refused: ${modeErrMsg}`);
+                  const unverifiedErr: any = new Error(modeErrMsg);
+                  unverifiedErr.isPositionModeUnverified = true;
+                  unverifiedErr.code = 'POSITION_MODE_UNVERIFIED';
+                  unverifiedErr.details = { symbol: orderSymbol, reason: 'EXCHANGE_QUERY_FAILED', underlying: posModeErr?.message };
+                  throw unverifiedErr;
+                }
+
+                // Requirement 2 & 4: Do not infer One-Way mode if empty or not an array
+                if (!Array.isArray(symbolPositions) || symbolPositions.length === 0) {
+                  const modeErrMsg = `Empty position metadata returned for ${orderSymbol}; position mode cannot be established reliably.`;
+                  console.error(`[SAFETY GATE] Order submission refused: ${modeErrMsg}`);
+                  const unverifiedErr: any = new Error(modeErrMsg);
+                  unverifiedErr.isPositionModeUnverified = true;
+                  unverifiedErr.code = 'POSITION_MODE_UNVERIFIED';
+                  unverifiedErr.details = { symbol: orderSymbol, reason: 'EMPTY_POSITION_LIST' };
+                  throw unverifiedErr;
+                }
+
+                // Requirement 4: Check for missing or malformed positionIdx
+                for (const pos of symbolPositions) {
+                  const pIdx = pos?.positionIdx;
+                  if (pIdx === undefined || pIdx === null || typeof pIdx !== 'number' || !Number.isInteger(pIdx) || isNaN(pIdx) || pIdx < 0 || pIdx > 2) {
+                    const modeErrMsg = `Missing or malformed positionIdx (${pIdx}) in position metadata for ${orderSymbol}.`;
+                    console.error(`[SAFETY GATE] Order submission refused: ${modeErrMsg}`);
+                    const unverifiedErr: any = new Error(modeErrMsg);
+                    unverifiedErr.isPositionModeUnverified = true;
+                    unverifiedErr.code = 'POSITION_MODE_UNVERIFIED';
+                    unverifiedErr.details = { symbol: orderSymbol, reason: 'MALFORMED_POSITION_IDX', rawPositionIdx: pIdx };
+                    throw unverifiedErr;
+                  }
+                }
+
+                // Requirement 4: Check for conflicting position mode indicators
+                const hasOneWay = symbolPositions.some((p: any) => p.positionIdx === 0);
+                const hasHedge = symbolPositions.some((p: any) => p.positionIdx === 1 || p.positionIdx === 2);
+
+                if (hasOneWay && hasHedge) {
+                  const modeErrMsg = `Conflicting position mode indicators detected for ${orderSymbol}: found both One-Way (positionIdx: 0) and Hedge (positionIdx: 1/2).`;
+                  console.error(`[SAFETY GATE] Order submission refused: ${modeErrMsg}`);
+                  const unverifiedErr: any = new Error(modeErrMsg);
+                  unverifiedErr.isPositionModeUnverified = true;
+                  unverifiedErr.code = 'POSITION_MODE_UNVERIFIED';
+                  unverifiedErr.details = { symbol: orderSymbol, reason: 'CONFLICTING_POSITION_MODE' };
+                  throw unverifiedErr;
+                }
+
+                // Requirement 3: Validate all position-mode responses:
+                // One-Way: positionIdx 0.
+                // Hedge BUY: positionIdx 1.
+                // Hedge SELL: positionIdx 2.
+                if (hasHedge) {
+                  verifiedPositionIdx = (side.toUpperCase() === 'SELL') ? 2 : 1;
+                  console.log(`[SAFETY GATE] Verified Bybit Hedge Mode for ${orderSymbol}: side=${side.toUpperCase()}, positionIdx=${verifiedPositionIdx}`);
+                } else if (hasOneWay) {
+                  verifiedPositionIdx = 0;
+                  console.log(`[SAFETY GATE] Verified Bybit One-Way Mode for ${orderSymbol}: positionIdx=0`);
+                } else {
+                  const modeErrMsg = `Unrecognized position mode for ${orderSymbol}.`;
+                  console.error(`[SAFETY GATE] Order submission refused: ${modeErrMsg}`);
+                  const unverifiedErr: any = new Error(modeErrMsg);
+                  unverifiedErr.isPositionModeUnverified = true;
+                  unverifiedErr.code = 'POSITION_MODE_UNVERIFIED';
+                  unverifiedErr.details = { symbol: orderSymbol, reason: 'UNRECOGNIZED_POSITION_MODE' };
+                  throw unverifiedErr;
+                }
+              } else {
+                verifiedPositionIdx = 0;
+              }
+
               const req: any = {
                 symbol: executionSnapshot.symbol,
                 side: executionSnapshot.side.toLowerCase(),
                 type: executionSnapshot.orderType.toLowerCase(),
                 amount: new BigNumber(executionSnapshot.quantizedQuantity),
                 clientOrderId: executionSnapshot.clientOrderId,
-                timeInForce: timeInForce,
                 category: matchedCategory || 'linear',
-                params: { tickSize, stepSize }
+                positionIdx: verifiedPositionIdx,
+                params: { tickSize, stepSize, positionIdx: verifiedPositionIdx }
               };
+              if (timeInForce && executionSnapshot.orderType === 'LIMIT') req.timeInForce = timeInForce;
               if (executionSnapshot.limitPrice) req.price = new BigNumber(executionSnapshot.limitPrice);
               if (triggerPrice) {
                 req.triggerPrice = new BigNumber(triggerPrice);
@@ -2664,6 +2904,9 @@ export class TradingBot {
               };
 
               await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+              if (intentObj.intentId !== target.id) {
+                await this.persistIntentSnapshot(target.id, intentObj);
+              }
               reservationIntent = intentObj;
 
               const safeEntryIntent: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER' | 'UNKNOWN' =
@@ -2806,7 +3049,7 @@ export class TradingBot {
                       symbol: orderSymbol,
                       side,
                       category: matchedCategory || 'linear',
-                      positionIdx: 0,
+                      positionIdx: verifiedPositionIdx,
                       closeIntentId: `close_${intentObj.intentId}`,
                       lockedAt: Date.now(),
                       reason: `Market order ${intentObj.intentId} fill and SL/TP status could not be verified after dispatch.`,
@@ -2849,6 +3092,9 @@ export class TradingBot {
                     reservationIntent.dispatchedAt = undefined;
                     reservationIntent.terminalReason = e?.message || 'PRE_DISPATCH_FAILURE';
                     await this.persistIntentSnapshot(target.id, reservationIntent);
+                    if (intentObj?.intentId && intentObj.intentId !== target.id) {
+                      await this.persistIntentSnapshot(intentObj.intentId, reservationIntent);
+                    }
                   }
                   throw e;
                 }
@@ -2910,7 +3156,7 @@ export class TradingBot {
                       symbol: orderSymbol,
                       side,
                       category: matchedCategory || 'linear',
-                      positionIdx: 0,
+                      positionIdx: verifiedPositionIdx,
                       closeIntentId: `close_${intentObj.intentId}`,
                       lockedAt: Date.now(),
                       reason: `Order ${intentObj.intentId} dispatch outcome is unknown due to network/timeout failure.`,
@@ -2927,6 +3173,9 @@ export class TradingBot {
                   intentObj.status = 'FAILED';
                   intentObj.terminalReason = e?.message || 'EXCHANGE_REJECTED';
                   await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                  if (intentObj.intentId !== target.id) {
+                    await this.persistIntentSnapshot(target.id, intentObj);
+                  }
                   throw e;
                 }
               }
@@ -2973,6 +3222,49 @@ export class TradingBot {
               };
             }
           } catch (e: any) {
+            if (e?.isPositionModeUnverified) {
+              if (reservationIntent && !reservationIntent.dispatchedAt && reservationIntent.status !== 'FAILED') {
+                reservationIntent.status = 'FAILED';
+                reservationIntent.terminalReason = e?.message || 'POSITION_MODE_UNVERIFIED';
+                await this.persistIntentSnapshot(target.id, reservationIntent);
+                if (reservationIntent.intentId && reservationIntent.intentId !== target.id) {
+                  await this.persistIntentSnapshot(reservationIntent.intentId, reservationIntent);
+                }
+              }
+              target.status = 'failed';
+              const latestAlerts = ((await this.state.storage.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+              const alertIdx = latestAlerts.findIndex((a) => a.id === target.id);
+              if (alertIdx >= 0) {
+                latestAlerts[alertIdx] = { ...latestAlerts[alertIdx], status: 'failed' };
+                await this.persistState('alerts', this.pruneAlerts(latestAlerts));
+              }
+              this.telemetrySink.emit({
+                userId,
+                category: 'EXCHANGE',
+                component: 'TradingBot',
+                eventName: 'POSITION_MODE_UNVERIFIED',
+                severity: 'ERROR',
+                correlationId: target.id,
+                symbol: orderSymbol,
+                strategyId: target.strategy,
+                payload: {
+                  reason: e?.details?.reason || 'POSITION_MODE_UNVERIFIED',
+                  message: e?.message,
+                  details: e?.details,
+                }
+              });
+              return new Response(
+                JSON.stringify({
+                  success: false,
+                  code: 'POSITION_MODE_UNVERIFIED',
+                  error: 'POSITION_MODE_UNVERIFIED',
+                  message: e?.message,
+                  symbol: orderSymbol,
+                  details: e?.details,
+                }),
+                { status: 422, headers: { 'Content-Type': 'application/json' } }
+              );
+            }
             if (e?.isFenceBAbort) {
               return new Response(
                 JSON.stringify({
@@ -3002,6 +3294,9 @@ export class TradingBot {
               reservationIntent.status = 'FAILED';
               reservationIntent.terminalReason = e?.message || 'PRE_DISPATCH_FAILURE';
               await this.persistIntentSnapshot(target.id, reservationIntent);
+              if (reservationIntent.intentId && reservationIntent.intentId !== target.id) {
+                await this.persistIntentSnapshot(reservationIntent.intentId, reservationIntent);
+              }
             }
             console.error(`[DIAGNOSTIC] [STAGE: ORDER_FAILED] exceptionMessage=${e.message}`);
             orderResult = {
@@ -3267,6 +3562,7 @@ export class TradingBot {
                 expectedSL: snapshot.stopLoss,
                 expectedTP: snapshot.takeProfit,
                 tickSize: activeTickSize,
+                positionIdx: verifiedPositionIdx,
               });
 
               if (!protCheck.verified) {
@@ -3829,6 +4125,7 @@ export class TradingBot {
     expectedSL?: number;
     expectedTP?: number;
     tickSize: number;
+    positionIdx?: number;
   }): Promise<{ verified: boolean; emergencyClosed: boolean; closeIntentId?: string; message: string }> {
     const {
       provider,
@@ -3845,6 +4142,7 @@ export class TradingBot {
       expectedSL,
       expectedTP,
       tickSize,
+      positionIdx,
     } = params;
 
     const toNum = (val: any): number | undefined => {
@@ -4002,13 +4300,14 @@ export class TradingBot {
     });
 
     const closeIntentId = `close_${positionId}`;
+    const verifiedPosIdx = positionIdx !== undefined ? positionIdx : (rawOrder?.positionIdx !== undefined ? Number(rawOrder.positionIdx) : 0);
     const lockObj: UnprotectedExposureLock = {
       positionId,
       alertId,
       symbol,
       side,
       category: category || 'linear',
-      positionIdx: 0,
+      positionIdx: verifiedPosIdx,
       closeIntentId,
       lockedAt: nowMs,
       reason: mismatchReason,
@@ -4029,7 +4328,7 @@ export class TradingBot {
       category: category || 'linear',
       side: closeSide,
       positionSide: side.toUpperCase() === 'BUY' ? 'long' : 'short',
-      positionIdx: 0,
+      positionIdx: verifiedPosIdx,
       qty: String(filledQuantity),
       orderLinkId: closeOrderLinkId,
       status: 'INTENT_PERSISTED',

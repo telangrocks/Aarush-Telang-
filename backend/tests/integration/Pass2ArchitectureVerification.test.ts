@@ -234,7 +234,7 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
         filled: { toNumber: () => 1.0 },
         average: { toNumber: () => 50000.0 },
       })),
-      fetchPositions: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockImplementation(async (cat, sym, zero) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
     } as any);
 
     vi.spyOn(ExchangeManager, 'executeIdempotentOrder').mockImplementation(async (provider: any, req: any) => {

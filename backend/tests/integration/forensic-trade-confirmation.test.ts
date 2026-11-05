@@ -156,6 +156,9 @@ describe('Forensic Investigation: Trade Confirmation Flow', () => {
           amount: req.amount,
           status: 'open'
         };
+      }),
+      fetchPositions: vi.fn().mockImplementation(async (cat, sym, zero) => {
+        return [{ symbol: sym || 'SOPH/USDT', positionIdx: 0, size: new BigNumber(0) }];
       })
     } as any);
 

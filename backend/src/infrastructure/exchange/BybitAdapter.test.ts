@@ -47,6 +47,7 @@ describe('BybitAdapter V5 Unit Tests', () => {
       type: 'market',
       amount: new (require('bignumber.js'))(0.0015),
       clientOrderId: 'alert_test_123',
+      positionIdx: 0,
       takeProfit: 67000.5,
       stopLoss: 63000.25,
     } as any;
@@ -151,6 +152,7 @@ describe('BybitAdapter V5 Unit Tests', () => {
         type: 'market',
         amount: new BigNumber(1.2847),
         clientOrderId: 'sol_alert_1',
+        positionIdx: 0,
         takeProfit: 145.6789,
         stopLoss: 132.4531,
         params: {
@@ -181,6 +183,7 @@ describe('BybitAdapter V5 Unit Tests', () => {
         type: 'market',
         amount: new BigNumber(0.0058),
         clientOrderId: 'btc_alert_sell',
+        positionIdx: 0,
         takeProfit: 63123.456,
         stopLoss: 67890.123,
         params: {
@@ -273,6 +276,110 @@ describe('BybitAdapter V5 Unit Tests', () => {
       const marketMalformed = (adapter as any).mapInstrumentToMarket(itemMalformed, 'linear');
       expect(marketMalformed.limits.amount.max.isNaN()).toBe(true);
       expect(marketMalformed.limits.marketAmount?.max?.isFinite()).toBe(false);
+    });
+  });
+
+  describe('F-09 Position Mode Resolution Invariants', () => {
+    it('serializes One-Way Mode (positionIdx: 0) into Bybit order payload', async () => {
+      await adapter.connect({ environment: 'demo', apiKey: 'testKey', secret: 'testSecret' });
+
+      let capturedParams: any = null;
+      (adapter as any).makeRequest = async (_method: string, path: string, params: any) => {
+        if (path === '/v5/order/create') {
+          capturedParams = params;
+          return { orderId: 'ord_oneway_1', orderLinkId: params.orderLinkId };
+        }
+        return {};
+      };
+
+      const BigNumber = require('bignumber.js');
+      await adapter.createOrder({
+        symbol: 'BTC/USDT',
+        side: 'buy',
+        type: 'market',
+        amount: new BigNumber(0.001),
+        positionIdx: 0,
+        clientOrderId: 'oneway_order',
+      } as any);
+
+      expect(capturedParams.positionIdx).toBe(0);
+      expect(capturedParams.orderType).toBe('Market');
+      expect(capturedParams.timeInForce).toBeUndefined();
+    });
+
+    it('serializes Hedge Mode with positionIdx 1 for BUY and 2 for SELL', async () => {
+      await adapter.connect({ environment: 'demo', apiKey: 'testKey', secret: 'testSecret' });
+
+      let capturedBuyParams: any = null;
+      let capturedSellParams: any = null;
+      (adapter as any).makeRequest = async (_method: string, path: string, params: any) => {
+        if (path === '/v5/order/create') {
+          if (params.side === 'Buy') capturedBuyParams = params;
+          else capturedSellParams = params;
+          return { orderId: 'ord_hedge', orderLinkId: params.orderLinkId };
+        }
+        return {};
+      };
+
+      const BigNumber = require('bignumber.js');
+      // BUY order -> positionIdx 1
+      await adapter.createOrder({
+        symbol: 'ETH/USDT',
+        side: 'buy',
+        type: 'market',
+        amount: new BigNumber(0.05),
+        positionIdx: 1,
+        clientOrderId: 'hedge_buy_order',
+      } as any);
+      expect(capturedBuyParams.positionIdx).toBe(1);
+
+      // SELL order -> positionIdx 2
+      await adapter.createOrder({
+        symbol: 'ETH/USDT',
+        side: 'sell',
+        type: 'market',
+        amount: new BigNumber(0.05),
+        positionIdx: 2,
+        clientOrderId: 'hedge_sell_order',
+      } as any);
+      expect(capturedSellParams.positionIdx).toBe(2);
+    });
+
+    it('parses fetchPositions mapping positionIdx, preserving undefined on missing index', async () => {
+      await adapter.connect({ environment: 'demo', apiKey: 'testKey', secret: 'testSecret' });
+
+      (adapter as any).makeRequest = async (_method: string, path: string, params: any) => {
+        if (path === '/v5/position/list') {
+          if (params.symbol === 'BTCUSDT') {
+            return { list: [{ symbol: 'BTCUSDT', side: 'Buy', size: '0', positionIdx: 0 }] };
+          }
+          if (params.symbol === 'ETHUSDT') {
+            return {
+              list: [
+                { symbol: 'ETHUSDT', side: 'Buy', size: '0', positionIdx: 1 },
+                { symbol: 'ETHUSDT', side: 'Sell', size: '0', positionIdx: 2 },
+              ]
+            };
+          }
+          if (params.symbol === 'SOLUSDT') {
+            return { list: [{ symbol: 'SOLUSDT', side: 'Buy', size: '0' }] }; // missing positionIdx
+          }
+        }
+        return {};
+      };
+
+      const btcPositions = await adapter.fetchPositions('linear', 'BTC/USDT', true);
+      expect(btcPositions).toHaveLength(1);
+      expect((btcPositions[0] as any).positionIdx).toBe(0);
+
+      const ethPositions = await adapter.fetchPositions('linear', 'ETH/USDT', true);
+      expect(ethPositions).toHaveLength(2);
+      expect((ethPositions[0] as any).positionIdx).toBe(1);
+      expect((ethPositions[1] as any).positionIdx).toBe(2);
+
+      const solPositions = await adapter.fetchPositions('linear', 'SOL/USDT', true);
+      expect(solPositions).toHaveLength(1);
+      expect((solPositions[0] as any).positionIdx).toBeUndefined();
     });
   });
 });

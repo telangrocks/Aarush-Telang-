@@ -112,7 +112,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         ];
         return list.find(m => m.symbol === sym || m.id === sym.replace(/[\/_-]/g, '')) || null;
       }),
-      fetchPositions: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockImplementation(async (cat, sym, zero) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: new BigNumber(0) }] : [])),
       createOrder: vi.fn().mockResolvedValue({
         id: 'ord-mock-123',
         status: 'closed',

@@ -68,6 +68,25 @@ export class ReconciliationEngine {
         order = await this.safeFetchHistory(adapter, intent.intentId, intent.symbol);
       }
 
+      if (!order && typeof (adapter as any).fetchMyTrades === 'function') {
+        try {
+          const trades = await (adapter as any).fetchMyTrades(intent.symbol);
+          const matchedTrade = trades?.find((t: any) =>
+            (t.orderLinkId && t.orderLinkId === intent.intentId) ||
+            (intent.actualOrderId && t.orderId === intent.actualOrderId)
+          );
+          if (matchedTrade) {
+            order = {
+              id: matchedTrade.orderId || intent.actualOrderId || '',
+              clientOrderId: intent.intentId,
+              status: 'partially_filled',
+              filled: matchedTrade.amount,
+              average: matchedTrade.price,
+            };
+          }
+        } catch (_) {}
+      }
+
       if (order) {
         // Exchange Found It exactly matching client ID!
         const proposedState = this.mapExchangeStatusToIntentState(order.status);
@@ -198,12 +217,24 @@ export class ReconciliationEngine {
             hasNoOpenOrders = true; // safeFetchOrder already checked open orders
           }
 
-          if (isPositionFlat && hasNoOpenOrders) {
+          let hasNoExecutions = false;
+          if (typeof (adapter as any).fetchMyTrades === 'function') {
+            const trades = await (adapter as any).fetchMyTrades(intent.symbol);
+            const matchingTrade = trades?.find((t: any) =>
+              (t.orderLinkId && t.orderLinkId === intent.intentId) ||
+              (intent.actualOrderId && t.orderId === intent.actualOrderId)
+            );
+            hasNoExecutions = !matchingTrade;
+          } else {
+            hasNoExecutions = true;
+          }
+
+          if (isPositionFlat && hasNoOpenOrders && hasNoExecutions) {
             intent.status = 'ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION';
             (intent as any).flatnessAffirmativelyVerified = true;
           } else {
-            console.warn(`[RECONCILIATION] Retaining protection on ${intent.symbol}: affirmative flatness not proven (flat=${isPositionFlat}, noOpenOrders=${hasNoOpenOrders})`);
-            intent.status = isPositionFlat ? 'UNKNOWN' : 'PARTIALLY_FILLED';
+            console.warn(`[RECONCILIATION] Retaining protection on ${intent.symbol}: affirmative flatness not proven (flat=${isPositionFlat}, noOpenOrders=${hasNoOpenOrders}, noExecutions=${hasNoExecutions})`);
+            intent.status = (isPositionFlat && hasNoOpenOrders) ? 'PARTIALLY_FILLED' : (isPositionFlat ? 'UNKNOWN' : 'PARTIALLY_FILLED');
             if (telemetryContext?.sink) {
               telemetryContext.sink.emit({
                 userId: telemetryContext.userId || 'system',

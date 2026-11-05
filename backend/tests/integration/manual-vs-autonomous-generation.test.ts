@@ -62,7 +62,7 @@ vi.mock('../../src/exchanges', async (importOriginal) => {
             amount: { min: 0.001, max: 1000 }
           }
         })),
-        fetchPositions: vi.fn().mockResolvedValue([]),
+        fetchPositions: vi.fn().mockImplementation(async (cat: any, sym: any, zero: any) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
         createOrder: vi.fn().mockResolvedValue({ id: 'ord-123', status: 'closed', filled: { toNumber: () => 0.02 }, amount: { toNumber: () => 0.02 }, average: { toNumber: () => 50100 } }),
         supportsOco: vi.fn().mockReturnValue(false),
         createOcoOrder: vi.fn()
@@ -829,7 +829,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
           limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } },
         };
       }),
-      fetchPositions: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockImplementation(async (cat: any, sym: any, zero: any) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
       createOrder: createOrderSpy,
       supportsOco: vi.fn().mockReturnValue(false),
     }));
@@ -1070,7 +1070,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
           price: new BigNumber(50050),
         },
       ]),
-      fetchPositions: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockImplementation(async (cat: any, sym: any, zero: any) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
       createOrder: createOrderSpy,
     });
 
@@ -1700,7 +1700,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         free: { USDT: 5000 },
         total: { USDT: 5000 },
       }),
-      fetchPositions: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockImplementation(async (cat: any, sym: any, zero: any) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
       fetchMarket: vi.fn().mockResolvedValue({
         id: 'BTCUSDT',
         symbol: 'BTC/USDT',
@@ -1873,7 +1873,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         free: { USDT: 5000 },
         total: { USDT: 5000 },
       }),
-      fetchPositions: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockImplementation(async (cat: any, sym: any, zero: any) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
       fetchOpenOrders: vi.fn().mockResolvedValue([]),
       fetchClosedOrders: fetchClosedOrdersSpy,
       fetchClosedPnl: vi.fn().mockResolvedValue([]),
@@ -2026,7 +2026,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
 
     fetchTickerSpy.mockClear();
     (ExchangeManager.getProvider as any).mockResolvedValue({
-      fetchPositions: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockImplementation(async (cat: any, sym: any, zero: any) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
       fetchOpenOrders: vi.fn().mockResolvedValue([]),
       fetchClosedOrders: vi.fn().mockResolvedValue([]),
       fetchTicker: fetchTickerSpy,
@@ -2094,7 +2094,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         stopLoss: new BigNumber(0.012100),
         takeProfit: new BigNumber(0.012900),
       }),
-      fetchPositions: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockImplementation(async (cat: any, sym: any, zero: any) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
       fetchOpenOrders: vi.fn().mockResolvedValue([]),
       fetchClosedOrders: vi.fn().mockResolvedValue([]),
     });
@@ -2142,7 +2142,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         takeProfit: new BigNumber(0.012900),
       }),
       fetchMarket: vi.fn().mockResolvedValue(null),
-      fetchPositions: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockImplementation(async (cat: any, sym: any, zero: any) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
       fetchOpenOrders: vi.fn().mockResolvedValue([]),
       fetchClosedOrders: vi.fn().mockResolvedValue([]),
     });

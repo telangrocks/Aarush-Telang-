@@ -1346,6 +1346,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
         fetchMarkets: vi.fn().mockImplementation(async () => [currentMarketRule]),
         fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTC/USDT', last: new BigNumber(76870) }),
         createOrder: vi.fn(),
+        fetchPositions: vi.fn().mockImplementation(async (cat, sym, zero) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: new BigNumber(0) }] : [])),
       };
       vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
 

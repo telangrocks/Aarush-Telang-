@@ -211,7 +211,7 @@ describe('End-to-End Approved Quantity Verification & Safety Tests', () => {
           price: new BigNumber(0.004962),
           average: new BigNumber(0.004962),
         }),
-        fetchPositions: vi.fn().mockResolvedValue([]),
+        fetchPositions: vi.fn().mockImplementation(async (cat, sym, zero) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: new BigNumber(0) }] : [])),
         fetchBalance: vi.fn().mockResolvedValue({
           free: { USDT: 10000 },
           total: { USDT: 10000 },

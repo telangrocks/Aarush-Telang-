@@ -1,5 +1,6 @@
 package com.cryptopulse.app.service
 
+import android.app.ActivityOptions
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -76,7 +77,10 @@ open class TradeAlertManager @Inject constructor(
             try {
                 val history = dataStore.getHandledAlertHistory()
                 history.forEach { (id, record) ->
-                    handledAlertsCache[id] = record.hardwareState
+                    val state = record?.hardwareState ?: "RESOLVED"
+                    if (id != null) {
+                        handledAlertsCache[id] = state
+                    }
                 }
                 val alert = dataStore.getActiveAlertFlow().first()
                 if (alert != null) {
@@ -104,8 +108,9 @@ open class TradeAlertManager @Inject constructor(
                 kotlinx.coroutines.runBlocking { dataStore.getHandledAlertHistory()[alertId] }
             } catch (_: Throwable) { null }
             if (persistedRecord != null) {
-                existingHardwareState = persistedRecord.hardwareState
-                handledAlertsCache[alertId] = persistedRecord.hardwareState
+                val state = persistedRecord.hardwareState ?: "RESOLVED"
+                existingHardwareState = state
+                handledAlertsCache[alertId] = state
             }
         }
 
@@ -586,9 +591,18 @@ open class TradeAlertManager @Inject constructor(
                 putExtra("alert_timestamp", timestamp)
             }
 
+            val activityOptionsBundle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                ActivityOptions.makeBasic().apply {
+                    setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                }.toBundle()
+            } else {
+                null
+            }
+
             val pendingIntent = PendingIntent.getActivity(
                 appContext, 2, intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                activityOptionsBundle
             )
 
             val silenceIntent = Intent(appContext, TradeAlertActionReceiver::class.java).apply {
@@ -665,9 +679,18 @@ open class TradeAlertManager @Inject constructor(
                 orderId?.let { putExtra("order_id", it) }
             }
 
+            val execActivityOptionsBundle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                ActivityOptions.makeBasic().apply {
+                    setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                }.toBundle()
+            } else {
+                null
+            }
+
             val pendingIntent = PendingIntent.getActivity(
                 appContext, 3, intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                execActivityOptionsBundle
             )
 
             val formattedPrice = if (entryPrice > 0.0) "$${"%.4f".format(entryPrice)}" else "Market"

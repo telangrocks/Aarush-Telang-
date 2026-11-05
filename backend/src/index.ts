@@ -435,6 +435,7 @@ api.post("/trading-bot/deactivate", handleDeactivateTradingBot);
 api.post("/trading-bot/stop", handleStopTradingBot);
 api.get("/trading-bot/alerts", handleGetBotAlerts);
 api.post("/trading-bot/alerts/:alertId/ack", handleAcknowledgeAlert);
+api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
 api.get("/trading-bot/execution-status/:positionId", handleGetExecutionStatus);
 api.post("/trading-bot/manual-alert", handleTriggerManualTradeAlert);
 

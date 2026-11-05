@@ -27,6 +27,7 @@ vi.mock('../../src/exchanges', async (importOriginal) => {
           }
           return { id: 'BTCUSDT', symbol: 'BTC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } };
         }),
+        fetchPositions: vi.fn().mockImplementation(async (cat, sym, zero) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: { toNumber: () => 0 } }] : [])),
         createOrder: vi.fn().mockResolvedValue({
           id: 'ord-restoration-1',
           status: 'closed',

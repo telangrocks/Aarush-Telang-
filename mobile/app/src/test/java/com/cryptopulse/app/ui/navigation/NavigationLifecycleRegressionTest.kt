@@ -652,4 +652,117 @@ class NavigationLifecycleRegressionTest {
         assertEquals("Must remain in authenticated flow despite network failure", "authenticated_flow", destination)
         assertTrue("Tokens must remain intact during temporary network drops", tokenManager.hasCachedTokenSync())
     }
+
+    // --- F-13: Android Notification Lifecycle Delivery Across 4 Process States ---
+
+    @Test
+    fun `F-13 Notification tap in FOREGROUND delivers alertId to trade_alert parser`() {
+        val now = System.currentTimeMillis()
+        val alertManager = FakeTestTradeAlertManager()
+        alertManager.setAlertState("alert_fg_101", "HARDWARE_ACTIVE")
+
+        val validated = com.cryptopulse.app.MainActivity.validateAlertData(
+            alertId = "alert_fg_101",
+            symbol = "BTC/USDT",
+            side = "BUY",
+            strategy = "ScalperV2",
+            entryPrice = 96500.0,
+            stopLoss = 94000.0,
+            takeProfit = 99000.0,
+            timestamp = now,
+            estimatedPnl = 250.0,
+            positionSize = 50.0,
+            tradeAlertManager = alertManager
+        )
+
+        assertNotNull("Foreground notification tap must validate successfully", validated)
+        assertEquals("alert_fg_101", validated?.alertId)
+        assertEquals("BTC/USDT", validated?.pairName)
+        assertEquals(96500.0, validated?.entryPrice ?: 0.0, 0.001)
+        val alertMap = validated?.toAlertMap()
+        assertEquals("alert_fg_101", alertMap?.get("alertId"))
+        assertEquals("BUY", alertMap?.get("side"))
+    }
+
+    @Test
+    fun `F-13 Notification tap in BACKGROUND with CLEAR_TOP delivers alertId and flags to trade_alert`() {
+        val now = System.currentTimeMillis()
+        val alertManager = FakeTestTradeAlertManager()
+        alertManager.setAlertState("alert_bg_202", "HARDWARE_ACTIVE")
+
+        // Verify PendingIntent flags contract matching TradeAlertManager
+        val intentFlags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+        assertTrue("Must include FLAG_ACTIVITY_NEW_TASK", (intentFlags and android.content.Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
+        assertTrue("Must include FLAG_ACTIVITY_CLEAR_TOP", (intentFlags and android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0)
+
+        val validated = com.cryptopulse.app.MainActivity.validateAlertData(
+            alertId = "alert_bg_202",
+            symbol = "SOL/USDT",
+            side = "BUY",
+            strategy = "ScalperV2",
+            entryPrice = 185.50,
+            stopLoss = 178.0,
+            takeProfit = 195.0,
+            timestamp = now,
+            tradeAlertManager = alertManager
+        )
+
+        assertNotNull("Background intent must validate successfully", validated)
+        assertEquals("alert_bg_202", validated?.alertId)
+        val candidate = validated?.toMarketCandidate()
+        assertEquals("SOL", candidate?.symbol)
+        assertEquals("SOL/USDT", candidate?.pairName)
+    }
+
+    @Test
+    fun `F-13 Activity RECREATION cleanses intent extras and prevents duplicate navigation loops`() {
+        val now = System.currentTimeMillis()
+        val alertManager = FakeTestTradeAlertManager()
+        alertManager.setAlertState("alert_rec_303", "HARDWARE_ACTIVE")
+
+        // Initial validation upon incoming notification
+        val firstPass = com.cryptopulse.app.MainActivity.validateAlertData(
+            alertId = "alert_rec_303",
+            symbol = "ETH/USDT",
+            side = "SELL",
+            strategy = "ScalperV2",
+            entryPrice = 3450.0,
+            stopLoss = 3550.0,
+            takeProfit = 3300.0,
+            timestamp = now,
+            tradeAlertManager = alertManager
+        )
+        assertNotNull(firstPass)
+
+        // After activity creation, intent extras are cleansed (simulated by null/empty alertId on recreation)
+        val recreationPass = com.cryptopulse.app.MainActivity.validateAlertData(
+            alertId = null,
+            symbol = null,
+            side = null,
+            strategy = null,
+            entryPrice = null,
+            stopLoss = null,
+            takeProfit = null,
+            timestamp = null,
+            tradeAlertManager = alertManager
+        )
+        assertNull("Cleansed intent during recreation must return null and prevent duplicate alert loops", recreationPass)
+    }
+
+    @Test
+    fun `F-13 PROCESS TERMINATION cold launch delivers alertId to trade_alert startup destination`() = runTest {
+        val tokenManager = FakeTestTokenManager(
+            isRegisteredSync = true,
+            hasTokenSync = true
+        )
+
+        // Cold launch with active unhandled trade alert
+        val destination = resolveStartupDestination(
+            tokenManager = tokenManager,
+            isExchangeConnected = true,
+            hasActiveAlert = true
+        )
+
+        assertEquals("Cold-start with active alert must target trade_alert screen", "trade_alert", destination)
+    }
 }

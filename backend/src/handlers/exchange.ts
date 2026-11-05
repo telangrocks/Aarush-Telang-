@@ -40,6 +40,7 @@ const USER_EXCHANGE_ROUTING_CACHE = new LruTtlCache<string, {
   exchange_region: string | null;
 }>(5000, 60000);
 const TICKER_CACHE = new LruTtlCache<string, any>(200, 2000); // 2s TTL
+const TICKER_FALLBACK_CACHE = new LruTtlCache<string, any>(200, 60000); // 60s stale fallback TTL
 const KLINES_CACHE = new LruTtlCache<string, any>(200, 15000); // 15s TTL
 
 interface ScopedPublicCandleStoreEntry {
@@ -136,6 +137,7 @@ export function __resetPublicOpportunityStateForTests(): void {
   DISCOVERY_CACHE.clear();
   USER_EXCHANGE_ROUTING_CACHE.clear();
   TICKER_CACHE.clear();
+  TICKER_FALLBACK_CACHE.clear();
   KLINES_CACHE.clear();
   PublicMarketDataService.getInstance().clearCaches();
 }
@@ -1791,12 +1793,27 @@ export async function handleGetTicker(
       timestamp: new Date().toISOString(),
     };
     TICKER_CACHE.set(tickerCacheKey, result);
+    TICKER_FALLBACK_CACHE.set(tickerCacheKey, result);
 
     return c.json(result);
   } catch (e: unknown) {
     const error = e as Error;
-    c.status(500);
-    return c.json({ error: "Error fetching ticker", message: error.message });
+    const symbolParam = c.req.query("symbol") || "";
+    // Check fallback cache for existing ticker
+    const fallbackTicker = Array.from(TICKER_FALLBACK_CACHE['cache']?.values() || []).find(
+      (v: any) => v?.value?.symbol === symbolParam || String(v?.value?.symbol || '').replace('/', '') === symbolParam.replace('/', '')
+    )?.value;
+
+    if (fallbackTicker) {
+      c.header("X-Cache-Status", "STALE");
+      return c.json({
+        ...fallbackTicker,
+        isStale: true,
+      });
+    }
+
+    c.status(503);
+    return c.json({ success: false, code: "EXCHANGE_UNAVAILABLE", error: "Error fetching ticker", message: error.message || "Exchange service temporarily unavailable." });
   }
 }
 
@@ -2411,7 +2428,14 @@ export async function handleAcknowledgeAlert(
   try {
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
-    const { alertId } = await c.req.json<{ alertId: string }>();
+
+    let alertId = c.req.param("alertId");
+    if (!alertId) {
+      try {
+        const body = await c.req.json<{ alertId?: string }>();
+        alertId = body?.alertId;
+      } catch (_) {}
+    }
 
     if (!alertId) {
       c.status(400);
