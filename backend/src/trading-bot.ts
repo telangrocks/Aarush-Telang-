@@ -7,7 +7,7 @@ import BigNumber from 'bignumber.js';
 
 import { decrypt } from './crypto';
 import { TradeValidator } from './validation/TradeValidator';
-import { sendTradeNotification, sendTradeFillNotification } from './handlers/notifications';
+import { sendTradeNotification, sendTradeFillNotification, FcmDispatchResult } from './handlers/notifications';
 import { StrategyOrchestrator, MarketDataEngine, AdapterCandleProvider } from './engine';
 import { EngineAPIService, AnalysisSnapshotMapper } from './api/engine';
 import { EvaluationResult } from './engine/dto/EvaluationResult';
@@ -74,6 +74,12 @@ export interface TradeAlert {
   generation?: number;
   source?: 'MANUAL' | 'AUTONOMOUS';
   timeframe?: Timeframe;
+  dispatchState?: 'UNSENT' | 'DISPATCHING' | 'SENT' | 'FAILED' | 'AMBIGUOUS' | 'EXPIRED' | 'HISTORICAL_UNTRACKED';
+  dispatchAttemptId?: string;
+  dispatchStartedAt?: number;
+  dispatchedAt?: number;
+  dispatchAttemptCount?: number;
+  dispatchError?: string;
 }
 
 export interface TradeSetupSnapshot {
@@ -764,7 +770,12 @@ export class TradingBot {
       }
 
       this.runtimeState.activePositions = (await getVal('activePositions')) || [];
-      this.runtimeState.alerts = (await getVal('alerts')) || [];
+      const storedAlerts: TradeAlert[] = (await getVal('alerts')) || [];
+      const { alerts: normalizedAlerts, modified: alertsModified } = this.normalizeAlertsRecovery(storedAlerts);
+      this.runtimeState.alerts = normalizedAlerts;
+      if (alertsModified) {
+        await this.state.storage.put('alerts', normalizedAlerts);
+      }
       this.runtimeState.symbolCooldowns = (await getVal('symbolCooldowns')) || {};
       this.runtimeState.pendingPositionSync = (await getVal('pendingPositionSync')) || null;
       this.runtimeState.lastAccountBalance = (await getVal('lastAccountBalance')) ?? undefined;
@@ -805,6 +816,188 @@ export class TradingBot {
   private async persistState(key: string, value: any) {
     (this.runtimeState as any)[key] = value;
     await this.state.storage.put(key, value);
+  }
+
+  public normalizeAlertsRecovery(alerts: TradeAlert[], nowMs: number = Date.now()): { alerts: TradeAlert[]; modified: boolean } {
+    let modified = false;
+    const normalized = alerts.map((alert) => {
+      // 1. Historical or untracked alert without dispatchState
+      if (!alert.dispatchState) {
+        modified = true;
+        return {
+          ...alert,
+          dispatchState: 'HISTORICAL_UNTRACKED' as const,
+        };
+      }
+
+      // 2. Orphaned or expired DISPATCHING lease (20s lease timeout or recovery across DO restart)
+      if (alert.dispatchState === 'DISPATCHING') {
+        const leaseAge = nowMs - (alert.dispatchStartedAt || 0);
+        if (leaseAge >= 20_000 || !alert.dispatchAttemptId) {
+          modified = true;
+          return {
+            ...alert,
+            dispatchState: 'AMBIGUOUS' as const,
+            dispatchError: 'Lease expired or orphaned across restart (recovery)',
+          };
+        }
+      }
+
+      // 3. Unsent alert that has exceeded MAX_SIGNAL_AGE_MS (300,000 ms)
+      if (alert.dispatchState === 'UNSENT') {
+        const parsedTime = Date.parse(alert.timestamp);
+        const ageMs = !isNaN(parsedTime) ? nowMs - parsedTime : Infinity;
+        if (ageMs > 300_000) {
+          modified = true;
+          return {
+            ...alert,
+            dispatchState: 'EXPIRED' as const,
+            dispatchError: 'Expired before dispatch attempt (age > 300s)',
+          };
+        }
+      }
+
+      return alert;
+    });
+
+    return { alerts: normalized, modified };
+  }
+
+  public async dispatchAlertNotification(
+    userId: string,
+    alert: TradeAlert,
+    confidenceScore: number,
+    reasoning: string[],
+    targetTimeframe?: Timeframe
+  ): Promise<void> {
+    // 1. Freshness check against MAX_SIGNAL_AGE_MS (300,000 ms)
+    const alertCreatedMs = Date.parse(alert.timestamp);
+    const nowMs = Date.now();
+    const elapsedMs = !isNaN(alertCreatedMs) ? nowMs - alertCreatedMs : 0;
+    const remainingMs = 300_000 - elapsedMs;
+    const remainingTtlSec = Math.floor(remainingMs / 1000);
+
+    const runTransaction = async (cb: (txn: any) => Promise<void>) => {
+      if (typeof this.state.storage.transaction === 'function') {
+        await this.state.storage.transaction(cb);
+      } else {
+        await cb(this.state.storage);
+      }
+    };
+
+    if (remainingTtlSec < 1) {
+      await runTransaction(async (txn: any) => {
+        const stored = await txn.get('alerts');
+        const currentAlerts: TradeAlert[] = Array.isArray(stored) ? stored : (this.runtimeState.alerts || []);
+        const target = currentAlerts.find((a: TradeAlert) => a.id === alert.id);
+        if (target && target.dispatchState === 'UNSENT') {
+          target.dispatchState = 'EXPIRED';
+          target.dispatchError = 'Alert expired before dispatch attempt (age > 300s)';
+          await txn.put('alerts', currentAlerts);
+          this.runtimeState.alerts = currentAlerts;
+        }
+      });
+      return;
+    }
+
+    // 2. Phase 1: Storage Transaction — Atomic Lease Acquisition
+    const attemptId = crypto.randomUUID();
+    let leaseAcquired = false;
+
+    await runTransaction(async (txn: any) => {
+      const stored = await txn.get('alerts');
+      const currentAlerts: TradeAlert[] = Array.isArray(stored) ? stored : (this.runtimeState.alerts || []);
+      const target = currentAlerts.find((a: TradeAlert) => a.id === alert.id);
+      if (!target) return;
+
+      // Only UNSENT alerts are eligible for an automatic outbound dispatch attempt
+      if (target.dispatchState !== 'UNSENT') {
+        return;
+      }
+
+      target.dispatchState = 'DISPATCHING';
+      target.dispatchAttemptId = attemptId;
+      target.dispatchStartedAt = Date.now();
+      target.dispatchAttemptCount = (target.dispatchAttemptCount || 0) + 1;
+      await txn.put('alerts', currentAlerts);
+      this.runtimeState.alerts = currentAlerts;
+      leaseAcquired = true;
+    });
+
+    if (!leaseAcquired) {
+      return;
+    }
+
+    // 3. Phase 2: Network I/O (Strictly outside storage transaction)
+    let dispatchResult: FcmDispatchResult;
+    try {
+      dispatchResult = await sendTradeNotification(
+        this.env,
+        userId,
+        alert.id,
+        {
+          symbol: alert.symbol,
+          side: alert.side,
+          entryPrice: alert.entryPrice,
+          targetEntryPrice: alert.targetEntryPrice,
+          signalPrice: alert.signalPrice,
+          stopLoss: alert.stopLoss,
+          takeProfit: alert.takeProfit,
+          estimatedPnl: alert.estimatedPnl,
+          positionSize: alert.positionSize,
+          quantity: alert.quantity,
+          requestedBudget: alert.requestedBudget,
+          effectiveNotional: alert.effectiveNotional,
+          strategy: alert.strategy,
+          timestamp: alert.timestamp,
+          timeframe: targetTimeframe,
+          confidenceScore,
+          reasoning,
+        },
+        this.telemetrySink,
+        Math.min(300, Math.max(1, remainingTtlSec))
+      );
+    } catch (networkErr: any) {
+      dispatchResult = {
+        success: false,
+        outcome: 'AMBIGUOUS',
+        httpStatus: 0,
+        errorCode: 'NETWORK_EXCEPTION',
+        error: networkErr?.message || String(networkErr),
+      };
+    }
+
+    // 4. Phase 3: Storage Transaction — Lease Ownership Verification & Commit
+    await runTransaction(async (txn: any) => {
+      const stored = await txn.get('alerts');
+      const currentAlerts: TradeAlert[] = Array.isArray(stored) ? stored : (this.runtimeState.alerts || []);
+      const target = currentAlerts.find((a: TradeAlert) => a.id === alert.id);
+      if (!target) return;
+
+      // Invariant: Verify state and attempt ownership
+      if (target.dispatchState !== 'DISPATCHING' || target.dispatchAttemptId !== attemptId) {
+        console.warn(`[FCM_DISPATCH_ORPHAN] Alert ${alert.id} lease expired or superseded during dispatch. Current state: ${target.dispatchState}, attempt: ${target.dispatchAttemptId}`);
+        return;
+      }
+
+      const commitNow = Date.now();
+      if (dispatchResult.outcome === 'SUCCESS') {
+        target.dispatchState = 'SENT';
+        target.dispatchedAt = commitNow;
+        target.dispatchError = undefined;
+      } else if (dispatchResult.outcome === 'EXPLICIT_REJECTION' || dispatchResult.outcome === 'PRE_DISPATCH_FAILURE') {
+        target.dispatchState = 'FAILED';
+        target.dispatchError = dispatchResult.errorCode || dispatchResult.error || 'Dispatch failed';
+      } else {
+        // AMBIGUOUS: HTTP 5xx, network drops, timeouts, aborts
+        // Never automatically retry an ambiguous dispatch!
+        target.dispatchState = 'AMBIGUOUS';
+        target.dispatchError = dispatchResult.errorCode || dispatchResult.error || 'Indeterminate dispatch outcome';
+      }
+
+      await txn.put('alerts', currentAlerts);
+      this.runtimeState.alerts = currentAlerts;
+    });
   }
 
   private canTransitionIntentStatus(existing: any, nextIntent: any): boolean {
@@ -1460,6 +1653,7 @@ export class TradingBot {
             status: 'pending',
             source: 'AUTONOMOUS',
             generation: alert.generation ?? storedGen,
+            dispatchState: alert.dispatchState || 'HISTORICAL_UNTRACKED',
           };
         } else {
           registeredAlert = {
@@ -1467,6 +1661,7 @@ export class TradingBot {
             status: 'pending',
             source: 'MANUAL',
             generation: undefined,
+            dispatchState: alert.dispatchState || 'HISTORICAL_UNTRACKED',
           };
         }
 
@@ -6360,6 +6555,8 @@ export class TradingBot {
                           timeframe: targetTimeframe,
                           generation: cycleGeneration,
                           source: 'AUTONOMOUS',
+                          dispatchState: 'UNSENT',
+                          dispatchAttemptCount: 0,
                         };
                         alerts.push(alert);
                         legacySignalForCandidate = alert;
@@ -6389,29 +6586,17 @@ export class TradingBot {
                           }
                         });
 
-                        // Trigger real-time FCM Push Notification to user's Android device
+                        // Trigger real-time FCM Push Notification to user's Android device via Phase 2 State Machine
                         try {
-                          await sendTradeNotification(this.env, userId, alert.id, {
-                            symbol: alert.symbol,
-                            side: alert.side,
-                            entryPrice: alert.entryPrice,
-                            targetEntryPrice: alert.targetEntryPrice,
-                            signalPrice: alert.signalPrice,
-                            stopLoss: alert.stopLoss,
-                            takeProfit: alert.takeProfit,
-                            estimatedPnl: alert.estimatedPnl,
-                            positionSize: alert.positionSize,
-                            quantity: alert.quantity,
-                            requestedBudget: alert.requestedBudget,
-                            effectiveNotional: alert.effectiveNotional,
-                            strategy: alert.strategy,
-                            timestamp: alert.timestamp,
-                            timeframe: targetTimeframe,
-                            confidenceScore: result.confidenceScore || 0,
-                            reasoning: result.metadata?.reasoning || [],
-                          }, this.telemetrySink);
+                          await this.dispatchAlertNotification(
+                            userId,
+                            alert,
+                            result.confidenceScore || 0,
+                            result.metadata?.reasoning || [],
+                            targetTimeframe
+                          );
                         } catch (notifErr) {
-                          console.error('Failed to send FCM trade notification:', notifErr);
+                          console.error('Failed to dispatch FCM trade notification:', notifErr);
                         }
 
                         // Stage 1: Successful strategy alert creation -> stop evaluating further strategies for this ticker

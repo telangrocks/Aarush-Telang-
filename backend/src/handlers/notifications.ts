@@ -2,6 +2,16 @@ import { Context } from "hono";
 import { Env } from "../index";
 import { BackendDiagnosticSink } from "../telemetry/BackendDiagnosticSink";
 
+export type DispatchOutcome = 'SUCCESS' | 'PRE_DISPATCH_FAILURE' | 'EXPLICIT_REJECTION' | 'AMBIGUOUS';
+
+export interface FcmDispatchResult {
+  success: boolean;
+  outcome: DispatchOutcome;
+  httpStatus: number;
+  errorCode?: string | null;
+  error?: string;
+}
+
 export interface FcmTokenPayload {
   fcmToken: string;
 }
@@ -52,6 +62,7 @@ function base64url(arr: Uint8Array | string): string {
 async function generateGoogleAccessToken(
   clientEmail: string,
   privateKeyPem: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   // Check memory cache (reuse token if valid for >60 seconds)
   if (cachedAccessToken && Date.now() < cachedExpiry - 60000) {
@@ -96,6 +107,7 @@ async function generateGoogleAccessToken(
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${assertion}`,
+    ...(signal ? { signal } : {}),
   });
 
   if (!response.ok) {
@@ -258,7 +270,7 @@ export async function sendTradeFillNotification(
           android: {
             notification: {
               sound: "default",
-              channel_id: "trading_bot_channel",
+              channel_id: "trading_bot_channel_v2",
             },
             priority: "normal",
           },
@@ -480,88 +492,157 @@ export async function sendTradeNotification(
     reasoning?: string[];
   },
   sink?: BackendDiagnosticSink,
-): Promise<void> {
+  remainingTtlSec?: number,
+  externalSignal?: AbortSignal,
+): Promise<FcmDispatchResult> {
   const startMs = Date.now();
-  const user = await env.DB.prepare(
-    "SELECT fcm_token FROM users WHERE id = ?",
-  )
-    .bind(userId)
-    .first<{ fcm_token: string | null }>();
+  const dispatchController = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    dispatchController.abort("DISPATCH_TIMEOUT_EXCEEDED");
+  }, 10_000);
 
-  const fcmToken = user?.fcm_token;
-  if (!fcmToken) {
-    sink?.emit({
-      userId,
-      category: "NOTIFICATION",
-      component: "notifications",
-      eventName: "FCM_DISPATCH_RESULT",
-      severity: "WARN",
-      correlationId: alertId,
-      symbol: opportunity.symbol,
-      strategyId: opportunity.strategy,
-      durationMs: 0,
-      payload: {
-        alertId,
-        success: false,
-        transport: "fcm_v1",
-        httpStatus: 0,
-        errorCode: "MISSING_FCM_TOKEN",
-      }
-    });
-    return;
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      dispatchController.abort(externalSignal.reason);
+    } else {
+      externalSignal.addEventListener("abort", () => dispatchController.abort(externalSignal.reason));
+    }
   }
 
-  const title = `Trade Signal: ${opportunity.side} ${opportunity.symbol}`;
-  const body = `${opportunity.side} ${opportunity.symbol} | Strategy: ${opportunity.strategy} | Entry: $${opportunity.entryPrice.toFixed(4)} | SL: $${opportunity.stopLoss.toFixed(4)} | TP: $${opportunity.takeProfit.toFixed(4)}`;
+  let endpointContacted = false;
 
-  const dataPayload: Record<string, string> = {
-    type: "TRADE_ALERT",
-    alertType: "TRADE_ALERT",
-    id: alertId,
-    alertId: alertId,
-    extra_alert: "true",
-    symbol: opportunity.symbol,
-    side: opportunity.side,
-    strategy: opportunity.strategy,
-    entryPrice: opportunity.entryPrice.toString(),
-    stopLoss: opportunity.stopLoss.toString(),
-    takeProfit: opportunity.takeProfit.toString(),
-    estimatedPnl: opportunity.estimatedPnl.toString(),
-    serverTimestamp: (opportunity.timestamp ? new Date(opportunity.timestamp).getTime() : Date.now()).toString(),
-  };
-  if (opportunity.timeframe) {
-    dataPayload.timeframe = opportunity.timeframe;
-  }
-  if (opportunity.targetEntryPrice != null) {
-    dataPayload.targetEntryPrice = opportunity.targetEntryPrice.toString();
-  }
-  if (opportunity.signalPrice != null) {
-    dataPayload.signalPrice = opportunity.signalPrice.toString();
-  }
-  if (opportunity.positionSize != null) {
-    dataPayload.positionSize = opportunity.positionSize.toString();
-  }
-  if (opportunity.quantity != null && Number.isFinite(opportunity.quantity) && opportunity.quantity > 0) {
-    dataPayload.quantity = opportunity.quantity.toString();
-  }
-  if (opportunity.requestedBudget != null && Number.isFinite(opportunity.requestedBudget) && opportunity.requestedBudget > 0) {
-    dataPayload.requestedBudget = opportunity.requestedBudget.toString();
-  }
-  if (opportunity.effectiveNotional != null && Number.isFinite(opportunity.effectiveNotional) && opportunity.effectiveNotional > 0) {
-    dataPayload.effectiveNotional = opportunity.effectiveNotional.toString();
-  }
-  if (opportunity.confidenceScore != null) {
-    dataPayload.confidenceScore = opportunity.confidenceScore.toString();
-  }
-  if (opportunity.reasoning && opportunity.reasoning.length > 0) {
-    dataPayload.reasoning = JSON.stringify(opportunity.reasoning);
-  }
-
-  // 1. Try FCM v1 HTTP API if keys are provided
-  if (env.FCM_PROJECT_ID && env.FCM_CLIENT_EMAIL && env.FCM_PRIVATE_KEY) {
+  try {
+    let fcmToken: string | null = null;
     try {
-      const accessToken = await generateGoogleAccessToken(env.FCM_CLIENT_EMAIL, env.FCM_PRIVATE_KEY);
-      
+      const user = await env.DB.prepare(
+        "SELECT fcm_token FROM users WHERE id = ?",
+      )
+        .bind(userId)
+        .first<{ fcm_token: string | null }>();
+      fcmToken = user?.fcm_token ?? null;
+    } catch (dbErr: any) {
+      clearTimeout(timeoutHandle);
+      return {
+        success: false,
+        outcome: 'PRE_DISPATCH_FAILURE',
+        httpStatus: 0,
+        errorCode: 'DB_ERROR',
+        error: dbErr?.message || 'Database query failed',
+      };
+    }
+
+    if (!fcmToken) {
+      clearTimeout(timeoutHandle);
+      sink?.emit({
+        userId,
+        category: "NOTIFICATION",
+        component: "notifications",
+        eventName: "FCM_DISPATCH_RESULT",
+        severity: "WARN",
+        correlationId: alertId,
+        symbol: opportunity.symbol,
+        strategyId: opportunity.strategy,
+        durationMs: 0,
+        payload: {
+          alertId,
+          success: false,
+          transport: "fcm_v1",
+          httpStatus: 0,
+          errorCode: "MISSING_FCM_TOKEN",
+        }
+      });
+      return {
+        success: false,
+        outcome: 'PRE_DISPATCH_FAILURE',
+        httpStatus: 0,
+        errorCode: 'MISSING_FCM_TOKEN',
+        error: 'User has no registered FCM token',
+      };
+    }
+
+    const title = `Trade Signal: ${opportunity.side} ${opportunity.symbol}`;
+    const body = `${opportunity.side} ${opportunity.symbol} | Strategy: ${opportunity.strategy} | Entry: $${opportunity.entryPrice.toFixed(4)} | SL: $${opportunity.stopLoss.toFixed(4)} | TP: $${opportunity.takeProfit.toFixed(4)}`;
+
+    const dataPayload: Record<string, string> = {
+      type: "TRADE_ALERT",
+      alertType: "TRADE_ALERT",
+      id: alertId,
+      alertId: alertId,
+      extra_alert: "true",
+      symbol: opportunity.symbol,
+      side: opportunity.side,
+      strategy: opportunity.strategy,
+      entryPrice: opportunity.entryPrice.toString(),
+      stopLoss: opportunity.stopLoss.toString(),
+      takeProfit: opportunity.takeProfit.toString(),
+      estimatedPnl: opportunity.estimatedPnl.toString(),
+      serverTimestamp: (opportunity.timestamp ? new Date(opportunity.timestamp).getTime() : Date.now()).toString(),
+    };
+    if (opportunity.timeframe) {
+      dataPayload.timeframe = opportunity.timeframe;
+    }
+    if (opportunity.targetEntryPrice != null) {
+      dataPayload.targetEntryPrice = opportunity.targetEntryPrice.toString();
+    }
+    if (opportunity.signalPrice != null) {
+      dataPayload.signalPrice = opportunity.signalPrice.toString();
+    }
+    if (opportunity.positionSize != null) {
+      dataPayload.positionSize = opportunity.positionSize.toString();
+    }
+    if (opportunity.quantity != null && Number.isFinite(opportunity.quantity) && opportunity.quantity > 0) {
+      dataPayload.quantity = opportunity.quantity.toString();
+    }
+    if (opportunity.requestedBudget != null && Number.isFinite(opportunity.requestedBudget) && opportunity.requestedBudget > 0) {
+      dataPayload.requestedBudget = opportunity.requestedBudget.toString();
+    }
+    if (opportunity.effectiveNotional != null && Number.isFinite(opportunity.effectiveNotional) && opportunity.effectiveNotional > 0) {
+      dataPayload.effectiveNotional = opportunity.effectiveNotional.toString();
+    }
+    if (opportunity.confidenceScore != null) {
+      dataPayload.confidenceScore = opportunity.confidenceScore.toString();
+    }
+    if (opportunity.reasoning && opportunity.reasoning.length > 0) {
+      dataPayload.reasoning = JSON.stringify(opportunity.reasoning);
+    }
+
+    const ttlString = remainingTtlSec != null && remainingTtlSec > 0 ? `${remainingTtlSec}s` : undefined;
+
+    // 1. Try FCM v1 HTTP API if keys are provided
+    if (env.FCM_PROJECT_ID && env.FCM_CLIENT_EMAIL && env.FCM_PRIVATE_KEY) {
+      let accessToken: string;
+      try {
+        accessToken = await generateGoogleAccessToken(env.FCM_CLIENT_EMAIL, env.FCM_PRIVATE_KEY, dispatchController.signal);
+      } catch (tokenErr: any) {
+        clearTimeout(timeoutHandle);
+        console.error("FCM v1 OAuth token generation failed:", tokenErr);
+        sink?.emit({
+          userId,
+          category: "NOTIFICATION",
+          component: "notifications",
+          eventName: "FCM_DISPATCH_RESULT",
+          severity: "ERROR",
+          correlationId: alertId,
+          symbol: opportunity.symbol,
+          strategyId: opportunity.strategy,
+          durationMs: Date.now() - startMs,
+          payload: {
+            alertId,
+            success: false,
+            transport: "fcm_v1",
+            httpStatus: 0,
+            errorCode: "OAUTH_TOKEN_ERROR",
+          }
+        });
+        return {
+          success: false,
+          outcome: 'PRE_DISPATCH_FAILURE',
+          httpStatus: 0,
+          errorCode: 'OAUTH_TOKEN_ERROR',
+          error: tokenErr?.message || 'OAuth token exchange failed',
+        };
+      }
+
       const payload = {
         message: {
           token: fcmToken,
@@ -573,114 +654,96 @@ export async function sendTradeNotification(
           android: {
             notification: {
               sound: "default",
-              channel_id: "trading_bot_channel",
+              channel_id: "trading_bot_channel_v2",
             },
             priority: "high",
+            ...(ttlString ? { ttl: ttlString } : {}),
           },
         },
       };
 
-      const response = await fetch(`https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID}/messages:send`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const durationMs = Date.now() - startMs;
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`FCM v1 trade notification send failed: ${response.status} ${errorText}`);
-        sink?.emit({
-          userId,
-          category: "NOTIFICATION",
-          component: "notifications",
-          eventName: "FCM_DISPATCH_RESULT",
-          severity: "ERROR",
-          correlationId: alertId,
-          symbol: opportunity.symbol,
-          strategyId: opportunity.strategy,
-          durationMs,
-          payload: {
-            alertId,
-            success: false,
-            transport: "fcm_v1",
-            httpStatus: response.status,
-            errorCode: "HTTP_ERROR"
-          }
-        });
-      } else {
-        console.log(`FCM v1 trade notification sent successfully to user ${userId}`);
-        sink?.emit({
-          userId,
-          category: "NOTIFICATION",
-          component: "notifications",
-          eventName: "FCM_DISPATCH_RESULT",
-          severity: "INFO",
-          correlationId: alertId,
-          symbol: opportunity.symbol,
-          strategyId: opportunity.strategy,
-          durationMs,
-          payload: {
-            alertId,
-            success: true,
-            transport: "fcm_v1",
-            httpStatus: response.status,
-            errorCode: null
-          }
-        });
-      }
-    } catch (err) {
-      console.error("FCM v1 trade notification failed:", err);
-      sink?.emit({
-        userId,
-        category: "NOTIFICATION",
-        component: "notifications",
-        eventName: "FCM_DISPATCH_RESULT",
-        severity: "ERROR",
-        correlationId: alertId,
-        symbol: opportunity.symbol,
-        strategyId: opportunity.strategy,
-        durationMs: Date.now() - startMs,
-        payload: {
-          alertId,
-          success: false,
-          transport: "fcm_v1",
-          httpStatus: 0,
-          errorCode: "NETWORK_ERROR"
-        }
-      });
-    }
-    return;
-  }
-
-  // 2. Fallback to legacy FCM if legacy keys are configured
-  if (env.FCM_SERVER_KEY) {
-    try {
-      const response = await fetch("https://fcm.googleapis.com/fcm/send", {
-        method: "POST",
-        headers: {
-          Authorization: `key=${env.FCM_SERVER_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          to: fcmToken,
-          notification: {
-            title,
-            body,
-            sound: "default",
-            priority: "high",
+      try {
+        endpointContacted = true;
+        const response = await fetch(`https://fcm.googleapis.com/v1/projects/${env.FCM_PROJECT_ID}/messages:send`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
           },
-          data: dataPayload,
-        }),
-      });
+          body: JSON.stringify(payload),
+          signal: dispatchController.signal,
+        });
 
-      const durationMs = Date.now() - startMs;
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`FCM Legacy trade notification send failed: ${response.status} ${errorText}`);
+        const durationMs = Date.now() - startMs;
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`FCM v1 trade notification send failed: ${response.status} ${errorText}`);
+          sink?.emit({
+            userId,
+            category: "NOTIFICATION",
+            component: "notifications",
+            eventName: "FCM_DISPATCH_RESULT",
+            severity: "ERROR",
+            correlationId: alertId,
+            symbol: opportunity.symbol,
+            strategyId: opportunity.strategy,
+            durationMs,
+            payload: {
+              alertId,
+              success: false,
+              transport: "fcm_v1",
+              httpStatus: response.status,
+              errorCode: "HTTP_ERROR",
+            }
+          });
+
+          if (response.status >= 400 && response.status < 500) {
+            return {
+              success: false,
+              outcome: 'EXPLICIT_REJECTION',
+              httpStatus: response.status,
+              errorCode: `HTTP_${response.status}`,
+              error: errorText,
+            };
+          } else {
+            return {
+              success: false,
+              outcome: 'AMBIGUOUS',
+              httpStatus: response.status,
+              errorCode: `HTTP_${response.status}`,
+              error: errorText,
+            };
+          }
+        } else {
+          console.log(`FCM v1 trade notification sent successfully to user ${userId}`);
+          sink?.emit({
+            userId,
+            category: "NOTIFICATION",
+            component: "notifications",
+            eventName: "FCM_DISPATCH_RESULT",
+            severity: "INFO",
+            correlationId: alertId,
+            symbol: opportunity.symbol,
+            strategyId: opportunity.strategy,
+            durationMs,
+            payload: {
+              alertId,
+              success: true,
+              transport: "fcm_v1",
+              httpStatus: response.status,
+              errorCode: null,
+            }
+          });
+          return {
+            success: true,
+            outcome: 'SUCCESS',
+            httpStatus: response.status,
+            errorCode: null,
+          };
+        }
+      } catch (fetchErr: any) {
+        const durationMs = Date.now() - startMs;
+        console.error("FCM v1 trade notification failed in flight:", fetchErr);
         sink?.emit({
           userId,
           category: "NOTIFICATION",
@@ -694,72 +757,169 @@ export async function sendTradeNotification(
           payload: {
             alertId,
             success: false,
-            transport: "fcm_legacy",
-            httpStatus: response.status,
-            errorCode: "HTTP_ERROR"
+            transport: "fcm_v1",
+            httpStatus: 0,
+            errorCode: "NETWORK_ERROR",
           }
         });
-      } else {
+        return {
+          success: false,
+          outcome: 'AMBIGUOUS',
+          httpStatus: 0,
+          errorCode: 'NETWORK_TIMEOUT_OR_RESET',
+          error: fetchErr?.message || 'Network error during FCM fetch',
+        };
+      }
+    }
+
+    // 2. Fallback to legacy FCM if legacy keys are configured
+    if (env.FCM_SERVER_KEY) {
+      try {
+        endpointContacted = true;
+        const response = await fetch("https://fcm.googleapis.com/fcm/send", {
+          method: "POST",
+          headers: {
+            Authorization: `key=${env.FCM_SERVER_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            to: fcmToken,
+            notification: {
+              title,
+              body,
+              sound: "default",
+              priority: "high",
+              android_channel_id: "trading_bot_channel_v2",
+            },
+            data: dataPayload,
+            ...(ttlString && remainingTtlSec ? { time_to_live: remainingTtlSec } : {}),
+          }),
+          signal: dispatchController.signal,
+        });
+
+        const durationMs = Date.now() - startMs;
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`FCM Legacy trade notification send failed: ${response.status} ${errorText}`);
+          sink?.emit({
+            userId,
+            category: "NOTIFICATION",
+            component: "notifications",
+            eventName: "FCM_DISPATCH_RESULT",
+            severity: "ERROR",
+            correlationId: alertId,
+            symbol: opportunity.symbol,
+            strategyId: opportunity.strategy,
+            durationMs,
+            payload: {
+              alertId,
+              success: false,
+              transport: "fcm_legacy",
+              httpStatus: response.status,
+              errorCode: "HTTP_ERROR",
+            }
+          });
+
+          if (response.status >= 400 && response.status < 500) {
+            return {
+              success: false,
+              outcome: 'EXPLICIT_REJECTION',
+              httpStatus: response.status,
+              errorCode: `HTTP_${response.status}`,
+              error: errorText,
+            };
+          } else {
+            return {
+              success: false,
+              outcome: 'AMBIGUOUS',
+              httpStatus: response.status,
+              errorCode: `HTTP_${response.status}`,
+              error: errorText,
+            };
+          }
+        } else {
+          sink?.emit({
+            userId,
+            category: "NOTIFICATION",
+            component: "notifications",
+            eventName: "FCM_DISPATCH_RESULT",
+            severity: "INFO",
+            correlationId: alertId,
+            symbol: opportunity.symbol,
+            strategyId: opportunity.strategy,
+            durationMs,
+            payload: {
+              alertId,
+              success: true,
+              transport: "fcm_legacy",
+              httpStatus: response.status,
+              errorCode: null,
+            }
+          });
+          return {
+            success: true,
+            outcome: 'SUCCESS',
+            httpStatus: response.status,
+            errorCode: null,
+          };
+        }
+      } catch (error: any) {
+        console.error("FCM Legacy notification failed in flight:", error);
         sink?.emit({
           userId,
           category: "NOTIFICATION",
           component: "notifications",
           eventName: "FCM_DISPATCH_RESULT",
-          severity: "INFO",
+          severity: "ERROR",
           correlationId: alertId,
           symbol: opportunity.symbol,
           strategyId: opportunity.strategy,
-          durationMs,
+          durationMs: Date.now() - startMs,
           payload: {
             alertId,
-            success: true,
+            success: false,
             transport: "fcm_legacy",
-            httpStatus: response.status,
-            errorCode: null
+            httpStatus: 0,
+            errorCode: "NETWORK_ERROR",
           }
         });
-      }
-    } catch (error) {
-      console.error("FCM Legacy notification failed:", error);
-      sink?.emit({
-        userId,
-        category: "NOTIFICATION",
-        component: "notifications",
-        eventName: "FCM_DISPATCH_RESULT",
-        severity: "ERROR",
-        correlationId: alertId,
-        symbol: opportunity.symbol,
-        strategyId: opportunity.strategy,
-        durationMs: Date.now() - startMs,
-        payload: {
-          alertId,
+        return {
           success: false,
-          transport: "fcm_legacy",
+          outcome: 'AMBIGUOUS',
           httpStatus: 0,
-          errorCode: "NETWORK_ERROR"
-        }
-      });
+          errorCode: 'NETWORK_TIMEOUT_OR_RESET',
+          error: error?.message || 'Network error during legacy FCM fetch',
+        };
+      }
     }
-    return;
-  }
 
-  console.warn("FCM notification skipped: neither FCM v1 nor FCM Legacy credentials configured.");
-  sink?.emit({
-    userId,
-    category: "NOTIFICATION",
-    component: "notifications",
-    eventName: "FCM_DISPATCH_RESULT",
-    severity: "WARN",
-    correlationId: alertId,
-    symbol: opportunity.symbol,
-    strategyId: opportunity.strategy,
-    durationMs: Date.now() - startMs,
-    payload: {
-      alertId,
+    console.warn("FCM notification skipped: neither FCM v1 nor FCM Legacy credentials configured.");
+    sink?.emit({
+      userId,
+      category: "NOTIFICATION",
+      component: "notifications",
+      eventName: "FCM_DISPATCH_RESULT",
+      severity: "WARN",
+      correlationId: alertId,
+      symbol: opportunity.symbol,
+      strategyId: opportunity.strategy,
+      durationMs: Date.now() - startMs,
+      payload: {
+        alertId,
+        success: false,
+        transport: "fcm_v1",
+        httpStatus: 0,
+        errorCode: "NO_FCM_CREDENTIALS",
+      }
+    });
+    return {
       success: false,
-      transport: "fcm_v1",
+      outcome: 'PRE_DISPATCH_FAILURE',
       httpStatus: 0,
-      errorCode: "NO_FCM_CREDENTIALS"
-    }
-  });
+      errorCode: 'NO_FCM_CREDENTIALS',
+      error: 'Neither FCM v1 nor FCM Legacy credentials configured',
+    };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
 }

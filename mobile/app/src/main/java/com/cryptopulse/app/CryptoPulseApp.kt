@@ -2,6 +2,7 @@ package com.cryptopulse.app
 
 import android.app.Application
 import android.os.StrictMode
+import com.cryptopulse.app.service.TradeAlertManager
 import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
@@ -17,5 +18,7 @@ class CryptoPulseApp : Application() {
                     .build()
             )
         }
+        // Authoritative notification channel initialization at application cold start
+        TradeAlertManager.createNotificationChannel(this)
     }
 }

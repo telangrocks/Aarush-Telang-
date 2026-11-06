@@ -1,15 +1,17 @@
 package com.cryptopulse.app.service
 
-import android.app.ActivityOptions
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.cryptopulse.app.MainActivity
+import com.cryptopulse.app.R
 import com.cryptopulse.app.data.local.TradeAlertDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -55,16 +57,46 @@ open class TradeAlertManager @Inject constructor(
     private val handledAlertsCache = ConcurrentHashMap<String, String>()
 
     companion object {
-        const val CHANNEL_ID = "trading_bot_channel"
+        const val CHANNEL_ID = "trading_bot_channel_v2"
         const val ALERT_NOTIFICATION_ID = 1002
         const val FILL_NOTIFICATION_ID = 1004
         const val TRADE_ALERT_HARDWARE_TIMEOUT_MS = 30_000L // Central 30 seconds hardware lifetime
         const val WAKELOCK_TIMEOUT_MS = TRADE_ALERT_HARDWARE_TIMEOUT_MS + 5_000L // 35 seconds safety cap
+
+        /**
+         * Authoritative notification channel initialization.
+         * Safe migration: only creates trading_bot_channel_v2 if it does not already exist.
+         * Preserves existing trading_bot_channel and any user customized channel preferences.
+         */
+        fun createNotificationChannel(context: Context?) {
+            if (context == null) return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+                if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+                    val soundUri = Uri.parse("android.resource://${context.packageName}/${R.raw.trade_detected}")
+                    val audioAttributes = AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+                        .build()
+                    val channel = NotificationChannel(
+                        CHANNEL_ID,
+                        "Trade Alerts",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "High-priority trade signals and execution updates"
+                        setSound(soundUri, audioAttributes)
+                        enableVibration(true)
+                        vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 1000)
+                        lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
+                    }
+                    manager.createNotificationChannel(channel)
+                }
+            }
+        }
     }
 
     init {
         try {
-            createNotificationChannel()
             restoreActiveAlert()
         } catch (_: Throwable) {
             // Ignored during test environment with mock/wrapper context
@@ -528,22 +560,6 @@ open class TradeAlertManager @Inject constructor(
         }
     }
 
-    private fun createNotificationChannel() {
-        if (appContext == null) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Trading Bot Monitor",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "High priority trade alert notifications with voice and vibration"
-                enableVibration(true)
-            }
-            val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-            manager?.createNotificationChannel(channel)
-        }
-    }
-
     private fun postSystemNotification(alertData: Map<String, Any>) {
         if (appContext == null) return
         try {
@@ -591,18 +607,9 @@ open class TradeAlertManager @Inject constructor(
                 putExtra("alert_timestamp", timestamp)
             }
 
-            val activityOptionsBundle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                ActivityOptions.makeBasic().apply {
-                    setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
-                }.toBundle()
-            } else {
-                null
-            }
-
             val pendingIntent = PendingIntent.getActivity(
                 appContext, 2, intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                activityOptionsBundle
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
             val silenceIntent = Intent(appContext, TradeAlertActionReceiver::class.java).apply {
@@ -623,6 +630,14 @@ open class TradeAlertManager @Inject constructor(
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
+            val publicNotification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+                .setContentTitle("🚨 Attention! Trade Detected")
+                .setContentText("New trade detected. Unlock device to review.")
+                .setSmallIcon(com.cryptopulse.app.R.drawable.ic_notification_cryptopulse)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .build()
+
             val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
                 .setContentTitle("🚨 Attention! Trade Detected")
                 .setContentText("$side $symbol | Entry: $${"%.2f".format(entryPrice)}")
@@ -636,6 +651,8 @@ open class TradeAlertManager @Inject constructor(
                 .setDeleteIntent(deletePendingIntent)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(publicNotification)
                 .setAutoCancel(true)
                 .build()
 
@@ -679,18 +696,9 @@ open class TradeAlertManager @Inject constructor(
                 orderId?.let { putExtra("order_id", it) }
             }
 
-            val execActivityOptionsBundle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                ActivityOptions.makeBasic().apply {
-                    setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
-                }.toBundle()
-            } else {
-                null
-            }
-
             val pendingIntent = PendingIntent.getActivity(
                 appContext, 3, intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                execActivityOptionsBundle
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
             val formattedPrice = if (entryPrice > 0.0) "$${"%.4f".format(entryPrice)}" else "Market"
@@ -701,12 +709,23 @@ open class TradeAlertManager @Inject constructor(
                 "$side $symbol executed at $formattedPrice"
             }
 
+            val publicTitle = if (isSubmitted) "Order Submitted" else "Order Filled"
+            val publicNotification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+                .setContentTitle(publicTitle)
+                .setContentText("Order status updated. Unlock device to review.")
+                .setSmallIcon(com.cryptopulse.app.R.drawable.ic_notification_cryptopulse)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .build()
+
             val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
                 .setContentTitle(title)
                 .setContentText(contentText)
                 .setSmallIcon(com.cryptopulse.app.R.drawable.ic_notification_cryptopulse)
                 .setContentIntent(pendingIntent)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(publicNotification)
                 .setAutoCancel(true)
                 .build()
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TradingBot } from "../../src/trading-bot";
+import { TradingBot, TradeAlert } from "../../src/trading-bot";
+import * as notifications from "../../src/handlers/notifications";
 import { FinalDispatchSafetyGate } from "../../src/engine/safety/FinalDispatchSafetyGate";
 
 // Mock security crypto
@@ -785,6 +786,377 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       const constraints = lastCall[1];
       // For LIMIT orders, referencePrice resolves to targetPrice (52000)
       expect(constraints.referencePrice).toBe(52000);
+    });
+  });
+
+  describe("Phase 2 FCM Dispatch Reliability & State Machine (Permanent Regression Suite)", () => {
+    let regressionBot: TradingBot;
+
+    beforeEach(() => {
+      regressionBot = new TradingBot(mockState, mockEnv);
+    });
+
+    it("1. Successful FCM acceptance commits SENT without modifying trading lifecycle status", async () => {
+      const alert: TradeAlert = {
+        id: "alert-perm-success",
+        symbol: "BTC/USDT",
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 100,
+        positionSize: 1000,
+        strategy: "Scalper",
+        side: "BUY",
+        timestamp: new Date().toISOString(),
+        status: "pending",
+        dispatchState: "UNSENT",
+      };
+      mockStorage.set("alerts", [alert]);
+
+      vi.spyOn(notifications, "sendTradeNotification").mockResolvedValueOnce({
+        success: true,
+        outcome: "SUCCESS",
+        httpStatus: 200,
+      });
+
+      await regressionBot.dispatchAlertNotification("user-1", alert, 85, ["RSI oversold"]);
+
+      const storedAlerts: TradeAlert[] = mockStorage.get("alerts");
+      expect(storedAlerts[0].dispatchState).toBe("SENT");
+      expect(storedAlerts[0].dispatchedAt).toBeDefined();
+      expect(storedAlerts[0].dispatchError).toBeUndefined();
+      expect(storedAlerts[0].status).toBe("pending"); // Trading lifecycle untouched
+    });
+
+    it("2. Explicit FCM rejection (HTTP 4xx / UNREGISTERED) commits FAILED without retries", async () => {
+      const alert: TradeAlert = {
+        id: "alert-perm-rejected",
+        symbol: "BTC/USDT",
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 100,
+        positionSize: 1000,
+        strategy: "Scalper",
+        side: "BUY",
+        timestamp: new Date().toISOString(),
+        status: "pending",
+        dispatchState: "UNSENT",
+      };
+      mockStorage.set("alerts", [alert]);
+
+      vi.spyOn(notifications, "sendTradeNotification").mockResolvedValueOnce({
+        success: false,
+        outcome: "EXPLICIT_REJECTION",
+        httpStatus: 404,
+        errorCode: "UNREGISTERED",
+      });
+
+      await regressionBot.dispatchAlertNotification("user-1", alert, 80, []);
+
+      const storedAlerts: TradeAlert[] = mockStorage.get("alerts");
+      expect(storedAlerts[0].dispatchState).toBe("FAILED");
+      expect(storedAlerts[0].dispatchError).toBe("UNREGISTERED");
+      expect(storedAlerts[0].status).toBe("pending");
+    });
+
+    it("3. Missing FCM token (PRE_DISPATCH_FAILURE) commits FAILED", async () => {
+      const alert: TradeAlert = {
+        id: "alert-perm-no-token",
+        symbol: "BTC/USDT",
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 100,
+        positionSize: 1000,
+        strategy: "Scalper",
+        side: "BUY",
+        timestamp: new Date().toISOString(),
+        status: "pending",
+        dispatchState: "UNSENT",
+      };
+      mockStorage.set("alerts", [alert]);
+
+      vi.spyOn(notifications, "sendTradeNotification").mockResolvedValueOnce({
+        success: false,
+        outcome: "PRE_DISPATCH_FAILURE",
+        httpStatus: 0,
+        errorCode: "MISSING_FCM_TOKEN",
+      });
+
+      await regressionBot.dispatchAlertNotification("user-1", alert, 80, []);
+
+      const storedAlerts: TradeAlert[] = mockStorage.get("alerts");
+      expect(storedAlerts[0].dispatchState).toBe("FAILED");
+      expect(storedAlerts[0].dispatchError).toBe("MISSING_FCM_TOKEN");
+    });
+
+    it("4. FCM HTTP 5xx commits AMBIGUOUS with ZERO automatic retry", async () => {
+      const alert: TradeAlert = {
+        id: "alert-perm-5xx",
+        symbol: "BTC/USDT",
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 100,
+        positionSize: 1000,
+        strategy: "Scalper",
+        side: "BUY",
+        timestamp: new Date().toISOString(),
+        status: "pending",
+        dispatchState: "UNSENT",
+      };
+      mockStorage.set("alerts", [alert]);
+
+      vi.spyOn(notifications, "sendTradeNotification").mockResolvedValueOnce({
+        success: false,
+        outcome: "AMBIGUOUS",
+        httpStatus: 503,
+        errorCode: "HTTP_503",
+        error: "Service Unavailable",
+      });
+
+      await regressionBot.dispatchAlertNotification("user-1", alert, 80, []);
+
+      const storedAlerts: TradeAlert[] = mockStorage.get("alerts");
+      expect(storedAlerts[0].dispatchState).toBe("AMBIGUOUS");
+      expect(storedAlerts[0].dispatchError).toBe("HTTP_503");
+
+      // Verify that subsequent dispatch attempt is prohibited (ZERO automatic retries)
+      const sendSpy = vi.spyOn(notifications, "sendTradeNotification");
+      await regressionBot.dispatchAlertNotification("user-1", storedAlerts[0], 80, []);
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+
+    it("5. Network timeout / reset commits AMBIGUOUS with ZERO automatic retry", async () => {
+      const alert: TradeAlert = {
+        id: "alert-perm-timeout",
+        symbol: "BTC/USDT",
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 100,
+        positionSize: 1000,
+        strategy: "Scalper",
+        side: "BUY",
+        timestamp: new Date().toISOString(),
+        status: "pending",
+        dispatchState: "UNSENT",
+      };
+      mockStorage.set("alerts", [alert]);
+
+      vi.spyOn(notifications, "sendTradeNotification").mockResolvedValueOnce({
+        success: false,
+        outcome: "AMBIGUOUS",
+        httpStatus: 0,
+        errorCode: "NETWORK_TIMEOUT_OR_RESET",
+        error: "Network dropped in flight",
+      });
+
+      await regressionBot.dispatchAlertNotification("user-1", alert, 80, []);
+
+      const storedAlerts: TradeAlert[] = mockStorage.get("alerts");
+      expect(storedAlerts[0].dispatchState).toBe("AMBIGUOUS");
+      expect(storedAlerts[0].dispatchError).toBe("NETWORK_TIMEOUT_OR_RESET");
+
+      const sendSpy = vi.spyOn(notifications, "sendTradeNotification");
+      await regressionBot.dispatchAlertNotification("user-1", storedAlerts[0], 80, []);
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+
+    it("6. Expired alert (age > 300s, TTL < 1s) commits EXPIRED without outbound FCM fetch", async () => {
+      const staleAlert: TradeAlert = {
+        id: "alert-perm-stale-ttl",
+        symbol: "BTC/USDT",
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 100,
+        positionSize: 1000,
+        strategy: "Scalper",
+        side: "BUY",
+        timestamp: new Date(Date.now() - 301_000).toISOString(), // 301 seconds ago
+        status: "pending",
+        dispatchState: "UNSENT",
+      };
+      mockStorage.set("alerts", [staleAlert]);
+
+      const sendSpy = vi.spyOn(notifications, "sendTradeNotification");
+
+      await regressionBot.dispatchAlertNotification("user-1", staleAlert, 80, []);
+
+      expect(sendSpy).not.toHaveBeenCalled();
+      const storedAlerts: TradeAlert[] = mockStorage.get("alerts");
+      expect(storedAlerts[0].dispatchState).toBe("EXPIRED");
+      expect(storedAlerts[0].dispatchError).toContain("Alert expired before dispatch attempt");
+    });
+
+    it("7. Concurrent dispatch calls make at most one automatic outbound FCM submission attempt", async () => {
+      const alert: TradeAlert = {
+        id: "alert-perm-concurrent",
+        symbol: "BTC/USDT",
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 100,
+        positionSize: 1000,
+        strategy: "Scalper",
+        side: "BUY",
+        timestamp: new Date().toISOString(),
+        status: "pending",
+        dispatchState: "UNSENT",
+      };
+      mockStorage.set("alerts", [alert]);
+
+      let callCount = 0;
+      vi.spyOn(notifications, "sendTradeNotification").mockImplementation(async () => {
+        callCount++;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return {
+          success: true,
+          outcome: "SUCCESS",
+          httpStatus: 200,
+        };
+      });
+
+      // Launch two concurrent dispatch calls
+      await Promise.all([
+        regressionBot.dispatchAlertNotification("user-1", alert, 80, []),
+        regressionBot.dispatchAlertNotification("user-1", alert, 80, []),
+      ]);
+
+      expect(callCount).toBe(1);
+    });
+
+    it("8. Stale lease recovery converts orphaned DISPATCHING (>20s) to AMBIGUOUS without auto-retry", () => {
+      const orphaned: TradeAlert[] = [
+        {
+          id: "alert-perm-orphan",
+          symbol: "ETH/USDT",
+          signalPrice: 3000,
+          entryPrice: 3000,
+          stopLoss: 2900,
+          takeProfit: 3200,
+          estimatedPnl: 50,
+          positionSize: 500,
+          strategy: "Trend",
+          side: "BUY",
+          timestamp: new Date(Date.now() - 30_000).toISOString(),
+          status: "pending",
+          dispatchState: "DISPATCHING",
+          dispatchAttemptId: "old-uuid",
+          dispatchStartedAt: Date.now() - 25_000, // 25s old > 20s lease
+        }
+      ];
+
+      const { alerts, modified } = regressionBot.normalizeAlertsRecovery(orphaned);
+      expect(modified).toBe(true);
+      expect(alerts[0].dispatchState).toBe("AMBIGUOUS");
+      expect(alerts[0].dispatchError).toContain("Lease expired or orphaned across restart");
+    });
+
+    it("9. Historical alerts without dispatch metadata migrate to HISTORICAL_UNTRACKED, not SENT", () => {
+      const historical: TradeAlert[] = [
+        {
+          id: "alert-perm-hist",
+          symbol: "BTC/USDT",
+          signalPrice: 50000,
+          entryPrice: 50000,
+          stopLoss: 49000,
+          takeProfit: 52000,
+          estimatedPnl: 100,
+          positionSize: 1000,
+          strategy: "Scalper",
+          side: "BUY",
+          timestamp: new Date(Date.now() - 600_000).toISOString(),
+          status: "executed",
+        }
+      ];
+
+      const { alerts, modified } = regressionBot.normalizeAlertsRecovery(historical);
+      expect(modified).toBe(true);
+      expect(alerts[0].dispatchState).toBe("HISTORICAL_UNTRACKED");
+      expect(alerts[0].status).toBe("executed"); // Trading lifecycle preserved
+    });
+
+    it("10. Stale dispatch ownership prevents an incorrect state overwrite after lease reassignment", async () => {
+      const alert: TradeAlert = {
+        id: "alert-perm-stale-lease",
+        symbol: "BTC/USDT",
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 100,
+        positionSize: 1000,
+        strategy: "Scalper",
+        side: "BUY",
+        timestamp: new Date().toISOString(),
+        status: "pending",
+        dispatchState: "UNSENT",
+      };
+      mockStorage.set("alerts", [alert]);
+
+      // Simulate network latency while DO restarts or reassigns lease
+      vi.spyOn(notifications, "sendTradeNotification").mockImplementationOnce(async () => {
+        const current: TradeAlert[] = mockStorage.get("alerts");
+        current[0].dispatchAttemptId = "superseded-attempt-uuid";
+        current[0].dispatchState = "AMBIGUOUS";
+        mockStorage.set("alerts", current);
+
+        return {
+          success: true,
+          outcome: "SUCCESS",
+          httpStatus: 200,
+        };
+      });
+
+      await regressionBot.dispatchAlertNotification("user-1", alert, 80, []);
+
+      // Phase 3 MUST drop the stale result because attemptId did not match
+      const storedAlerts: TradeAlert[] = mockStorage.get("alerts");
+      expect(storedAlerts[0].dispatchState).toBe("AMBIGUOUS");
+      expect(storedAlerts[0].dispatchAttemptId).toBe("superseded-attempt-uuid");
+    });
+
+    it("11. Storage transaction failure handling does not crash or corrupt alert state", async () => {
+      const alert: TradeAlert = {
+        id: "alert-perm-storage-fail",
+        symbol: "BTC/USDT",
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49000,
+        takeProfit: 52000,
+        estimatedPnl: 100,
+        positionSize: 1000,
+        strategy: "Scalper",
+        side: "BUY",
+        timestamp: new Date().toISOString(),
+        status: "pending",
+        dispatchState: "UNSENT",
+      };
+      mockStorage.set("alerts", [alert]);
+
+      // Cause storage transaction to reject
+      const origTxn = mockState.storage.transaction;
+      mockState.storage.transaction = vi.fn().mockRejectedValueOnce(new Error("DO Storage Lock Contention"));
+
+      const sendSpy = vi.spyOn(notifications, "sendTradeNotification");
+
+      // Attempt dispatch — should handle storage failure safely without making uncommitted FCM call
+      await expect(regressionBot.dispatchAlertNotification("user-1", alert, 80, [])).rejects.toThrow("DO Storage Lock Contention");
+
+      expect(sendSpy).not.toHaveBeenCalled();
+
+      // Restore transaction function
+      mockState.storage.transaction = origTxn;
     });
   });
 });
