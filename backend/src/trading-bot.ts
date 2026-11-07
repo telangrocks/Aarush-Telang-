@@ -5925,7 +5925,7 @@ export class TradingBot {
                 let hoistedMarket: any = null;
                 let marketFetchAttempted = false;
                 try {
-                  const results = await this.orchestrator.executeCycle(currentSymbol, undefined, undefined, accountBalance, {
+                  const results = await this.orchestrator.executeCycle(currentSymbol, undefined, strategyConfig, accountBalance, {
                     userId,
                     cycleId,
                     sink: this.telemetrySink

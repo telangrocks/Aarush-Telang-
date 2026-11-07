@@ -132,10 +132,53 @@ export class StrategyOrchestrator {
           tallySignal(result, success);
         }
       } else {
-        for (const [id, strategy] of registry.getAllStrategies()) {
-          this.logger.info(`[Orchestrator] Evaluating strategy: ${id}`);
-          for (const tf of strategy.manifest.supportedTimeframes) {
-            const { result, success } = this.evaluateWithTelemetry(strategy, id, tf, symbol, frozenContext, telemetryContext);
+        const hasExplicitOverrides = Boolean(config && typeof config === 'object' && Object.keys(config).length > 0);
+        const emitConfigErrorTelemetry = (stratId: string) => {
+          if (telemetryContext?.userId && telemetryContext?.sink) {
+            telemetryContext.sink.emit({
+              userId: telemetryContext.userId,
+              category: 'STRATEGY',
+              component: 'StrategyOrchestrator',
+              eventName: 'STRATEGY_EVALUATION',
+              severity: 'ERROR',
+              cycleId: telemetryContext.cycleId,
+              symbol,
+              strategyId: stratId,
+              durationMs: 0,
+              payload: {
+                hasSignal: false,
+                signalType: null,
+                confidenceScore: 0,
+                errorCode: 'INVALID_STRATEGY_CONFIG'
+              }
+            });
+          }
+        };
+
+        for (const [id, defaultStrategy] of registry.getAllStrategies()) {
+          let strategyToEvaluate: IStrategy = defaultStrategy;
+
+          if (hasExplicitOverrides) {
+            try {
+              const configured = registry.createStrategy(id, config);
+              if (!configured) {
+                this.logger.error(`[Orchestrator] Strategy '${id}' could not be instantiated with user configuration. Suppressing evaluation.`);
+                failedEvaluations++;
+                emitConfigErrorTelemetry(id);
+                continue;
+              }
+              strategyToEvaluate = configured;
+            } catch (configErr: any) {
+              this.logger.error(`[Orchestrator] Configuration error for strategy '${id}': ${configErr?.message || String(configErr)}. Suppressing evaluation.`);
+              failedEvaluations++;
+              emitConfigErrorTelemetry(id);
+              continue; // Strict Live Safety: Never execute unapproved default SL/TP on explicit config failure
+            }
+          }
+
+          this.logger.info(`[Orchestrator] Evaluating strategy: ${id}${hasExplicitOverrides ? ' (with config overrides)' : ''}`);
+          for (const tf of strategyToEvaluate.manifest.supportedTimeframes) {
+            const { result, success } = this.evaluateWithTelemetry(strategyToEvaluate, id, tf, symbol, frozenContext, telemetryContext);
             if (result) results.push(result);
             tallySignal(result, success);
           }

@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TradingBot, TradeAlert } from "../../src/trading-bot";
 import * as notifications from "../../src/handlers/notifications";
 import { FinalDispatchSafetyGate } from "../../src/engine/safety/FinalDispatchSafetyGate";
+import { StrategyOrchestrator } from "../../src/engine/orchestrator/StrategyOrchestrator";
+import { calculateATR } from "../../src/engine/indicator/indicators/ATR";
+import { PriceNormalizer } from "../../src/utils/PriceNormalizer";
+import { ExchangeManager } from "../../src/exchanges";
 
 // Mock security crypto
 vi.mock("../../src/crypto", () => ({
@@ -62,35 +66,6 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
     },
     normalizeEnvironment: vi.fn().mockReturnValue('testnet'),
     normalizeRegion: vi.fn().mockReturnValue('global'),
-  };
-});
-
-// Mock the StrategyOrchestrator prototype
-vi.mock("../../src/engine/orchestrator/StrategyOrchestrator", () => {
-  const StrategyOrchestratorMock = vi.fn();
-  StrategyOrchestratorMock.prototype.setMarketDataEngine = vi.fn();
-  StrategyOrchestratorMock.prototype.executeCycle = vi.fn().mockResolvedValue([
-    {
-      strategyId: 'scalper-v2',
-      confidenceScore: 75,
-      hasSignal: true,
-      metadata: {
-        signal: {
-          type: 'BUY',
-          signalPrice: 50100,
-          stopLoss: 49000,
-          takeProfit: 52000,
-          riskAssessment: {
-            positionSizeRecommendation: 1000
-          }
-        }
-      }
-    }
-  ]);
-  StrategyOrchestratorMock.prototype.getCurrentState = vi.fn().mockReturnValue('ACTIVE');
-
-  return {
-    StrategyOrchestrator: StrategyOrchestratorMock
   };
 });
 
@@ -206,6 +181,26 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
   });
 
   it("should execute StrategyOrchestrator in alarm() and generate TradeAlerts", async () => {
+    const spyState = vi.spyOn(StrategyOrchestrator.prototype, 'getCurrentState').mockReturnValue('ACTIVE' as any);
+    const spyCycle = vi.spyOn(StrategyOrchestrator.prototype, 'executeCycle').mockResolvedValueOnce([
+      {
+        strategyId: 'scalper-v2',
+        confidenceScore: 75,
+        hasSignal: true,
+        metadata: {
+          signal: {
+            type: 'BUY',
+            signalPrice: 50100,
+            stopLoss: 49000,
+            takeProfit: 52000,
+            riskAssessment: {
+              positionSizeRecommendation: 1000
+            }
+          }
+        }
+      } as any
+    ]);
+
     const bot = new TradingBot(mockState, mockEnv);
     
     // Set up DO state for an active run
@@ -238,6 +233,158 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     
     // Check that next alarm was scheduled
     expect(mockState.storage.setAlarm).toHaveBeenCalled();
+
+    spyState.mockRestore();
+    spyCycle.mockRestore();
+  }, 10000);
+
+  it("should propagate stored strategyConfig riskParameters in alarm() to generate TradeAlert with configured SL/TP", async () => {
+    // 1. Setup multi-timeframe bullish candles (60 candles each) for real ATR, strategy, and arbitration evaluation
+    const now = Date.now();
+    function createBullishCandles(count: number, basePrice: number, tf: string) {
+      const tfMs = tf === '5m' ? 300000 : tf === '15m' ? 900000 : tf === '1h' ? 3600000 : 14400000;
+      const candles: any[] = [];
+      for (let i = 0; i < count; i++) {
+        const openTime = now - (count - i) * tfMs;
+        const p = basePrice + i * 1.5;
+        const spread = 2 + (i >= count - 4 ? (i - (count - 4) + 1) * 0.5 : 0);
+        const vol = 1000 + i * 20 + (i === count - 1 ? 1500 : i === count - 2 ? 800 : 0);
+        candles.push({
+          timestamp: openTime,
+          openTime,
+          closeTime: openTime + tfMs,
+          open: p - 1,
+          high: p + spread,
+          low: p - spread,
+          close: p,
+          volume: vol
+        });
+      }
+      return candles;
+    }
+
+    const candles5m = createBullishCandles(60, 50000, '5m');
+    const candles15m = createBullishCandles(60, 50000, '15m');
+    const candles1h = createBullishCandles(60, 50000, '1h');
+    const candles4h = createBullishCandles(60, 50000, '4h');
+
+    const latestCandle = candles5m[candles5m.length - 1];
+    const latestPrice = latestCandle.close; // 50088.5
+    const tickSize = 0.25; // Non-trivial tick size (not 1.0 or 0.01)
+
+    // 2. Configure exchange adapter spies to provide authoritative market data
+    const provider = await ExchangeManager.getProvider('bybit' as any, {} as any);
+    const spyKlines = vi.spyOn(provider, 'fetchKlines').mockImplementation(async (_sym: string, tf: string) => {
+      if (tf === '15m') return candles15m;
+      if (tf === '1h') return candles1h;
+      if (tf === '4h') return candles4h;
+      return candles5m;
+    });
+    const spyTicker = vi.spyOn(provider, 'fetchTicker').mockResolvedValue({
+      symbol: 'BTC/USDT',
+      last: latestPrice,
+      bid: latestPrice - 1,
+      ask: latestPrice + 1,
+      high: latestPrice + 10,
+      low: latestPrice - 10,
+      volume: 1000,
+      quoteVolume: 1000 * latestPrice
+    } as any);
+    const spyMarket = vi.spyOn(provider, 'fetchMarket').mockResolvedValue({
+      id: 'BTCUSDT',
+      symbol: 'BTC/USDT',
+      quote: 'USDT',
+      active: true,
+      category: 'linear',
+      precision: { amount: 0.001, price: tickSize },
+      limits: {
+        cost: { min: 5 },
+        amount: { min: 0.001, max: 1000 }
+      }
+    } as any);
+
+    // 3. Store Android-style risk configuration in Durable Object storage
+    const configuredTpMult = 3.0;
+    const configuredSlMult = 1.5;
+    mockStorage.set('isActive', true);
+    mockStorage.set('coinId', 'BTC/USDT');
+    mockStorage.set('userId', 'user-123');
+    mockStorage.set('strategy', 'scalper-v2');
+    mockStorage.set('positionSize', 100);
+    mockStorage.set('lock:alarmGeneration', 1);
+    mockStorage.set('strategyConfig', {
+      riskParameters: {
+        atrTakeProfitMultiplier: configuredTpMult,
+        atrStopLossMultiplier: configuredSlMult
+      }
+    });
+
+    // 4. Initialize bot and execute real autonomous alarm cycle
+    // Exercises real TradingBot.alarm(), StrategyOrchestrator, ScalperV2Strategy, RiskEngine, and PriceNormalizer
+    const bot = new TradingBot(mockState, mockEnv);
+    await bot.alarm();
+
+    // 5. Clean up provider spies
+    spyKlines.mockRestore();
+    spyTicker.mockRestore();
+    spyMarket.mockRestore();
+
+    // 6. Retrieve persisted TradeAlert generated by real application logic
+    const alerts = mockStorage.get('alerts');
+    expect(alerts).toBeDefined();
+    expect(alerts.length).toBe(1);
+    const alert = alerts[0];
+
+    // 7. Independently calculate expected ATR from actual candle data
+    const atrSeries = calculateATR(candles5m, 14);
+    const expectedAtr = atrSeries[atrSeries.length - 1];
+    expect(expectedAtr).toBeGreaterThan(0);
+
+    // 8. Independently calculate theoretical SL/TP distances using stored multipliers
+    const expectedSlDist = expectedAtr * configuredSlMult; // 1.5x ATR
+    const expectedTpDist = expectedAtr * configuredTpMult; // 3.0x ATR
+    const theoreticalSl = latestPrice - expectedSlDist;
+    const theoreticalTp = latestPrice + expectedTpDist;
+
+    // 9. Independently calculate expected quantized prices using PriceNormalizer with non-trivial tickSize
+    const expectedNormalized = PriceNormalizer.normalizeTradePrices({
+      entryPrice: latestPrice,
+      theoreticalSL: theoreticalSl,
+      theoreticalTP: theoreticalTp,
+      tickSize,
+      minAllowedPrice: tickSize,
+      side: 'BUY'
+    });
+
+    // 10. Assert alert properties generated through real pipeline
+    expect(alert.symbol).toBe('BTC/USDT');
+    expect(alert.side).toBe('BUY');
+    expect(alert.signalPrice).toBe(latestPrice);
+    expect(alert.strategy).toBe('ScalperV2_NEW');
+
+    // 11. Assert real quantized SL and TP match PriceNormalizer
+    expect(alert.stopLoss).toBe(expectedNormalized.stopLoss);
+    expect(alert.takeProfit).toBe(expectedNormalized.takeProfit);
+
+    // 12. Assert non-trivial tick-size quantization (multiples of 0.25)
+    expect(Number.isInteger(alert.stopLoss / tickSize)).toBe(true);
+    expect(Number.isInteger(alert.takeProfit / tickSize)).toBe(true);
+    expect(alert.stopLoss % tickSize).toBeCloseTo(0, 5);
+    expect(alert.takeProfit % tickSize).toBeCloseTo(0, 5);
+
+    // 13. Assert directional validity
+    expect(alert.stopLoss).toBeLessThan(alert.signalPrice);
+    expect(alert.takeProfit).toBeGreaterThan(alert.signalPrice);
+
+    // 14. Assert realized SL/TP distances reflect 1.5x and 3.0x ATR
+    const actualSlDist = alert.signalPrice - alert.stopLoss;
+    const actualTpDist = alert.takeProfit - alert.signalPrice;
+    expect(actualSlDist).toBeCloseTo(expectedSlDist, 1);
+    expect(actualTpDist).toBeCloseTo(expectedTpDist, 1);
+
+    // 15. Assert realized risk/reward ratio is approximately 2.0 (3.0 / 1.5 = 2.0)
+    const realizedRiskReward = actualTpDist / actualSlDist;
+    expect(realizedRiskReward).toBeCloseTo(2.0, 1);
   }, 10000);
 
   it("should not execute Orchestrator if GLOBAL_TRADING_HALT is true", async () => {
