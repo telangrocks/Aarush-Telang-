@@ -597,10 +597,39 @@ open class TradeAlertManager @Inject constructor(
                 putExtra("stopLoss", stopLoss.toString())
                 putExtra("alert_take_profit", takeProfit)
                 putExtra("takeProfit", takeProfit.toString())
-                putExtra("alert_estimated_pnl", estimatedPnl)
-                putExtra("estimatedPnl", estimatedPnl.toString())
+                (alertData["estimatedPnl"] as? Number)?.toDouble()?.let {
+                    putExtra("alert_estimated_pnl", it)
+                    putExtra("estimatedPnl", it.toString())
+                }
                 putExtra("alert_position_size", positionSize)
                 putExtra("positionSize", positionSize.toString())
+                (alertData["quantity"] as? Number)?.toDouble()?.let {
+                    putExtra("alert_quantity", it)
+                    putExtra("quantity", it.toString())
+                }
+                (alertData["requestedBudget"] as? Number)?.toDouble()?.let {
+                    putExtra("alert_requested_budget", it)
+                    putExtra("requestedBudget", it.toString())
+                }
+                (alertData["effectiveNotional"] as? Number)?.toDouble()?.let {
+                    putExtra("alert_effective_notional", it)
+                    putExtra("effectiveNotional", it.toString())
+                }
+                when (val exec = alertData["isExecutable"]) {
+                    is Boolean -> {
+                        putExtra("isExecutable", exec.toString())
+                        putExtra("alert_is_executable", exec)
+                    }
+                    is String -> {
+                        putExtra("isExecutable", exec)
+                        exec.toBooleanStrictOrNull()?.let { putExtra("alert_is_executable", it) }
+                    }
+                    else -> {}
+                }
+                (alertData["ineligibilityReason"] as? String)?.let {
+                    putExtra("ineligibilityReason", it)
+                    putExtra("alert_ineligibility_reason", it)
+                }
                 putExtra("alert_id", alertId)
                 putExtra("id", alertId)
                 putExtra("serverTimestamp", timestamp.toString())

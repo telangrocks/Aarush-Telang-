@@ -29,14 +29,11 @@ interface BotRepository {
     suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult>
     suspend fun executeTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> =
         executeTrade(request.alertId)
-    @Deprecated("Do not use in production. Real trades must use executeTrade(alertId).", level = DeprecationLevel.WARNING)
-    suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult>
     suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult>
     fun pollExecutionStatus(positionId: String, timeoutMs: Long = 30_000L, pollIntervalMs: Long = 1500L): kotlinx.coroutines.flow.Flow<TradeExecutionResult>
     suspend fun stopTrade(): NetworkResult<Unit>
     suspend fun getAlerts(): NetworkResult<List<BotAlert>>
     suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit>
-    suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert>
 
     fun updateAnalysisState(snapshot: AnalysisSnapshot?)
     fun updateConnectionState(connected: Boolean)

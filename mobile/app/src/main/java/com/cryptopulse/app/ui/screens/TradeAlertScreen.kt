@@ -243,7 +243,7 @@ fun TradeAlertScreen(
     entryPrice: Double,
     stopLossPrice: Double,
     takeProfitPrice: Double,
-    estimatedPnl: Double,
+    estimatedPnl: Double? = null,
     signalPrice: Double = 0.0,
     targetEntryPrice: Double? = null,
     tradeAmountUsdt: Double = 0.0,
@@ -252,6 +252,8 @@ fun TradeAlertScreen(
     effectiveNotional: Double? = null,
     strategy: String? = null,
     timeframe: String? = null,
+    isExecutable: Boolean? = null,
+    ineligibilityReason: String? = null,
     viewModel: ExchangeViewModel,
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
@@ -442,18 +444,23 @@ fun TradeAlertScreen(
                                             enabled = !isExecuting,
                                             testTag = "trade_alert_cancel_button",
                                         )
-                                        val isQuantityValid = quantity != null && quantity > 0.0 && !quantity.isNaN()
+                                        val isQuantityValid = quantity != null && quantity.isFinite() && quantity > 0.0
+                                        val isAlertExecutable = isExecutable != false && isQuantityValid
+                                        val buttonText = if (isExecutable == false) "SIGNAL ONLY" else "TRADE"
+                                        val buttonIcon = if (isExecutable == false) Icons.Default.Info else Icons.Default.Check
                                         TradeAlertCyberButton(
-                                            text = "TRADE",
+                                            text = buttonText,
                                             onClick = {
-                                                viewModel.clearTradeError()
-                                                scope.launch {
-                                                    viewModel.executeCurrentTrade()
+                                                if (isAlertExecutable) {
+                                                    viewModel.clearTradeError()
+                                                    scope.launch {
+                                                        viewModel.executeCurrentTrade()
+                                                    }
                                                 }
                                             },
-                                            leadingIcon = Icons.Default.Check,
+                                            leadingIcon = buttonIcon,
                                             modifier = Modifier.weight(1f),
-                                            enabled = !isExecuting && isQuantityValid,
+                                            enabled = !isExecuting && isAlertExecutable,
                                             testTag = "trade_alert_trade_button",
                                         )
                                     }
@@ -673,7 +680,7 @@ fun TradeAlertScreen(
                                 }
 
                                 // 6. Approved Quantity
-                                val isQuantityValid = quantity != null && quantity > 0.0 && !quantity.isNaN()
+                                val isQuantityValid = quantity != null && quantity.isFinite() && quantity > 0.0
                                 SummaryRow(
                                     "Approved Quantity",
                                     formatQuantity(quantity),
@@ -698,11 +705,15 @@ fun TradeAlertScreen(
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
                                 // 10. Estimated P&L
-                                val pnlSign = if (estimatedPnl >= 0) "+" else ""
-                                val pnlColor = if (estimatedPnl >= 0) Color(0xFF00FFA3) else Color(0xFFFF3D57)
-                                SummaryRow("Estimated P&L", "$pnlSign${"%.2f".format(estimatedPnl)} USDT", pnlColor, "trade_alert_estimated_pnl")
+                                if (estimatedPnl != null && estimatedPnl.isFinite()) {
+                                    val pnlSign = if (estimatedPnl >= 0) "+" else ""
+                                    val pnlColor = if (estimatedPnl >= 0) Color(0xFF00FFA3) else Color(0xFFFF3D57)
+                                    SummaryRow("Estimated P&L", "$pnlSign${"%.2f".format(estimatedPnl)} USDT", pnlColor, "trade_alert_estimated_pnl")
+                                } else {
+                                    SummaryRow("Estimated P&L", "—", Color(0xFF94B0D0), "trade_alert_estimated_pnl")
+                                }
 
-                                if (!isQuantityValid) {
+                                if (isExecutable == false || !isQuantityValid) {
                                     Spacer(Modifier.height(10.dp))
                                     Row(
                                         modifier = Modifier
@@ -710,13 +721,13 @@ fun TradeAlertScreen(
                                             .background(Color(0x33FF3D57), RoundedCornerShape(8.dp))
                                             .border(1.dp, Color(0x88FF3D57), RoundedCornerShape(8.dp))
                                             .padding(8.dp)
-                                            .testTag("trade_alert_invalid_quantity_notice"),
+                                            .testTag(if (isExecutable == false) "trade_alert_ineligible_notice" else "trade_alert_invalid_quantity_notice"),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Icon(Icons.Default.Warning, null, tint = Color(0xFFFF3D57), modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(8.dp))
                                         Text(
-                                            "Exchange-approved quantity is unavailable or invalid. Trade execution is disabled for safety.",
+                                            formatIneligibilityReason(ineligibilityReason, !isQuantityValid),
                                             color = Color(0xFFFF8595),
                                             fontSize = 11.5.sp,
                                             lineHeight = 15.sp
@@ -792,11 +803,31 @@ private fun SummaryRow(label: String, value: String, valueColor: Color, testTag:
 }
 
 internal fun formatQuantity(quantity: Double?): String {
-    if (quantity == null || quantity <= 0.0 || quantity.isNaN()) return "—"
+    if (quantity == null || !quantity.isFinite() || quantity <= 0.0) return "—"
     return if (quantity % 1.0 == 0.0) {
         String.format(java.util.Locale.US, "%,d", quantity.toLong())
     } else {
         String.format(java.util.Locale.US, "%.6f", quantity).trimEnd('0').trimEnd('.')
+    }
+}
+
+internal fun formatIneligibilityReason(reason: String?, isQuantityInvalid: Boolean): String {
+    return when (reason) {
+        "BELOW_MIN_NOTIONAL" -> "Calculated position value is below the exchange minimum order notional (5 USDT). Execution disabled for safety."
+        "INSUFFICIENT_BUDGET" -> "Account available balance or allocation is insufficient for this trade. Execution disabled for safety."
+        "PORTFOLIO_EXPOSURE_EXCEEDED" -> "Maximum total portfolio exposure reached. Additional orders are blocked to protect risk limits."
+        "LOT_SIZE_METADATA_UNAVAILABLE" -> "Exchange lot size and trading rules could not be verified. Execution disabled for safety."
+        "MIN_ORDER_QTY_UNMET" -> "Order quantity does not meet the minimum contract size required by the exchange. Execution disabled for safety."
+        "EXCEEDS_MAX_ORDER_QTY" -> "Order quantity exceeds the maximum allowable single-order size on the exchange. Execution disabled for safety."
+        else -> {
+            if (!reason.isNullOrBlank()) {
+                "Execution disabled for safety: ${reason.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }}."
+            } else if (isQuantityInvalid) {
+                "Exchange-approved quantity is unavailable or invalid. Trade execution is disabled for safety."
+            } else {
+                "Trade signal is currently not eligible for autonomous execution."
+            }
+        }
     }
 }
 

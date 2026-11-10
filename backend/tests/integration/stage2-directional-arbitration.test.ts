@@ -586,6 +586,21 @@ describe('Stage 2 Directional & Multi-Timeframe Arbitration Suite', () => {
       mockStorage.set('lock:alarmGeneration', 1);
       mockStorage.set('monitoredSymbols', ['BTC/USDT']);
       mockStorage.set('strategy', 'ScalperV2');
+      mockStorage.set('positionSize', 100);
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'usr-stage2',
+        budgetUsdt: 100,
+        approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'testnet',
+        accountFingerprint: 'bybit:testnet',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
       mockStorage.set('strategyConfig', {
         riskParameters: { maxExposureLimit: 100 },
         confidenceWeights: { trend: 30, momentum: 30, volatility: 20, volume: 20 },

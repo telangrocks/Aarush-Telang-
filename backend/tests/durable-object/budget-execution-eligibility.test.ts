@@ -443,6 +443,20 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       mockStorage.set("positionSize", 5.0); // Exact $5.00 USDT budget
       mockStorage.set("monitoredSymbols", ["GRAM/USDT", "BTC/USDT"]);
       mockStorage.set("lock:alarmGeneration", 1);
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-multi-ticker-test',
+        budgetUsdt: 5.0,
+        approvedSymbols: ['GRAM/USDT', 'BTC/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'testnet',
+        accountFingerprint: 'bybit:testnet',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
 
       // Mock Orchestrator: Both tickers generate qualified BUY signals
       mockExecuteCycle.mockImplementation(async (symbol: string) => {

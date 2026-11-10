@@ -253,6 +253,20 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       };
 
       bot = new TradingBot(mockState, mockEnv);
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-f08-test',
+        budgetUsdt: 10,
+        approvedSymbols: ['SOXL', 'SOXLUSDT', 'SOXL/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'demo',
+        accountFingerprint: 'bybit:demo',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
       (bot as any).runtimeState = {
         isInitialized: true,
         isActive: true,
@@ -307,6 +321,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       };
       mockStorage.set('alerts', [targetAlert]);
@@ -337,6 +352,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'filled',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       };
       mockStorage.set('alerts', [completedAlert]);
@@ -369,6 +385,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       };
       mockStorage.set('alerts', [targetAlert]);
@@ -399,6 +416,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       };
       mockStorage.set('alerts', [targetAlert]);
@@ -435,6 +453,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'failed',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       };
       mockStorage.set('alerts', [targetAlert]);
@@ -482,6 +501,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'failed',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       };
       mockStorage.set('alerts', [targetAlert]);
@@ -522,6 +542,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'failed',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       };
       mockStorage.set('alerts', [targetAlert]);
@@ -556,6 +577,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       };
       mockStorage.set('alerts', [targetAlert]);
@@ -706,6 +728,20 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         dispatchedAt: Date.now() - 60000,
       });
 
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-part-test',
+        budgetUsdt: 10,
+        approvedSymbols: ['SOXL', 'SOXLUSDT', 'SOXL/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'demo',
+        accountFingerprint: 'bybit:demo',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
       const mockState = {
         blockConcurrencyWhile: vi.fn(async (cb: any) => cb()),
         storage: {
@@ -876,6 +912,20 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       };
 
       bot = new TradingBot(mockState, mockEnv);
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-f09-test',
+        budgetUsdt: 10,
+        approvedSymbols: ['SOXL', 'SOXLUSDT', 'SOXL/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'demo',
+        accountFingerprint: 'bybit:demo',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
       (bot as any).runtimeState = {
         isInitialized: true,
         isActive: true,
@@ -934,6 +984,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       }]);
 
@@ -965,6 +1016,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       }]);
 
@@ -996,6 +1048,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       }]);
 
@@ -1024,6 +1077,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       }]);
 
@@ -1055,6 +1109,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       }]);
 
@@ -1086,6 +1141,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       }]);
 
@@ -1118,6 +1174,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       }]);
 
@@ -1147,6 +1204,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       }]);
 
@@ -1177,6 +1235,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         status: 'pending',
         entryPrice: 62.14,
         positionSize: 10,
+        quantity: 0.16,
         strategy: 'scalper-v2',
       }]);
 

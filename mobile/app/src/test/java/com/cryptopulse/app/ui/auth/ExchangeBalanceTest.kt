@@ -302,12 +302,10 @@ class FakeBotRepositoryMinimal : com.cryptopulse.app.domain.repository.BotReposi
     override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun getStatus(): NetworkResult<com.cryptopulse.app.domain.models.BotStatus> = NetworkResult.Success(com.cryptopulse.app.domain.models.BotStatus(state = com.cryptopulse.app.domain.models.BotState.NOT_STARTED, isActive = false))
     override suspend fun executeTrade(alertId: String): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecutionResult(alertId))
-    override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecutionResult("mock"))
     override suspend fun getExecutionStatus(positionId: String): NetworkResult<com.cryptopulse.app.domain.models.TradeExecutionResult> = NetworkResult.Success(createDummyExecutionResult(positionId))
     override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<com.cryptopulse.app.domain.models.TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecutionResult(positionId))
     override suspend fun getAlerts(): NetworkResult<List<com.cryptopulse.app.domain.models.BotAlert>> = NetworkResult.Success(emptyList())
     override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
-    override suspend fun triggerAlert(symbol: String, strategy: String, config: com.cryptopulse.app.domain.models.TradeSetupConfig?): NetworkResult<com.cryptopulse.app.domain.models.BotAlert> = NetworkResult.Success(com.cryptopulse.app.domain.models.BotAlert("a1", symbol, 50000.0, 49000.0, 52000.0, 200.0, strategy, "BUY", "2026-08-24T00:00:00Z"))
 }
 
 private fun createDummyExecutionResult(id: String) = com.cryptopulse.app.domain.models.TradeExecutionResult(

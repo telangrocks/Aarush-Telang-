@@ -394,9 +394,6 @@ private class FakeBotRepoForSession : BotRepository {
     override suspend fun executeTrade(alertId: String) = NetworkResult.Success(com.cryptopulse.app.domain.models.TradeExecutionResult(
         positionId = "pos_1", alertId = alertId, orderId = "ord_1", symbol = "BTC/USDT", side = "BUY", strategy = "Scalper", exchange = "bybit", environment = "demo", orderType = "MARKET", status = "FILLED", entryStatus = "FILLED", requestedEntryPrice = 100.0, actualFillPrice = 100.0, requestedQuantity = 1.0, actualFilledQuantity = 1.0, remainingQuantity = 0.0, stopLoss = 95.0, takeProfit = 110.0, slippagePercent = 0.0, submittedAt = "now", executedAt = "now", isFilled = true
     ))
-    override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto) = NetworkResult.Success(com.cryptopulse.app.domain.models.TradeExecutionResult(
-        positionId = "pos_1", alertId = request.alertId ?: "1", orderId = "ord_1", symbol = "BTC/USDT", side = "BUY", strategy = "Scalper", exchange = "bybit", environment = "demo", orderType = "MARKET", status = "FILLED", entryStatus = "FILLED", requestedEntryPrice = 100.0, actualFillPrice = 100.0, requestedQuantity = 1.0, actualFilledQuantity = 1.0, remainingQuantity = 0.0, stopLoss = 95.0, takeProfit = 110.0, slippagePercent = 0.0, submittedAt = "now", executedAt = "now", isFilled = true
-    ))
     override suspend fun getExecutionStatus(positionId: String) = NetworkResult.Success(com.cryptopulse.app.domain.models.TradeExecutionResult(
         positionId = positionId, alertId = "1", orderId = "ord_1", symbol = "BTC/USDT", side = "BUY", strategy = "Scalper", exchange = "bybit", environment = "demo", orderType = "MARKET", status = "FILLED", entryStatus = "FILLED", requestedEntryPrice = 100.0, actualFillPrice = 100.0, requestedQuantity = 1.0, actualFilledQuantity = 1.0, remainingQuantity = 0.0, stopLoss = 95.0, takeProfit = 110.0, slippagePercent = 0.0, submittedAt = "now", executedAt = "now", isFilled = true
     ))
@@ -406,7 +403,6 @@ private class FakeBotRepoForSession : BotRepository {
     override suspend fun stopTrade() = NetworkResult.Success(Unit)
     override suspend fun getAlerts() = NetworkResult.Success(emptyList<com.cryptopulse.app.domain.models.BotAlert>())
     override suspend fun acknowledgeAlert(alertId: String) = NetworkResult.Success(Unit)
-    override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?) = NetworkResult.Success(com.cryptopulse.app.domain.models.BotAlert(id = "1", symbol = "BTC/USDT", entryPrice = 100.0, stopLoss = 95.0, takeProfit = 110.0, estimatedPnl = 50.0, strategy = "Scalper", side = "BUY", timestamp = "now"))
     override fun updateAnalysisState(snapshot: com.cryptopulse.app.domain.models.AnalysisSnapshot?) {}
     override fun updateConnectionState(connected: Boolean) {}
     override fun startObserving() { isObserving = true }

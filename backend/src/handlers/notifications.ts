@@ -480,9 +480,11 @@ export async function sendTradeNotification(
     signalPrice?: number;
     stopLoss: number;
     takeProfit: number;
-    estimatedPnl: number;
+    estimatedPnl?: number;
     positionSize?: number;
     quantity?: number;
+    isExecutable?: boolean;
+    ineligibilityReason?: string;
     requestedBudget?: number;
     effectiveNotional?: number;
     strategy: string;
@@ -490,6 +492,7 @@ export async function sendTradeNotification(
     timestamp?: string;
     confidenceScore?: number;
     reasoning?: string[];
+    approvalGeneration?: number;
   },
   sink?: BackendDiagnosticSink,
   remainingTtlSec?: number,
@@ -575,9 +578,11 @@ export async function sendTradeNotification(
       entryPrice: opportunity.entryPrice.toString(),
       stopLoss: opportunity.stopLoss.toString(),
       takeProfit: opportunity.takeProfit.toString(),
-      estimatedPnl: opportunity.estimatedPnl.toString(),
       serverTimestamp: (opportunity.timestamp ? new Date(opportunity.timestamp).getTime() : Date.now()).toString(),
     };
+    if (opportunity.estimatedPnl != null && Number.isFinite(opportunity.estimatedPnl)) {
+      dataPayload.estimatedPnl = opportunity.estimatedPnl.toString();
+    }
     if (opportunity.timeframe) {
       dataPayload.timeframe = opportunity.timeframe;
     }
@@ -590,8 +595,37 @@ export async function sendTradeNotification(
     if (opportunity.positionSize != null) {
       dataPayload.positionSize = opportunity.positionSize.toString();
     }
-    if (opportunity.quantity != null && Number.isFinite(opportunity.quantity) && opportunity.quantity > 0) {
-      dataPayload.quantity = opportunity.quantity.toString();
+    // Authoritative Executability & Quantity Serialization:
+    let fcmIsExecutable = false;
+    let fcmQuantity: string | undefined = undefined;
+
+    if (opportunity.isExecutable === false) {
+      // Explicit false: serialize false and omit quantity
+      fcmIsExecutable = false;
+    } else if (opportunity.isExecutable === true) {
+      // Explicit true: serialize true ONLY when authoritative stored quantity is positive and finite
+      if (typeof opportunity.quantity === 'number' && Number.isFinite(opportunity.quantity) && opportunity.quantity > 0) {
+        fcmIsExecutable = true;
+        fcmQuantity = opportunity.quantity.toString();
+      } else {
+        fcmIsExecutable = false;
+      }
+    } else {
+      // Legacy undefined: derive executability from the positive finite quantity on the stored alert
+      if (typeof opportunity.quantity === 'number' && Number.isFinite(opportunity.quantity) && opportunity.quantity > 0) {
+        fcmIsExecutable = true;
+        fcmQuantity = opportunity.quantity.toString();
+      } else {
+        fcmIsExecutable = false;
+      }
+    }
+
+    dataPayload.isExecutable = fcmIsExecutable ? "true" : "false";
+    if (fcmIsExecutable && fcmQuantity) {
+      dataPayload.quantity = fcmQuantity;
+    }
+    if (!fcmIsExecutable && opportunity.ineligibilityReason) {
+      dataPayload.ineligibilityReason = opportunity.ineligibilityReason;
     }
     if (opportunity.requestedBudget != null && Number.isFinite(opportunity.requestedBudget) && opportunity.requestedBudget > 0) {
       dataPayload.requestedBudget = opportunity.requestedBudget.toString();
@@ -604,6 +638,9 @@ export async function sendTradeNotification(
     }
     if (opportunity.reasoning && opportunity.reasoning.length > 0) {
       dataPayload.reasoning = JSON.stringify(opportunity.reasoning);
+    }
+    if (opportunity.approvalGeneration != null && Number.isFinite(opportunity.approvalGeneration)) {
+      dataPayload.approvalGeneration = opportunity.approvalGeneration.toString();
     }
 
     const ttlString = remainingTtlSec != null && remainingTtlSec > 0 ? `${remainingTtlSec}s` : undefined;

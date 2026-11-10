@@ -302,8 +302,12 @@ export class MarketOpportunityScanner {
     // STAGE 2.5: Budget & Execution Constraint Gate (Pre-Top-25)
     // Reduce quality candidates down to affordable candidates FIRST
     // ─────────────────────────────────────────────────────────────────────────
-    const affordableCandidates = (options?.tradeAmountUsdt !== undefined && options.tradeAmountUsdt > 0)
-      ? qualityCandidates.filter(({ market, ticker, quality }) => {
+    let affordableCandidates: typeof qualityCandidates = [];
+    if (options?.tradeAmountUsdt !== undefined) {
+      if (typeof options.tradeAmountUsdt !== 'number' || !Number.isFinite(options.tradeAmountUsdt) || options.tradeAmountUsdt <= 0) {
+        affordableCandidates = [];
+      } else {
+        affordableCandidates = qualityCandidates.filter(({ market, ticker, quality }) => {
           const px = typeof ticker.last?.toNumber === 'function' ? ticker.last.toNumber() : Number(ticker.last ?? ticker.price ?? 0);
           const eligibility = ExecutionEligibilityGate.evaluate({
             tradeAmountUsdt: options.tradeAmountUsdt!,
@@ -314,8 +318,11 @@ export class MarketOpportunityScanner {
             maxOrderQty: quality.maxOrderQty,
           });
           return eligibility.isExecutable;
-        })
-      : qualityCandidates;
+        });
+      }
+    } else {
+      affordableCandidates = qualityCandidates;
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // STAGE 3 & 4: Staged Multi-Timeframe Retrieval & Technical Analysis

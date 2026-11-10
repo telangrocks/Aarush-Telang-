@@ -97,3 +97,5 @@ export async function decrypt(encryptedData: { iv: string; encrypted: string; sa
 
   return new TextDecoder().decode(decryptedContent);
 }
+
+export { computeAccountFingerprint } from './utils/accountFingerprint';

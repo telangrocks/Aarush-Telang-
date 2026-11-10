@@ -111,6 +111,21 @@ describe('Forensic Investigation: Trade Confirmation Flow', () => {
       GLOBAL_TRADING_HALT: 'false'
     };
 
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user_test_1',
+      budgetUsdt: 25.00,
+      approvedSymbols: ['SOPH', 'SOPHUSDT', 'SOPH/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
+
     // Mock Bybit Adapter
     vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue({
       fetchTicker: vi.fn().mockResolvedValue({ last: 0.005969 }),
@@ -191,6 +206,7 @@ describe('Forensic Investigation: Trade Confirmation Flow', () => {
       stopLoss: 0.005748,
       takeProfit: 0.006411,
       positionSize: 25.00, // 25 USDT allocation
+      quantity: 4180,
       estimatedPnl: 1.85,
       timestamp: new Date().toISOString(),
       status: 'pending'
@@ -274,6 +290,7 @@ describe('Forensic Investigation: Trade Confirmation Flow', () => {
       stopLoss: 0.005748,
       takeProfit: 0.006411,
       positionSize: 25.00,
+      quantity: 4180,
       timestamp: new Date().toISOString(),
       status: 'pending'
     };
@@ -322,6 +339,7 @@ describe('Forensic Investigation: Trade Confirmation Flow', () => {
       stopLoss: 0.005748,
       takeProfit: 0.006411,
       positionSize: 25.00,
+      quantity: 4180,
       timestamp: new Date().toISOString(),
       status: 'pending'
     };

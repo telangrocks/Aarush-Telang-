@@ -81,10 +81,15 @@ class MainActivity : FragmentActivity() {
         val entryPrice: Double,
         val stopLoss: Double,
         val takeProfit: Double,
-        val estimatedPnl: Double,
+        val estimatedPnl: Double?,
         val positionSize: Double,
         val timestamp: Long?,
-        val timeframe: String? = null
+        val timeframe: String? = null,
+        val quantity: Double? = null,
+        val requestedBudget: Double? = null,
+        val effectiveNotional: Double? = null,
+        val isExecutable: Boolean? = null,
+        val ineligibilityReason: String? = null
     ) {
         val cleanSymbol: String
             get() = symbol.replace("/USDT", "").replace("USDT", "")
@@ -102,9 +107,14 @@ class MainActivity : FragmentActivity() {
             put("signalPrice", entryPrice)
             put("stopLoss", stopLoss)
             put("takeProfit", takeProfit)
-            put("estimatedPnl", estimatedPnl)
+            estimatedPnl?.let { put("estimatedPnl", it) }
             put("positionSize", positionSize)
             timeframe?.let { put("timeframe", it) }
+            quantity?.let { put("quantity", it) }
+            requestedBudget?.let { put("requestedBudget", it) }
+            effectiveNotional?.let { put("effectiveNotional", it) }
+            isExecutable?.let { put("isExecutable", it) }
+            ineligibilityReason?.let { put("ineligibilityReason", it) }
             put("type", "TRADE_ALERT")
             put("alertType", "TRADE_ALERT")
             timestamp?.let {
@@ -130,7 +140,7 @@ class MainActivity : FragmentActivity() {
         val signalPrice: Double,
         val targetEntryPrice: Double?,
         val positionSize: Double,
-        val calculatedPnl: Double
+        val calculatedPnl: Double?
     )
 
     private var currentNavController: NavHostController? = null
@@ -151,10 +161,19 @@ class MainActivity : FragmentActivity() {
         val entryPrice = (alert["entryPrice"] as? Number)?.toDouble() ?: (alert["signalPrice"] as? Number)?.toDouble()
         val stopLoss = (alert["stopLoss"] as? Number)?.toDouble()
         val takeProfit = (alert["takeProfit"] as? Number)?.toDouble()
-        val estimatedPnl = (alert["estimatedPnl"] as? Number)?.toDouble() ?: 0.0
+        val estimatedPnl = (alert["estimatedPnl"] as? Number)?.toDouble() ?: (alert["estimatedPnl"] as? String)?.toDoubleOrNull()
         val positionSize = (alert["positionSize"] as? Number)?.toDouble() ?: 0.0
         val timestamp = (alert["timestamp"] as? Number)?.toLong() ?: (alert["serverTimestamp"] as? Number)?.toLong()
         val timeframe = alert["timeframe"]?.toString()
+        val quantity = (alert["quantity"] as? Number)?.toDouble() ?: (alert["quantity"] as? String)?.toDoubleOrNull()
+        val requestedBudget = (alert["requestedBudget"] as? Number)?.toDouble() ?: (alert["requestedBudget"] as? String)?.toDoubleOrNull()
+        val effectiveNotional = (alert["effectiveNotional"] as? Number)?.toDouble() ?: (alert["effectiveNotional"] as? String)?.toDoubleOrNull()
+        val isExecutable = when (val raw = alert["isExecutable"]) {
+            is Boolean -> raw
+            is String -> raw.toBooleanStrictOrNull()
+            else -> null
+        }
+        val ineligibilityReason = alert["ineligibilityReason"] as? String
 
         return validateAlertData(
             alertId = alertId,
@@ -168,7 +187,12 @@ class MainActivity : FragmentActivity() {
             positionSize = positionSize,
             timestamp = timestamp,
             timeframe = timeframe,
-            tradeAlertManager = tradeAlertManager
+            tradeAlertManager = tradeAlertManager,
+            quantity = quantity,
+            requestedBudget = requestedBudget,
+            effectiveNotional = effectiveNotional,
+            isExecutable = isExecutable,
+            ineligibilityReason = ineligibilityReason
         )
     }
 
@@ -635,15 +659,6 @@ class MainActivity : FragmentActivity() {
                                             }
                                         }
                                     },
-                                    onExecuteTrade = {
-                                        if (sharedExchangeViewModel.pendingAlert.value != null) {
-                                            navController.navigate("trade_alert") {
-                                                launchSingleTop = true
-                                            }
-                                        } else {
-                                            technicalAnalysisViewModel.triggerTradeAlert(analysisState?.symbol, applicationContext)
-                                        }
-                                    },
                                     onRetry = {
                                         technicalAnalysisViewModel.selectStrategyForViewing(viewedStrategyId, candidate.pairName)
                                     },
@@ -663,10 +678,7 @@ class MainActivity : FragmentActivity() {
                                     val sp = (alert?.get("signalPrice") as? Double) ?: ep
                                     val tep = (alert?.get("targetEntryPrice") as? Double)
                                     val ps = (alert?.get("positionSize") as? Double) ?: 0.0
-                                    
-                                    val refPrice = tep ?: sp
-                                    val q = if (refPrice > 0.0) ps / refPrice else 0.0
-                                    val pnl = (alert?.get("estimatedPnl") as? Double) ?: (if (q > 0.0) kotlin.math.abs(tp - sp) * q else 0.0)
+                                    val pnl = (alert?.get("estimatedPnl") as? Number)?.toDouble() ?: (alert?.get("estimatedPnl") as? String)?.toDoubleOrNull()
                                     TradeMath(ep, sl, tp, sp, tep, ps, pnl)
                                 }
 
@@ -703,6 +715,12 @@ class MainActivity : FragmentActivity() {
                                 val quantity = (alert?.get("quantity") as? Number)?.toDouble() ?: (alert?.get("quantity") as? String)?.toDoubleOrNull()
                                 val requestedBudget = (alert?.get("requestedBudget") as? Number)?.toDouble() ?: (alert?.get("requestedBudget") as? String)?.toDoubleOrNull()
                                 val effectiveNotional = (alert?.get("effectiveNotional") as? Number)?.toDouble() ?: (alert?.get("effectiveNotional") as? String)?.toDoubleOrNull()
+                                val isExecutable = when (val raw = alert?.get("isExecutable")) {
+                                    is Boolean -> raw
+                                    is String -> raw.toBooleanStrictOrNull()
+                                    else -> null
+                                }
+                                val ineligibilityReason = alert?.get("ineligibilityReason") as? String
                                 TradeAlertScreen(
                                     onBack = { navController.popBackStack() },
                                     onTradeExecuted = {
@@ -726,6 +744,8 @@ class MainActivity : FragmentActivity() {
                                     effectiveNotional = effectiveNotional ?: if (quantity != null && quantity > 0.0 && math.entryPrice > 0.0) quantity * math.entryPrice else null,
                                     strategy = strategy,
                                     timeframe = timeframe,
+                                    isExecutable = isExecutable,
+                                    ineligibilityReason = ineligibilityReason,
                                     viewModel = viewModel
                                 )
                             }
@@ -808,10 +828,15 @@ class MainActivity : FragmentActivity() {
             stopLoss: Double?,
             takeProfit: Double?,
             timestamp: Long?,
-            estimatedPnl: Double = 0.0,
+            estimatedPnl: Double? = null,
             positionSize: Double = 0.0,
             timeframe: String? = null,
-            tradeAlertManager: TradeAlertManager? = null
+            tradeAlertManager: TradeAlertManager? = null,
+            quantity: Double? = null,
+            requestedBudget: Double? = null,
+            effectiveNotional: Double? = null,
+            isExecutable: Boolean? = null,
+            ineligibilityReason: String? = null
         ): ValidatedAlertData? {
             // MANDATORY SAFETY REQUIREMENT: Never silently substitute 0.0 for execution-critical fields
             if (alertId.isNullOrBlank() ||
@@ -849,13 +874,17 @@ class MainActivity : FragmentActivity() {
                 estimatedPnl = estimatedPnl,
                 positionSize = positionSize,
                 timestamp = timestamp,
-                timeframe = timeframe
+                timeframe = timeframe,
+                quantity = quantity,
+                requestedBudget = requestedBudget,
+                effectiveNotional = effectiveNotional,
+                isExecutable = isExecutable,
+                ineligibilityReason = ineligibilityReason
             )
         }
-    }
 
-    @androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PRIVATE)
-    internal fun parseValidatedAlert(intent: Intent?): ValidatedAlertData? {
+        @androidx.annotation.VisibleForTesting(otherwise = androidx.annotation.VisibleForTesting.PRIVATE)
+        internal fun parseValidatedAlert(intent: Intent?, tradeAlertManager: TradeAlertManager? = null): ValidatedAlertData? {
         if (intent == null) return null
 
         val isAlert = intent.getBooleanExtra("extra_alert", false) ||
@@ -892,7 +921,8 @@ class MainActivity : FragmentActivity() {
             ?: intent.getDoubleExtra("alert_take_profit", -1.0).takeIf { it > 0.0 }
 
         val estimatedPnl = intent.getStringExtra("estimatedPnl")?.toDoubleOrNull()
-            ?: intent.getDoubleExtra("alert_estimated_pnl", 0.0)
+            ?: intent.getStringExtra("alert_estimated_pnl")?.toDoubleOrNull()
+            ?: if (intent.hasExtra("alert_estimated_pnl")) intent.getDoubleExtra("alert_estimated_pnl", 0.0) else null
 
         val positionSize = intent.getStringExtra("positionSize")?.toDoubleOrNull()
             ?: intent.getDoubleExtra("alert_position_size", 0.0)
@@ -903,6 +933,27 @@ class MainActivity : FragmentActivity() {
 
         val timeframe = intent.getStringExtra("timeframe")
             ?: intent.getStringExtra("alert_timeframe")
+
+        val quantity = intent.getStringExtra("quantity")?.toDoubleOrNull()
+            ?: intent.getStringExtra("alert_quantity")?.toDoubleOrNull()
+            ?: if (intent.hasExtra("alert_quantity")) intent.getDoubleExtra("alert_quantity", -1.0).takeIf { it > 0.0 } else null
+
+        val requestedBudget = intent.getStringExtra("requestedBudget")?.toDoubleOrNull()
+            ?: intent.getStringExtra("alert_requested_budget")?.toDoubleOrNull()
+            ?: if (intent.hasExtra("alert_requested_budget")) intent.getDoubleExtra("alert_requested_budget", -1.0).takeIf { it > 0.0 } else null
+
+        val effectiveNotional = intent.getStringExtra("effectiveNotional")?.toDoubleOrNull()
+            ?: intent.getStringExtra("alert_effective_notional")?.toDoubleOrNull()
+            ?: if (intent.hasExtra("alert_effective_notional")) intent.getDoubleExtra("alert_effective_notional", -1.0).takeIf { it > 0.0 } else null
+
+        val isExecutable = intent.getStringExtra("isExecutable")?.toBooleanStrictOrNull()
+            ?: intent.getStringExtra("alert_is_executable")?.toBooleanStrictOrNull()
+            ?: if (intent.hasExtra("isExecutable")) intent.getBooleanExtra("isExecutable", false)
+               else if (intent.hasExtra("alert_is_executable")) intent.getBooleanExtra("alert_is_executable", false)
+               else null
+
+        val ineligibilityReason = intent.getStringExtra("ineligibilityReason")
+            ?: intent.getStringExtra("alert_ineligibility_reason")
 
         return validateAlertData(
             alertId = alertId,
@@ -916,13 +967,19 @@ class MainActivity : FragmentActivity() {
             positionSize = positionSize,
             timestamp = timestamp,
             timeframe = timeframe,
-            tradeAlertManager = tradeAlertManager
+            tradeAlertManager = tradeAlertManager,
+            quantity = quantity,
+            requestedBudget = requestedBudget,
+            effectiveNotional = effectiveNotional,
+            isExecutable = isExecutable,
+            ineligibilityReason = ineligibilityReason
         )
     }
+}
 
     private fun handleIncomingAlertIntent(intent: Intent?) {
         if (intent == null) return
-        val alert = parseValidatedAlert(intent)
+        val alert = parseValidatedAlert(intent, tradeAlertManager)
         if (alert == null) return
 
         if (alert.alertId == lastHandledAlertId) {

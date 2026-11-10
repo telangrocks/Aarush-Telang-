@@ -212,6 +212,21 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
         }
       }
     ]);
+
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-p1',
+      budgetUsdt: 200,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
   });
 
   // =========================================================================
@@ -228,11 +243,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 200,
+      quantity: 0.004,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
 
     // Existing active LONG position in D1
     dbPositions.push({
@@ -269,11 +286,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 200,
+      quantity: 0.004,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
 
     // Existing active LONG position in runtime activePositions and D1
     dbPositions.push({
@@ -319,11 +338,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 200,
+      quantity: 0.004,
       status: "pending" as const,
       strategy: "breakout"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
 
     // Existing active SHORT position
     dbPositions.push({
@@ -360,11 +381,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 200,
+      quantity: 0.004,
       status: "pending" as const,
       strategy: "momentum"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
 
     dbPositions.push({
       id: "pos-existing-short-2",
@@ -403,11 +426,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 200,
+      quantity: 0.004,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
 
     // In-flight intent in DO storage
     mockStorage.set("intent:order:inflight-1", {
@@ -550,11 +575,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 3000,
       signalPrice: 3000,
       positionSize: 200, // Proposed: $200
+      quantity: 0.066,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
     // Configured policy limit: $500 total exposure
     mockStorage.set("strategyConfig", { maxPortfolioExposureUsdt: 500 });
     mockStorage.set("lastAccountBalance", 5000);
@@ -595,11 +622,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 3000,
       signalPrice: 3000,
       positionSize: 100, // Proposed: $100
+      quantity: 0.03,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
     // Configured policy limit: $500 total exposure
     mockStorage.set("strategyConfig", { maxPortfolioExposureUsdt: 500 });
     mockStorage.set("lastAccountBalance", 5000);
@@ -712,11 +741,14 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 50000, // Proposed $50,000 allocation
+      quantity: 1,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
     mockStorage.set("lastAccountBalance", 100000);
 
     const req = new Request("http://bot/execute-trade", {
@@ -745,11 +777,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 50000, // Proposed $50,000
+      quantity: 1,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
     mockStorage.set("lastAccountBalance", 20000);
 
     const req = new Request("http://bot/execute-trade", {
@@ -780,11 +814,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 100,
+      quantity: 0.002,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
     mockStorage.set("lastAccountBalance", 0);
 
     const req = new Request("http://bot/execute-trade", {
@@ -814,11 +850,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 100,
+      quantity: 0.002,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
     mockStorage.set("lastAccountBalance", 0);
     // Explicit limit attempted to bypass live zero balance
     mockStorage.set("strategyConfig", { maxPortfolioExposureUsdt: 50000 });
@@ -846,11 +884,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 50000,
       signalPrice: 50000,
       positionSize: 0, // Invalid size
+      quantity: 0.002,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alert]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: (alert as any).positionSize || 200 });
     mockStorage.set("lastAccountBalance", 50000);
 
     const req = new Request("http://bot/execute-trade", {
@@ -899,11 +939,13 @@ describe("Phase 1 Safety Gates: Portfolio Exposure & Same-Symbol Conflict Protec
       targetEntryPrice: 3000,
       signalPrice: 3000,
       positionSize: 100,
+      quantity: 0.03,
       status: "pending" as const,
       strategy: "scalper-v2"
     };
     mockStorage.set("alerts", [alertEth]);
     mockStorage.set("userId", "user-p1");
+    mockStorage.set("approvedCandidateRecord", { ...mockStorage.get("approvedCandidateRecord"), budgetUsdt: alertEth.positionSize });
     mockStorage.set("lastAccountBalance", 10000);
 
     // Active position on BTC

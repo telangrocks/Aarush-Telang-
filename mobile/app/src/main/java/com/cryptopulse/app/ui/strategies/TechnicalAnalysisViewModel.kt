@@ -249,42 +249,6 @@ class TechnicalAnalysisViewModel @Inject constructor(
         _activationError.value = null
     }
 
-    fun triggerTradeAlert(symbol: String? = null, context: android.content.Context) {
-        viewModelScope.launch {
-            val originalConfig = sessionRepository.tradeSetupConfig.value
-            val targetStrategyId = _viewedStrategyId.value
-                ?: sessionRepository.selectedStrategyId.value
-                ?: originalConfig?.strategyId
-                ?: "ScalperV2"
-
-            val targetSymbol = (symbol ?: _explorationState.value?.symbol ?: originalConfig?.symbol ?: "").trim()
-            if (targetSymbol.isBlank()) {
-                android.widget.Toast.makeText(context, "No active qualified trade opportunity available.", android.widget.Toast.LENGTH_LONG).show()
-                return@launch
-            }
-
-            val executionConfig = originalConfig?.copy(
-                strategyId = targetStrategyId,
-                symbol = targetSymbol,
-                parameters = if (targetStrategyId == originalConfig?.strategyId) (originalConfig?.parameters ?: emptyMap()) else emptyMap()
-            ) ?: TradeSetupConfig(
-                strategyId = targetStrategyId,
-                symbol = targetSymbol,
-                entryPrice = 0.0,
-                tradeValueUsdt = 5.0
-            )
-
-            val result = botRepository.triggerAlert(targetSymbol, targetStrategyId, executionConfig)
-            result.onSuccess { botAlert ->
-                val alertMap = botAlert.toMap().toMutableMap()
-                alertMap["signalOrigin"] = "MANUAL_TRIGGER"
-                tradeAlertManager.onNewAlertReceived(alertMap)
-            }.onFailure { e ->
-                android.widget.Toast.makeText(context, e.message ?: "Failed to generate trade alert. Please retry.", android.widget.Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
     fun commitStrategyAndActivateBot(
         symbol: String,
         strategy: String,

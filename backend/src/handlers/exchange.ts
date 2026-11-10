@@ -2,6 +2,7 @@ import { Context } from "hono";
 import BigNumber from "bignumber.js";
 import { Env } from "../index";
 import { encrypt, decrypt, cleanCredential } from "../crypto";
+import { computeAccountFingerprint } from "../utils/accountFingerprint";
 import { ExchangeManager, ExchangeName, ExchangeEnvironment, type ExchangeRegion } from "../exchanges";
 import { FRIENDLY_MESSAGES, classifyException, type ExchangeErrorCode } from "../exchanges/errors";
 import { StructuredLogger } from "../infrastructure/telemetry/Telemetry";
@@ -25,6 +26,7 @@ import { PublicMarketDataService } from "../infrastructure/market-data/PublicMar
 import { isExcludedAsset } from "../domain/trading/AssetClassification";
 import { PriceNormalizer } from "../utils/PriceNormalizer";
 import { extractUsdtBalance } from "../utils/balance";
+import { TradeAlert, ApprovedCandidateRecord, normalizeCanonicalSymbol } from "../trading-bot";
 
 const DISCOVERY_CACHE = new LruTtlCache<string, any[]>(500, 30000);
 const CACHE_TTL_MS = 30000;
@@ -38,6 +40,8 @@ const USER_EXCHANGE_ROUTING_CACHE = new LruTtlCache<string, {
   exchange_name: string | null;
   exchange_environment: string | null;
   exchange_region: string | null;
+  exchange_api_key_encrypted?: string | null;
+  exchange_api_key?: string | null;
 }>(5000, 60000);
 const TICKER_CACHE = new LruTtlCache<string, any>(200, 2000); // 2s TTL
 const TICKER_FALLBACK_CACHE = new LruTtlCache<string, any>(200, 60000); // 60s stale fallback TTL
@@ -180,6 +184,9 @@ export function selectBoundedDiscoveryMarkets(
   maxCandidates: number = 8,
   orderType: string = 'ALL'
 ): any[] {
+  if (userAllocation !== null && (typeof userAllocation !== 'number' || !Number.isFinite(userAllocation) || userAllocation <= 0)) {
+    return [];
+  }
   const tickerMap = new Map<string, any>();
   for (const t of tickers) {
     const sym = String(t.pairName || t.symbol || '').toUpperCase();
@@ -1084,7 +1091,13 @@ export async function handleGetPersonalizedMarketCandidates(
           .bind(userId)
           .first();
         if (user && user.exchange_name) {
-          USER_EXCHANGE_ROUTING_CACHE.set(userId, { exchange_name: user.exchange_name, exchange_environment: user.exchange_environment, exchange_region: user.exchange_region });
+          USER_EXCHANGE_ROUTING_CACHE.set(userId, {
+            exchange_name: user.exchange_name,
+            exchange_environment: user.exchange_environment,
+            exchange_region: user.exchange_region,
+            exchange_api_key_encrypted: (user as any).exchange_api_key_encrypted,
+            exchange_api_key: (user as any).exchange_api_key
+          });
         }
       } catch (dbErr: any) {
         console.error("[DIAGNOSTIC] Stage 2 EXCEPTION: Database query failed:", dbErr?.message, dbErr?.stack);
@@ -1129,52 +1142,50 @@ export async function handleGetPersonalizedMarketCandidates(
 
     const queryBudget = c.req.query("budget");
     const parsedBudget = queryBudget ? parseFloat(queryBudget) : null;
-    const userAllocation = (parsedBudget !== null && !isNaN(parsedBudget) && parsedBudget > 0) ? parsedBudget : null;
+    if (parsedBudget === null || isNaN(parsedBudget) || parsedBudget <= 0) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_BUDGET",
+        message: "A positive budget is required to discover market candidates.",
+        error: "A positive budget is required to discover market candidates."
+      });
+    }
+    const userAllocation = parsedBudget;
     const queryOrderType = String(c.req.query("orderType") || "ALL").toUpperCase();
     const canonicalExchange = String(user.exchange_name || "bybit").toLowerCase();
     const canonicalEnv = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
     const canonicalRegion = resolveCanonicalRoutingRegion(user.exchange_region);
+    const baseCacheKey = `${userId}_${canonicalExchange}_${canonicalEnv}_${canonicalRegion}_${queryOrderType}_${String(userAllocation)}`;
 
-    const baseCacheKey = `${userId}_${canonicalExchange}_${canonicalEnv}_${canonicalRegion}_${queryOrderType}_${userAllocation !== null ? String(userAllocation) : 'default'}`;
-    if (userAllocation === null) {
-      const cached = DISCOVERY_CACHE.get(baseCacheKey);
-      if (cached && cached.length > 0) {
-        console.log(`[DIAGNOSTIC] Cache hit for ${baseCacheKey}`);
-        if (typeof c.header === 'function') {
-          c.header("X-Eligible-Market-Count", String(cached.length));
-        }
-        return c.json(cached);
-      }
-    }
+    const accountFingerprint = await computeAccountFingerprint({
+      userId,
+      exchangeName: canonicalExchange,
+      environment: canonicalEnv,
+      accountIdentifier: user.exchange_api_key_encrypted || user.exchange_api_key || null,
+      serverSecret: c.env.ENCRYPTION_KEY
+    });
 
-    // Stage 3.5: Authoritative DO Scanner State Query (CP-CONF-001)
-    // Directly query user's TradingBot DO for its authoritative scanner state before doing any expensive local work
-    // when no custom budget filter is overriding discovery eligibility.
-    if (c.env.TRADING_BOTS && userAllocation === null) {
+    let approvalGeneration = 1;
+    let bot: any = null;
+    if (c.env.TRADING_BOTS) {
       try {
         const botId = c.env.TRADING_BOTS.idFromName(userId);
-        const bot = c.env.TRADING_BOTS.get(botId);
-        const scanResp = await bot.fetch(new Request("http://bot/scanner-state", {
-          headers: { "X-User-Id": userId }
+        bot = c.env.TRADING_BOTS.get(botId);
+        const reserveResp = await bot.fetch(new Request("http://bot/reserve-candidate-generation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId })
         }));
-        if (scanResp.ok) {
-          const scanResult = await scanResp.json() as any;
-          if (scanResult && scanResult.topOpportunities) {
-            console.log(`[DIAGNOSTIC] Stage 3.5: Retrieved authoritative DO scanner state: universeSize=${scanResult.universeSize}, eligible=${scanResult.eligibleCount}, top=${scanResult.topOpportunities?.length || 0}`);
-            const candidates = mapScanResultToCandidates(scanResult);
-
-            if (candidates.length > 0) {
-              console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully from DO (${candidates.length} items)`);
-              DISCOVERY_CACHE.set(baseCacheKey, candidates);
-              if (typeof c.header === 'function') {
-                c.header("X-Eligible-Market-Count", String(scanResult.eligibleCount ?? candidates.length));
-              }
-              return c.json(candidates);
-            }
-          }
+        if (!reserveResp.ok) {
+          c.status(500);
+          return c.json({ success: false, error: "Failed to reserve candidate approval generation in trading session." });
         }
-      } catch (doErr: any) {
-        console.warn("[DIAGNOSTIC] Stage 3.5: Failed to query DO scanner-state, proceeding to fallback:", doErr?.message);
+        const reserveData = (await reserveResp.json()) as { success: boolean; generation: number };
+        approvalGeneration = reserveData.generation;
+      } catch (reserveErr: any) {
+        c.status(500);
+        return c.json({ success: false, error: `Failed to initialize approval generation: ${reserveErr?.message || reserveErr}` });
       }
     }
 
@@ -1393,12 +1404,86 @@ export async function handleGetPersonalizedMarketCandidates(
     let candidates: any[] = [];
     const boundedMarkets = selectBoundedDiscoveryMarkets(activeMarkets, tickers, userAllocation, 8, queryOrderType);
     if (boundedMarkets.length === 0) {
-      console.log(`[DIAGNOSTIC] Stage 9: 0 eligible markets after bounded pre-selection (universe=${activeMarkets.length}, budget=${userAllocation ?? 'default'}). Returning empty array without scanner invocation.`);
+      console.log(`[DIAGNOSTIC] Stage 9: 0 eligible markets after bounded pre-selection (universe=${activeMarkets.length}, budget=${userAllocation}). Returning empty array without scanner invocation.`);
+      if (bot) {
+        try {
+          const emptyResp = await bot.fetch(new Request("http://bot/commit-empty-candidates", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ generation: approvalGeneration })
+          }));
+          if (!emptyResp.ok) {
+            c.status(500);
+            return c.json({ success: false, error: "Failed to persist candidate approval state to trading session." });
+          }
+        } catch (commitErr) {
+          console.error("Failed to commit empty candidates to DO:", commitErr);
+          c.status(500);
+          return c.json({ success: false, error: "Failed to persist candidate approval state to trading session." });
+        }
+      }
       if (typeof c.header === 'function') {
         c.header("X-Empty-Reason", "NO_ELIGIBLE_MARKETS");
         c.header("X-Eligible-Market-Count", "0");
+        c.header("X-Approval-Generation", String(approvalGeneration));
       }
       return c.json([]);
+    }
+
+    if (bot) {
+      const tickerMap = new Map<string, any>(tickers.map((t: any) => [t.pairName || `${t.symbol}/USDT`, t]));
+      const symbolMetadataSnapshot: Record<string, any> = {};
+      for (const m of boundedMarkets) {
+        const canonicalSym = normalizeCanonicalSymbol(m.symbol || m.id);
+        const t = tickerMap.get(m.symbol) || tickerMap.get(m.id) || tickerMap.get(`${m.base}/USDT`);
+        symbolMetadataSnapshot[canonicalSym] = {
+          priceAtApproval: t?.last ?? t?.price ?? 0,
+          qtyStep: m?.precision?.amount ?? (t?.qtyStep || 0.0001),
+          minOrderQty: m?.limits?.amount?.min ?? (t?.minOrderQty || 0.001),
+          minNotional: m?.limits?.cost?.min ?? (t?.minNotional || 5),
+          maxOrderQty: m?.limits?.amount?.max ?? t?.maxQty ?? undefined
+        };
+      }
+
+      const discoverySymbols: string[] = [];
+      for (const m of boundedMarkets) {
+        const pairSym = normalizeCanonicalSymbol(m.symbol || m.id);
+        if (pairSym && !discoverySymbols.includes(pairSym)) discoverySymbols.push(pairSym);
+        if (m.base) {
+          const baseSym = normalizeCanonicalSymbol(m.base);
+          if (baseSym && !discoverySymbols.includes(baseSym)) discoverySymbols.push(baseSym);
+        }
+      }
+
+      const discoveryRecord: ApprovedCandidateRecord = {
+        approvalGeneration,
+        userId,
+        budgetUsdt: userAllocation,
+        approvedSymbols: discoverySymbols,
+        approvalState: 'DISCOVERY_APPROVED',
+        exchangeName: String(exchangeName),
+        environment: String(environment),
+        accountFingerprint,
+        orderType: queryOrderType,
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 10 * 60 * 1000,
+        symbolMetadataSnapshot
+      };
+
+      try {
+        const discResp = await bot.fetch(new Request("http://bot/discovery-approved-candidates", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ record: discoveryRecord })
+        }));
+        if (!discResp.ok) {
+          c.status(500);
+          return c.json({ success: false, error: "Failed to persist discovery approval state to trading session." });
+        }
+      } catch (discErr) {
+        c.status(500);
+        return c.json({ success: false, error: "Failed to commit discovery candidate approval." });
+      }
     }
 
     const rulesSnapshotFingerprint = activeMarkets
@@ -1484,8 +1569,80 @@ export async function handleGetPersonalizedMarketCandidates(
     currentStage = "10. response serialized";
     console.log(`[DIAGNOSTIC] Stage 10: response serialized successfully (${candidates.length} items)`);
 
+    if (bot) {
+      if (candidates.length === 0) {
+        try {
+          const emptyResp = await bot.fetch(new Request("http://bot/commit-empty-candidates", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ generation: approvalGeneration })
+          }));
+          if (!emptyResp.ok) {
+            c.status(500);
+            return c.json({ success: false, error: "Failed to persist empty candidate state." });
+          }
+        } catch (commitErr) {
+          c.status(500);
+          return c.json({ success: false, error: "Failed to persist empty candidate state." });
+        }
+      } else {
+        const symbolMetadataSnapshot: Record<string, any> = {};
+        for (const cand of candidates) {
+          const canonicalSym = normalizeCanonicalSymbol(cand.symbol || cand.pairName);
+          symbolMetadataSnapshot[canonicalSym] = {
+            priceAtApproval: cand.price || 0,
+            qtyStep: cand.qtyStep || 0.0001,
+            minOrderQty: cand.minOrderQty || 0.001,
+            minNotional: cand.minNotional || 5,
+            maxOrderQty: cand.maxQty || undefined
+          };
+        }
+
+        const finalSymbols: string[] = [];
+        for (const cand of candidates) {
+          const pairSym = normalizeCanonicalSymbol(cand.pairName || cand.symbol);
+          if (pairSym && !finalSymbols.includes(pairSym)) finalSymbols.push(pairSym);
+          if (cand.symbol) {
+            const baseSym = normalizeCanonicalSymbol(cand.symbol);
+            if (baseSym && !finalSymbols.includes(baseSym)) finalSymbols.push(baseSym);
+          }
+        }
+
+        const finalRecord: ApprovedCandidateRecord = {
+          approvalGeneration,
+          userId,
+          budgetUsdt: userAllocation,
+          approvedSymbols: finalSymbols,
+          approvalState: 'FINAL_APPROVED',
+          exchangeName: String(exchangeName),
+          environment: String(environment),
+          accountFingerprint,
+          orderType: queryOrderType,
+          approvedAt: Date.now(),
+          expiresAt: Date.now() + 10 * 60 * 1000,
+          symbolMetadataSnapshot
+        };
+
+        try {
+          const finalResp = await bot.fetch(new Request("http://bot/commit-final-approved-candidates", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ record: finalRecord })
+          }));
+          if (!finalResp.ok) {
+            c.status(500);
+            return c.json({ success: false, error: "Failed to persist final candidate approval to trading session." });
+          }
+        } catch (finalErr) {
+          c.status(500);
+          return c.json({ success: false, error: "Failed to commit final candidate approval." });
+        }
+      }
+    }
+
     if (typeof c.header === 'function') {
       c.header("X-Eligible-Market-Count", String(eligibleMarketCount));
+      c.header("X-Approval-Generation", String(approvalGeneration));
       if (candidates.length === 0) {
         c.header("X-Empty-Reason", eligibleMarketCount === 0 ? "NO_ELIGIBLE_MARKETS" : "NO_TECHNICAL_OPPORTUNITIES");
       }
@@ -1493,9 +1650,6 @@ export async function handleGetPersonalizedMarketCandidates(
 
     if (candidates.length > 0) {
       DISCOVERY_CACHE.set(cacheKey, candidates);
-      if (userAllocation === null) {
-        DISCOVERY_CACHE.set(baseCacheKey, candidates);
-      }
     }
     return c.json(candidates);
 
@@ -1698,7 +1852,6 @@ import { StopLossCalculator } from "../engine/risk/StopLossCalculator";
 import { TakeProfitCalculator } from "../engine/risk/TakeProfitCalculator";
 import { RiskParameters } from "../engine/risk/RiskParameters";
 import { calculateATR } from "../engine/indicator/indicators/ATR";
-import { TradeAlert } from "../trading-bot";
 
 export async function handleGetStrategies(
   c: Context<{ Bindings: Env }>,
@@ -1914,6 +2067,33 @@ export async function handleGetTechnicalAnalysis(
       }
     }
 
+    // Strict Budget Gate: On-demand Technical Analysis preview requires prior Budget Gate approval
+    if (c.env.TRADING_BOTS) {
+      try {
+        const botId = c.env.TRADING_BOTS.idFromName(userId);
+        const bot = c.env.TRADING_BOTS.get(botId);
+        const verifyResp = await bot.fetch(new Request(`http://bot/verify-approval?symbol=${encodeURIComponent(symbol)}`));
+        if (verifyResp.ok) {
+          const verifyData = await verifyResp.json<{ valid: boolean; reason?: string }>();
+          if (!verifyData.valid) {
+            c.status(403);
+            return c.json({
+              success: false,
+              code: "SYMBOL_NOT_APPROVED",
+              error: `Symbol '${symbol}' is not approved by budget gate. Please select an approved coin from the market scanner.`,
+              message: `Symbol '${symbol}' is not approved by budget gate. Please select an approved coin from the market scanner.`
+            });
+          }
+        } else {
+          c.status(500);
+          return c.json({ success: false, error: "Failed to verify symbol approval with trading session." });
+        }
+      } catch (verifyErr: any) {
+        c.status(500);
+        return c.json({ success: false, error: `Error verifying budget approval: ${verifyErr?.message || verifyErr}` });
+      }
+    }
+
     const user = await c.env.DB.prepare(
       "SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?",
     )
@@ -2123,13 +2303,14 @@ export async function handleActivateTradingBot(
   try {
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
-    const { symbols, coinId, strategy, positionSize, targetEntryPrice, config } = await c.req.json<{
+    const { symbols, coinId, strategy, positionSize, targetEntryPrice, config, approvalGeneration } = await c.req.json<{
       symbols?: string[];
       coinId?: string;
       strategy: string;
       positionSize?: number;
       targetEntryPrice?: number;
       config?: any;
+      approvalGeneration?: number;
     }>();
 
     const targetSymbols = (symbols && Array.isArray(symbols) && symbols.length > 0)
@@ -2148,7 +2329,7 @@ export async function handleActivateTradingBot(
       new Request("http://bot/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, symbols: targetSymbols, coinId: targetSymbols[0], strategy, positionSize, targetEntryPrice, config }),
+        body: JSON.stringify({ userId, symbols: targetSymbols, coinId: targetSymbols[0], strategy, positionSize, targetEntryPrice, config, approvalGeneration }),
       }),
     );
 

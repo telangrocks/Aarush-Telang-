@@ -162,6 +162,21 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       DB: mockDb,
       ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     };
+
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 5,
+      userId: 'user-test-1',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT', 'SOPH', 'SOPHUSDT', 'SOPH/USDT', 'DOGE', 'DOGEUSDT', 'DOGE/USDT', 'SYM0/USDT', 'SYM1/USDT', 'SYM2/USDT', 'SYM3/USDT', 'SYM4/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
   });
 
   it('Autonomous alert: succeeds when generation matches currentGen', async () => {
@@ -181,6 +196,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -218,6 +234,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -257,6 +274,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -293,6 +311,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -339,6 +358,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -379,6 +399,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date(Date.now() - 360000).toISOString(), // 6 minutes ago (>5 min TTL)
@@ -634,6 +655,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -657,6 +679,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
           userId: 'user-test-1',
           strategy: 'ScalperV2',
           positionSize: 100,
+      quantity: 0.002,
           coinId: 'BTC/USDT',
           monitoredSymbols: ['BTC/USDT'],
         }),
@@ -702,6 +725,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -740,6 +764,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -793,6 +818,10 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
     mockStorage.set('isActive', true);
     mockStorage.set('strategy', 'ScalperV2');
     mockStorage.set('lock:alarmGeneration', 3);
+    const existingRec = mockStorage.get('approvedCandidateRecord');
+    if (existingRec) {
+      mockStorage.set('approvedCandidateRecord', { ...existingRec, approvalGeneration: 3 });
+    }
 
     const autoAlert: TradeAlert = {
       id: 'auto-race-t6',
@@ -804,6 +833,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -972,6 +1002,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -1105,6 +1136,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -1261,6 +1293,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       takeProfit: 52000,
       estimatedPnl: 20,
       positionSize: 100,
+      quantity: 0.002,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -1745,6 +1778,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         takeProfit: 51200,
         estimatedPnl: 20,
         positionSize: 100,
+      quantity: 0.002,
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date().toISOString(),
@@ -1910,6 +1944,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         takeProfit: 51200,
         estimatedPnl: 20,
         positionSize: 100,
+      quantity: 0.002,
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date().toISOString(),
@@ -2279,7 +2314,12 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
         },
         env: {
           ...mockEnv,
-          TRADING_BOTS: undefined,
+          TRADING_BOTS: {
+            idFromName: () => 'mock-bot-id',
+            get: () => ({
+              fetch: vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true, generation: 1 }), { status: 200 })),
+            }),
+          },
         },
         status: (code: number) => {
           statusCode = code;

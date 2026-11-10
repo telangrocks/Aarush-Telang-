@@ -603,7 +603,6 @@ fun TechnicalAnalysisScreen(
     onActivateBot: (() -> Unit)? = null,
     onDeactivateBot: () -> Unit = {},
     onBack: () -> Unit,
-    onExecuteTrade: () -> Unit,
     onRetry: () -> Unit = {},
     onLogout: (() -> Unit)? = null
 ) {
@@ -848,14 +847,6 @@ fun TechnicalAnalysisScreen(
                                     testTag = "commit_and_start_bot_button"
                                 )
                             }
-
-                            TechnicalAnalysisCyberButton(
-                                text = "TEST TRADE EXECUTION",
-                                onClick = { onExecuteTrade() },
-                                enabled = true,
-                                leadingIcon = Icons.Default.Bolt,
-                                testTag = "execute_trade_button"
-                            )
                         }
                     }
                 }

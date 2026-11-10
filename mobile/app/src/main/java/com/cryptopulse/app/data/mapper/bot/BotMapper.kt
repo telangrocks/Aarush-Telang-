@@ -20,7 +20,10 @@ fun BotAlertDto.toDomain(): BotAlert = BotAlert(
     timeframe = timeframe,
     quantity = quantity,
     requestedBudget = requestedBudget,
-    effectiveNotional = effectiveNotional
+    effectiveNotional = effectiveNotional,
+    isExecutable = isExecutable,
+    ineligibilityReason = ineligibilityReason,
+    approvalGeneration = approvalGeneration
 )
 
 fun StrategyMetadataDto.toDomain(): StrategyMetadata = StrategyMetadata(
@@ -135,4 +138,3 @@ fun ExecuteTradeResponseDto.toDomain(fallbackAlertId: String): TradeExecutionRes
     success = this.success,
     message = this.message
 )
-

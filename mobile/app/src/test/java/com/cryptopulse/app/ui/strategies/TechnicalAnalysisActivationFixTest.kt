@@ -95,9 +95,6 @@ class TechnicalAnalysisActivationFixTest {
             NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "ScalperV2"))
         override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> =
             NetworkResult.Error(NetworkError.Unknown(Exception("Not implemented")))
-        @Suppress("DEPRECATION")
-        override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> =
-            NetworkResult.Error(NetworkError.Unknown(Exception("Not implemented")))
         override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> =
             NetworkResult.Error(NetworkError.Unknown(Exception("Not implemented")))
         override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long) =
@@ -105,8 +102,6 @@ class TechnicalAnalysisActivationFixTest {
         override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
         override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
         override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
-        override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> =
-            NetworkResult.Error(NetworkError.Unknown(Exception("Not implemented")))
 
         override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
         override fun updateConnectionState(connected: Boolean) { _isConnected.value = connected }

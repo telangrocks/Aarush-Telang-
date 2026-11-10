@@ -83,11 +83,9 @@ class BotExecutionBridgeTest {
             override suspend fun getStatus() = NetworkResult.Success(BotStatusResponseDto(true, "BTCUSDT", "ScalperV2"))
             override suspend fun getAnalysisStatus() = NetworkResult.Success(AnalysisSnapshotDto())
             override suspend fun executeTrade(alertId: String) = NetworkResult.Success(ExecuteTradeResponseDto(true, "Order accepted", alertId, alertId, "order_123"))
-            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "Mock OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "Stopped"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
-            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Success(BotAlertDto("a1", "BTCUSDT", 50000.0, 49000.0, 52000.0, 200.0, "ScalperV2", "BUY", "2026-08-24T00:00:00Z", 50000.0, 50000.0))
 
             override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> {
                 callCount++
@@ -151,11 +149,9 @@ class BotExecutionBridgeTest {
             override suspend fun getStatus() = NetworkResult.Success(BotStatusResponseDto(true, "BTCUSDT", "Momentum"))
             override suspend fun getAnalysisStatus() = NetworkResult.Success(pollResponse)
             override suspend fun executeTrade(alertId: String) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
-            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
-            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
             override suspend fun getExecutionStatus(positionId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
         }
 
@@ -208,11 +204,9 @@ class BotExecutionBridgeTest {
                 )
             )
             override suspend fun executeTrade(alertId: String) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
-            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
-            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
             override suspend fun getExecutionStatus(positionId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
         }
 
@@ -241,11 +235,9 @@ class BotExecutionBridgeTest {
                 )
             )
             override suspend fun executeTrade(alertId: String) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
-            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
-            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
             override suspend fun getExecutionStatus(positionId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
         }
 
@@ -268,11 +260,9 @@ class BotExecutionBridgeTest {
             override suspend fun getStatus() = NetworkResult.Success(BotStatusResponseDto(true, "BTCUSDT", "MeanReversion"))
             override suspend fun getAnalysisStatus() = NetworkResult.Success(AnalysisSnapshotDto(isActive = true, committedStrategy = "MeanReversion"))
             override suspend fun executeTrade(alertId: String) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
-            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
-            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
             override suspend fun getExecutionStatus(positionId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
         }
 
@@ -294,11 +284,9 @@ class BotExecutionBridgeTest {
             override suspend fun getAnalysisStatus() = NetworkResult.Success(AnalysisSnapshotDto())
             override suspend fun executeTrade(alertId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
             override suspend fun executeTrade(request: ExecuteTradeRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
-            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
-            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
             override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> {
                 return NetworkResult.Success(
                     TradeExecutionStatusDto(
@@ -343,11 +331,9 @@ class BotExecutionBridgeTest {
             override suspend fun getAnalysisStatus() = NetworkResult.Success(AnalysisSnapshotDto())
             override suspend fun executeTrade(alertId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
             override suspend fun executeTrade(request: ExecuteTradeRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
-            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
-            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
             override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> {
                 return NetworkResult.Success(
                     TradeExecutionStatusDto(
@@ -387,11 +373,9 @@ class BotExecutionBridgeTest {
             override suspend fun getAnalysisStatus() = NetworkResult.Success(AnalysisSnapshotDto())
             override suspend fun executeTrade(alertId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
             override suspend fun executeTrade(request: ExecuteTradeRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Timeout)
-            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
-            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
             override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> {
                 return NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.HttpError(404, "Position not found."))
             }
@@ -414,11 +398,9 @@ class BotExecutionBridgeTest {
                 AnalysisSnapshotDto(isActive = false, committedStrategy = null, engineStatus = EngineStatusDto(state = "STOPPED", activeStrategy = null, committedStrategy = null))
             )
             override suspend fun executeTrade(alertId: String) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
-            override suspend fun executeMockTrade(request: ExecuteTradeRequestDto) = NetworkResult.Success(ExecuteTradeResponseDto(true, "OK"))
             override suspend fun stopTrade() = NetworkResult.Success(StopTradeResponseDto(true, "OK"))
             override suspend fun getAlerts() = NetworkResult.Success(emptyList<BotAlertDto>())
             override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = NetworkResult.Success(AcknowledgeAlertResponseDto(true, "OK"))
-            override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
             override suspend fun getExecutionStatus(positionId: String) = NetworkResult.Error(com.cryptopulse.app.core.error.NetworkError.Unknown(Exception()))
         }
         val repository = BotRepositoryImpl(fakeDataSource, testDispatcherProvider)

@@ -233,7 +233,8 @@ class TradeSetupViewModel @Inject constructor(
             tradeValueUsdt = tradeAmount,
             parameters = emptyMap(),
             riskParameters = riskParams,
-            entryIntent = currentState.selectedEntryIntent
+            entryIntent = currentState.selectedEntryIntent,
+            approvalGeneration = sessionRepository.tradeSetupConfig.value?.approvalGeneration
         )
         sessionRepository.setTradeSetupConfig(config)
         _uiState.update { it.copy(isLoading = false) }

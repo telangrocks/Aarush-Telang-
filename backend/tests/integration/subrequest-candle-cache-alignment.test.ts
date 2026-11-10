@@ -208,6 +208,20 @@ describe('Subrequest Optimization: Kline Candle Cache Alignment', () => {
     mockStorage.set('monitoredSymbols', ['BTC/USDT']);
     mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('alerts', []);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-candle-cache-test',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     await bot.alarm();
 

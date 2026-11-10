@@ -6,16 +6,19 @@ data class BotAlertDto(
     val entryPrice: Double,
     val stopLoss: Double,
     val takeProfit: Double,
-    val estimatedPnl: Double,
+    val estimatedPnl: Double? = null,
     val strategy: String?,
     val side: String?,
     val timestamp: String?,
-    val signalPrice: Double?,
-    val targetEntryPrice: Double?,
+    val signalPrice: Double? = null,
+    val targetEntryPrice: Double? = null,
     val positionSize: Double? = null,
     val entryIntent: String? = null,
     val timeframe: String? = null,
     val quantity: Double? = null,
     val requestedBudget: Double? = null,
-    val effectiveNotional: Double? = null
+    val effectiveNotional: Double? = null,
+    val isExecutable: Boolean? = null,
+    val ineligibilityReason: String? = null,
+    val approvalGeneration: Long? = null
 )

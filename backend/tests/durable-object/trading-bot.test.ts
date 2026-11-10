@@ -178,6 +178,21 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       GLOBAL_TRADING_HALT: "false",
       ENCRYPTION_KEY: "test-encryption-key"
     };
+
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-123',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'ETH', 'ETHUSDT', 'SOL', 'SOLUSDT', 'HYPE', 'HYPEUSDT', 'STX', 'STXUSDT', 'DOGE', 'DOGEUSDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'binance',
+      environment: 'testnet',
+      accountFingerprint: 'binance:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
   });
 
   it("should execute StrategyOrchestrator in alarm() and generate TradeAlerts", async () => {
@@ -443,6 +458,20 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     mockStorage.set('userId', 'user-123');
     mockStorage.set('coinId', 'BTCUSDT');
     mockStorage.set('targetEntryPrice', 50000);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-123',
+      budgetUsdt: 1000,
+      approvedSymbols: ['BTC', 'BTCUSDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'binance',
+      environment: 'testnet',
+      accountFingerprint: 'binance:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
     mockStorage.set('alerts', [
       {
         id: 'alert-1',
@@ -454,6 +483,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
         takeProfit: 52000,
         estimatedPnl: 0,
         positionSize: 1000,
+        quantity: 0.02,
         strategy: 'scalper-v2',
         side: 'BUY',
         timestamp: new Date().toISOString(),
@@ -496,7 +526,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
 
     const bot = new TradingBot(mockState, mockEnv);
     mockStorage.set('userId', 'user-123');
-    mockStorage.set('alerts', [ { id: 'alert-1', status: 'pending', source: 'MANUAL' } ]);
+    mockStorage.set('alerts', [ { id: 'alert-1', symbol: 'BTCUSDT', positionSize: 100, quantity: 0.02, status: 'pending', source: 'MANUAL' } ]);
 
     const req = new Request('http://bot/execute-trade', {
       method: 'POST',
@@ -543,6 +573,20 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
 
     const bot = new TradingBot(mockState, mockEnv);
     mockStorage.set('userId', 'user-abc');
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-abc',
+      budgetUsdt: 100,
+      approvedSymbols: ['STX', 'STXUSDT', 'STX/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     const testAlert = {
       id: 'test-uuid-999',
@@ -554,6 +598,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       takeProfit: 0.24,
       estimatedPnl: 10,
       positionSize: 100,
+      quantity: 450,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -615,6 +660,20 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
 
     const bot = new TradingBot(mockState, mockEnv);
     mockStorage.set('userId', 'user-abc');
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-abc',
+      budgetUsdt: 100,
+      approvedSymbols: ['STX', 'STXUSDT', 'STX/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     // Register alert with unaligned price (3 decimals vs tickSize 0.01) to trigger validation rejection
     const invalidAlert = {
@@ -626,6 +685,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       stopLoss: 130.00,
       takeProfit: 140.00,
       positionSize: 100,
+      quantity: 0.74,
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
@@ -660,12 +720,26 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     it("Test 1 & Test 5: Activating Momentum keeps committedStrategy = Momentum across polls even when analysis fallback is ScalperV2", async () => {
       const bot = new TradingBot(mockState, mockEnv);
       mockStorage.set('userId', 'user-test-1');
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-test-1',
+        budgetUsdt: 100,
+        approvedSymbols: ['BTCUSDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'binance',
+        environment: 'testnet',
+        accountFingerprint: 'binance:testnet',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
 
       // 1. Activate Momentum
       const actReq = new Request('http://bot/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: 'user-test-1', coinId: 'BTCUSDT', strategy: 'Momentum' })
+        body: JSON.stringify({ userId: 'user-test-1', coinId: 'BTCUSDT', strategy: 'Momentum', positionSize: 100, approvalGeneration: 1 })
       });
       const actRes = await bot.fetch(actReq);
       expect(actRes.status).toBe(200);
@@ -700,12 +774,26 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     it("Test 2: Activating MeanReversion remains stable across multiple /analysis-status polls with no spontaneous takeover", async () => {
       const bot = new TradingBot(mockState, mockEnv);
       mockStorage.set('userId', 'user-test-2');
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-test-2',
+        budgetUsdt: 100,
+        approvedSymbols: ['BTCUSDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'binance',
+        environment: 'testnet',
+        accountFingerprint: 'binance:testnet',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
 
       // 1. Activate MeanReversion
       const actReq = new Request('http://bot/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: 'user-test-2', coinId: 'BTCUSDT', strategy: 'MeanReversion' })
+        body: JSON.stringify({ userId: 'user-test-2', coinId: 'BTCUSDT', strategy: 'MeanReversion', positionSize: 100, approvalGeneration: 1 })
       });
       const actRes = await bot.fetch(actReq);
       expect(actRes.status).toBe(200);
@@ -734,12 +822,26 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     it("Test 3: Explicit deactivation clears DO committed state and sets activeStrategy to null", async () => {
       const bot = new TradingBot(mockState, mockEnv);
       mockStorage.set('userId', 'user-test-3');
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-test-3',
+        budgetUsdt: 100,
+        approvedSymbols: ['BTCUSDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'binance',
+        environment: 'testnet',
+        accountFingerprint: 'binance:testnet',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
 
       // Activate first
       await bot.fetch(new Request('http://bot/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: 'user-test-3', coinId: 'BTCUSDT', strategy: 'Breakout' })
+        body: JSON.stringify({ userId: 'user-test-3', coinId: 'BTCUSDT', strategy: 'Breakout', positionSize: 100, approvalGeneration: 1 })
       }));
       expect(mockStorage.get('isActive')).toBe(true);
 
@@ -764,12 +866,26 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     it("Test 4: Explicit strategy switch changes committed strategy ONLY upon explicit activation action", async () => {
       const bot = new TradingBot(mockState, mockEnv);
       mockStorage.set('userId', 'user-test-4');
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-test-4',
+        budgetUsdt: 100,
+        approvedSymbols: ['BTCUSDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'binance',
+        environment: 'testnet',
+        accountFingerprint: 'binance:testnet',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
 
       // 1. Activate MeanReversion
       await bot.fetch(new Request('http://bot/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: 'user-test-4', coinId: 'BTCUSDT', strategy: 'MeanReversion' })
+        body: JSON.stringify({ userId: 'user-test-4', coinId: 'BTCUSDT', strategy: 'MeanReversion', positionSize: 100, approvalGeneration: 1 })
       }));
       expect(mockStorage.get('strategy')).toBe('MeanReversion');
 
@@ -786,7 +902,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       const switchReq = new Request('http://bot/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: 'user-test-4', coinId: 'BTCUSDT', strategy: 'Momentum' })
+        body: JSON.stringify({ userId: 'user-test-4', coinId: 'BTCUSDT', strategy: 'Momentum', positionSize: 100, approvalGeneration: 1 })
       });
       const switchRes = await bot.fetch(switchReq);
       expect(switchRes.status).toBe(200);
@@ -826,6 +942,20 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
 
       const bot = new TradingBot(mockState, mockEnv);
       mockStorage.set('userId', 'user-lineage-1');
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-lineage-1',
+        budgetUsdt: 1000,
+        approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'demo',
+        accountFingerprint: 'bybit:demo',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
 
       // Alert has targetEntryPrice = 52000, while ticker last = 50100
       const testAlert = {
@@ -837,6 +967,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
         stopLoss: 48000,
         takeProfit: 55000,
         positionSize: 1000,
+        quantity: 0.02,
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date().toISOString(),
@@ -893,6 +1024,20 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
 
       const bot = new TradingBot(mockState, mockEnv);
       mockStorage.set('userId', 'user-lineage-2');
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-lineage-2',
+        budgetUsdt: 1000,
+        approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'demo',
+        accountFingerprint: 'bybit:demo',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
 
       const testAlert = {
         id: 'alert-limit-lineage',
@@ -903,6 +1048,7 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
         stopLoss: 48000,
         takeProfit: 55000,
         positionSize: 1000,
+        quantity: 0.02,
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date().toISOString(),

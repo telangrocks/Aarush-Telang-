@@ -250,6 +250,20 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
 
       mockStorage.set('userId', 'usr_test');
       mockStorage.set('strategy', 'ScalperV2');
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'usr_test',
+        budgetUsdt: 25.00,
+        approvedSymbols: ['HYPE', 'HYPEUSDT', 'HYPE/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'demo',
+        accountFingerprint: 'bybit:demo',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
 
       fetchMarketsSpy = vi.fn().mockResolvedValue([]);
       fetchMarketSpy = vi.fn().mockResolvedValue({
@@ -308,6 +322,7 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
         stopLoss: 87.86,
         takeProfit: 88.35,
         positionSize: 25.00,
+        quantity: 0.3,
         estimatedPnl: 1.85,
         timestamp: new Date().toISOString(),
         status: 'pending',
@@ -361,6 +376,7 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
         stopLoss: 87.86,
         takeProfit: 88.35,
         positionSize: 25.00,
+        quantity: 0.3,
         estimatedPnl: 1.85,
         timestamp: new Date().toISOString(),
         status: 'pending',
@@ -417,6 +433,7 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
         stopLoss: 87.86,
         takeProfit: 88.35,
         positionSize: 25.00,
+        quantity: 0.3,
         estimatedPnl: 1.85,
         timestamp: new Date().toISOString(),
         status: 'pending',

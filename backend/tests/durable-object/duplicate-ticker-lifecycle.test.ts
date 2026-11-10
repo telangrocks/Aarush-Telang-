@@ -234,6 +234,22 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
       ENVIRONMENT: "test",
       GLOBAL_TRADING_HALT: "false",
     };
+
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-dup-test',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
+
   });
 
   // --------------------------------------------------------------------------
@@ -395,6 +411,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: nowIso,
@@ -409,6 +426,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: nowIso,
@@ -463,6 +481,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 0, // Invalid position size fails pre-dispatch validation!
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: nowIso,
@@ -496,6 +515,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: nowIso,
@@ -538,6 +558,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: nowIso,
@@ -572,6 +593,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: nowIso,
@@ -623,6 +645,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: nowIso,
@@ -655,6 +678,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: nowIso,
@@ -728,6 +752,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: nowIso,
@@ -803,6 +828,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: new Date().toISOString(),
@@ -869,6 +895,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: new Date().toISOString(),
@@ -922,6 +949,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: new Date().toISOString(),
@@ -1012,6 +1040,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: new Date().toISOString(),
@@ -1038,11 +1067,26 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
     mockStorage.set("isActive", true);
     mockStorage.set("userId", "user-def02-concurrency");
     mockStorage.set("strategy", "ScalperV2");
+    mockStorage.set("positionSize", 100);
     mockStorage.set("coinId", "BTC/USDT");
     mockStorage.set("monitoredSymbols", ["BTC/USDT"]);
     mockStorage.set("lock:alarmGeneration", 1);
     mockStorage.set("alerts", []);
     mockStorage.set("activePositions", []);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-def02-concurrency',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     mockExecuteCycle.mockResolvedValue([
       {
@@ -1125,6 +1169,7 @@ describe("Normalized-Ticker Single-Active-or-Unresolved-Trade-Lifecycle Invarian
         generation: 1,
         source: "AUTONOMOUS",
         positionSize: 100,
+        quantity: 0.002,
         signalPrice: 50000,
         targetEntryPrice: 50000,
         timestamp: new Date().toISOString(),

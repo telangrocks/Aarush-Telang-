@@ -92,6 +92,13 @@ class FcmService : FirebaseMessagingService() {
                 data["effectiveNotional"]?.toDoubleOrNull()?.let { put("effectiveNotional", it) }
                 data["strategy"]?.let { put("strategy", it) }
                 data["side"]?.let { put("side", it) }
+                data["isExecutable"]?.let {
+                    val b = it.toBooleanStrictOrNull()
+                    if (b != null) put("isExecutable", b)
+                }
+                data["ineligibilityReason"]?.let {
+                    if (it.isNotBlank()) put("ineligibilityReason", it)
+                }
                 data["serverTimestamp"]?.let {
                     put("serverTimestamp", it)
                     put("timestamp", it)
@@ -101,6 +108,7 @@ class FcmService : FirebaseMessagingService() {
                 }
                 data["entryIntent"]?.let { put("entryIntent", it) }
                 data["timeframe"]?.let { put("timeframe", it) }
+                data["approvalGeneration"]?.toLongOrNull()?.let { put("approvalGeneration", it) }
                 put("type", "TRADE_ALERT")
                 put("alertType", "TRADE_ALERT")
             }

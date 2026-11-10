@@ -100,7 +100,8 @@ class BotRepositoryImpl @Inject constructor(
             strategy = strategy,
             targetEntryPrice = config?.entryPrice?.takeIf { it > 0.0 },
             positionSize = resolvedPositionSize,
-            config = mergedConfig.takeIf { it.isNotEmpty() }
+            config = mergedConfig.takeIf { it.isNotEmpty() },
+            approvalGeneration = config?.approvalGeneration
         )
         when (val result = botRemoteDataSource.activate(request)) {
             is NetworkResult.Success -> {
@@ -254,14 +255,6 @@ class BotRepositoryImpl @Inject constructor(
         return null
     }
 
-    @Deprecated("Do not use in production. Real trades must use executeTrade(alertId).", level = DeprecationLevel.WARNING)
-    override suspend fun executeMockTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
-        when (val result = botRemoteDataSource.executeMockTrade(request)) {
-            is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain(request.alertId.ifBlank { "mock_trade" }))
-            is NetworkResult.Error -> result
-        }
-    }
-
     override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.getExecutionStatus(positionId)) {
             is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain())
@@ -305,18 +298,6 @@ class BotRepositoryImpl @Inject constructor(
     override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
         when (val result = botRemoteDataSource.acknowledgeAlert(AcknowledgeAlertRequestDto(alertId))) {
             is NetworkResult.Success -> NetworkResult.Success(Unit)
-            is NetworkResult.Error -> result
-        }
-    }
-
-    override suspend fun triggerAlert(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<BotAlert> = withContext(dispatcherProvider.io) {
-        val request = com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto(
-            symbol = symbol,
-            strategy = strategy,
-            config = config?.let { com.google.gson.Gson().fromJson(com.google.gson.Gson().toJson(it), Map::class.java) as Map<String, Any> }
-        )
-        when (val result = botRemoteDataSource.triggerAlert(request)) {
-            is NetworkResult.Success -> NetworkResult.Success(result.data.toDomain())
             is NetworkResult.Error -> result
         }
     }

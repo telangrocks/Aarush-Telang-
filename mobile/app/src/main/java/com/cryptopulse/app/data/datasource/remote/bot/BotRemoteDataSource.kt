@@ -15,13 +15,10 @@ interface BotRemoteDataSource {
     suspend fun executeTrade(alertId: String): NetworkResult<ExecuteTradeResponseDto>
     suspend fun executeTrade(request: ExecuteTradeRequestDto): NetworkResult<ExecuteTradeResponseDto> =
         executeTrade(request.alertId)
-    @Deprecated("Do not use in production Android flow. Production executions must use executeTrade.", level = DeprecationLevel.WARNING)
-    suspend fun executeMockTrade(request: ExecuteTradeRequestDto): NetworkResult<ExecuteTradeResponseDto>
     suspend fun stopTrade(): NetworkResult<StopTradeResponseDto>
     suspend fun getAlerts(): NetworkResult<List<BotAlertDto>>
     suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto): NetworkResult<AcknowledgeAlertResponseDto>
     suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto>
-    suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto): NetworkResult<BotAlertDto>
 }
 
 class RetrofitBotRemoteDataSource @Inject constructor(
@@ -45,10 +42,6 @@ class RetrofitBotRemoteDataSource @Inject constructor(
     override suspend fun executeTrade(request: ExecuteTradeRequestDto): NetworkResult<ExecuteTradeResponseDto> =
         safeApiCall { tradingBotService.executeTrade(request) }
 
-    @Deprecated("Do not use in production Android flow. Production executions must use executeTrade.", level = DeprecationLevel.WARNING)
-    override suspend fun executeMockTrade(request: ExecuteTradeRequestDto): NetworkResult<ExecuteTradeResponseDto> =
-        safeApiCall { tradingBotService.executeMockTrade(request) }
-
     override suspend fun stopTrade(): NetworkResult<StopTradeResponseDto> =
         safeApiCall { tradingBotService.stopTrade() }
 
@@ -60,7 +53,4 @@ class RetrofitBotRemoteDataSource @Inject constructor(
 
     override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> =
         safeApiCall { tradingBotService.getExecutionStatus(positionId) }
-
-    override suspend fun triggerAlert(request: com.cryptopulse.app.data.api.dto.technicalanalysis.request.TechnicalAnalysisRequestDto): NetworkResult<BotAlertDto> =
-        safeApiCall { tradingBotService.triggerAlert(request) }
 }

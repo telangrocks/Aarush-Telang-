@@ -185,6 +185,22 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
       ENVIRONMENT: "test",
       GLOBAL_TRADING_HALT: "false"
     };
+
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-multi-strat',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT', 'XRP/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
+
   });
 
   // --------------------------------------------------------------------------
@@ -423,13 +439,27 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
     ]);
 
     // Activate the bot (transitioning to generation 2)
+        mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-lifecycle',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT', 'XRP/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
     const req = new Request("http://internal/activate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         strategy: "scalper-v2",
         coinId: "BTC/USDT",
-        userId: "user-lifecycle"
+        userId: "user-lifecycle", positionSize: 100, approvalGeneration: 1
       })
     });
 
@@ -468,7 +498,7 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
     const req = new Request("http://internal/deactivate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: "user-lifecycle" })
+      body: JSON.stringify({ userId: "user-lifecycle", positionSize: 100, approvalGeneration: 1 })
     });
 
     const res = await bot.fetch(req);
@@ -501,13 +531,27 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
       }
     ]);
 
+        mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-lifecycle',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT', 'XRP/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
     const req = new Request("http://internal/activate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         strategy: "scalper-v2",
         coinId: "BTC/USDT",
-        userId: "user-lifecycle"
+        userId: "user-lifecycle", positionSize: 100, approvalGeneration: 1
       })
     });
 
@@ -553,13 +597,27 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
       }
     ]);
 
+        mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-lifecycle',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT', 'XRP/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
     const req = new Request("http://internal/activate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         strategy: "scalper-v2",
         coinId: "BTC/USDT",
-        userId: "user-lifecycle"
+        userId: "user-lifecycle", positionSize: 100, approvalGeneration: 1
       })
     });
 
@@ -635,13 +693,27 @@ describe("Multi-Strategy Alert Qualification & Schema-Safe Lifecycle Expiry Regr
       }
     ]);
 
+        mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-lifecycle',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT', 'XRP/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
     const req = new Request("http://internal/activate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         strategy: "scalper-v2",
         coinId: "BTC/USDT",
-        userId: "user-lifecycle"
+        userId: "user-lifecycle", positionSize: 100, approvalGeneration: 1
       })
     });
 

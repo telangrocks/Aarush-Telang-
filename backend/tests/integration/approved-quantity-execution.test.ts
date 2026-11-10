@@ -98,6 +98,7 @@ describe('End-to-End Approved Quantity Verification & Safety Tests', () => {
         takeProfit: 0.005458,
         estimatedPnl: 496.15,
         positionSize: 4961.50,
+        requestedBudget: 5555.0,
         quantity: 999900,
         requestedBudget: 5555.0,
         effectiveNotional: 4961.5038,
@@ -183,6 +184,20 @@ describe('End-to-End Approved Quantity Verification & Safety Tests', () => {
       mockStorage.set('userId', 'usr_test_1');
       mockStorage.set('isActive', true);
       mockStorage.set('lock:alarmGeneration', 1);
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'usr_test_1',
+        budgetUsdt: 5555.0,
+        approvedSymbols: ['1000PEPE', '1000PEPEUSDT', '1000PEPE/USDT', 'SOL', 'SOLUSDT', 'SOL/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'testnet',
+        accountFingerprint: 'bybit:testnet',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
 
       const marketInfo = {
         symbol: '1000PEPE/USDT',
@@ -243,6 +258,7 @@ describe('End-to-End Approved Quantity Verification & Safety Tests', () => {
         takeProfit: 0.005458,
         estimatedPnl: 496.15,
         positionSize: 4961.50,
+        requestedBudget: 5555.0,
         quantity: 999900, // Approved: 999,900
         requestedBudget: 5555.0,
         effectiveNotional: 4961.50,
@@ -283,6 +299,7 @@ describe('End-to-End Approved Quantity Verification & Safety Tests', () => {
         takeProfit: 0.005458,
         estimatedPnl: 496.15,
         positionSize: 4961.50,
+        requestedBudget: 5555.0,
         quantity: 999900,
         strategy: 'ScalperV2',
         side: 'BUY',
@@ -319,6 +336,7 @@ describe('End-to-End Approved Quantity Verification & Safety Tests', () => {
         takeProfit: 99.0,
         estimatedPnl: 200,
         positionSize: 5000,
+        requestedBudget: 5555.0,
         quantity: 50,
         strategy: 'ScalperV2',
         side: 'BUY',
@@ -356,6 +374,7 @@ describe('End-to-End Approved Quantity Verification & Safety Tests', () => {
         takeProfit: 99.0,
         estimatedPnl: 200,
         positionSize: 5000,
+        requestedBudget: 5555.0,
         quantity: 50,
         strategy: 'ScalperV2',
         side: 'BUY',
@@ -394,6 +413,7 @@ describe('End-to-End Approved Quantity Verification & Safety Tests', () => {
         takeProfit: 99.0,
         estimatedPnl: 200,
         positionSize: 5000,
+        requestedBudget: 5555.0,
         quantity: 50,
         strategy: 'ScalperV2',
         side: 'BUY',
@@ -429,6 +449,7 @@ describe('End-to-End Approved Quantity Verification & Safety Tests', () => {
         takeProfit: 0.005458,
         estimatedPnl: 496.15,
         positionSize: 4961.50,
+        requestedBudget: 5555.0,
         quantity: 999900,
         requestedBudget: 5555.0,
         effectiveNotional: 4961.50,

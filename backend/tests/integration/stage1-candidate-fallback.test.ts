@@ -157,6 +157,20 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
     mockStorage.set('positionSize', 100);
     mockStorage.set('alerts', []);
     mockStorage.set('activePositions', []);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 10,
+      userId: 'user-test-1',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT', symbol],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     for (const [k, v] of Object.entries(initialOverrides)) {
       mockStorage.set(k, v);
@@ -208,8 +222,8 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
     expect(alerts[0].strategy).toBe('Momentum_NEW');
   });
 
-  // 4. First strategy fails position-size validation; next succeeds
-  it('4. falls back to next strategy when first strategy has invalid position size (<= 0)', async () => {
+  // 4. First strategy fails position-size validation (<= 0) -> skips alert creation without fallback
+  it('4. skips alert creation when first strategy has invalid position size (<= 0) without fallback', async () => {
     const bot = setupBot('BTC/USDT', { positionSize: 0 }); // dynamic sizing from recommendation
     vi.spyOn((bot as any).orchestrator, 'executeCycle').mockResolvedValue([
       { strategyId: 'ScalperV2', confidenceScore: 90, hasSignal: true, metadata: { signal: { type: 'BUY', signalPrice: 50000, stopLoss: 49500, takeProfit: 51000, timeframe: '5m', riskAssessment: { positionSizeRecommendation: 0, riskClassification: 'LOW' } } } },
@@ -218,13 +232,12 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
 
     await bot.alarm();
     const alerts = mockStorage.get('alerts') as TradeAlert[];
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0].strategy).toBe('Momentum_NEW');
-    expect(alerts[0].positionSize).toBe(150);
+    expect(alerts).toHaveLength(0);
+    expect(mockAdapter.createOrder).not.toHaveBeenCalled();
   });
 
-  // 5. First strategy fails exposure validation; next succeeds within remaining exposure
-  it('5. falls back when first strategy exceeds portfolio exposure limit, next fits within remaining', async () => {
+  // 5. First strategy fails exposure validation -> skips alert creation without fallback
+  it('5. skips alert creation when first strategy exceeds portfolio exposure limit without fallback', async () => {
     // Current exposure $800, balance $1000, max default exposure $1000
     const bot = setupBot('BTC/USDT', {
       positionSize: 0,
@@ -237,13 +250,12 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
 
     await bot.alarm();
     const alerts = mockStorage.get('alerts') as TradeAlert[];
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0].strategy).toBe('Momentum_NEW');
-    expect(alerts[0].positionSize).toBe(150);
+    expect(alerts).toHaveLength(0);
+    expect(mockAdapter.createOrder).not.toHaveBeenCalled();
   });
 
-  // 6. Exposure is independently recalculated for every proposed strategy signal
-  it('6. independently recalculates portfolio exposure for each candidate signal', async () => {
+  // 6. Exposure validation prevents execution -> skips alert creation without fallback
+  it('6. skips alert creation when strategy exceeds portfolio exposure limit without fallback', async () => {
     const bot = setupBot('BTC/USDT', {
       positionSize: 0,
       activePositions: [{ id: 'pos-1', symbol: 'ETH/USDT', amount: 2, averageFillPrice: 450, status: 'OPEN' }] // $900
@@ -255,12 +267,12 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
 
     await bot.alarm();
     const alerts = mockStorage.get('alerts') as TradeAlert[];
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0].strategy).toBe('Breakout_NEW');
+    expect(alerts).toHaveLength(0);
+    expect(mockAdapter.createOrder).not.toHaveBeenCalled();
   });
 
-  // 7. First strategy fails execution eligibility; next succeeds
-  it('7. falls back when first strategy fails execution eligibility (budget < minNotional)', async () => {
+  // 7. First strategy fails min notional ($5) -> skips alert creation without fallback
+  it('7. skips alert creation when first strategy is below min notional ($5) without fallback', async () => {
     const bot = setupBot('BTC/USDT', { positionSize: 0 });
     vi.spyOn((bot as any).orchestrator, 'executeCycle').mockResolvedValue([
       { strategyId: 'ScalperV2', confidenceScore: 90, hasSignal: true, metadata: { signal: { type: 'BUY', signalPrice: 50000, stopLoss: 49500, takeProfit: 51000, timeframe: '5m', riskAssessment: { positionSizeRecommendation: 2, riskClassification: 'LOW' } } } }, // $2 < minNotional $5
@@ -269,8 +281,8 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
 
     await bot.alarm();
     const alerts = mockStorage.get('alerts') as TradeAlert[];
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0].strategy).toBe('Momentum_NEW');
+    expect(alerts).toHaveLength(0);
+    expect(mockAdapter.createOrder).not.toHaveBeenCalled();
   });
 
   // 8. Unsupported SELL signal is skipped; next eligible strategy is evaluated
@@ -373,8 +385,8 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
     expect(alerts).toHaveLength(0);
   });
 
-  // 13. Missing quantity step-size metadata blocks further strategies for that ticker
-  it('13. stops strategy evaluation for that ticker if stepSize is missing', async () => {
+  // 13. Missing quantity step-size metadata generates signal-only alert
+  it('13. generates signal-only alert for that ticker if stepSize is missing', async () => {
     mockAdapter.fetchMarket.mockResolvedValueOnce({
       id: 'BTCUSDT', symbol: 'BTC/USDT', active: true, category: 'linear', precision: { amount: 0, price: 0.1 }, limits: { cost: { min: 5 } }
     });
@@ -387,6 +399,7 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
     await bot.alarm();
     const alerts = mockStorage.get('alerts') as TradeAlert[];
     expect(alerts).toHaveLength(0);
+    expect(mockAdapter.createOrder).not.toHaveBeenCalled();
   });
 
   // 14. Metadata is fetched at most once per ticker evaluation and reused
@@ -543,17 +556,18 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
     expect(alerts[0].strategy).toBe('ScalperV2_NEW');
   });
 
-  // 23. All strategies failing produces no new alert
-  it('23. produces zero alerts when all candidates fail candidate-specific gates', async () => {
+  // 23. All strategies failing genuine technical qualification gates produces no new alert
+  it('23. produces zero alerts when all candidates fail genuine technical qualification gates', async () => {
     const bot = setupBot('BTC/USDT', { positionSize: 0 });
     vi.spyOn((bot as any).orchestrator, 'executeCycle').mockResolvedValue([
-      { strategyId: 'ScalperV2', confidenceScore: 90, hasSignal: true, metadata: { signal: { type: 'BUY', signalPrice: 50000, stopLoss: 49500, takeProfit: 51000, timeframe: '5m', riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'EXTREME' } } } }, // fails risk
-      { strategyId: 'Momentum', confidenceScore: 85, hasSignal: true, metadata: { signal: { type: 'BUY', signalPrice: 50000, stopLoss: 49000, takeProfit: 52000, timeframe: '15m', riskAssessment: { positionSizeRecommendation: 0, riskClassification: 'LOW' } } } }, // fails size
+      { strategyId: 'ScalperV2', confidenceScore: 90, hasSignal: true, metadata: { signal: { type: 'BUY', signalPrice: 50000, stopLoss: 49500, takeProfit: 51000, timeframe: '5m', riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'EXTREME' } } } }, // fails technical risk gate (EXTREME)
+      { strategyId: 'Momentum', confidenceScore: 85, hasSignal: true, metadata: { signal: { type: 'BUY', signalPrice: 50000, stopLoss: 49000, takeProfit: 52000, timeframe: '15m', riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'EXTREME' } } } }, // fails technical risk gate (EXTREME)
     ]);
 
     await bot.alarm();
     const alerts = mockStorage.get('alerts') as TradeAlert[];
     expect(alerts).toHaveLength(0);
+    expect(mockAdapter.createOrder).not.toHaveBeenCalled();
   });
 
   // 24. Existing TradeAlert schema is preserved

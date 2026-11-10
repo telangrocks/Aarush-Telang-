@@ -241,6 +241,21 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
         },
       },
     ]);
+
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-p3-1',
+      budgetUsdt: 100,
+      approvedSymbols: ['SOL/USDT', 'ETH/USDT', 'BTC/USDT', 'FAIL/USDT', 'PASS/USDT', 'REGIME_REJECT/USDT', 'REGIME_ACCEPT/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
   });
 
   // =========================================================================
@@ -286,6 +301,20 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
   it("Requirement 2: Legacy activation or stored coinId restores monitoredSymbols as [coinId]", async () => {
     // 2a. Activation with legacy coinId only (no symbols array)
     const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-p3-2',
+      budgetUsdt: 150,
+      approvedSymbols: ['ETH/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     const activateReq = new Request("http://bot/activate", {
       method: "POST",
@@ -349,6 +378,20 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["SOL/USDT", "ETH/USDT", "BTC/USDT"]);
     mockStorage.set("lock:alarmGeneration", 1);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-p3-3',
+      budgetUsdt: 100,
+      approvedSymbols: ["SOL/USDT", "ETH/USDT", "BTC/USDT"],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     await bot.alarm();
 
@@ -374,6 +417,20 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["FAIL/USDT", "PASS/USDT"]);
     mockStorage.set("lock:alarmGeneration", 1);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-p3-4',
+      budgetUsdt: 100,
+      approvedSymbols: ["FAIL/USDT", "PASS/USDT"],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     mockExecuteCycle.mockImplementation((symbol: string) => {
       if (symbol === "FAIL/USDT") {
@@ -427,6 +484,20 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["REGIME_REJECT/USDT", "REGIME_ACCEPT/USDT"]);
     mockStorage.set("lock:alarmGeneration", 1);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-p3-5',
+      budgetUsdt: 100,
+      approvedSymbols: ["REGIME_REJECT/USDT", "REGIME_ACCEPT/USDT"],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     vi.spyOn(MarketRegimeEngine, "evaluate").mockImplementation((highs: number[], lows: number[], closes: number[], currentPrice: number) => {
       // Simulate evaluate
@@ -490,6 +561,20 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["SOL/USDT", "ETH/USDT"]);
     mockStorage.set("lock:alarmGeneration", 1);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-p3-6',
+      budgetUsdt: 100,
+      approvedSymbols: ["SOL/USDT", "ETH/USDT"],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
     mockStorage.set("alerts", [existingAlert]);
 
     await bot.alarm();
@@ -523,6 +608,7 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
       takeProfit: 110,
       estimatedPnl: 10,
       positionSize: 100,
+      quantity: 1,
       strategy: "scalper-v2",
       side: "BUY" as const,
       timestamp: new Date().toISOString(),
@@ -532,6 +618,20 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("userId", "user-p3-7");
     mockStorage.set("coinId", "BTC/USDT"); // Legacy primary coinId is BTC/USDT
     mockStorage.set("monitoredSymbols", ["BTC/USDT", "SOL/USDT", "ETH/USDT"]);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-p3-7',
+      budgetUsdt: 100,
+      approvedSymbols: ["BTC/USDT", "SOL/USDT", "ETH/USDT"],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
     mockStorage.set("alerts", [ethAlert]);
 
     const execReq = new Request("http://bot/execute-trade", {
@@ -661,6 +761,20 @@ describe("Phase 3 Multi-Symbol Monitoring & Execution", () => {
     mockStorage.set("positionSize", 100);
     mockStorage.set("monitoredSymbols", ["BTC/USDT", "ETH/USDT"]);
     mockStorage.set("lock:alarmGeneration", 1);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-p3-coalesce',
+      budgetUsdt: 100,
+      approvedSymbols: ["BTC/USDT", "ETH/USDT"],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'testnet',
+      accountFingerprint: 'bybit:testnet',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     mockExecuteCycle.mockImplementation((symbol: string) => {
       if (symbol === "BTC/USDT") {

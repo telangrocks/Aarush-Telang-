@@ -6,6 +6,7 @@ import BigNumber from 'bignumber.js';
 
 
 import { decrypt } from './crypto';
+import { computeAccountFingerprint } from './utils/accountFingerprint';
 import { TradeValidator } from './validation/TradeValidator';
 import { sendTradeNotification, sendTradeFillNotification, FcmDispatchResult } from './handlers/notifications';
 import { StrategyOrchestrator, MarketDataEngine, AdapterCandleProvider } from './engine';
@@ -62,9 +63,11 @@ export interface TradeAlert {
   entryPrice: number;
   stopLoss: number;
   takeProfit: number;
-  estimatedPnl: number;
-  positionSize: number;
+  estimatedPnl?: number;
+  positionSize?: number;
   quantity?: number;
+  isExecutable?: boolean;
+  ineligibilityReason?: string;
   requestedBudget?: number;
   effectiveNotional?: number;
   strategy: string;
@@ -72,6 +75,7 @@ export interface TradeAlert {
   timestamp: string;
   status: 'pending' | 'acknowledged' | 'submitted' | 'partially_filled' | 'filled' | 'executed' | 'expired' | 'failed';
   generation?: number;
+  approvalGeneration?: number;
   source?: 'MANUAL' | 'AUTONOMOUS';
   timeframe?: Timeframe;
   dispatchState?: 'UNSENT' | 'DISPATCHING' | 'SENT' | 'FAILED' | 'AMBIGUOUS' | 'EXPIRED' | 'HISTORICAL_UNTRACKED';
@@ -80,6 +84,32 @@ export interface TradeAlert {
   dispatchedAt?: number;
   dispatchAttemptCount?: number;
   dispatchError?: string;
+}
+
+export interface ApprovedCandidateRecord {
+  readonly approvalGeneration: number;
+  readonly userId: string;
+  readonly budgetUsdt: number;
+  readonly approvedSymbols: string[];
+  readonly approvalState: 'DISCOVERY_APPROVED' | 'FINAL_APPROVED';
+  readonly exchangeName: string;
+  readonly environment: string;
+  readonly accountFingerprint: string;
+  readonly orderType: string;
+  readonly approvedAt: number;
+  readonly expiresAt: number;
+  readonly symbolMetadataSnapshot: Record<string, {
+    priceAtApproval: number;
+    qtyStep: number;
+    minOrderQty: number;
+    minNotional: number;
+    maxOrderQty?: number;
+  }>;
+}
+
+export function normalizeCanonicalSymbol(s: string | undefined | null): string {
+  if (!s) return '';
+  return s.replace(/[\/_-]/g, '').toUpperCase().trim();
 }
 
 export interface TradeSetupSnapshot {
@@ -92,6 +122,8 @@ export interface TradeSetupSnapshot {
   readonly activatedAt: string;
   readonly exchangeName?: string;
   readonly environment?: string;
+  readonly approvedSymbols?: string[];
+  readonly approvalGeneration?: number;
 }
 
 export interface TradeExecutionSnapshot {
@@ -555,6 +587,9 @@ export interface TradingBotRuntimeState {
   activeIntents: Map<string, any>;
   pendingPositionSync: any | null;
   lastAccountBalance?: number;
+  approvedCandidateRecord?: ApprovedCandidateRecord | null;
+  discoveryApprovalRecord?: ApprovedCandidateRecord | null;
+  candidateApprovalGeneration?: number;
 }
 
 export class TradingBot {
@@ -734,7 +769,7 @@ export class TradingBot {
   private async ensureInitialized() {
     if (this.runtimeState.isInitialized) return;
     await this.state.blockConcurrencyWhile(async () => {
-      const keys = ['isActive', 'userId', 'strategy', 'strategyConfig', 'setupSnapshot', 'positionSize', 'coinId', 'monitoredSymbols', 'activePositions', 'alerts', 'symbolCooldowns', 'pendingPositionSync', 'lastAccountBalance', 'lock:alarmGeneration', 'lock:unprotectedExposure'];
+      const keys = ['isActive', 'userId', 'strategy', 'strategyConfig', 'setupSnapshot', 'positionSize', 'coinId', 'monitoredSymbols', 'activePositions', 'alerts', 'symbolCooldowns', 'pendingPositionSync', 'lastAccountBalance', 'lock:alarmGeneration', 'lock:unprotectedExposure', 'approvedCandidateRecord', 'discoveryApprovalRecord', 'candidateApprovalGeneration'];
       let vals: any = null;
       try {
         vals = await this.state.storage.get<any>(keys);
@@ -755,6 +790,9 @@ export class TradingBot {
       this.runtimeState.setupSnapshot = await getVal('setupSnapshot');
       this.runtimeState.positionSize = await getVal('positionSize');
       this.runtimeState.coinId = await getVal('coinId');
+      this.runtimeState.approvedCandidateRecord = (await getVal('approvedCandidateRecord')) || null;
+      this.runtimeState.discoveryApprovalRecord = (await getVal('discoveryApprovalRecord')) || null;
+      this.runtimeState.candidateApprovalGeneration = (await getVal('candidateApprovalGeneration')) || 0;
 
       const storedGen = await getVal('lock:alarmGeneration');
       this.alarmGeneration = (typeof storedGen === 'number' && Number.isInteger(storedGen) && storedGen > 0) ? storedGen : 0;
@@ -779,6 +817,7 @@ export class TradingBot {
       this.runtimeState.symbolCooldowns = (await getVal('symbolCooldowns')) || {};
       this.runtimeState.pendingPositionSync = (await getVal('pendingPositionSync')) || null;
       this.runtimeState.lastAccountBalance = (await getVal('lastAccountBalance')) ?? undefined;
+      this.runtimeState.approvedCandidateRecord = (await getVal('approvedCandidateRecord')) || null;
 
       const intentMap = await this.state.storage.list({ prefix: 'intent:order:' });
       for (const [k, v] of intentMap.entries()) {
@@ -946,6 +985,8 @@ export class TradingBot {
           estimatedPnl: alert.estimatedPnl,
           positionSize: alert.positionSize,
           quantity: alert.quantity,
+          isExecutable: alert.isExecutable,
+          ineligibilityReason: alert.ineligibilityReason,
           requestedBudget: alert.requestedBudget,
           effectiveNotional: alert.effectiveNotional,
           strategy: alert.strategy,
@@ -953,6 +994,7 @@ export class TradingBot {
           timeframe: targetTimeframe,
           confidenceScore,
           reasoning,
+          approvalGeneration: alert.approvalGeneration,
         },
         this.telemetrySink,
         Math.min(300, Math.max(1, remainingTtlSec))
@@ -1176,8 +1218,7 @@ export class TradingBot {
   }
 
   public normalizeSymbol(s: string | undefined | null): string {
-    if (!s) return '';
-    return s.replace(/[\/_-]/g, '').toUpperCase().trim();
+    return normalizeCanonicalSymbol(s);
   }
 
   public getPositionNotional(pos: any): number {
@@ -1297,7 +1338,7 @@ export class TradingBot {
         let user: any = null;
         let earlyErrorResponse: Response | null = null;
         await this.runExclusiveLifecycle(async () => {
-          const { userId, coinId, symbols, strategy, positionSize, targetEntryPrice, config } = await request.json<{
+          const { userId, coinId, symbols, strategy, positionSize, targetEntryPrice, config, approvalGeneration } = await request.json<{
             userId: string;
             coinId?: string;
             symbols?: string[];
@@ -1305,6 +1346,7 @@ export class TradingBot {
             positionSize?: number;
             targetEntryPrice?: number;
             config?: any;
+            approvalGeneration?: number;
           }>();
 
           // Safe symbol resolution - NO BTCUSDT FALLBACK
@@ -1327,6 +1369,65 @@ export class TradingBot {
             return;
           }
 
+          // Strict Budget Gate Invariant: Bot activation requires valid unexpired final approval
+          const approvedRecord = (await this.state.storage.get<ApprovedCandidateRecord>('approvedCandidateRecord')) ?? null;
+          this.runtimeState.approvedCandidateRecord = approvedRecord;
+          if (
+            !approvedRecord ||
+            approvedRecord.approvalState !== 'FINAL_APPROVED' ||
+            approvedRecord.expiresAt <= Date.now() ||
+            approvedRecord.userId !== userId
+          ) {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                error: 'Cannot activate bot: No valid unexpired budget approval found. Please run candidate scan with a valid budget first.',
+                code: 'APPROVAL_RECORD_INVALID_OR_EXPIRED',
+              }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
+
+          if (approvalGeneration != null && approvedRecord.approvalGeneration !== approvalGeneration) {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                error: `Cannot activate bot: Approval generation mismatch (requested: ${approvalGeneration}, active: ${approvedRecord.approvalGeneration}).`,
+                code: 'STALE_APPROVAL_GENERATION',
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
+
+          if (positionSize == null || !new BigNumber(positionSize).isEqualTo(new BigNumber(approvedRecord.budgetUsdt))) {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                error: `Cannot activate bot: Activation positionSize ($${positionSize}) does not exactly match approved budget ($${approvedRecord.budgetUsdt}).`,
+                code: 'POSITION_SIZE_BUDGET_MISMATCH',
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
+
+          const approvedCanonicalSet = new Set(approvedRecord.approvedSymbols.map(s => normalizeCanonicalSymbol(s)));
+          for (const sym of resolvedSymbols) {
+            if (!approvedCanonicalSet.has(normalizeCanonicalSymbol(sym))) {
+              earlyErrorResponse = new Response(
+                JSON.stringify({
+                  success: false,
+                  error: `Cannot activate bot: Symbol '${sym}' is not approved by budget gate for this session.`,
+                  code: 'SYMBOL_NOT_APPROVED',
+                }),
+                { status: 403, headers: { 'Content-Type': 'application/json' } }
+              );
+              return;
+            }
+          }
+
           const primaryCoinId = resolvedSymbols[0];
 
           user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region, exchange_connection_status, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?').bind(userId).first<any>();
@@ -1343,6 +1444,50 @@ export class TradingBot {
             return;
           }
 
+          if (approvedRecord.exchangeName && user?.exchange_name && approvedRecord.exchangeName.toLowerCase() !== user.exchange_name.toLowerCase()) {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                code: 'EXCHANGE_MISMATCH',
+                error: `Cannot activate bot: Approved exchange (${approvedRecord.exchangeName}) does not match configured exchange (${user.exchange_name}).`,
+              }),
+              { status: 403, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
+          if (approvedRecord.environment && user?.exchange_environment && normalizeEnvironment(approvedRecord.environment) !== normalizeEnvironment(user.exchange_environment)) {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                code: 'ENVIRONMENT_MISMATCH',
+                error: `Cannot activate bot: Approved environment (${approvedRecord.environment}) does not match configured environment (${user.exchange_environment}).`,
+              }),
+              { status: 403, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
+
+          if (user?.exchange_name && approvedRecord.accountFingerprint) {
+            const expectedFingerprint = await computeAccountFingerprint({
+              userId,
+              exchangeName: user.exchange_name,
+              environment: user.exchange_environment,
+              accountIdentifier: user.exchange_api_key_encrypted || user.exchange_api_key || null,
+              serverSecret: this.env.ENCRYPTION_KEY
+            });
+            if (approvedRecord.accountFingerprint.startsWith('fp_') && approvedRecord.accountFingerprint !== expectedFingerprint) {
+              earlyErrorResponse = new Response(
+                JSON.stringify({
+                  success: false,
+                  code: 'ACCOUNT_FINGERPRINT_MISMATCH',
+                  error: 'Cannot activate bot: Approved exchange account does not match configured account credentials.',
+                }),
+                { status: 403, headers: { 'Content-Type': 'application/json' } }
+              );
+              return;
+            }
+          }
+
           const setupSnapshot: TradeSetupSnapshot = Object.freeze({
             userId,
             coinId: primaryCoinId,
@@ -1352,6 +1497,8 @@ export class TradingBot {
             activatedAt: new Date().toISOString(),
             exchangeName: user?.exchange_name ?? undefined,
             environment: user?.exchange_environment ?? undefined,
+            approvedSymbols: approvedRecord.approvedSymbols,
+            approvalGeneration: approvedRecord.approvalGeneration,
           });
 
           await this.logAuditEvent(userId, 'BOT_ACTIVATED', { strategy, coinId: primaryCoinId, symbols: resolvedSymbols, positionSize, targetEntryPrice });
@@ -1984,7 +2131,8 @@ export class TradingBot {
             );
           }
 
-          const alerts = ((await this.state.storage.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+          const alerts = ((await this.state.storage.get<TradeAlert[]>('alerts')) || []) as TradeAlert[];
+          this.runtimeState.alerts = alerts;
           const target: TradeAlert | undefined = alerts.find((a) => a.id === alertId && (a.status === 'pending' || a.status === 'acknowledged' || a.status === 'failed'));
           const completedAlert = !target
             ? alerts.find((a) => a.id === alertId && ['submitted', 'executed', 'filled', 'partially_filled'].includes(a.status))
@@ -2137,58 +2285,6 @@ export class TradingBot {
             }
           }
 
-          // Authoritative Approved Quantity Verification Gate
-          const storedQuantity = target.quantity;
-          const submittedQuantity = requestBody.quantity != null ? Number(requestBody.quantity) : undefined;
-
-          if (requestBody.requireApprovedQuantity === true) {
-            if (storedQuantity == null || !Number.isFinite(storedQuantity) || storedQuantity <= 0) {
-              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Alert ${target.id} does not contain a valid backend-approved quantity.`);
-              return new Response(JSON.stringify({
-                success: false,
-                code: 'MISSING_APPROVED_QUANTITY',
-                error: 'Execution rejected: Trade alert does not contain a valid backend-approved quantity.'
-              }), { status: 409 });
-            }
-
-            if (submittedQuantity == null || !Number.isFinite(submittedQuantity) || submittedQuantity <= 0) {
-              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Execution request missing or invalid quantity.`);
-              return new Response(JSON.stringify({
-                success: false,
-                code: 'MISSING_SUBMITTED_QUANTITY',
-                error: 'Execution rejected: Execution request must specify the exact approved quantity.'
-              }), { status: 400 });
-            }
-
-            if (Math.abs(submittedQuantity - storedQuantity) > 1e-6) {
-              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Submitted quantity ${submittedQuantity} differs from approved quantity ${storedQuantity}. AlertId: ${target.id}`);
-              return new Response(JSON.stringify({
-                success: false,
-                code: 'QUANTITY_TAMPERED',
-                error: `Execution rejected: Submitted quantity (${submittedQuantity}) does not match the approved quantity stored in alert (${storedQuantity}).`
-              }), { status: 409 });
-            }
-          } else if (submittedQuantity !== undefined) {
-            if (!Number.isFinite(submittedQuantity) || submittedQuantity <= 0) {
-              return new Response(JSON.stringify({
-                success: false,
-                code: 'INVALID_SUBMITTED_QUANTITY',
-                error: 'Execution rejected: Submitted quantity must be a positive finite number.'
-              }), { status: 400 });
-            }
-
-            if (storedQuantity != null && Number.isFinite(storedQuantity) && storedQuantity > 0) {
-              if (Math.abs(submittedQuantity - storedQuantity) > 1e-6) {
-                console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Submitted quantity ${submittedQuantity} differs from approved quantity ${storedQuantity}. AlertId: ${target.id}`);
-                return new Response(JSON.stringify({
-                  success: false,
-                  code: 'QUANTITY_TAMPERED',
-                  error: `Execution rejected: Submitted quantity (${submittedQuantity}) does not match the approved quantity stored in alert (${storedQuantity}).`
-                }), { status: 409 });
-              }
-            }
-          }
-
           // Signal TTL Enforcement (5 minutes = 300,000ms)
           const MAX_SIGNAL_AGE_MS = 300000;
           const signalAgeMs = Date.now() - new Date(target.timestamp).getTime();
@@ -2269,6 +2365,186 @@ export class TradingBot {
               { status: 409, headers: { 'Content-Type': 'application/json' } }
             );
           }
+
+          // [SAFETY GATE: FAIL-CLOSED AUTHORITATIVE BUDGET APPROVAL GATE]
+          const approvedRecord = (await this.state.storage.get<ApprovedCandidateRecord>('approvedCandidateRecord')) ?? null;
+          this.runtimeState.approvedCandidateRecord = approvedRecord;
+          if (
+            !approvedRecord ||
+            approvedRecord.approvalState !== 'FINAL_APPROVED' ||
+            approvedRecord.expiresAt <= Date.now()
+          ) {
+            console.error(`[SAFETY GATE: FATAL] Rejected trade execution: No valid unexpired approval record found for alert ${alertId}.`);
+            return new Response(JSON.stringify({
+              success: false,
+              code: 'APPROVAL_EXPIRED',
+              error: 'Execution rejected: Trade approval is missing or expired. A fresh candidate scan is required.'
+            }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+          }
+
+          if (approvedRecord.userId && approvedRecord.userId !== userId) {
+            console.error(`[SAFETY GATE: FATAL] Rejected trade execution: User ID mismatch (alert userId: ${userId}, approval userId: ${approvedRecord.userId}).`);
+            return new Response(JSON.stringify({
+              success: false,
+              code: 'USER_MISMATCH',
+              error: 'Execution rejected: Trade approval user does not match session user.'
+            }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+          }
+
+          let userRow: any = null;
+          try {
+            userRow = await this.env.DB.prepare(
+              'SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?'
+            ).bind(userId).first<any>();
+          } catch (_) {}
+
+          if (userRow?.exchange_name) {
+            if (approvedRecord.exchangeName && approvedRecord.exchangeName.toLowerCase() !== userRow.exchange_name.toLowerCase()) {
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'EXCHANGE_MISMATCH',
+                error: `Execution rejected: Approved exchange (${approvedRecord.exchangeName}) does not match active exchange (${userRow.exchange_name}).`
+              }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (approvedRecord.environment && userRow.exchange_environment && normalizeEnvironment(approvedRecord.environment) !== normalizeEnvironment(userRow.exchange_environment)) {
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'ENVIRONMENT_MISMATCH',
+                error: `Execution rejected: Approved environment (${approvedRecord.environment}) does not match active environment (${userRow.exchange_environment}).`
+              }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+            }
+            const expectedFingerprint = await computeAccountFingerprint({
+              userId,
+              exchangeName: userRow.exchange_name,
+              environment: userRow.exchange_environment,
+              accountIdentifier: userRow.exchange_api_key_encrypted || userRow.exchange_api_key || null,
+              serverSecret: this.env.ENCRYPTION_KEY
+            });
+            if (approvedRecord.accountFingerprint && approvedRecord.accountFingerprint.startsWith('fp_') && approvedRecord.accountFingerprint !== expectedFingerprint) {
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'ACCOUNT_FINGERPRINT_MISMATCH',
+                error: 'Execution rejected: Candidate approval account fingerprint does not match active exchange account.'
+              }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+            }
+          }
+
+          // Authoritative TradeAlert Generation Verification:
+          // Autonomous alert MUST have approvalGeneration matching the current active approval generation.
+          if (effectiveSource === 'AUTONOMOUS' || target.approvalGeneration !== undefined) {
+            const effectiveAlertGen = target.approvalGeneration ?? target.generation;
+            if (effectiveAlertGen == null || effectiveAlertGen !== approvedRecord.approvalGeneration) {
+              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Alert approval generation (${effectiveAlertGen}) does not match current active approval (${approvedRecord.approvalGeneration}).`);
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'STALE_APPROVAL_GENERATION',
+                error: `Execution rejected: Alert approval generation (${effectiveAlertGen}) does not match current active approval (${approvedRecord.approvalGeneration}).`
+              }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+            }
+          }
+
+          // Client-supplied generation is purely a consistency check, never the source of authority
+          const requestApprovalGen = typeof requestBody?.approvalGeneration === 'number'
+            ? requestBody.approvalGeneration
+            : (typeof requestBody?.approvalGeneration === 'string' ? parseInt(requestBody.approvalGeneration, 10) : undefined);
+          if (requestApprovalGen != null && !isNaN(requestApprovalGen) && requestApprovalGen !== approvedRecord.approvalGeneration) {
+            console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Request approval generation mismatch (request: ${requestApprovalGen}, active: ${approvedRecord.approvalGeneration}). AlertId: ${target.id}`);
+            return new Response(JSON.stringify({
+              success: false,
+              code: 'STALE_APPROVAL_GENERATION',
+              error: `Execution rejected: Request approval generation (${requestApprovalGen}) does not match current active approval (${approvedRecord.approvalGeneration}).`
+            }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+          }
+
+          const targetCanonicalSymbol = normalizeCanonicalSymbol(target.symbol);
+          const isSymbolApproved = approvedRecord.approvedSymbols.some(s => normalizeCanonicalSymbol(s) === targetCanonicalSymbol);
+          if (!isSymbolApproved) {
+            console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Symbol ${target.symbol} is not in approved candidate list.`);
+            return new Response(JSON.stringify({
+              success: false,
+              code: 'SYMBOL_NOT_APPROVED',
+              error: `Execution rejected: Symbol '${target.symbol}' is not approved for trading.`
+            }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+          }
+
+          const rawPositionSize = target.requestedBudget ?? target.positionSize;
+          if (rawPositionSize != null && typeof rawPositionSize === 'number' && !isNaN(rawPositionSize) && rawPositionSize > 0) {
+            if (!new BigNumber(rawPositionSize).isEqualTo(new BigNumber(approvedRecord.budgetUsdt))) {
+              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Alert budget ($${rawPositionSize}) does not match approved budget ($${approvedRecord.budgetUsdt}).`);
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'BUDGET_MISMATCH',
+                error: `Execution rejected: Trade budget ($${rawPositionSize}) does not match approved budget ($${approvedRecord.budgetUsdt}).`
+              }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+            }
+          }
+
+          // [SAFETY GATE: AUTHORITATIVE STORED EXECUTABILITY INVARIANT]
+          // Rejects explicit non-executable alerts before WAL reservation and Bybit order submission.
+          // Enforced on authoritative stored alert, never client-supplied fields.
+          if (target.isExecutable === false) {
+            console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Alert ${target.id} is explicitly marked non-executable (reason: ${target.ineligibilityReason || 'UNSPECIFIED'}).`);
+            return new Response(JSON.stringify({
+              success: false,
+              code: 'ALERT_NOT_EXECUTABLE',
+              error: `Execution rejected: Trade alert is marked non-executable (${target.ineligibilityReason || 'Execution ineligibility'}).`
+            }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+          }
+
+          // [SAFETY GATE: AUTHORITATIVE STORED APPROVED QUANTITY INVARIANT]
+          // UNCONDITIONALLY ENFORCED: Every execution against an alert requires an authoritative backend-approved quantity.
+          // Rejects missing, null, zero, negative, NaN and infinite stored quantities regardless of client flags.
+          const storedQuantity = target.quantity;
+
+          if (
+            storedQuantity == null ||
+            typeof storedQuantity !== 'number' ||
+            !Number.isFinite(storedQuantity) ||
+            Number.isNaN(storedQuantity) ||
+            storedQuantity <= 0
+          ) {
+            console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Alert ${target.id} does not contain a valid backend-approved quantity (${storedQuantity}).`);
+            return new Response(JSON.stringify({
+              success: false,
+              code: 'MISSING_APPROVED_QUANTITY',
+              error: 'Execution rejected: Trade alert does not contain a valid backend-approved quantity.'
+            }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+          }
+
+          // Authoritative Quantity Tamper Gate:
+          // If client explicitly submits a quantity, it must be finite, positive, and match stored approved quantity within 1e-6 epsilon.
+          // Client cannot override, replace, or invent quantity.
+          const submittedQuantity = requestBody.quantity != null ? Number(requestBody.quantity) : undefined;
+          if (requestBody.requireApprovedQuantity === true && (submittedQuantity == null || !Number.isFinite(submittedQuantity) || submittedQuantity <= 0)) {
+            console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Execution request missing or invalid quantity.`);
+            return new Response(JSON.stringify({
+              success: false,
+              code: 'MISSING_SUBMITTED_QUANTITY',
+              error: 'Execution rejected: Execution request must specify the exact approved quantity.'
+            }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+          }
+
+          if (submittedQuantity !== undefined) {
+            if (!Number.isFinite(submittedQuantity) || Number.isNaN(submittedQuantity) || submittedQuantity <= 0) {
+              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Submitted quantity must be a positive finite number (${submittedQuantity}). AlertId: ${target.id}`);
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'INVALID_SUBMITTED_QUANTITY',
+                error: 'Execution rejected: Submitted quantity must be a positive finite number.'
+              }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+            }
+
+            if (Math.abs(submittedQuantity - storedQuantity) > 1e-6) {
+              console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Submitted quantity ${submittedQuantity} differs from approved quantity ${storedQuantity}. AlertId: ${target.id}`);
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'QUANTITY_TAMPERED',
+                error: `Execution rejected: Submitted quantity (${submittedQuantity}) does not match the approved quantity stored in alert (${storedQuantity}).`
+              }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+            }
+          }
+
+
 
           const side: 'BUY' | 'SELL' = target.side || 'BUY';
           const committedStrategy: string | undefined = this.runtimeState.strategy;
@@ -2455,6 +2731,23 @@ export class TradingBot {
             if (!userKeys?.exchange_name || !hasApiKey || !userKeys?.exchange_api_secret_encrypted) {
               await releasePreReservation('EXCHANGE_KEYS_NOT_CONFIGURED');
               return new Response(JSON.stringify({ error: 'User has not configured their exchange API keys.' }), { status: 400 });
+            }
+
+            if (approvedRecord.exchangeName && userKeys?.exchange_name && approvedRecord.exchangeName.toLowerCase() !== userKeys.exchange_name.toLowerCase()) {
+              await releasePreReservation('EXCHANGE_MISMATCH');
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'EXCHANGE_MISMATCH',
+                error: `Execution rejected: Approved exchange (${approvedRecord.exchangeName}) does not match configured exchange (${userKeys.exchange_name}).`
+              }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (approvedRecord.environment && userKeys?.exchange_environment && normalizeEnvironment(approvedRecord.environment) !== normalizeEnvironment(userKeys.exchange_environment)) {
+              await releasePreReservation('ENVIRONMENT_MISMATCH');
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'ENVIRONMENT_MISMATCH',
+                error: `Execution rejected: Approved environment (${approvedRecord.environment}) does not match configured environment (${userKeys.exchange_environment}).`
+              }), { status: 403, headers: { 'Content-Type': 'application/json' } });
             }
 
             let decryptedApiKey: string | undefined = undefined;
@@ -2856,7 +3149,18 @@ export class TradingBot {
                 if (target.stopLoss !== undefined) target.stopLoss = normResult.stopLoss;
               }
 
-              const approvedQuantity = (typeof target.quantity === 'number' && target.quantity > 0) ? target.quantity : undefined;
+              // [SAFETY GATE: MANDATORY APPROVED QUANTITY INVARIANT BEFORE TRADE VALIDATION]
+              const approvedQuantity = target.quantity;
+              if (
+                approvedQuantity == null ||
+                typeof approvedQuantity !== 'number' ||
+                !Number.isFinite(approvedQuantity) ||
+                Number.isNaN(approvedQuantity) ||
+                approvedQuantity <= 0
+              ) {
+                console.error(`[SAFETY GATE: FATAL] Execution rejected: Alert ${target.id} lacks approved quantity at validation stage (${approvedQuantity}).`);
+                throw new Error(`Execution rejected: Alert ${target.id} does not contain an authoritative backend-approved quantity.`);
+              }
 
               const rulesRes = TradeValidator.validate({
                 symbol: orderSymbol,
@@ -2867,8 +3171,8 @@ export class TradingBot {
                 currentMarketPrice: currentPrice,
                 markPrice: currentPrice,
                 quantity: approvedQuantity,
-                isApprovedQuantity: approvedQuantity !== undefined,
-                tradeValueUsdt: target.requestedBudget || positionSizeUsdt
+                isApprovedQuantity: true,
+                tradeValueUsdt: undefined
               }, {
                 schemaVersion: "2.0",
                 symbol: orderSymbol,
@@ -4197,6 +4501,174 @@ export class TradingBot {
           pendingBackgroundOperations: this.isExecutingTrade ? 1 : 0,
           cacheMetrics: adapterMetrics,
         }), { status: 200 });
+      }
+      case '/reserve-candidate-generation': {
+        let newGen = 1;
+        await this.state.storage.transaction(async (txn) => {
+          const currentGen = (await txn.get<number>('candidateApprovalGeneration')) || 0;
+          newGen = currentGen + 1;
+          await txn.put('candidateApprovalGeneration', newGen);
+          await txn.delete('discoveryApprovalRecord');
+          await txn.delete('approvedCandidateRecord');
+        });
+        this.runtimeState.candidateApprovalGeneration = newGen;
+        this.runtimeState.discoveryApprovalRecord = null;
+        this.runtimeState.approvedCandidateRecord = null;
+        return new Response(JSON.stringify({ success: true, generation: newGen }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      case '/discovery-approved-candidates': {
+        const body = await request.json<{ record: ApprovedCandidateRecord }>().catch(() => null);
+        const record = body?.record;
+        if (
+          !record ||
+          record.approvalState !== 'DISCOVERY_APPROVED' ||
+          typeof record.approvalGeneration !== 'number' ||
+          record.approvalGeneration !== this.runtimeState.candidateApprovalGeneration ||
+          typeof record.budgetUsdt !== 'number' ||
+          record.budgetUsdt <= 0 ||
+          !Array.isArray(record.approvedSymbols) ||
+          typeof record.expiresAt !== 'number' ||
+          record.expiresAt <= Date.now()
+        ) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'Invalid discovery approval record or generation mismatch.',
+          }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        }
+
+        await this.state.storage.put('discoveryApprovalRecord', record);
+        this.runtimeState.discoveryApprovalRecord = record;
+
+        return new Response(JSON.stringify({
+          success: true,
+          generation: record.approvalGeneration,
+          count: record.approvedSymbols.length,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      case '/commit-final-approved-candidates': {
+        const body = await request.json<{ record: ApprovedCandidateRecord }>().catch(() => null);
+        const record = body?.record;
+        const currentGen = (await this.state.storage.get<number>('candidateApprovalGeneration')) || this.runtimeState.candidateApprovalGeneration || 0;
+        if (
+          !record ||
+          record.approvalState !== 'FINAL_APPROVED' ||
+          typeof record.approvalGeneration !== 'number' ||
+          record.approvalGeneration !== currentGen ||
+          typeof record.budgetUsdt !== 'number' ||
+          record.budgetUsdt <= 0 ||
+          !Array.isArray(record.approvedSymbols) ||
+          typeof record.expiresAt !== 'number' ||
+          record.expiresAt <= Date.now()
+        ) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'Invalid final approval record or generation mismatch.',
+          }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        }
+
+        const discoveryRecord = this.runtimeState.discoveryApprovalRecord;
+        if (discoveryRecord && discoveryRecord.approvalGeneration === record.approvalGeneration) {
+          const discSet = new Set(discoveryRecord.approvedSymbols.map(s => normalizeCanonicalSymbol(s)));
+          const allInDiscovery = record.approvedSymbols.every(s => discSet.has(normalizeCanonicalSymbol(s)));
+          if (!allInDiscovery) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: 'Final approved symbols must be a subset of discovery approved symbols.',
+            }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+          }
+        }
+
+        await this.state.storage.transaction(async (txn) => {
+          await txn.put('approvedCandidateRecord', record);
+          await txn.delete('discoveryApprovalRecord');
+        });
+        this.runtimeState.approvedCandidateRecord = record;
+        this.runtimeState.discoveryApprovalRecord = null;
+
+        return new Response(JSON.stringify({
+          success: true,
+          generation: record.approvalGeneration,
+          count: record.approvedSymbols.length,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      case '/commit-empty-candidates': {
+        const body = await request.json<{ generation?: number }>().catch(() => ({ generation: undefined }));
+        const requestedGen = typeof body?.generation === 'number' ? body.generation : undefined;
+        const currentGen = (await this.state.storage.get<number>('candidateApprovalGeneration')) || this.runtimeState.candidateApprovalGeneration || 0;
+        if (requestedGen !== undefined && requestedGen < currentGen) {
+          console.warn(`[SAFETY GATE] Rejected stale empty candidates commit (requested gen: ${requestedGen}, current: ${currentGen})`);
+          return new Response(JSON.stringify({
+            success: false,
+            code: 'STALE_EMPTY_GENERATION',
+            error: 'Cannot commit empty candidates for an obsolete candidate generation.',
+          }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+        }
+
+        await this.state.storage.transaction(async (txn) => {
+          await txn.delete('approvedCandidateRecord');
+          await txn.delete('discoveryApprovalRecord');
+          await txn.put('lastEmptyCandidateCommit', {
+            generation: requestedGen ?? currentGen,
+            timestamp: Date.now()
+          });
+        });
+        this.runtimeState.approvedCandidateRecord = null;
+        this.runtimeState.discoveryApprovalRecord = null;
+        return new Response(JSON.stringify({ success: true, cleared: true, generation: requestedGen ?? currentGen }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      case '/verify-approval': {
+        const symbolParam = url.searchParams.get('symbol');
+        const budgetParam = url.searchParams.get('budget');
+        const record = this.runtimeState.approvedCandidateRecord || (await this.state.storage.get<ApprovedCandidateRecord>('approvedCandidateRecord'));
+
+        if (!record || record.approvalState !== 'FINAL_APPROVED' || record.expiresAt <= Date.now()) {
+          return new Response(JSON.stringify({
+            valid: false,
+            reason: !record ? 'NO_APPROVAL_RECORD' : (record.expiresAt <= Date.now() ? 'APPROVAL_EXPIRED' : 'NOT_FINAL_APPROVED'),
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (symbolParam) {
+          const normSym = normalizeCanonicalSymbol(symbolParam);
+          const isApproved = record.approvedSymbols.some(s => normalizeCanonicalSymbol(s) === normSym);
+          if (!isApproved) {
+            return new Response(JSON.stringify({
+              valid: false,
+              reason: 'SYMBOL_NOT_APPROVED',
+              generation: record.approvalGeneration,
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+        }
+
+        if (budgetParam) {
+          const parsedB = parseFloat(budgetParam);
+          if (isNaN(parsedB) || !new BigNumber(parsedB).isEqualTo(new BigNumber(record.budgetUsdt))) {
+            return new Response(JSON.stringify({
+              valid: false,
+              reason: 'BUDGET_MISMATCH',
+              expectedBudget: record.budgetUsdt,
+              generation: record.approvalGeneration,
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+        }
+
+        return new Response(JSON.stringify({
+          valid: true,
+          generation: record.approvalGeneration,
+          budgetUsdt: record.budgetUsdt,
+          approvedSymbols: record.approvedSymbols,
+          expiresAt: record.expiresAt,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       default:
         return new Response('Not found', { status: 404 });
@@ -5917,9 +6389,47 @@ export class TradingBot {
               const primarySymbol = symbolsForCycle[0];
               let primarySnapshotMapped = false;
 
-              for (const currentSymbol of symbolsForCycle) {
-                let legacySignalForCandidate: any = null;
-                let legacySuppressionInfo: { isLegacySuppressedByGate: boolean; suppressionGate: string } | undefined = undefined;
+              // [BUDGET GATE: EXPIRED / MISSING CHECK]
+              const approvedCandidateRecord = (await this.state.storage.get<ApprovedCandidateRecord>('approvedCandidateRecord')) ?? null;
+              this.runtimeState.approvedCandidateRecord = approvedCandidateRecord;
+              const isApprovalValid = approvedCandidateRecord &&
+                approvedCandidateRecord.approvalState === 'FINAL_APPROVED' &&
+                approvedCandidateRecord.expiresAt > Date.now();
+
+              let isFingerprintValid = true;
+              if (approvedCandidateRecord?.accountFingerprint?.startsWith('fp_')) {
+                try {
+                  const userRecord = await this.env.DB.prepare(
+                    'SELECT exchange_name, exchange_environment, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt FROM users WHERE id = ?'
+                  ).bind(userId).first<any>();
+                  if (userRecord?.exchange_name) {
+                    const expectedFp = await computeAccountFingerprint({
+                      userId,
+                      exchangeName: userRecord.exchange_name,
+                      environment: userRecord.exchange_environment,
+                      accountIdentifier: userRecord.exchange_api_key_encrypted || userRecord.exchange_api_key || null,
+                      serverSecret: this.env.ENCRYPTION_KEY
+                    });
+                    if (approvedCandidateRecord.accountFingerprint !== expectedFp) {
+                      isFingerprintValid = false;
+                      console.warn(`[BUDGET GATE: ACCOUNT_FINGERPRINT_MISMATCH] Approval account fingerprint does not match active exchange account. Skipping strategy evaluation.`);
+                    }
+                  }
+                } catch (_) {}
+              }
+
+              if (!isApprovalValid || !isFingerprintValid) {
+                console.warn(`[BUDGET GATE: EXPIRED / MISSING] Approval record is expired, missing, or mismatched. Halting strategy evaluation. Open positions monitoring remains active.`);
+              } else {
+                for (const currentSymbol of symbolsForCycle) {
+                  const normCurrent = normalizeCanonicalSymbol(currentSymbol);
+                  const isSymbolApproved = approvedCandidateRecord.approvedSymbols.some(s => normalizeCanonicalSymbol(s) === normCurrent);
+                  if (!isSymbolApproved) {
+                    console.warn(`[BUDGET GATE: REJECTED] Symbol ${currentSymbol} is not in approvedCandidateRecord (${approvedCandidateRecord.approvalGeneration}). Skipping TA.`);
+                    continue;
+                  }
+                  let legacySignalForCandidate: any = null;
+                  let legacySuppressionInfo: { isLegacySuppressedByGate: boolean; suppressionGate: string } | undefined = undefined;
 
                 // Stage 1: Market metadata hoist scope (strictly lifetime-bound to currentSymbol iteration)
                 let hoistedMarket: any = null;
@@ -6157,53 +6667,26 @@ export class TradingBot {
 
                         const setupSnapshot = this.runtimeState.setupSnapshot;
                         const storedPositionSize = setupSnapshot?.positionSize ?? (this.runtimeState.positionSize as number | undefined);
-                        const calculatedSize = sig.riskAssessment?.positionSizeRecommendation;
-                        const size = (storedPositionSize && storedPositionSize > 0) ? storedPositionSize : (calculatedSize && calculatedSize > 0 ? calculatedSize : 0);
+                        const size = (storedPositionSize && storedPositionSize > 0 && Number.isFinite(storedPositionSize)) ? storedPositionSize : 0;
+
+                        // Stage 2.2 Decoupled Execution Eligibility Tracking
+                        let alertIsExecutable = true;
+                        let alertIneligibilityReason: string | undefined = undefined;
 
                         if (size <= 0) {
-                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'MISSING_POSITION_SIZE' };
-                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): No valid position size available from RiskEngine or manual override.`);
-                          this.telemetrySink.emit({
-                            userId,
-                            category: 'SAFETY',
-                            component: 'TradingBot',
-                            eventName: 'FINAL_DISPATCH_GATE',
-                            severity: 'WARN',
-                            cycleId,
-                            symbol: currentSymbol,
-                            strategyId: result.strategyId,
-                            payload: {
-                              passed: false,
-                              gate: 'MISSING_POSITION_SIZE'
-                            }
-                          });
-                          await this.logAuditEvent(userId, 'ALERT_SKIPPED_MISSING_POSITION_SIZE', {
-                            symbol: currentSymbol,
-                            strategy: result.strategyId,
-                            reason: 'Trade opportunity detected, but execution was skipped because no valid position size was available.'
-                          });
-
-                          const existingLogs = (await this.state.storage.get('logs')) as string[] || [];
-                          existingLogs.push(`[${new Date().toISOString()}] WARN: Trade opportunity detected for ${currentSymbol} (${result.strategyId}), but alert generation was skipped because no valid position size was available.`);
-                          await this.state.storage.put('logs', existingLogs.slice(-50));
-                          continue;
+                          alertIsExecutable = false;
+                          alertIneligibilityReason = 'INSUFFICIENT_BUDGET';
+                          console.warn(`[trading-bot] Trade opportunity detected for ${currentSymbol} (${result.strategyId}) with non-positive budget ($${size}). Skipping alert publication.`);
+                          break;
                         }
 
                         // Phase 1 Safety Gate (Level 1): Portfolio Exposure Check
                         const currentExposure = this.calculateAggregateExposure(activePositions);
                         const maxExposure = this.resolveMaxPortfolioExposure(accountBalance, strategyConfig, setupSnapshot);
-                        if (currentExposure + size > maxExposure) {
-                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'PORTFOLIO_EXPOSURE' };
-                          console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Proposed notional $${size} + current exposure $${currentExposure.toFixed(2)} exceeds maximum portfolio exposure $${maxExposure.toFixed(2)}.`);
-                          await this.logAuditEvent(userId, 'ALERT_SKIPPED_PORTFOLIO_EXPOSURE', {
-                            symbol: currentSymbol,
-                            strategy: result.strategyId,
-                            currentExposure,
-                            proposedSize: size,
-                            maxExposure,
-                            reason: `Aggregate portfolio exposure ($${(currentExposure + size).toFixed(2)}) exceeds limit ($${maxExposure.toFixed(2)}).`
-                          });
-                          continue;
+                        if (alertIsExecutable && (currentExposure + size > maxExposure)) {
+                          alertIsExecutable = false;
+                          alertIneligibilityReason = 'PORTFOLIO_EXPOSURE_EXCEEDED';
+                          console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity detected for ${currentSymbol} (${result.strategyId}) exceeds portfolio exposure ($${(currentExposure + size).toFixed(2)} > $${maxExposure.toFixed(2)}). Marking alert as non-executable (PORTFOLIO_EXPOSURE_EXCEEDED).`);
                         }
 
                         // Informational MarketRegime Telemetry — reuses hoisted symbolMarketRegime
@@ -6371,88 +6854,71 @@ export class TradingBot {
                           }
                         }
 
-                        if (!stepSize || stepSize <= 0) {
-                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'METADATA_UNAVAILABLE' };
-                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit qtyStep/stepSize unavailable.`);
-                          this.telemetrySink.emit({
-                            userId,
-                            category: 'SAFETY',
-                            component: 'TradingBot',
-                            eventName: 'FINAL_DISPATCH_GATE',
-                            severity: 'WARN',
-                            cycleId,
-                            symbol: currentSymbol,
-                            strategyId: result.strategyId,
-                            payload: {
-                              passed: false,
-                              gate: 'METADATA_UNAVAILABLE'
-                            }
-                          });
-                          break; // Ticker-wide failure -> stop evaluating further strategies for this ticker
-                        }
-
-                        if (
-                          (maxOrderQty !== undefined && (!Number.isFinite(maxOrderQty) || maxOrderQty <= 0)) ||
-                          (marketMaxQty !== undefined && (!Number.isFinite(marketMaxQty) || marketMaxQty <= 0))
-                        ) {
-                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'MAX_QTY_INVALID' };
-                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit maxOrderQty/marketMaxQty invalid (maxOrderQty=${maxOrderQty}, marketMaxQty=${marketMaxQty}).`);
-                          this.telemetrySink.emit({
-                            userId,
-                            category: 'SAFETY',
-                            component: 'TradingBot',
-                            eventName: 'FINAL_DISPATCH_GATE',
-                            severity: 'WARN',
-                            cycleId,
-                            symbol: currentSymbol,
-                            strategyId: result.strategyId,
-                            payload: {
-                              passed: false,
-                              gate: 'MAX_QTY_INVALID'
-                            }
-                          });
-                          break; // Ticker-wide failure -> stop evaluating further strategies for this ticker
-                        }
-
-                        const resolvedMinOrderQty = (minOrderQty !== undefined && minOrderQty > 0) ? minOrderQty : stepSize;
-                        const resolvedMinNotional = (minNotional !== undefined && minNotional > 0) ? minNotional : 5.0;
+                        // Stage 2.2 Decoupled Lot Size & Order Execution Evaluation
                         const isLimitAlert = alertTargetPrice !== undefined && alertTargetPrice > 0;
                         const applicableAlertMaxOrderQty = isLimitAlert ? maxOrderQty : marketMaxQty;
+                        const resolvedMinNotional = (minNotional !== undefined && minNotional > 0) ? minNotional : 5.0;
 
-                        const eligibility = ExecutionEligibilityGate.evaluate({
-                          tradeAmountUsdt: size,
-                          currentPrice: alertSignalPrice,
-                          qtyStep: stepSize,
-                          minOrderQty: resolvedMinOrderQty,
-                          minNotional: resolvedMinNotional,
-                          maxOrderQty: applicableAlertMaxOrderQty,
-                        });
+                        let eligibilityResult: any = null;
+                        if (alertIsExecutable) {
+                          const isLotMetadataValid =
+                            stepSize !== undefined && Number.isFinite(stepSize) && stepSize > 0 &&
+                            minOrderQty !== undefined && minOrderQty !== null && Number.isFinite(minOrderQty) && minOrderQty > 0 &&
+                            (maxOrderQty === undefined || maxOrderQty === null || (Number.isFinite(maxOrderQty) && maxOrderQty > 0)) &&
+                            (marketMaxQty === undefined || marketMaxQty === null || (Number.isFinite(marketMaxQty) && marketMaxQty > 0));
 
-                        if (!eligibility.isExecutable) {
-                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'EXECUTION_INELIGIBLE' };
-                          console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): ${eligibility.rejectionReason}`);
-                          this.telemetrySink.emit({
-                            userId,
-                            category: 'SAFETY',
-                            component: 'TradingBot',
-                            eventName: 'FINAL_DISPATCH_GATE',
-                            severity: 'WARN',
-                            cycleId,
-                            symbol: currentSymbol,
-                            strategyId: result.strategyId,
-                            payload: {
-                              passed: false,
-                              gate: 'EXECUTION_INELIGIBLE',
-                              budget: size,
+                          if (!isLotMetadataValid) {
+                            alertIsExecutable = false;
+                            alertIneligibilityReason = 'LOT_SIZE_METADATA_UNAVAILABLE';
+                            console.warn(`[trading-bot] Trade opportunity detected for ${currentSymbol} (${result.strategyId}) with invalid or missing lot size metadata. Skipping alert creation.`);
+                            break;
+                          } else {
+                            const validStepSize = stepSize!;
+                            const validMinOrderQty = minOrderQty!;
+                            eligibilityResult = ExecutionEligibilityGate.evaluate({
+                              tradeAmountUsdt: size,
                               currentPrice: alertSignalPrice,
-                              qtyStep: stepSize,
-                              minOrderQty: resolvedMinOrderQty,
+                              qtyStep: validStepSize,
+                              minOrderQty: validMinOrderQty,
                               minNotional: resolvedMinNotional,
-                              postRoundingNotional: eligibility.postRoundingNotional,
-                              rejectionReason: eligibility.rejectionReason,
+                              maxOrderQty: applicableAlertMaxOrderQty,
+                            });
+
+                            if (!eligibilityResult.isExecutable) {
+                              alertIsExecutable = false;
+                              const reasonText = eligibilityResult.rejectionReason || '';
+                              if (reasonText.includes('minNotional') || reasonText.includes('Trade amount')) {
+                                alertIneligibilityReason = 'BELOW_MIN_NOTIONAL';
+                              } else if (reasonText.includes('minOrderQty') || reasonText.includes('Quantized qty')) {
+                                alertIneligibilityReason = 'MIN_ORDER_QTY_UNMET';
+                              } else if (eligibilityResult.quantizedQty < validMinOrderQty) {
+                                alertIneligibilityReason = 'MIN_ORDER_QTY_UNMET';
+                              } else if (eligibilityResult.postRoundingNotional < resolvedMinNotional || size < resolvedMinNotional) {
+                                alertIneligibilityReason = 'BELOW_MIN_NOTIONAL';
+                              } else {
+                                alertIneligibilityReason = eligibilityResult.rejectionReason || 'EXECUTION_INELIGIBLE';
+                              }
+                              this.telemetrySink.emit({
+                                userId,
+                                category: 'SAFETY',
+                                component: 'TradingBot',
+                                eventName: 'FINAL_DISPATCH_GATE',
+                                severity: 'WARN',
+                                symbol: currentSymbol,
+                                strategyId: alertStrategyKey,
+                                payload: {
+                                  passed: false,
+                                  gate: 'EXECUTION_INELIGIBLE',
+                                  budget: size,
+                                  currentPrice: alertSignalPrice,
+                                  qtyStep: validStepSize,
+                                  rejectionReason: eligibilityResult.rejectionReason,
+                                }
+                              });
+                              console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) is execution-ineligible (${alertIneligibilityReason}). Skipping alert creation.`);
+                              break;
                             }
-                          });
-                          continue; // Candidate-specific failure -> continue to next strategy
+                          }
                         }
 
                         // Autonomous alert safety check: fail closed if cycle generation was invalid at cycle start
@@ -6531,9 +6997,13 @@ export class TradingBot {
                           break;
                         }
 
-                        const effectiveAlertPositionSize = eligibility.wasClampedToMax
-                          ? eligibility.postRoundingNotional
-                          : size;
+                        const effectiveAlertPositionSize = (alertIsExecutable && eligibilityResult?.wasClampedToMax)
+                          ? eligibilityResult.postRoundingNotional
+                          : (alertIsExecutable ? size : undefined);
+
+                        const effectiveAlertEstimatedPnl = alertIsExecutable
+                          ? Math.abs(alertTakeProfit - alertSignalPrice) * (eligibilityResult?.quantizedQty ?? (alertSignalPrice > 0 ? size / alertSignalPrice : 0))
+                          : undefined;
 
                         const alert: TradeAlert = {
                           id: crypto.randomUUID(),
@@ -6543,17 +7013,20 @@ export class TradingBot {
                           entryPrice: alertSignalPrice,
                           stopLoss: normalized.stopLoss,
                           takeProfit: normalized.takeProfit,
-                          estimatedPnl: estimatedPnl,
+                          estimatedPnl: effectiveAlertEstimatedPnl,
                           positionSize: effectiveAlertPositionSize,
-                          quantity: eligibility.quantizedQty,
-                          requestedBudget: size,
-                          effectiveNotional: eligibility.postRoundingNotional,
+                          quantity: alertIsExecutable ? eligibilityResult?.quantizedQty : undefined,
+                          isExecutable: alertIsExecutable,
+                          ineligibilityReason: alertIsExecutable ? undefined : alertIneligibilityReason,
+                          requestedBudget: (size > 0 && Number.isFinite(size)) ? size : undefined,
+                          effectiveNotional: alertIsExecutable ? eligibilityResult?.postRoundingNotional : undefined,
                           strategy: alertStrategyKey,
                           side: sig.type as 'BUY' | 'SELL',
                           timestamp: new Date().toISOString(),
                           status: 'pending',
                           timeframe: targetTimeframe,
                           generation: cycleGeneration,
+                          approvalGeneration: approvedCandidateRecord.approvalGeneration,
                           source: 'AUTONOMOUS',
                           dispatchState: 'UNSENT',
                           dispatchAttemptCount: 0,
@@ -6582,7 +7055,9 @@ export class TradingBot {
                             timeframe: targetTimeframe,
                             positionSize: alert.positionSize,
                             quantity: alert.quantity,
-                            wasClampedToMax: eligibility.wasClampedToMax,
+                            isExecutable: alert.isExecutable,
+                            ineligibilityReason: alert.ineligibilityReason,
+                            wasClampedToMax: alertIsExecutable ? (eligibilityResult?.wasClampedToMax || false) : false,
                           }
                         });
 
@@ -6640,6 +7115,7 @@ export class TradingBot {
                   console.error(`[trading-bot] Strategy cycle failed for candidate ${currentSymbol}:`, candidateErr?.message || candidateErr);
                   // Candidate failure isolated - continue to next candidate
                 }
+              }
               }
 
               // Persist engineState and signal_lifecycle_state once per 15s cycle outside the multi-symbol loop

@@ -375,6 +375,20 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     mockStorage.set('monitoredSymbols', ['BTC/USDT', 'ETH/USDT']);
     mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('alerts', [existing5mAlert]);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-test-dedup',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT', 'ETH', 'ETHUSDT', 'ETH/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     // Mock executeCycle:
     // - For BTC/USDT: emit both 5m and 15m signals (both suppressed by single active alert gate)
@@ -469,6 +483,20 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     mockStorage.set('monitoredSymbols', ['BTC/USDT']);
     mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('alerts', []);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-test-fcm',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     const { StrategyOrchestrator: MockOrchestrator } = await import('../../src/engine/orchestrator/StrategyOrchestrator');
     vi.spyOn(MockOrchestrator.prototype, 'executeCycle').mockResolvedValue([
@@ -518,6 +546,7 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
       stopLoss: 49000,
       takeProfit: 52000,
       positionSize: 100,
+      quantity: 0.002,
       status: 'pending' as const,
       timestamp: new Date().toISOString(),
     };
@@ -525,6 +554,20 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     mockStorage.set('userId', 'user-wal-test');
     mockStorage.set('strategy', 'scalper-v2');
     mockStorage.set('alerts', [tradeAlert]);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-wal-test',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     let capturedWalIntent: any = null;
     const origPut = mockState.storage.put;
@@ -569,6 +612,7 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
       stopLoss: 49000,
       takeProfit: 52000,
       positionSize: 100,
+      quantity: 0.002,
       status: 'pending' as const,
       timestamp: new Date().toISOString(),
     };
@@ -576,6 +620,20 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     mockStorage.set('userId', 'user-d1-positions-test');
     mockStorage.set('strategy', 'scalper-v2');
     mockStorage.set('alerts', [tradeAlert]);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-d1-positions-test',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     const execReq = new Request('http://bot/execute-trade', {
       method: 'POST',
@@ -614,6 +672,7 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
       stopLoss: 49000,
       takeProfit: 52000,
       positionSize: 100,
+      quantity: 0.002,
       status: 'pending' as const,
       timestamp: new Date().toISOString(),
     };
@@ -621,6 +680,20 @@ describe('Pass 2 Architecture Verification: Independent Timeframe Pipelines', ()
     mockStorage.set('userId', 'user-d1-audit-test');
     mockStorage.set('strategy', 'scalper-v2');
     mockStorage.set('alerts', [tradeAlert]);
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-d1-audit-test',
+      budgetUsdt: 100,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
 
     const execReq = new Request('http://bot/execute-trade', {
       method: 'POST',

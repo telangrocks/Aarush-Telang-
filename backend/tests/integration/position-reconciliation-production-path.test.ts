@@ -183,6 +183,7 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
     stopLoss: 0.005748,
     takeProfit: 0.006411,
     positionSize: 25.00,
+    quantity: 4180,
     timestamp: new Date().toISOString(),
     status: "pending"
   };
@@ -194,7 +195,16 @@ describe("Position Reconciliation Production Path Integration Tests", () => {
 
     mockStorage.set("userId", userId);
     mockStorage.set("strategy", "ScalperV2");
-    mockStorage.set("alerts", [baseTradeAlert]);
+    mockStorage.set("approvedCandidateRecord", {
+      approvalGeneration: 1,
+      approvalState: "FINAL_APPROVED",
+      userId,
+      budgetUsdt: 25.00,
+      approvedSymbols: ["SOPH", "SOPHUSDT", "SOPH/USDT"],
+      timestamp: Date.now(),
+      expiresAt: Date.now() + 600000
+    });
+    mockStorage.set("alerts", [{ ...baseTradeAlert, approvalGeneration: 1 }]);
 
     // Instantiate REAL TradingBot Durable Object
     const bot = new TradingBot(mockState, mockEnv);

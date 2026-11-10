@@ -161,6 +161,21 @@ describe('CryptoPulse Restoration Regression Tests — Fence B & Order Precision
       ENCRYPTION_KEY: 'test_encryption_key_32_bytes_long!!',
       GLOBAL_TRADING_HALT: 'false',
     };
+
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 2,
+      userId: 'user-restored-1',
+      budgetUsdt: 1000,
+      approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
   });
 
   // ── Fence B Restoration Tests ───────────────────────────────────────────────
@@ -191,6 +206,7 @@ describe('CryptoPulse Restoration Regression Tests — Fence B & Order Precision
         takeProfit: 52000,
         estimatedPnl: 19,
         positionSize: 1000,
+        quantity: 0.01,
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date(Date.now() - 45_000).toISOString(),
@@ -232,6 +248,7 @@ describe('CryptoPulse Restoration Regression Tests — Fence B & Order Precision
         takeProfit: 52000,
         estimatedPnl: 19,
         positionSize: 1000,
+        quantity: 0.01,
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date().toISOString(),
@@ -271,7 +288,8 @@ describe('CryptoPulse Restoration Regression Tests — Fence B & Order Precision
         stopLoss: 49000,
         takeProfit: 52000,
         estimatedPnl: 19,
-        positionSize: 500,
+        positionSize: 1000,
+        quantity: 0.01,
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date(Date.now() - 310_000).toISOString(), // 5m 10s old (> 300,000ms)
@@ -311,7 +329,8 @@ describe('CryptoPulse Restoration Regression Tests — Fence B & Order Precision
         stopLoss: 49000,
         takeProfit: 52000,
         estimatedPnl: 19,
-        positionSize: 500,
+        positionSize: 1000,
+        quantity: 0.01,
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date().toISOString(),
@@ -351,7 +370,8 @@ describe('CryptoPulse Restoration Regression Tests — Fence B & Order Precision
         stopLoss: 49000,
         takeProfit: 52000,
         estimatedPnl: 19,
-        positionSize: 500,
+        positionSize: 1000,
+        quantity: 0.01,
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date().toISOString(),

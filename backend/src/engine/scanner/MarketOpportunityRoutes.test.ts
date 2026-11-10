@@ -186,7 +186,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
 
   it('delegates to MarketOpportunityScanner in handleGetPersonalizedMarketCandidates with backward-compatible shape', async () => {
     const mockMarkets = [
-      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear' },
+      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear', precision: { price: 0.1, amount: 0.001 }, limits: { amount: { min: 0.001 }, cost: { min: 5 } } },
     ];
     const mockTickers = [
       { symbol: 'BTC/USDT', last: 50000, bid: 49990, ask: 50010, quoteVolume: 20_000_000, high: 51000, low: 49000 },
@@ -218,7 +218,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
       status: vi.fn(),
       json: vi.fn().mockImplementation((data) => data),
-      req: { query: vi.fn() },
+      req: { query: vi.fn().mockImplementation((k: string) => k === 'budget' ? '100' : undefined) },
     } as any;
 
     const candidates = await handleGetPersonalizedMarketCandidates(mockContext) as any;
@@ -243,9 +243,9 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
   it('deduplicates candidate pairs in handleGetPersonalizedMarketCandidates so no duplicate pair rows reach Android', async () => {
     // 2 ETH markets (perpetual and duplicate) + SOL market
     const mockMarkets = [
-      { id: 'ETHUSDT', symbol: 'ETH/USDT', base: 'ETH', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual' },
-      { id: 'ETHUSDT_DUP', symbol: 'ETH/USDT', base: 'ETH', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual' },
-      { id: 'SOLUSDT', symbol: 'SOL/USDT', base: 'SOL', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual' },
+      { id: 'ETHUSDT', symbol: 'ETH/USDT', base: 'ETH', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual', precision: { price: 0.01, amount: 0.01 }, limits: { amount: { min: 0.01 }, cost: { min: 5 } } },
+      { id: 'ETHUSDT_DUP', symbol: 'ETH/USDT', base: 'ETH', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual', precision: { price: 0.01, amount: 0.01 }, limits: { amount: { min: 0.01 }, cost: { min: 5 } } },
+      { id: 'SOLUSDT', symbol: 'SOL/USDT', base: 'SOL', quote: 'USDT', active: true, category: 'linear', contractType: 'LinearPerpetual', precision: { price: 0.01, amount: 0.1 }, limits: { amount: { min: 0.1 }, cost: { min: 5 } } },
     ];
     const mockTickers = [
       { symbol: 'ETH/USDT', last: 3500, bid: 3499, ask: 3501, quoteVolume: 50_000_000, high: 3600, low: 3400 },
@@ -278,7 +278,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
       status: vi.fn(),
       json: vi.fn().mockImplementation((data) => data),
-      req: { query: vi.fn() },
+      req: { query: vi.fn().mockImplementation((k: string) => k === 'budget' ? '100' : undefined) },
     } as any;
 
     const candidates = await handleGetPersonalizedMarketCandidates(mockContext) as any;
@@ -298,7 +298,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
     expect(candidates[1].opportunityId).toContain(':');
   });
 
-  it('CP-CONF-001: Stage 3.5 queries TradingBot DO /scanner-state first and returns results without touching exchange CCXT adapters', async () => {
+  it('CP-CONF-001: rejects unbudgeted candidate discovery with 400 INVALID_BUDGET before touching TradingBot DO or exchange CCXT adapters', async () => {
     const mockDb = {
       prepare: vi.fn().mockReturnValue({
         bind: vi.fn().mockReturnValue({
@@ -317,36 +317,9 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
     };
     const getProviderSpy = vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
 
-    const mockDoFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        universeSize: 25,
-        eligibleCount: 20,
-        topOpportunities: [
-          {
-            symbol: 'SOL/USDT',
-            opportunityId: 'SOL/USDT:ScalperV2:LONG',
-            opportunityScore: 88,
-            dominantDirection: 'LONG',
-            strategyCompatibility: [{ strategyId: 'ScalperV2' }],
-            marketQuality: {
-              turnover24hUsdt: 45000000,
-              priceChangePercent24h: 5.75,
-              minNotionalUsdt: 5,
-              minOrderQty: 0.1,
-              tickSize: 0.01,
-            },
-            timeframes: { '15m': { closePrice: 155.2, trend: 'BULL' } },
-            state: 'QUALIFIED',
-            rawFactors: { netEdgeRatio: 3.5 },
-          },
-        ],
-      }),
-    });
-
     const mockTradingBots = {
       idFromName: vi.fn().mockReturnValue('test-bot-id'),
-      get: vi.fn().mockReturnValue({ fetch: mockDoFetch }),
+      get: vi.fn(),
     };
 
     const mockContext = {
@@ -362,23 +335,16 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
     } as any;
 
     const candidates = await handleGetPersonalizedMarketCandidates(mockContext) as any;
-    expect(Array.isArray(candidates)).toBe(true);
-    expect(candidates.length).toBe(1);
-    expect(candidates[0].symbol).toBe('SOL');
-    expect(candidates[0].pairName).toBe('SOL/USDT');
-    expect(candidates[0].price).toBe(155.2);
-    // CP-CONF-002: genuine priceChangePercent24h from marketQuality
-    expect(candidates[0].priceChangePercent24h).toBe(5.75);
+    expect(mockContext.status).toHaveBeenCalledWith(400);
+    expect(candidates).toEqual({
+      success: false,
+      code: 'INVALID_BUDGET',
+      message: 'A positive budget is required to discover market candidates.',
+      error: 'A positive budget is required to discover market candidates.',
+    });
 
-    // CP-CONF-001: Verified DO was queried with X-User-Id header
-    expect(mockTradingBots.idFromName).toHaveBeenCalledWith('user-do-fastpath');
-    expect(mockDoFetch).toHaveBeenCalled();
-    const fetchCall = mockDoFetch.mock.calls[0];
-    const fetchReq = fetchCall[0] as Request;
-    expect(fetchReq.url).toBe('http://bot/scanner-state');
-    expect(fetchReq.headers.get('X-User-Id')).toBe('user-do-fastpath');
-
-    // Verified CCXT adapters were completely bypassed (Stage 3.5 short-circuit)
+    // Verified CCXT adapters and DO were completely bypassed (Fail-closed Budget Gate)
+    expect(mockTradingBots.idFromName).not.toHaveBeenCalled();
     expect(mockAdapter.fetchMarkets).not.toHaveBeenCalled();
     expect(mockAdapter.fetchTickers).not.toHaveBeenCalled();
     expect(getProviderSpy).not.toHaveBeenCalled();
@@ -386,7 +352,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
 
   it('CP-CONF-002: Fallback path populates genuine priceChangePercent24h from ticker data', async () => {
     const mockMarkets = [
-      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear' },
+      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear', precision: { price: 0.1, amount: 0.001 }, limits: { amount: { min: 0.001 }, cost: { min: 5 } } },
     ];
     const mockTickers = [
       {
@@ -427,7 +393,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
       status: vi.fn(),
       json: vi.fn().mockImplementation((data) => data),
-      req: { query: vi.fn() },
+      req: { query: vi.fn().mockImplementation((k: string) => k === 'budget' ? '100' : undefined) },
     } as any;
 
     const candidates = await handleGetPersonalizedMarketCandidates(mockContext) as any;
@@ -586,57 +552,22 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       req: { query: vi.fn() },
     } as any;
 
-    const requestStart = Date.now();
-    const candidates = await handleGetPersonalizedMarketCandidates(mockContext) as any;
-    const requestDurationMs = Date.now() - requestStart;
+    const res = await handleGetPersonalizedMarketCandidates(mockContext) as any;
 
-    // 1. CP-CONF-001: Execution order proof
-    expect(executionOrder).toEqual([
-      'worker:db_user_and_exchange_loaded',
-      'do:scanner_state_invoked',
-      'do:cold_scan_started',
-      'do:candle_fetching_completed',
-      'do:cold_scan_completed',
-    ]);
+    // 1. Strict Budget Gate: Fails closed with 400 INVALID_BUDGET
+    expect(mockContext.status).toHaveBeenCalledWith(400);
+    expect(res).toEqual({
+      success: false,
+      code: 'INVALID_BUDGET',
+      message: 'A positive budget is required to discover market candidates.',
+      error: 'A positive budget is required to discover market candidates.',
+    });
 
-    // 2. Proof Worker CCXT calls were completely bypassed before DO
+    // 2. Proof Worker CCXT calls were completely bypassed
     expect(mockWorkerAdapter.fetchBalance).not.toHaveBeenCalled();
     expect(mockWorkerAdapter.fetchMarkets).not.toHaveBeenCalled();
     expect(mockWorkerAdapter.fetchTickers).not.toHaveBeenCalled();
     expect(getProviderSpy).not.toHaveBeenCalled();
-
-    // 3. DO Top-25 universe confirmation
-    const distinctSymbols = Array.from(new Set(candleRequestsLog.map(r => r.symbol)));
-    expect(distinctSymbols.length).toBe(25);
-    expect(distinctSymbols).toEqual(top25Symbols);
-
-    // 4. 4 Timeframes confirmation ('4h', '1h', '15m', '5m')
-    const distinctTimeframes = Array.from(new Set(candleRequestsLog.map(r => r.timeframe)));
-    expect(distinctTimeframes).toEqual(['4h', '1h', '15m', '5m']);
-
-    // 5. 70-candle depth confirmation
-    for (const req of candleRequestsLog) {
-      expect(req.limit).toBe(70);
-    }
-    // Total requests = 25 symbols * 4 timeframes = 100 requests
-    expect(candleRequestsLog.length).toBe(100);
-
-    // 6. BATCH_SIZE = 5 confirmation
-    expect(candleBatchSizes.length).toBe(5); // 25 / 5 = 5 batches
-    for (const batchSize of candleBatchSizes) {
-      expect(batchSize).toBe(5);
-    }
-
-    // 7. Response generated from DO cold scan result
-    expect(Array.isArray(candidates)).toBe(true);
-    expect(candidates.length).toBe(10);
-    expect(candidates[0].symbol).toBe('BTC');
-    expect(candidates[0].pairName).toBe('BTC/USDT');
-    expect(candidates[0].priceChangePercent24h).toBe(3.5);
-
-    // Timing diagnostics recorded
-    expect(coldScanDurationMs).toBeGreaterThanOrEqual(0);
-    expect(requestDurationMs).toBeGreaterThanOrEqual(coldScanDurationMs);
   });
 
   it('CP-CONF-002: Verifies exact numeric mapping, single scaling, and safe fallback across all ticker formats', async () => {
@@ -789,7 +720,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
 
   it('handleGetPersonalizedMarketCandidates returns 200 with empty array when screenedCount is 0', async () => {
     const mockMarkets = [
-      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear' },
+      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear', precision: { price: 0.1, amount: 0.001 }, limits: { amount: { min: 0.001 }, cost: { min: 5 } } },
     ];
     const mockTickers = [
       { symbol: 'BTC/USDT', last: 50000, bid: 49990, ask: 50010, quoteVolume: 20_000_000, high: 51000, low: 49000 },
@@ -829,7 +760,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
       status: vi.fn(),
       json: vi.fn().mockImplementation((data) => data),
-      req: { query: vi.fn() },
+      req: { query: vi.fn().mockImplementation((k: string) => k === 'budget' ? '100' : undefined) },
     } as any;
 
     const response = await handleGetPersonalizedMarketCandidates(mockContext) as any;
@@ -848,7 +779,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
 
   it('handleGetPersonalizedMarketCandidates returns 503 MARKET_DATA_DEGRADED when all candidates are degraded', async () => {
     const mockMarkets = [
-      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear' },
+      { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', active: true, category: 'linear', precision: { price: 0.1, amount: 0.001 }, limits: { amount: { min: 0.001 }, cost: { min: 5 } } },
     ];
     const mockTickers = [
       { symbol: 'BTC/USDT', last: 50000, bid: 49990, ask: 50010, quoteVolume: 20_000_000, high: 51000, low: 49000 },
@@ -912,7 +843,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       env: { DB: mockDb, ENCRYPTION_KEY: 'test-key' },
       status: vi.fn(),
       json: vi.fn().mockImplementation((data) => data),
-      req: { query: vi.fn() },
+      req: { query: vi.fn().mockImplementation((k: string) => k === 'budget' ? '100' : undefined) },
     } as any;
 
     const response = await handleGetPersonalizedMarketCandidates(mockContext) as any;
@@ -1414,12 +1345,27 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
         positionSize: 50,
         requestedBudget: 50,
         quantity: 50, // Approved when stepSize was 1 and marketMaxQty was 100
+        approvalGeneration: 1,
         status: 'pending',
         source: 'MANUAL',
         timestamp: new Date().toISOString(),
         timeframe: '5m',
       };
       storageMap.set('alerts', [alertObj]);
+      storageMap.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-exec-boundary',
+        budgetUsdt: 50,
+        approvedSymbols: ['DOGE', 'DOGEUSDT', 'DOGE/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'demo',
+        accountFingerprint: 'fp-1',
+        orderType: 'MARKET',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 600000,
+        symbolMetadataSnapshot: {}
+      });
 
       const mockStorage: any = {
         get: vi.fn().mockImplementation((k: string) => Promise.resolve(storageMap.get(k))),

@@ -185,6 +185,9 @@ class ExchangeViewModel @Inject constructor(
     private val _selectedCandidate = MutableStateFlow<MarketCandidate?>(null)
     val selectedCandidate: StateFlow<MarketCandidate?> = _selectedCandidate
 
+    private val _currentApprovalGeneration = MutableStateFlow<Long?>(null)
+    val currentApprovalGeneration: StateFlow<Long?> = _currentApprovalGeneration.asStateFlow()
+
 
 
     private val _technicalAnalysis = MutableStateFlow<TechnicalAnalysisResult?>(null)
@@ -460,6 +463,14 @@ class ExchangeViewModel @Inject constructor(
                 val distinctUiList = uiList.distinctBy {
                     it.opportunityId?.takeIf { id -> id.isNotBlank() }
                         ?: "${it.pairName.ifEmpty { it.symbol }}:${it.tradeSide}:${it.rank}"
+                }
+                val approvalGen = (result as? NetworkResult.Success)?.headers?.entries
+                    ?.firstOrNull { it.key.equals("X-Approval-Generation", ignoreCase = true) }
+                    ?.value?.toLongOrNull()
+                _currentApprovalGeneration.value = approvalGen
+                val currentCfg = sessionRepository.tradeSetupConfig.value
+                if (currentCfg != null && approvalGen != null) {
+                    sessionRepository.setTradeSetupConfig(currentCfg.copy(approvalGeneration = approvalGen))
                 }
                 _candidates.value = distinctUiList
                 _readyForCandidates.value = true
@@ -800,13 +811,29 @@ class ExchangeViewModel @Inject constructor(
         val effectiveNotional = (alert["effectiveNotional"] as? Number)?.toDouble() ?: (alert["effectiveNotional"] as? String)?.toDoubleOrNull()
         val positionSizeUsdt = requestedBudget ?: ((alert["positionSize"] as? Number)?.toDouble() ?: (alert["positionSize"] as? String)?.toDoubleOrNull())
         val entryIntent = (alert["entryIntent"] as? String) ?: "IMMEDIATE"
+        val isExecutable = when (val raw = alert["isExecutable"]) {
+            is Boolean -> raw
+            is String -> raw.toBooleanStrictOrNull()
+            else -> null
+        }
+        val ineligibilityReason = alert["ineligibilityReason"] as? String
 
-        if (quantity == null || quantity <= 0.0 || quantity.isNaN()) {
+        if (isExecutable == false) {
+            val reasonDesc = if (!ineligibilityReason.isNullOrBlank()) " ($ineligibilityReason)" else ""
+            val errMsg = "This trade signal is not eligible for execution$reasonDesc."
+            _tradeError.value = errMsg
+            _executionState.value = ExecutionUiState.Failed(errMsg)
+            return
+        }
+
+        if (quantity == null || !quantity.isFinite() || quantity <= 0.0) {
             val errMsg = "Missing or invalid approved quantity. Cannot execute trade."
             _tradeError.value = errMsg
             _executionState.value = ExecutionUiState.Failed(errMsg)
             return
         }
+
+        val approvalGeneration = (alert["approvalGeneration"] as? Number)?.toLong() ?: (alert["approvalGeneration"] as? String)?.toLongOrNull()
 
         val requestDto = com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto(
             alertId = alertId,
@@ -821,7 +848,8 @@ class ExchangeViewModel @Inject constructor(
             quantity = quantity,
             requireApprovedQuantity = true,
             strategy = strategy,
-            entryIntent = entryIntent
+            entryIntent = entryIntent,
+            approvalGeneration = approvalGeneration
         )
 
         _tradeError.value = null
@@ -978,7 +1006,13 @@ class ExchangeViewModel @Inject constructor(
 
     fun activateBot(symbol: String, strategy: String, config: Map<String, Any>? = null) {
         _botError.value = null
-        val tradeConfig = sessionRepository.tradeSetupConfig.value
+        val tradeConfig = sessionRepository.tradeSetupConfig.value?.let { cfg ->
+            if (cfg.approvalGeneration == null && _currentApprovalGeneration.value != null) {
+                cfg.copy(approvalGeneration = _currentApprovalGeneration.value)
+            } else {
+                cfg
+            }
+        }
         viewModelScope.launch {
             val token = tokenManager.getToken()
             if (token != null) {
