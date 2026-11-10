@@ -23,7 +23,9 @@ fun BotAlertDto.toDomain(): BotAlert = BotAlert(
     effectiveNotional = effectiveNotional,
     isExecutable = isExecutable,
     ineligibilityReason = ineligibilityReason,
-    approvalGeneration = approvalGeneration
+    approvalGeneration = approvalGeneration,
+    confidenceScore = confidenceScore,
+    requiredScore = requiredScore
 )
 
 fun StrategyMetadataDto.toDomain(): StrategyMetadata = StrategyMetadata(
@@ -78,9 +80,10 @@ fun AnalysisSnapshotDto.toDomain(): AnalysisSnapshot = AnalysisSnapshot(
             requiredScore = it.requiredScore,
             hasSignal = it.hasSignal ?: false,
             signalType = it.signalType,
-            qualificationStatus = it.qualificationStatus ?: if (it.hasSignal == true) "QUALIFIED" else if (it.confidenceScore != null) "NOT_MET" else "PENDING",
+            qualificationStatus = it.qualificationStatus ?: if (it.hasSignal == true) "THRESHOLD_MET" else if (it.confidenceScore != null) "NOT_MET" else "PENDING",
             timestamp = it.timestamp ?: System.currentTimeMillis(),
-            reasoning = it.reasoning?.filterNotNull() ?: emptyList()
+            reasoning = it.reasoning?.filterNotNull() ?: emptyList(),
+            suppressionReason = it.suppressionReason
         )
     } ?: emptyList()
 )

@@ -491,6 +491,7 @@ export async function sendTradeNotification(
     timeframe?: string;
     timestamp?: string;
     confidenceScore?: number;
+    requiredScore?: number;
     reasoning?: string[];
     approvalGeneration?: number;
   },
@@ -635,6 +636,9 @@ export async function sendTradeNotification(
     }
     if (opportunity.confidenceScore != null) {
       dataPayload.confidenceScore = opportunity.confidenceScore.toString();
+    }
+    if (opportunity.requiredScore != null && Number.isFinite(opportunity.requiredScore) && opportunity.requiredScore > 0) {
+      dataPayload.requiredScore = opportunity.requiredScore.toString();
     }
     if (opportunity.reasoning && opportunity.reasoning.length > 0) {
       dataPayload.reasoning = JSON.stringify(opportunity.reasoning);

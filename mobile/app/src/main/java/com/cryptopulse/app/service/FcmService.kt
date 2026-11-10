@@ -109,6 +109,8 @@ class FcmService : FirebaseMessagingService() {
                 data["entryIntent"]?.let { put("entryIntent", it) }
                 data["timeframe"]?.let { put("timeframe", it) }
                 data["approvalGeneration"]?.toLongOrNull()?.let { put("approvalGeneration", it) }
+                data["confidenceScore"]?.toDoubleOrNull()?.let { put("confidenceScore", it) }
+                data["requiredScore"]?.toDoubleOrNull()?.let { put("requiredScore", it) }
                 put("type", "TRADE_ALERT")
                 put("alertType", "TRADE_ALERT")
             }

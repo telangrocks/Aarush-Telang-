@@ -21,6 +21,8 @@ data class BotAlert(
     val isExecutable: Boolean? = null,
     val ineligibilityReason: String? = null,
     val approvalGeneration: Long? = null,
+    val confidenceScore: Double? = null,
+    val requiredScore: Double? = null,
 ) {
     fun toMap(): Map<String, Any> = buildMap {
         put("id", id)
@@ -47,6 +49,8 @@ data class BotAlert(
         isExecutable?.let { put("isExecutable", it) }
         ineligibilityReason?.let { put("ineligibilityReason", it) }
         approvalGeneration?.let { put("approvalGeneration", it) }
+        confidenceScore?.let { put("confidenceScore", it) }
+        requiredScore?.let { put("requiredScore", it) }
         put("type", "TRADE_ALERT")
         put("alertType", "TRADE_ALERT")
     }
@@ -62,6 +66,10 @@ data class BotAlert(
                 ?: (map["estimatedPnl"] as? String)?.toDoubleOrNull()
             val approvalGenParsed = (map["approvalGeneration"] as? Number)?.toLong()
                 ?: (map["approvalGeneration"] as? String)?.toLongOrNull()
+            val confidenceScoreParsed = (map["confidenceScore"] as? Number)?.toDouble()
+                ?: (map["confidenceScore"] as? String)?.toDoubleOrNull()
+            val requiredScoreParsed = (map["requiredScore"] as? Number)?.toDouble()
+                ?: (map["requiredScore"] as? String)?.toDoubleOrNull()
 
             return BotAlert(
                 id = (map["id"] as? String) ?: (map["alertId"] as? String) ?: "",
@@ -84,6 +92,8 @@ data class BotAlert(
                 isExecutable = isExecutableParsed,
                 ineligibilityReason = map["ineligibilityReason"] as? String,
                 approvalGeneration = approvalGenParsed,
+                confidenceScore = confidenceScoreParsed,
+                requiredScore = requiredScoreParsed,
             )
         }
     }

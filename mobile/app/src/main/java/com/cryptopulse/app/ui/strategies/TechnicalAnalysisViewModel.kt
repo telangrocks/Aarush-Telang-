@@ -137,12 +137,14 @@ class TechnicalAnalysisViewModel @Inject constructor(
         previewPollingJob = viewModelScope.launch {
             while (isActive) {
                 kotlinx.coroutines.delay(5000L)
-                if (!isBotActive.value || !_viewedStrategyId.value.equals(botRepository.committedStrategyId.value, ignoreCase = true)) {
-                    val config = sessionRepository.tradeSetupConfig.value
-                    val symbolToUse = currentSymbol ?: config?.symbol ?: "BTC/USDT"
-                    val strategyToUse = _viewedStrategyId.value
-                    loadPreviewAnalysisSilently(symbolToUse, strategyToUse, config)
+                // When bot is active, suppress preview polling entirely to prevent overwriting authoritative autonomous results
+                if (isBotActive.value) {
+                    continue
                 }
+                val config = sessionRepository.tradeSetupConfig.value
+                val symbolToUse = currentSymbol ?: config?.symbol ?: "BTC/USDT"
+                val strategyToUse = _viewedStrategyId.value
+                loadPreviewAnalysisSilently(symbolToUse, strategyToUse, config)
             }
         }
     }

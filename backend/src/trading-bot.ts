@@ -907,8 +907,9 @@ export class TradingBot {
     alert: TradeAlert,
     confidenceScore: number,
     reasoning: string[],
-    targetTimeframe?: Timeframe
-  ): Promise<void> {
+    targetTimeframe?: Timeframe,
+    requiredScore?: number
+  ): Promise<FcmDispatchResult | void> {
     // 1. Freshness check against MAX_SIGNAL_AGE_MS (300,000 ms)
     const alertCreatedMs = Date.parse(alert.timestamp);
     const nowMs = Date.now();
@@ -993,6 +994,7 @@ export class TradingBot {
           timestamp: alert.timestamp,
           timeframe: targetTimeframe,
           confidenceScore,
+          requiredScore,
           reasoning,
           approvalGeneration: alert.approvalGeneration,
         },
@@ -1040,6 +1042,7 @@ export class TradingBot {
       await txn.put('alerts', currentAlerts);
       this.runtimeState.alerts = currentAlerts;
     });
+    return dispatchResult;
   }
 
   private canTransitionIntentStatus(existing: any, nextIntent: any): boolean {
@@ -6440,6 +6443,36 @@ export class TradingBot {
                     cycleId,
                     sink: this.telemetrySink
                   });
+                  for (const r of results) {
+                    if (r && r.metadata) {
+                      if (!r.metadata.strategyConfig?.signalRules?.minConfidenceScore) {
+                      const stratManifest = registry.getManifest(r.strategyId);
+                      const normId = registry.normalizeStrategyId(r.strategyId).toLowerCase();
+                      const fallbackThreshold = (normId === 'scalperv2' || normId === 'meanreversion') ? 75 : ((normId === 'momentum' || normId === 'breakout' || normId === 'vwap') ? 70 : undefined);
+                      if (this.runtimeState.strategyConfig?.signalRules?.minConfidenceScore !== undefined) {
+                        r.metadata.strategyConfig = {
+                          ...(stratManifest?.defaultConfiguration || {}),
+                          ...this.runtimeState.strategyConfig,
+                          ...(r.metadata.strategyConfig || {})
+                        };
+                      } else if (stratManifest?.defaultConfiguration?.signalRules?.minConfidenceScore !== undefined) {
+                        r.metadata.strategyConfig = {
+                          ...stratManifest.defaultConfiguration,
+                          ...(this.runtimeState.strategyConfig || {}),
+                          ...(r.metadata.strategyConfig || {})
+                        };
+                      } else if (fallbackThreshold !== undefined) {
+                        r.metadata.strategyConfig = {
+                          ...(this.runtimeState.strategyConfig || {}),
+                          ...(r.metadata.strategyConfig || {}),
+                          signalRules: {
+                            minConfidenceScore: fallbackThreshold
+                          }
+                        };
+                      }
+                    }
+                  }
+                  }
                   const currentState = this.orchestrator.getCurrentState();
 
                   const snapshot = await dataEngine.getSnapshot(currentSymbol, cycleTimeframes, cycleCandleLimit);
@@ -6462,6 +6495,7 @@ export class TradingBot {
 
                   // Map and persist newAnalysis for UI preview:
                   // Prioritize if current candidate has an active signal, or if this is the primary symbol and not yet mapped
+                  let candidateAnalysisSnapshot: any = null;
                   if (displayResult?.hasSignal || (!primarySnapshotMapped && currentSymbol === primarySymbol)) {
                     const newAnalysis = AnalysisSnapshotMapper.map(displayResult, displayManifest, snapshot, currentState.toString(), true);
                     newAnalysis.strategyAnalyses = AnalysisSnapshotMapper.mapStrategyEvaluations(results, registry, Date.now());
@@ -6477,7 +6511,23 @@ export class TradingBot {
                     if (currentSymbol === primarySymbol) {
                       primarySnapshotMapped = true;
                     }
+                    candidateAnalysisSnapshot = newAnalysis;
                   }
+
+                  const recordStrategyStatus = (stratId: string, status: string, suppressionReason?: string) => {
+                    if (candidateAnalysisSnapshot?.strategyAnalyses) {
+                      const normTarget = registry.normalizeStrategyId(stratId).toLowerCase();
+                      const entry = candidateAnalysisSnapshot.strategyAnalyses.find(
+                        (s: any) => registry.normalizeStrategyId(s.strategyId).toLowerCase() === normTarget
+                      );
+                      if (entry) {
+                        entry.qualificationStatus = status;
+                        if (suppressionReason) {
+                          entry.suppressionReason = suppressionReason;
+                        }
+                      }
+                    }
+                  };
 
                   // Independent Strategy Alert Evaluation:
                   // All 5 strategies (ScalperV2, Momentum, Breakout, MeanReversion, VWAP) evaluate independently.
@@ -6506,6 +6556,20 @@ export class TradingBot {
 
                   for (const result of orderedActionableResults) {
                     if (result?.hasSignal && result.metadata?.signal) {
+                      const runtimeThreshold = result.metadata?.strategyConfig?.signalRules?.minConfidenceScore;
+                      if (typeof runtimeThreshold !== 'number' || isNaN(runtimeThreshold) || runtimeThreshold <= 0) {
+                        legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'CONFIGURATION_MISSING' };
+                        recordStrategyStatus(result.strategyId, 'CONFIGURATION_MISSING', 'CONFIGURATION_MISSING');
+                        continue;
+                      }
+
+                      const runtimeTargetTf = result.metadata?.targetTimeframe;
+                      if (typeof runtimeTargetTf !== 'string' || !runtimeTargetTf.trim()) {
+                        legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'CONFIGURATION_MISSING' };
+                        recordStrategyStatus(result.strategyId, 'CONFIGURATION_MISSING', 'CONFIGURATION_MISSING');
+                        continue;
+                      }
+
                       const sig = result.metadata.signal;
                       const stratManifest = registry.getManifest(result.strategyId);
                       if (!stratManifest) continue;
@@ -6514,6 +6578,7 @@ export class TradingBot {
                       const isAllowedSignal = sig && (sig.type === 'BUY' || (sig.type === 'SELL' && stratManifest.supportsShort));
                       if (!isAllowedSignal) {
                         legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'UNSUPPORTED_SHORT_SIGNAL' };
+                        recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'UNSUPPORTED_SHORT_SIGNAL');
                         console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Strategy does not support short/SELL signals.`);
                         this.telemetrySink.emit({
                           userId,
@@ -6535,7 +6600,7 @@ export class TradingBot {
                         const alerts = this.runtimeState.alerts as TradeAlert[] || [];
                         const alertStrategyKey = `${result.strategyId}_NEW`;
                         const currentNorm = this.normalizeSymbol(currentSymbol);
-                        const targetTimeframe = (sig.timeframe || result.metadata?.targetTimeframe || '5m') as Timeframe;
+                        const targetTimeframe = runtimeTargetTf as Timeframe;
                         const nowMs = Date.now();
 
                         // Normalized-Ticker Single Active Alert Gate:
@@ -6548,6 +6613,7 @@ export class TradingBot {
                         );
                         if (existingActiveAlert) {
                           legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'SAME_TIMEFRAME_ACTIVE_ALERT' };
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'SAME_TIMEFRAME_ACTIVE_ALERT');
                           console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId} @ ${targetTimeframe}): Existing active alert (${existingActiveAlert.id}, strategy: ${existingActiveAlert.strategy}) within 5m already exists.`);
                           this.telemetrySink.emit({
                             userId,
@@ -6586,6 +6652,7 @@ export class TradingBot {
                         }
                         if (hasActiveIntent) {
                           legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'IN_FLIGHT_INTENT' };
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'IN_FLIGHT_INTENT');
                           this.telemetrySink.emit({
                             userId,
                             category: 'SAFETY',
@@ -6608,6 +6675,7 @@ export class TradingBot {
                         const existingPos = activePositions.find((p: any) => this.normalizeSymbol(p.symbol) === currentNorm);
                         if (existingPos) {
                           legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'ACTIVE_POSITION' };
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'ACTIVE_POSITION');
                           console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Active position already exists (id: ${existingPos.id}, side: ${existingPos.side}).`);
                           this.telemetrySink.emit({
                             userId,
@@ -6640,6 +6708,7 @@ export class TradingBot {
                         const riskClass = sig.riskAssessment?.riskClassification;
                         if (riskClass === 'EXTREME') {
                           legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'RISK_GATE_REJECTED' };
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'RISK_GATE_REJECTED');
                           console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Risk classification is EXTREME.`);
                           this.telemetrySink.emit({
                             userId,
@@ -6676,6 +6745,7 @@ export class TradingBot {
                         if (size <= 0) {
                           alertIsExecutable = false;
                           alertIneligibilityReason = 'INSUFFICIENT_BUDGET';
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INSUFFICIENT_BUDGET');
                           console.warn(`[trading-bot] Trade opportunity detected for ${currentSymbol} (${result.strategyId}) with non-positive budget ($${size}). Skipping alert publication.`);
                           break;
                         }
@@ -6686,6 +6756,7 @@ export class TradingBot {
                         if (alertIsExecutable && (currentExposure + size > maxExposure)) {
                           alertIsExecutable = false;
                           alertIneligibilityReason = 'PORTFOLIO_EXPOSURE_EXCEEDED';
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'PORTFOLIO_EXPOSURE_EXCEEDED');
                           console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity detected for ${currentSymbol} (${result.strategyId}) exceeds portfolio exposure ($${(currentExposure + size).toFixed(2)} > $${maxExposure.toFixed(2)}). Marking alert as non-executable (PORTFOLIO_EXPOSURE_EXCEEDED).`);
                         }
 
@@ -6719,6 +6790,7 @@ export class TradingBot {
 
                         if (!arbitration.passed) {
                           legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: arbitration.gate };
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', arbitration.gate || 'ARBITRATION_FAILED');
                           console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): ${arbitration.reasoning}`);
                           this.telemetrySink.emit({
                             userId,
@@ -6782,6 +6854,7 @@ export class TradingBot {
 
                         if (!tickSize || tickSize <= 0) {
                           legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'TICK_SIZE_UNAVAILABLE' };
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'TICK_SIZE_UNAVAILABLE');
                           console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit tickSize unavailable.`);
                           this.telemetrySink.emit({
                             userId,
@@ -6870,6 +6943,7 @@ export class TradingBot {
                           if (!isLotMetadataValid) {
                             alertIsExecutable = false;
                             alertIneligibilityReason = 'LOT_SIZE_METADATA_UNAVAILABLE';
+                            recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'LOT_SIZE_METADATA_UNAVAILABLE');
                             console.warn(`[trading-bot] Trade opportunity detected for ${currentSymbol} (${result.strategyId}) with invalid or missing lot size metadata. Skipping alert creation.`);
                             break;
                           } else {
@@ -6916,6 +6990,7 @@ export class TradingBot {
                                 }
                               });
                               console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) is execution-ineligible (${alertIneligibilityReason}). Skipping alert creation.`);
+                              recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', alertIneligibilityReason || 'EXECUTION_INELIGIBLE');
                               break;
                             }
                           }
@@ -6971,11 +7046,13 @@ export class TradingBot {
                             await this.state.storage.put('isExecutingTrade', false);
                           } else {
                             console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: trade execution is currently in progress.`);
+                            recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'TRADE_EXECUTION_IN_PROGRESS');
                             break;
                           }
                         }
                         if (this.unprotectedExposureLock) {
                           console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: active unprotected exposure lock on ${this.unprotectedExposureLock.symbol}.`);
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'ACTIVE_EXPOSURE_LOCK');
                           break;
                         }
 
@@ -6994,6 +7071,7 @@ export class TradingBot {
 
                         if (prePersistActivePosition || prePersistActiveIntent || prePersistActiveAlert) {
                           console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: conflicting position, in-flight intent, or active alert detected immediately prior to persistence.`);
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'CONFLICTING_ACTIVE_ENTITY');
                           break;
                         }
 
@@ -7005,6 +7083,7 @@ export class TradingBot {
                           ? Math.abs(alertTakeProfit - alertSignalPrice) * (eligibilityResult?.quantizedQty ?? (alertSignalPrice > 0 ? size / alertSignalPrice : 0))
                           : undefined;
 
+                        recordStrategyStatus(result.strategyId, 'TRADE_QUALIFIED');
                         const alert: TradeAlert = {
                           id: crypto.randomUUID(),
                           symbol: currentSymbol,
@@ -7034,6 +7113,7 @@ export class TradingBot {
                         alerts.push(alert);
                         legacySignalForCandidate = alert;
                         await this.persistState('alerts', alerts);
+                        recordStrategyStatus(result.strategyId, 'TRADE_ALERT_CREATED');
 
                         this.telemetrySink.emit({
                           userId,
@@ -7063,19 +7143,30 @@ export class TradingBot {
 
                         // Trigger real-time FCM Push Notification to user's Android device via Phase 2 State Machine
                         try {
-                          await this.dispatchAlertNotification(
+                          const dispatchRes = await this.dispatchAlertNotification(
                             userId,
                             alert,
                             result.confidenceScore || 0,
                             result.metadata?.reasoning || [],
-                            targetTimeframe
+                            targetTimeframe,
+                            runtimeThreshold
                           );
+                          recordStrategyStatus(result.strategyId, dispatchRes && (dispatchRes as any).success ? 'FCM_DISPATCHED' : 'FCM_FAILED');
                         } catch (notifErr) {
+                          recordStrategyStatus(result.strategyId, 'FCM_FAILED');
                           console.error('Failed to dispatch FCM trade notification:', notifErr);
                         }
 
                         // Stage 1: Successful strategy alert creation -> stop evaluating further strategies for this ticker
                         break;
+                    }
+                  }
+
+                  if (candidateAnalysisSnapshot) {
+                    try {
+                      await this.state.storage.put('newAnalysis', candidateAnalysisSnapshot);
+                    } catch (storageErr) {
+                      console.warn('[TradingBot] Failed to persist newAnalysis UI snapshot (non-blocking):', storageErr);
                     }
                   }
 

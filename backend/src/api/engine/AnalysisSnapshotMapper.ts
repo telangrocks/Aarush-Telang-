@@ -17,12 +17,26 @@ export interface AnalysisDiagnosticsDTO {
 export interface StrategyEvaluationDTO {
   strategyId: string;
   confidenceScore: number | null;
-  requiredScore: number;
+  requiredScore: number | null;
   hasSignal: boolean;
   signalType: string | null;
-  qualificationStatus: 'QUALIFIED' | 'NOT_MET' | 'PENDING' | 'FAILED';
+  qualificationStatus:
+    | 'QUALIFIED'
+    | 'NOT_MET'
+    | 'PENDING'
+    | 'FAILED'
+    | 'CONFIGURATION_MISSING'
+    | 'THRESHOLD_NOT_MET'
+    | 'NO_DIRECTIONAL_SIGNAL'
+    | 'THRESHOLD_MET'
+    | 'BLOCKED_BY_EXISTING_GATE'
+    | 'TRADE_QUALIFIED'
+    | 'TRADE_ALERT_CREATED'
+    | 'FCM_DISPATCHED'
+    | 'FCM_FAILED';
   timestamp: number;
   reasoning?: string[];
+  suppressionReason?: string;
 }
 
 export interface AnalysisSnapshotDto {
@@ -88,8 +102,8 @@ export class AnalysisSnapshotMapper {
       health: engineState === 'ERROR' ? 'ERROR' : 'OK',
     };
 
-    const strategyConfig = result.metadata?.strategyConfig || manifest.defaultConfiguration || {};
-    const minConfidenceScore = strategyConfig.signalRules?.minConfidenceScore ?? 70;
+    const runtimeMinConf = result.metadata?.strategyConfig?.signalRules?.minConfidenceScore;
+    const minConfidenceScore = typeof runtimeMinConf === 'number' && Number.isFinite(runtimeMinConf) && runtimeMinConf > 0 ? runtimeMinConf : undefined;
 
     const marketAnalysis: MarketAnalysisDTO = {
       symbol: snapshot.symbol,
@@ -186,14 +200,12 @@ export class AnalysisSnapshotMapper {
     return canonicalIds.map(strategyId => {
       const result = results.find(r => r.strategyId.toLowerCase() === strategyId.toLowerCase());
       const manifest = registry.getManifest(strategyId);
-      const defaultRequiredScore = manifest?.defaultConfiguration?.signalRules?.minConfidenceScore ??
-        (strategyId === 'ScalperV2' || strategyId === 'MeanReversion' ? 75 : 70);
 
       if (!result) {
         return {
           strategyId,
           confidenceScore: null,
-          requiredScore: defaultRequiredScore,
+          requiredScore: null,
           hasSignal: false,
           signalType: null,
           qualificationStatus: 'PENDING',
@@ -201,21 +213,94 @@ export class AnalysisSnapshotMapper {
         };
       }
 
-      const trace = result.metadata?.forensicTrace;
-      const requiredScore = trace?.requiredScore ?? defaultRequiredScore;
-      const confidenceScore = trace?.overallScore ?? result.confidenceScore;
+      // Authoritative runtime threshold resolution:
+      // result.metadata.strategyConfig.signalRules.minConfidenceScore is the sole source of truth.
+      const rawRuntimeThreshold = result.metadata?.strategyConfig?.signalRules?.minConfidenceScore;
+      const isRuntimeThresholdValid = typeof rawRuntimeThreshold === 'number' && Number.isFinite(rawRuntimeThreshold) && rawRuntimeThreshold > 0;
+
+      if (!isRuntimeThresholdValid) {
+        return {
+          strategyId,
+          confidenceScore: null,
+          requiredScore: null,
+          hasSignal: false,
+          signalType: null,
+          qualificationStatus: 'CONFIGURATION_MISSING',
+          timestamp: result.timestamp || timestamp,
+          reasoning: ['Authoritative runtime threshold missing or unconfigured'],
+          suppressionReason: 'CONFIGURATION_MISSING',
+        };
+      }
+
+      const requiredScore = rawRuntimeThreshold;
+
+      // Exact timeframe and directional score resolution
+      // Authoritative target timeframe resolution: fail closed on missing/invalid timeframe
+      const rawTargetTf = result.metadata?.targetTimeframe;
+      if (typeof rawTargetTf !== 'string' || !rawTargetTf.trim()) {
+        return {
+          strategyId,
+          confidenceScore: null,
+          requiredScore,
+          hasSignal: false,
+          signalType: null,
+          qualificationStatus: 'CONFIGURATION_MISSING',
+          timestamp: result.timestamp || timestamp,
+          reasoning: ['Authoritative target timeframe missing or unconfigured'],
+          suppressionReason: 'CONFIGURATION_MISSING',
+        };
+      }
+      const targetTf = rawTargetTf;
+      const tfConfidence = result.metadata?.confidenceScore?.timeframes?.[targetTf];
+      const longScore = typeof tfConfidence?.longScore === 'number' ? tfConfidence.longScore : null;
+      const shortScore = typeof tfConfidence?.shortScore === 'number' ? tfConfidence.shortScore : null;
+
+      const tfCondition = result.metadata?.conditionResult?.timeframes?.[targetTf];
+      const isNeutralMarket = Boolean(
+        tfCondition &&
+        tfCondition.trend?.trendDirection === 'SIDEWAYS' &&
+        tfCondition.trend?.emaCrossoverState === 'NONE' &&
+        tfCondition.momentum?.macdDirection === 'NEUTRAL' &&
+        tfCondition.momentum?.rsiState === 'NEUTRAL'
+      );
+
       const hasSignal = Boolean(result.hasSignal);
       const sig = result.metadata?.signal;
-      const rawSignalType = sig?.type ?? (trace?.finalSignal && trace.finalSignal !== 'NONE' && trace.finalSignal !== 'HOLD' ? trace.finalSignal : null);
+      const rawSignalType = sig?.type;
       const signalType = (rawSignalType === 'BUY' || rawSignalType === 'SELL') ? rawSignalType : null;
 
-      let qualificationStatus: 'QUALIFIED' | 'NOT_MET' | 'PENDING' | 'FAILED' = 'NOT_MET';
-      if (hasSignal) {
-        qualificationStatus = 'QUALIFIED';
-      } else if (confidenceScore == null) {
-        qualificationStatus = 'PENDING';
+      let confidenceScore: number | null = null;
+      let qualificationStatus: StrategyEvaluationDTO['qualificationStatus'] = 'PENDING';
+      let suppressionReason: string | undefined = undefined;
+
+      if (hasSignal && signalType) {
+        // Authoritative Directional Score evaluated by SignalEngine for active signal
+        confidenceScore = signalType === 'BUY' ? (longScore ?? result.confidenceScore) : (shortScore ?? result.confidenceScore);
+        qualificationStatus = 'THRESHOLD_MET';
+      } else if (longScore !== null && shortScore !== null) {
+        // Diagnostic score when no directional signal exists
+        confidenceScore = Math.max(longScore, shortScore);
+
+        if (isNeutralMarket) {
+          qualificationStatus = 'NO_DIRECTIONAL_SIGNAL';
+          suppressionReason = 'NEUTRAL_MARKET_CONDITIONS';
+        } else if (longScore >= requiredScore && shortScore >= requiredScore) {
+          qualificationStatus = 'NO_DIRECTIONAL_SIGNAL';
+          suppressionReason = 'CONFLICTING_DIRECTIONAL_SCORES';
+        } else if (longScore < requiredScore && shortScore < requiredScore) {
+          qualificationStatus = 'THRESHOLD_NOT_MET';
+          suppressionReason = 'DIRECTIONAL_THRESHOLD_UNMET';
+        } else {
+          qualificationStatus = 'NO_DIRECTIONAL_SIGNAL';
+          suppressionReason = 'SIGNAL_RULES_REJECTED';
+        }
+      } else if (typeof result.confidenceScore === 'number' && !isNaN(result.confidenceScore)) {
+        confidenceScore = result.confidenceScore;
+        qualificationStatus = 'NO_DIRECTIONAL_SIGNAL';
+        suppressionReason = 'DIAGNOSTIC_COMPOSITE';
       } else {
-        qualificationStatus = 'NOT_MET';
+        confidenceScore = null;
+        qualificationStatus = 'PENDING';
       }
 
       return {
@@ -227,6 +312,7 @@ export class AnalysisSnapshotMapper {
         qualificationStatus,
         timestamp: result.timestamp || timestamp,
         reasoning: result.metadata?.reasoning,
+        suppressionReason,
       };
     });
   }

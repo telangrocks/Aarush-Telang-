@@ -421,45 +421,61 @@ private fun StrategyScoreCard(
     val score = evaluation?.confidenceScore
     val requiredScore = evaluation?.requiredScore
     val requiredText = if (requiredScore != null) "$requiredScore" else "—"
-    val hasSignal = evaluation?.hasSignal == true
     val signalType = evaluation?.signalType
-    val qualificationStatus = evaluation?.qualificationStatus ?: (if (score == null) "PENDING" else if (hasSignal) "QUALIFIED" else "NOT_MET")
+    val qualificationStatus = evaluation?.qualificationStatus ?: (if (score == null) "PENDING" else "NOT_MET")
 
-    val isQualified = qualificationStatus.startsWith("QUALIFIED") || hasSignal
+    val suppressionReason = evaluation?.suppressionReason
+    val isQualified = qualificationStatus in listOf("TRADE_QUALIFIED", "TRADE_ALERT_CREATED", "FCM_DISPATCHED")
+    val isBlocked = qualificationStatus == "BLOCKED_BY_EXISTING_GATE"
+    val isConfigMissing = qualificationStatus == "CONFIGURATION_MISSING"
+    val isNoDirectional = qualificationStatus == "NO_DIRECTIONAL_SIGNAL"
+    val isThresholdMet = qualificationStatus == "THRESHOLD_MET"
     val isPending = qualificationStatus == "PENDING" || score == null
-    val isFailed = qualificationStatus == "FAILED"
+    val isFailed = qualificationStatus in listOf("FAILED", "THRESHOLD_NOT_MET", "NOT_MET")
 
     val displayStatus = when {
-        isFailed -> "FAILED"
-        isPending -> "EVALUATION PENDING"
         isQualified -> if (!signalType.isNullOrBlank()) "QUALIFIED ($signalType)" else "QUALIFIED"
-        else -> "NOT MET"
+        isBlocked -> if (!suppressionReason.isNullOrBlank()) "BLOCKED ($suppressionReason)" else "BLOCKED BY SAFETY GATE"
+        isConfigMissing -> "CONFIG MISSING"
+        isNoDirectional -> "NO DIRECTIONAL SIGNAL"
+        isThresholdMet -> "THRESHOLD MET (EVALUATING)"
+        isFailed -> "NOT MET"
+        isPending -> "EVALUATION PENDING"
+        else -> qualificationStatus.replace("_", " ")
     }
 
     val scoreText = if (score != null) "$score / 100" else "— / 100"
 
     val scoreColor = when {
         isQualified -> Color(0xFF00FFA3)
+        isBlocked -> Color(0xFFFFAB40)
+        isConfigMissing -> LossRed
         isPending -> Color(0xFF7A94B8)
         isFailed -> LossRed
         else -> Color(0xFF00E5FF)
     }
 
     val badgeBorderColor = when {
-        isFailed -> LossRed
         isQualified -> Color(0xFF00E676)
+        isBlocked -> Color(0xFFFFAB40)
+        isConfigMissing -> LossRed
         isPending -> Color(0xFF00B4FF)
+        isFailed -> LossRed
         else -> Color(0xFFFFAB40)
     }
     val badgeBgColor = when {
         isFailed -> LossRed.copy(alpha = 0.12f)
+        isConfigMissing -> LossRed.copy(alpha = 0.12f)
         isQualified -> Color(0x1800E676)
+        isBlocked -> Color(0x18FFAB40)
         isPending -> Color(0x1800B4FF)
         else -> Color(0x18FFAB40)
     }
     val badgeTextColor = when {
         isFailed -> LossRed
+        isConfigMissing -> LossRed
         isQualified -> Color(0xFF00FFA3)
+        isBlocked -> Color(0xFFFFAB40)
         isPending -> Color(0xFF00B4FF)
         else -> Color(0xFFFFAB40)
     }
@@ -559,7 +575,8 @@ private fun StrategyScoreCard(
                     Icon(
                         imageVector = when {
                             isQualified -> Icons.Default.Check
-                            isFailed -> Icons.Default.Close
+                            isBlocked -> Icons.Default.Warning
+                            isConfigMissing || isFailed -> Icons.Default.Close
                             else -> Icons.Default.PriorityHigh
                         },
                         contentDescription = null,

@@ -20,5 +20,7 @@ data class BotAlertDto(
     val effectiveNotional: Double? = null,
     val isExecutable: Boolean? = null,
     val ineligibilityReason: String? = null,
-    val approvalGeneration: Long? = null
+    val approvalGeneration: Long? = null,
+    val confidenceScore: Double? = null,
+    val requiredScore: Double? = null
 )

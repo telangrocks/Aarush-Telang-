@@ -75,6 +75,7 @@ data class StrategyEvaluationDto(
     val hasSignal: Boolean? = null,
     val signalType: String? = null,
     val qualificationStatus: String? = null,
+    val suppressionReason: String? = null,
     val timestamp: Long? = null,
     val reasoning: List<String>? = null
 )

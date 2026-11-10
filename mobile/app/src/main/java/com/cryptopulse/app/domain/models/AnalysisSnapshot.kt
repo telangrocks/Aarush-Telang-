@@ -85,6 +85,7 @@ data class StrategyEvaluation(
     val hasSignal: Boolean,
     val signalType: String?,
     val qualificationStatus: String,
+    val suppressionReason: String? = null,
     val timestamp: Long,
     val reasoning: List<String> = emptyList()
 )
