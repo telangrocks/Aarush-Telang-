@@ -6,6 +6,8 @@ import { UnifiedError } from '../../../exchanges/models/UnifiedError';
 import { ExchangeErrorClassifier } from '../../../exchanges/ExchangeErrorClassifier';
 import { ExchangeRoutingResolver } from '../../../exchanges/routing/ExchangeRoutingResolver';
 import { CandleValidator } from '../CandleValidator';
+import { PermissionValidator, WithdrawalVerificationStatus } from '../../security/PermissionValidator';
+import { FRIENDLY_MESSAGES } from '../../../exchanges/errors';
 import BigNumber from 'bignumber.js';
 
 export class BybitAdapter extends BaseExchangeAdapter {
@@ -391,6 +393,8 @@ export class BybitAdapter extends BaseExchangeAdapter {
     isValid: boolean;
     readOnly: boolean;
     hasTradingPermission: boolean;
+    hasWithdrawPermission: boolean;
+    withdrawalVerificationStatus: WithdrawalVerificationStatus;
     permissions: Record<string, string[]>;
     rawResult?: any;
   }> {
@@ -398,33 +402,41 @@ export class BybitAdapter extends BaseExchangeAdapter {
     if (!result) {
       throw new UnifiedError('Invalid response from Bybit permission check.', 'SERVICE_TEMPORARILY_UNAVAILABLE', undefined, undefined, 502);
     }
-    const rawReadOnly = result.readOnly ?? (result as any).result?.readOnly;
-    const isReadOnly = rawReadOnly === 1 || rawReadOnly === '1' || rawReadOnly === true;
-    const perms = result.permissions ?? (result as any).result?.permissions ?? {};
 
-    const contractTrade: string[] = Array.isArray(perms.ContractTrade) ? perms.ContractTrade : [];
-    const spotTrade: string[] = Array.isArray(perms.Spot) ? perms.Spot : [];
-    const derivativesTrade: string[] = Array.isArray(perms.Derivatives) ? perms.Derivatives : [];
+    const inspection = PermissionValidator.inspectBybitPermissions(result, this.config?.environment);
 
-    const hasContractOrder = contractTrade.some(
-      (p: string) => typeof p === 'string' && (p.toLowerCase() === 'order' || p.toLowerCase() === 'orders' || p.toLowerCase() === 'position' || p.toLowerCase() === 'positions')
-    );
-    const hasSpotOrder = spotTrade.some(
-      (p: string) => typeof p === 'string' && (p.toLowerCase() === 'spottrade' || p.toLowerCase() === 'order')
-    );
-    const hasDerivativesOrder = derivativesTrade.some(
-      (p: string) => typeof p === 'string' && (p.toLowerCase() === 'order' || p.toLowerCase() === 'derivativestrade')
-    );
+    if (inspection.withdrawalVerificationStatus === 'ENABLED' || inspection.hasWithdrawPermission) {
+      throw new UnifiedError(
+        inspection.errorMessage || FRIENDLY_MESSAGES.WITHDRAWAL_PERMISSION_FORBIDDEN.friendlyMessage,
+        'WITHDRAWAL_PERMISSION_FORBIDDEN',
+        undefined,
+        undefined,
+        400
+      );
+    }
 
-    const isDemoEnv = this.config?.environment === 'demo';
-    // On demo, if perms is empty or unpopulated but readOnly is false, allow simulated trading
-    const hasTradingPermission = !isReadOnly && (hasContractOrder || hasSpotOrder || hasDerivativesOrder || (isDemoEnv && Object.keys(perms).length === 0));
+    if (
+      !inspection.isValid ||
+      inspection.withdrawalVerificationStatus === 'MISSING_FIELD' ||
+      inspection.withdrawalVerificationStatus === 'NULL_FIELD' ||
+      inspection.withdrawalVerificationStatus === 'UNRECOGNIZED'
+    ) {
+      throw new UnifiedError(
+        inspection.errorMessage || FRIENDLY_MESSAGES.PERMISSION_VERIFICATION_FAILED.friendlyMessage,
+        inspection.errorCode || 'PERMISSION_VERIFICATION_FAILED',
+        undefined,
+        undefined,
+        400
+      );
+    }
 
     return {
       isValid: true,
-      readOnly: isReadOnly,
-      hasTradingPermission,
-      permissions: perms,
+      readOnly: inspection.readOnly,
+      hasTradingPermission: inspection.hasTradingPermission,
+      hasWithdrawPermission: false,
+      withdrawalVerificationStatus: inspection.withdrawalVerificationStatus,
+      permissions: inspection.permissions,
       rawResult: result,
     };
   }
@@ -438,6 +450,9 @@ export class BybitAdapter extends BaseExchangeAdapter {
       'AUTHENTICATION_FAILED',
       'INVALID_API_KEY',
       'INVALID_SIGNATURE',
+      'WITHDRAWAL_PERMISSION_FORBIDDEN',
+      'PERMISSION_VERIFICATION_FAILED',
+      'INVALID_ENVIRONMENT',
       'PERMISSION_DENIED',
       'INSUFFICIENT_PERMISSIONS',
       'RATE_LIMIT_EXCEEDED',

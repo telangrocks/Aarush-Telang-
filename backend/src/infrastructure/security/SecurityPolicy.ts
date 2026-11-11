@@ -6,7 +6,7 @@ export type ExchangeCapability =
   | 'CAN_STREAM'
   | 'CAN_ADMIN';
 
-export type EnvironmentMode = 'mainnet' | 'testnet' | 'sandbox';
+export type EnvironmentMode = 'mainnet' | 'demo' | 'testnet' | 'sandbox';
 
 export interface ExchangePermissionSet {
   readonly environment: EnvironmentMode;
@@ -21,7 +21,7 @@ export class SecurityPolicy {
     requiredCapability: ExchangeCapability,
     targetEnvironment: EnvironmentMode
   ): { allowed: boolean; reason?: string } {
-    // 1. Environment Policy Check: Sandbox/Testnet keys cannot touch Mainnet
+    // 1. Environment Policy Check: Sandbox/Testnet/Demo keys cannot cross environments
     if (userPermissions.environment !== targetEnvironment) {
       return {
         allowed: false,
@@ -29,7 +29,15 @@ export class SecurityPolicy {
       };
     }
 
-    // 2. Capability Policy Check
+    // 2. Least-Privilege Policy Check: Withdrawal permission is strictly forbidden
+    if (userPermissions.capabilities.has('CAN_WITHDRAW')) {
+      return {
+        allowed: false,
+        reason: `Least-privilege security violation: API keys with withdrawal permission ('CAN_WITHDRAW') are forbidden. CryptoPulse never requires withdrawal access.`,
+      };
+    }
+
+    // 3. Capability Policy Check
     if (!userPermissions.capabilities.has(requiredCapability)) {
       return {
         allowed: false,

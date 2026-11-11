@@ -8,12 +8,15 @@ describe('BybitAdapter V5 Unit Tests', () => {
     adapter = new BybitAdapter();
   });
 
-  it('selects correct environment hosts for mainnet and demo', async () => {
+  it('selects correct environment hosts for mainnet, demo, and testnet', async () => {
     await adapter.connect({ environment: 'mainnet' });
     expect(adapter.getHost()).toBe('https://api.bybit.com');
 
     await adapter.connect({ environment: 'demo' });
     expect(adapter.getHost()).toBe('https://api-demo.bybit.com');
+
+    await adapter.connect({ environment: 'testnet' });
+    expect(adapter.getHost()).toBe('https://api-testnet.bybit.com');
   });
 
   it('normalizes symbols consistently', () => {
@@ -64,14 +67,15 @@ describe('BybitAdapter V5 Unit Tests', () => {
   });
 
   describe('Permission Parsing & Validation Fixtures', () => {
-    it('correctly validates Bybit Real UTA account with ContractTrade orders', async () => {
+    it('correctly validates Bybit Real UTA account with ContractTrade orders and transfer/convert permissions', async () => {
       await adapter.connect({ environment: 'mainnet', apiKey: 'liveKey', secret: 'liveSec' });
       (adapter as any).makeRequest = async () => ({
         readOnly: 0,
         permissions: {
           ContractTrade: ['Order', 'Position'],
           Spot: ['SpotTrade'],
-          Wallet: ['AccountBalance']
+          Wallet: ['AccountTransfer', 'SubMemberTransfer'],
+          Exchange: ['ExchangeHistory'],
         },
       });
 
@@ -79,13 +83,15 @@ describe('BybitAdapter V5 Unit Tests', () => {
       expect(perms.isValid).toBe(true);
       expect(perms.readOnly).toBe(false);
       expect(perms.hasTradingPermission).toBe(true);
+      expect(perms.hasWithdrawPermission).toBe(false);
+      expect(perms.withdrawalVerificationStatus).toBe('DISABLED');
     });
 
     it('correctly detects Read-Only API key', async () => {
       await adapter.connect({ environment: 'mainnet', apiKey: 'roKey', secret: 'roSec' });
       (adapter as any).makeRequest = async () => ({
         readOnly: 1,
-        permissions: { Wallet: ['AccountBalance'] },
+        permissions: { Wallet: ['AccountTransfer'] },
       });
 
       const perms = await adapter.checkApiKeyPermissions();
@@ -94,17 +100,58 @@ describe('BybitAdapter V5 Unit Tests', () => {
       expect(perms.hasTradingPermission).toBe(false);
     });
 
-    it('correctly validates Bybit Demo simulated trading keys', async () => {
+    it('correctly validates Bybit Demo simulated trading keys without withdrawal permission', async () => {
       await adapter.connect({ environment: 'demo', apiKey: 'demoKey', secret: 'demoSec' });
       (adapter as any).makeRequest = async () => ({
         readOnly: 0,
-        permissions: {},
+        permissions: {
+          ContractTrade: ['Order', 'Position'],
+          Spot: ['SpotTrade'],
+          Wallet: ['AccountTransfer', 'SubMemberTransferList'],
+        },
       });
 
       const perms = await adapter.checkApiKeyPermissions();
       expect(perms.isValid).toBe(true);
       expect(perms.readOnly).toBe(false);
       expect(perms.hasTradingPermission).toBe(true);
+      expect(perms.hasWithdrawPermission).toBe(false);
+      expect(perms.withdrawalVerificationStatus).toBe('DISABLED');
+    });
+
+    it('rejects API key with withdrawal permission enabled with WITHDRAWAL_PERMISSION_FORBIDDEN', async () => {
+      await adapter.connect({ environment: 'mainnet', apiKey: 'withdrawKey', secret: 'withdrawSec' });
+      (adapter as any).makeRequest = async () => ({
+        readOnly: 0,
+        permissions: {
+          ContractTrade: ['Order', 'Position'],
+          Wallet: ['AccountTransfer', 'Withdraw'],
+        },
+      });
+
+      await expect(adapter.checkApiKeyPermissions()).rejects.toMatchObject({
+        code: 'WITHDRAWAL_PERMISSION_FORBIDDEN',
+        status: 400,
+      });
+    });
+
+    it('rejects missing, null, or unrecognized permission structures safely with PERMISSION_VERIFICATION_FAILED', async () => {
+      await adapter.connect({ environment: 'demo', apiKey: 'demoKey', secret: 'demoSec' });
+
+      (adapter as any).makeRequest = async () => ({ readOnly: 0 });
+      await expect(adapter.checkApiKeyPermissions()).rejects.toMatchObject({
+        code: 'PERMISSION_VERIFICATION_FAILED',
+      });
+
+      (adapter as any).makeRequest = async () => ({ readOnly: 0, permissions: null });
+      await expect(adapter.checkApiKeyPermissions()).rejects.toMatchObject({
+        code: 'PERMISSION_VERIFICATION_FAILED',
+      });
+
+      (adapter as any).makeRequest = async () => ({ readOnly: 0, permissions: {} });
+      await expect(adapter.checkApiKeyPermissions()).rejects.toMatchObject({
+        code: 'PERMISSION_VERIFICATION_FAILED',
+      });
     });
   });
 

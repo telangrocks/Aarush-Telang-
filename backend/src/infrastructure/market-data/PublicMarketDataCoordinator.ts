@@ -71,11 +71,26 @@ export class PublicMarketDataCoordinator {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // Optional environment overrides via headers or query params
-    const envParam = url.searchParams.get('environment') || request.headers.get('x-exchange-environment');
-    if (envParam) {
+    // Optional environment overrides via headers or query params (fail-closed if explicitly provided and invalid)
+    const hasEnvQuery = url.searchParams.has('environment');
+    const hasEnvHeader = request.headers.has('x-exchange-environment');
+    if (hasEnvQuery || hasEnvHeader) {
+      const envParam = hasEnvQuery ? url.searchParams.get('environment') : request.headers.get('x-exchange-environment');
       const normEnv = normalizeEnvironment(envParam);
-      if (normEnv) this.environment = normEnv;
+      if (!normEnv) {
+        return Response.json(
+          {
+            success: false,
+            code: 'INVALID_ENVIRONMENT',
+            error: `Invalid or unsupported exchange environment: '${String(envParam ?? '')}'.`,
+          },
+          { status: 400 }
+        );
+      }
+      if (this.environment !== normEnv) {
+        this.environment = normEnv;
+        this.adapterPromise = null;
+      }
     }
     const regionParam = url.searchParams.get('region') || request.headers.get('x-exchange-region');
     if (regionParam) {

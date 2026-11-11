@@ -66,4 +66,14 @@ describe('ExchangeRoutingResolver & Routing Architecture Regression Suite', () =
     const key2 = await (ExchangeManager as any).getHashedCacheKey('bybit', { environment: 'mainnet' as any, region: 'india', apiKey: 'k', secret: 's' });
     expect(key1).toBe(key2);
   });
+
+  it('9. Missing, blank, null, or unsupported environment fails closed with INVALID_ENVIRONMENT', () => {
+    expect(() => resolveCanonicalEnvironment(undefined)).toThrow(/INVALID_ENVIRONMENT|Invalid or missing exchange environment/i);
+    expect(() => resolveCanonicalEnvironment(null)).toThrow(/INVALID_ENVIRONMENT|Invalid or missing exchange environment/i);
+    expect(() => resolveCanonicalEnvironment('')).toThrow(/INVALID_ENVIRONMENT|Invalid or missing exchange environment/i);
+    expect(() => resolveCanonicalEnvironment('   ')).toThrow(/INVALID_ENVIRONMENT|Invalid or missing exchange environment/i);
+    expect(() => resolveCanonicalEnvironment('staging')).toThrow(/INVALID_ENVIRONMENT|Invalid or missing exchange environment/i);
+    expect(() => ExchangeRoutingResolver.getRestUrl({ exchange: 'bybit', environment: '' as any })).toThrow(/INVALID_ENVIRONMENT|Invalid or missing exchange environment/i);
+    expect(() => ExchangeRoutingResolver.getRestUrl({ exchange: 'bybit', environment: undefined as any })).toThrow(/INVALID_ENVIRONMENT|Invalid or missing exchange environment/i);
+  });
 });

@@ -30,14 +30,14 @@ import {
   SignalLifecycleManager,
   ShadowComparisonEngine,
 } from './engine/signal-lifecycle';
+import { normalizeEnvironment as normalizeCanonicalEnvironment } from './utils/environment';
 
 /**
- * Normalize an untrusted environment value into a valid ExchangeEnvironment.
+ * Normalize an untrusted environment value into a valid ExchangeEnvironment,
+ * or return null if missing, blank, null, or unsupported (fail-closed).
  */
-function normalizeEnvironment(value: unknown): ExchangeEnvironment {
-  if (value === 'demo') return 'demo' as ExchangeEnvironment;
-  if (value === 'testnet' || value === 'testing' || value === 'sandbox') return 'testnet';
-  return 'mainnet';
+function normalizeEnvironment(value: unknown): ExchangeEnvironment | null {
+  return normalizeCanonicalEnvironment(value);
 }
 
 /**
@@ -662,6 +662,7 @@ export class TradingBot {
     apiKey?: string;
     secret?: string;
     password?: string;
+    credentialFingerprint?: string;
     loadedAt: number;
   } | null = null;
 
@@ -708,19 +709,73 @@ export class TradingBot {
     apiKey?: string;
     secret?: string;
     password?: string;
+    credentialFingerprint?: string;
     loadedAt: number;
   } | null> {
-    if (this.cachedCredentials && this.cachedCredentials.userId === userId) {
-      return this.cachedCredentials;
-    }
+    const invalidateStaleProviderIfNeeded = async () => {
+      const prev = this.cachedCredentials;
+      const prevEnv = normalizeEnvironment(prev?.environment);
+      if (prev?.exchangeName && prevEnv && prev.apiKey && prev.secret) {
+        try {
+          await ExchangeManager.invalidateUserProvider(prev.exchangeName, {
+            environment: prevEnv,
+            apiKey: prev.apiKey,
+            secret: prev.secret,
+            password: prev.password,
+            region: resolveCanonicalRoutingRegion(prev.region),
+          });
+        } catch (_) {}
+      }
+      this.invalidateCredentialsCache();
+    };
 
     try {
       const user = await this.env.DB.prepare(
-        'SELECT exchange_name, exchange_environment, exchange_region, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?'
+        'SELECT exchange_name, exchange_environment, exchange_region, exchange_connection_status, exchange_api_key, exchange_api_key_iv, exchange_api_key_encrypted, exchange_api_key_salt, exchange_api_secret_iv, exchange_api_secret_encrypted, exchange_api_secret_salt, exchange_api_passphrase_iv, exchange_api_passphrase_encrypted, exchange_api_passphrase_salt FROM users WHERE id = ?'
       ).bind(userId).first<any>();
 
       if (!user?.exchange_name) {
+        await invalidateStaleProviderIfNeeded();
         return null;
+      }
+
+      if (user.exchange_connection_status === 'INVALID') {
+        console.warn(`[TradingBot] Exchange credentials marked INVALID in D1 for user=${userId}; skipping credential load while preserving open-position safety tracking.`);
+        await invalidateStaleProviderIfNeeded();
+        return null;
+      }
+
+      const canonicalEnv = normalizeEnvironment(user.exchange_environment);
+      if (!canonicalEnv) {
+        console.error(`[TradingBot] INVALID_ENVIRONMENT in D1 for user=${userId} (raw=${JSON.stringify(user.exchange_environment)}). Failing closed without substituting default environment.`);
+        await invalidateStaleProviderIfNeeded();
+        return null;
+      }
+
+      const d1CredentialFingerprint = [
+        String(user.exchange_name || '').toLowerCase().trim(),
+        canonicalEnv,
+        String(user.exchange_region || '').toLowerCase().trim(),
+        String(user.exchange_connection_status || 'CONNECTED'),
+        String(user.exchange_api_key_iv || ''),
+        String(user.exchange_api_key_encrypted || user.exchange_api_key || ''),
+        String(user.exchange_api_secret_iv || ''),
+        String(user.exchange_api_secret_encrypted || ''),
+        String(user.exchange_api_passphrase_iv || ''),
+        String(user.exchange_api_passphrase_encrypted || ''),
+      ].join('|');
+
+      if (this.cachedCredentials && this.cachedCredentials.userId === userId) {
+        const cachedEnv = normalizeEnvironment(this.cachedCredentials.environment);
+        if (
+          cachedEnv === canonicalEnv &&
+          this.cachedCredentials.credentialFingerprint === d1CredentialFingerprint &&
+          this.cachedCredentials.apiKey
+        ) {
+          return this.cachedCredentials;
+        }
+        console.warn(`[TradingBot] Stale in-memory credentials detected for user=${userId} via D1 credential fingerprint mismatch. Invalidating cached credentials and reloading fresh credentials from D1.`);
+        await invalidateStaleProviderIfNeeded();
       }
 
       const encKey = this.env.ENCRYPTION_KEY || (this.env as any).COOKIE_ENCRYPTION_KEY;
@@ -728,7 +783,11 @@ export class TradingBot {
       if (encKey && user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
         try {
           apiKey = await decrypt({ iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt }, encKey);
-        } catch (_) {}
+        } catch (decKeyErr) {
+          console.error(`[TradingBot] Failed to decrypt exchange API key for user=${userId}; keeping open-position safety tracking intact:`, decKeyErr);
+          this.invalidateCredentialsCache();
+          return null;
+        }
       }
       if (!apiKey && user.exchange_api_key) {
         apiKey = user.exchange_api_key;
@@ -738,7 +797,17 @@ export class TradingBot {
       if (encKey && user.exchange_api_secret_iv && user.exchange_api_secret_encrypted) {
         try {
           secret = await decrypt({ iv: user.exchange_api_secret_iv, encrypted: user.exchange_api_secret_encrypted, salt: user.exchange_api_secret_salt }, encKey);
-        } catch (_) {}
+        } catch (decSecErr) {
+          console.error(`[TradingBot] Failed to decrypt exchange API secret for user=${userId}; keeping open-position safety tracking intact:`, decSecErr);
+          this.invalidateCredentialsCache();
+          return null;
+        }
+      }
+
+      if (!apiKey) {
+        console.warn(`[TradingBot] Missing or incomplete decrypted exchange credentials for user=${userId}; keeping open-position safety tracking intact.`);
+        this.invalidateCredentialsCache();
+        return null;
       }
 
       let password: string | undefined = undefined;
@@ -751,17 +820,19 @@ export class TradingBot {
       this.cachedCredentials = {
         userId,
         exchangeName: user.exchange_name,
-        environment: user.exchange_environment,
+        environment: canonicalEnv,
         region: user.exchange_region,
         apiKey,
         secret,
         password,
+        credentialFingerprint: d1CredentialFingerprint,
         loadedAt: Date.now()
       };
 
       return this.cachedCredentials;
     } catch (e) {
       console.error('[TradingBot] Failed to load exchange credentials from D1:', e);
+      this.invalidateCredentialsCache();
       return null;
     }
   }
@@ -1458,7 +1529,45 @@ export class TradingBot {
             );
             return;
           }
-          if (approvedRecord.environment && user?.exchange_environment && normalizeEnvironment(approvedRecord.environment) !== normalizeEnvironment(user.exchange_environment)) {
+          if (config?.environment !== undefined && !normalizeEnvironment(config.environment)) {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                code: 'INVALID_ENVIRONMENT',
+                error: 'Cannot activate bot: Invalid or unsupported environment specified in configuration.',
+              }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
+
+          const canonicalUserEnv = normalizeEnvironment(user?.exchange_environment);
+          if (!canonicalUserEnv) {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                code: 'INVALID_ENVIRONMENT',
+                error: 'Cannot activate bot: Configured exchange environment is missing or invalid.',
+              }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
+
+          const canonicalApprovedEnv = normalizeEnvironment(approvedRecord.environment);
+          if (!canonicalApprovedEnv) {
+            earlyErrorResponse = new Response(
+              JSON.stringify({
+                success: false,
+                code: 'INVALID_ENVIRONMENT',
+                error: 'Cannot activate bot: Approved candidate environment is missing or invalid.',
+              }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+            return;
+          }
+
+          if (canonicalApprovedEnv !== canonicalUserEnv) {
             earlyErrorResponse = new Response(
               JSON.stringify({
                 success: false,
@@ -1474,7 +1583,7 @@ export class TradingBot {
             const expectedFingerprint = await computeAccountFingerprint({
               userId,
               exchangeName: user.exchange_name,
-              environment: user.exchange_environment,
+              environment: canonicalUserEnv,
               accountIdentifier: user.exchange_api_key_encrypted || user.exchange_api_key || null,
               serverSecret: this.env.ENCRYPTION_KEY
             });
@@ -1499,7 +1608,7 @@ export class TradingBot {
             positionSize: positionSize ?? undefined,
             activatedAt: new Date().toISOString(),
             exchangeName: user?.exchange_name ?? undefined,
-            environment: user?.exchange_environment ?? undefined,
+            environment: canonicalUserEnv,
             approvedSymbols: approvedRecord.approvedSymbols,
             approvalGeneration: approvedRecord.approvalGeneration,
           });
@@ -1592,8 +1701,20 @@ export class TradingBot {
             } catch (_) {}
           }
 
+          const activeEnv = normalizeEnvironment(user.exchange_environment);
+          if (!activeEnv) {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                code: 'INVALID_ENVIRONMENT',
+                error: 'Cannot activate bot: Configured exchange environment is missing or invalid.',
+              }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
           const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-            environment: normalizeEnvironment(user.exchange_environment),
+            environment: activeEnv,
             apiKey,
             secret,
             password,
@@ -1657,7 +1778,27 @@ export class TradingBot {
       }
 
       case '/reload-credentials': {
+        const previousCreds = this.cachedCredentials;
         this.invalidateCredentialsCache();
+        if (previousCreds?.exchangeName) {
+          try {
+            const prevEnv = normalizeEnvironment(previousCreds.environment);
+            if (prevEnv) {
+              await ExchangeManager.disconnectProvider(previousCreds.exchangeName as ExchangeName, {
+                environment: prevEnv,
+                apiKey: previousCreds.apiKey,
+                secret: previousCreds.secret,
+                password: previousCreds.password,
+                region: resolveCanonicalRoutingRegion(previousCreds.region),
+              });
+            }
+          } catch (_) {}
+        }
+        if (this.runtimeState.isActive) {
+          try { await this.state.storage.setAlarm(Date.now() + ANALYSIS_INTERVAL_MS); } catch (_) {}
+        } else if (await this.hasLocalOrD1Exposure()) {
+          try { await this.state.storage.setAlarm(Date.now() + 60000); } catch (_) {}
+        }
         return new Response(JSON.stringify({ success: true, message: 'Credentials cache invalidated.' }), { status: 200 });
       }
 
@@ -1669,6 +1810,9 @@ export class TradingBot {
           this.runtimeState.isActive = false;
           await this.state.storage.put('isActive', false);
           await this.state.storage.put('tradeActive', false);
+        }
+        if (await this.hasLocalOrD1Exposure()) {
+          try { await this.state.storage.setAlarm(Date.now() + 60000); } catch (_) {}
         }
         return new Response(JSON.stringify({ success: true, message: 'Exchange invalidated: credentials purged and bot deactivated.' }), { status: 200 });
       }
@@ -1886,8 +2030,13 @@ export class TradingBot {
                 decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted, salt: userKeys.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
               }
 
+              const reconEnv = normalizeEnvironment(userKeys.exchange_environment);
+              if (!reconEnv) {
+                throw new UnifiedError('Invalid or missing exchange environment for execution status reconciliation', 'INVALID_ENVIRONMENT', undefined, undefined, 400);
+              }
+
               const provider = await ExchangeManager.getProvider('bybit', {
-                environment: normalizeEnvironment(userKeys.exchange_environment),
+                environment: reconEnv,
                 apiKey: decryptedApiKey,
                 secret: decryptedSecret,
                 region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
@@ -1934,7 +2083,7 @@ export class TradingBot {
                     entryStatus: intentObj.status,
                     strategy: dbPos?.strategy || intentObj.payloadSnapshot?.strategy || 'manual',
                     exchange: dbPos?.exchange || intentObj.exchangeName || 'bybit',
-                    environment: dbPos?.environment || intentObj.environment || 'mainnet',
+                    environment: normalizeEnvironment(dbPos?.environment) || normalizeEnvironment(intentObj.environment) || reconEnv,
                     orderId: dbPos?.order_id || intentObj.actualOrderId,
                     enteredAt: dbPos?.entry_at || now,
                   });
@@ -1981,8 +2130,13 @@ export class TradingBot {
                 decryptedSecret = await decrypt({ iv: userKeys.exchange_api_secret_iv, encrypted: userKeys.exchange_api_secret_encrypted, salt: userKeys.exchange_api_secret_salt }, this.env.ENCRYPTION_KEY);
               }
 
+              const reconEnv = normalizeEnvironment(userKeys.exchange_environment);
+              if (!reconEnv) {
+                throw new UnifiedError('Invalid or missing exchange environment for execution status reconciliation', 'INVALID_ENVIRONMENT', undefined, undefined, 400);
+              }
+
               const provider = await ExchangeManager.getProvider('bybit', {
-                environment: normalizeEnvironment(userKeys.exchange_environment),
+                environment: reconEnv,
                 apiKey: decryptedApiKey,
                 secret: decryptedSecret,
                 region: resolveCanonicalRoutingRegion(userKeys.exchange_region),
@@ -2018,7 +2172,7 @@ export class TradingBot {
         const side = (dbPos?.side || intentObj?.side || 'BUY').toUpperCase();
         const strategy = dbPos?.strategy || intentObj?.payloadSnapshot?.strategy || 'ScalperV2';
         const exchange = dbPos?.exchange || 'bybit';
-        const environment = dbPos?.environment || 'mainnet';
+        const environment = normalizeEnvironment(dbPos?.environment) || normalizeEnvironment(intentObj?.environment) || null;
         const orderType = dbPos?.order_type || (intentObj?.orderType ? intentObj.orderType.toUpperCase() : 'MARKET');
 
         const stopLoss = dbPos?.stop_loss ?? (intentObj?.requestedStopLoss ? parseFloat(intentObj.requestedStopLoss) : null);
@@ -2409,7 +2563,29 @@ export class TradingBot {
                 error: `Execution rejected: Approved exchange (${approvedRecord.exchangeName}) does not match active exchange (${userRow.exchange_name}).`
               }), { status: 403, headers: { 'Content-Type': 'application/json' } });
             }
-            if (approvedRecord.environment && userRow.exchange_environment && normalizeEnvironment(approvedRecord.environment) !== normalizeEnvironment(userRow.exchange_environment)) {
+            const hasExplicitUserEnv = 'exchange_environment' in userRow;
+            const hasExplicitApprovedEnv = 'environment' in approvedRecord && approvedRecord.environment !== undefined;
+            const canonicalUserEnv = hasExplicitUserEnv
+              ? normalizeEnvironment(userRow.exchange_environment)
+              : normalizeEnvironment(approvedRecord.environment);
+            if (!canonicalUserEnv) {
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'INVALID_ENVIRONMENT',
+                error: 'Execution rejected: Active exchange environment is missing or invalid.'
+              }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+            }
+            const canonicalApprovedEnv = hasExplicitApprovedEnv
+              ? normalizeEnvironment(approvedRecord.environment)
+              : canonicalUserEnv;
+            if (!canonicalApprovedEnv) {
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'INVALID_ENVIRONMENT',
+                error: 'Execution rejected: Approved candidate environment is missing or invalid.'
+              }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (canonicalApprovedEnv !== canonicalUserEnv) {
               return new Response(JSON.stringify({
                 success: false,
                 code: 'ENVIRONMENT_MISMATCH',
@@ -2419,7 +2595,7 @@ export class TradingBot {
             const expectedFingerprint = await computeAccountFingerprint({
               userId,
               exchangeName: userRow.exchange_name,
-              environment: userRow.exchange_environment,
+              environment: canonicalUserEnv,
               accountIdentifier: userRow.exchange_api_key_encrypted || userRow.exchange_api_key || null,
               serverSecret: this.env.ENCRYPTION_KEY
             });
@@ -2744,7 +2920,31 @@ export class TradingBot {
                 error: `Execution rejected: Approved exchange (${approvedRecord.exchangeName}) does not match configured exchange (${userKeys.exchange_name}).`
               }), { status: 403, headers: { 'Content-Type': 'application/json' } });
             }
-            if (approvedRecord.environment && userKeys?.exchange_environment && normalizeEnvironment(approvedRecord.environment) !== normalizeEnvironment(userKeys.exchange_environment)) {
+            const hasExplicitUserKeysEnv = userKeys && ('exchange_environment' in userKeys);
+            const hasExplicitApprovedExecEnv = 'environment' in approvedRecord && approvedRecord.environment !== undefined;
+            const canonicalUserKeysEnv = hasExplicitUserKeysEnv
+              ? normalizeEnvironment(userKeys?.exchange_environment)
+              : normalizeEnvironment(approvedRecord.environment);
+            if (!canonicalUserKeysEnv) {
+              await releasePreReservation('INVALID_ENVIRONMENT');
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'INVALID_ENVIRONMENT',
+                error: 'Execution rejected: Configured exchange environment is missing or invalid.'
+              }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+            }
+            const canonicalApprovedExecEnv = hasExplicitApprovedExecEnv
+              ? normalizeEnvironment(approvedRecord.environment)
+              : canonicalUserKeysEnv;
+            if (!canonicalApprovedExecEnv) {
+              await releasePreReservation('INVALID_ENVIRONMENT');
+              return new Response(JSON.stringify({
+                success: false,
+                code: 'INVALID_ENVIRONMENT',
+                error: 'Execution rejected: Approved candidate environment is missing or invalid.'
+              }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (canonicalApprovedExecEnv !== canonicalUserKeysEnv) {
               await releasePreReservation('ENVIRONMENT_MISMATCH');
               return new Response(JSON.stringify({
                 success: false,
@@ -2777,7 +2977,7 @@ export class TradingBot {
             }
 
             const adapter = await ExchangeManager.getProvider(userKeys.exchange_name as ExchangeName, {
-              environment: normalizeEnvironment(userKeys.exchange_environment),
+              environment: canonicalUserKeysEnv,
               apiKey: decryptedApiKey,
               secret: decryptedSecret,
               password: decryptedPassphrase,
@@ -3227,7 +3427,7 @@ export class TradingBot {
                 takeProfit: target.takeProfit,
                 strategy: target.strategy,
                 exchangeName: userKeys.exchange_name,
-                environment: userKeys.exchange_environment || 'mainnet',
+                environment: canonicalUserKeysEnv,
                 clientOrderId: clientOrderId,
                 createdAt: new Date().toISOString()
               });
@@ -3235,7 +3435,7 @@ export class TradingBot {
 
               // Re-fetch provider with full keys for write
               const writeProvider = await ExchangeManager.getProvider(executionSnapshot.exchangeName, {
-                environment: normalizeEnvironment(executionSnapshot.environment),
+                environment: canonicalUserKeysEnv,
                 apiKey: decryptedApiKey,
                 secret: decryptedSecret,
                 password: decryptedPassphrase,
@@ -4207,10 +4407,13 @@ export class TradingBot {
           .first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
 
         const exchangeName = (user?.exchange_name || 'bybit') as ExchangeName;
-        const adapter = await ExchangeManager.getProvider(exchangeName, {
-          environment: normalizeEnvironment(user?.exchange_environment),
-          region: resolveCanonicalRoutingRegion(user?.exchange_region),
-        }).catch(() => null);
+        const mockUserEnv = normalizeEnvironment(user?.exchange_environment);
+        const adapter = mockUserEnv
+          ? await ExchangeManager.getProvider(exchangeName, {
+              environment: mockUserEnv,
+              region: resolveCanonicalRoutingRegion(user?.exchange_region),
+            }).catch(() => null)
+          : null;
 
         const ticker = adapter ? await adapter.fetchTicker(orderSymbol).catch(() => null) : null;
         const livePrice = ticker?.last?.toNumber?.() || (typeof ticker?.last === 'number' ? ticker.last : 0);
@@ -4461,8 +4664,9 @@ export class TradingBot {
           const userId = this.runtimeState.userId as string;
           if (userId) {
             const user = await this.env.DB.prepare('SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?').bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null }>();
-            if (user?.exchange_name) {
-              const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: normalizeEnvironment(user.exchange_environment), region: resolveCanonicalRoutingRegion(user.exchange_region) });
+            const healthEnv = normalizeEnvironment(user?.exchange_environment);
+            if (user?.exchange_name && healthEnv) {
+              const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, { environment: healthEnv, region: resolveCanonicalRoutingRegion(user.exchange_region) });
 
               if ((adapter as any).cacheMetrics) {
                 adapterMetrics = { ... (adapter as any).cacheMetrics };
@@ -4526,6 +4730,13 @@ export class TradingBot {
       case '/discovery-approved-candidates': {
         const body = await request.json<{ record: ApprovedCandidateRecord }>().catch(() => null);
         const record = body?.record;
+        if (record && !normalizeEnvironment(record.environment)) {
+          return new Response(JSON.stringify({
+            success: false,
+            code: 'INVALID_ENVIRONMENT',
+            error: 'Invalid or missing environment in discovery approval record.',
+          }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        }
         if (
           !record ||
           record.approvalState !== 'DISCOVERY_APPROVED' ||
@@ -4557,6 +4768,13 @@ export class TradingBot {
         const body = await request.json<{ record: ApprovedCandidateRecord }>().catch(() => null);
         const record = body?.record;
         const currentGen = (await this.state.storage.get<number>('candidateApprovalGeneration')) || this.runtimeState.candidateApprovalGeneration || 0;
+        if (record && !normalizeEnvironment(record.environment)) {
+          return new Response(JSON.stringify({
+            success: false,
+            code: 'INVALID_ENVIRONMENT',
+            error: 'Invalid or missing environment in final approval record.',
+          }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        }
         if (
           !record ||
           record.approvalState !== 'FINAL_APPROVED' ||
@@ -5453,7 +5671,7 @@ export class TradingBot {
     return earliest;
   }
 
-  private async hasActiveExposure(): Promise<boolean> {
+  private async hasLocalOrD1Exposure(): Promise<boolean> {
     if (this.hasPendingSafetyWork()) return true;
 
     if (Array.isArray(this.runtimeState.activePositions) && this.runtimeState.activePositions.length > 0) {
@@ -5470,12 +5688,22 @@ export class TradingBot {
       } catch (_) {
         return true;
       }
+    }
 
+    return false;
+  }
+
+  private async hasActiveExposure(): Promise<boolean> {
+    if (await this.hasLocalOrD1Exposure()) return true;
+
+    const userId = (this.runtimeState.userId as string) || ((await this.state.storage.get('userId')) as string);
+    if (userId) {
       try {
         const userKeys = await this.getOrLoadExchangeCredentials(userId);
-        if (userKeys?.exchangeName && userKeys.secret) {
+        const exposureEnv = normalizeEnvironment(userKeys?.environment);
+        if (userKeys?.exchangeName && exposureEnv && userKeys.secret) {
           const adapter = await ExchangeManager.getProvider(userKeys.exchangeName as ExchangeName, {
-            environment: normalizeEnvironment(userKeys.environment),
+            environment: exposureEnv,
             apiKey: userKeys.apiKey,
             secret: userKeys.secret,
             password: userKeys.password,
@@ -5970,9 +6198,10 @@ export class TradingBot {
           const userId = (this.runtimeState.userId as string) || (await this.state.storage.get<string>('userId'));
           if (userId) {
             const userKeys = await this.getOrLoadExchangeCredentials(userId);
-            if (userKeys?.exchangeName && userKeys.secret) {
+            const walRecoveryEnv = normalizeEnvironment(userKeys?.environment);
+            if (userKeys?.exchangeName && walRecoveryEnv && userKeys.secret) {
               const adapter = await ExchangeManager.getProvider(userKeys.exchangeName as ExchangeName, {
-                environment: normalizeEnvironment(userKeys.environment),
+                environment: walRecoveryEnv,
                 apiKey: userKeys.apiKey,
                 secret: userKeys.secret,
                 password: userKeys.password,
@@ -6322,9 +6551,10 @@ export class TradingBot {
 
           if (symbolsToMonitor.length > 0 && userId && strategy) {
             const user = await this.getOrLoadExchangeCredentials(userId);
-            if (user?.exchangeName) {
+            const cycleEnv = normalizeEnvironment(user?.environment);
+            if (user?.exchangeName && cycleEnv) {
               const adapter = await ExchangeManager.getProvider(user.exchangeName as ExchangeName, {
-                environment: normalizeEnvironment(user.environment),
+                environment: cycleEnv,
                 apiKey: user.apiKey,
                 secret: user.secret,
                 password: user.password,
@@ -7302,10 +7532,11 @@ export class TradingBot {
       if (results.length === 0) return;
 
       const userKeys = await this.getOrLoadExchangeCredentials(userId);
-      if (!userKeys?.exchangeName) return;
+      const monitorEnv = normalizeEnvironment(userKeys?.environment);
+      if (!userKeys?.exchangeName || !monitorEnv) return;
 
       const adapter = await ExchangeManager.getProvider(userKeys.exchangeName as ExchangeName, {
-        environment: normalizeEnvironment(userKeys.environment),
+        environment: monitorEnv,
         apiKey: userKeys.apiKey,
         secret: userKeys.secret,
         password: userKeys.password,

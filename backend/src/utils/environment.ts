@@ -1,4 +1,5 @@
 // backend/src/utils/environment.ts
+import { UnifiedError } from "../exchanges/models/UnifiedError";
 
 export type CanonicalEnvironment = "mainnet" | "demo" | "testnet";
 
@@ -15,7 +16,7 @@ export function normalizeEnvironment(value: unknown): CanonicalEnvironment | nul
     if (lower === "demo") {
       return "demo";
     }
-    if (lower === "testnet") {
+    if (lower === "testnet" || lower === "testing" || lower === "sandbox") {
       return "testnet";
     }
   }
@@ -23,10 +24,21 @@ export function normalizeEnvironment(value: unknown): CanonicalEnvironment | nul
 }
 
 /**
- * Resolves an environment string into a guaranteed CanonicalEnvironment, defaulting to "demo".
+ * Resolves an environment string into a guaranteed CanonicalEnvironment.
+ * Fails closed with INVALID_ENVIRONMENT when missing, blank, null, or unsupported.
  */
 export function resolveCanonicalEnvironment(value: unknown): CanonicalEnvironment {
-  return normalizeEnvironment(value) ?? "demo";
+  const normalized = normalizeEnvironment(value);
+  if (!normalized) {
+    throw new UnifiedError(
+      `Invalid or missing exchange environment: '${String(value ?? "")}'. Supported environments: demo, mainnet, testnet.`,
+      "INVALID_ENVIRONMENT",
+      undefined,
+      undefined,
+      400
+    );
+  }
+  return normalized;
 }
 
 /**

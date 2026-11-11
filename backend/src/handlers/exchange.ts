@@ -10,6 +10,7 @@ import { UnifiedError } from "../exchanges/models/UnifiedError";
 import { analyzeMarket } from "../market-analysis";
 import { normalizeEnvironment as normEnvUtil, isEnvironmentSupported, getSupportedEnvironmentsList, CanonicalEnvironment } from "../utils/environment";
 import { normalizeRegion, resolveCanonicalRoutingRegion } from "../utils/region";
+import { PermissionValidator } from "../infrastructure/security/PermissionValidator";
 import { WebCryptoSigner } from "../infrastructure/crypto/WebCryptoSigner";
 import {
   MarketOpportunityScanner,
@@ -414,8 +415,8 @@ export async function handleValidateExchange(
       c.status(400);
       return c.json({
         success: false,
-        code: "INVALID_REQUEST" as ExchangeErrorCode,
-        message: "Invalid environment. Supported values: demo, mainnet.",
+        code: "INVALID_ENVIRONMENT" as ExchangeErrorCode,
+        message: "Invalid or missing environment. Supported values: demo, mainnet.",
         hint: "Supported environment values are demo or mainnet.",
         version: "1.0",
         correlationId,
@@ -469,6 +470,48 @@ export async function handleValidateExchange(
       }
       if (typeof provider.checkApiKeyPermissions === "function") {
         const permCheck = await provider.checkApiKeyPermissions();
+        if (permCheck.hasWithdrawPermission || permCheck.withdrawalVerificationStatus === "ENABLED") {
+          throw new UnifiedError(
+            FRIENDLY_MESSAGES.WITHDRAWAL_PERMISSION_FORBIDDEN.friendlyMessage,
+            "WITHDRAWAL_PERMISSION_FORBIDDEN",
+            undefined,
+            undefined,
+            400
+          );
+        }
+        if (permCheck.withdrawalVerificationStatus !== "DISABLED") {
+          const inspected = PermissionValidator.inspectBybitPermissions(
+            { readOnly: permCheck.readOnly ? 1 : 0, permissions: permCheck.permissions },
+            normEnv
+          );
+          if (inspected.hasWithdrawPermission || inspected.withdrawalVerificationStatus === "ENABLED") {
+            throw new UnifiedError(
+              inspected.errorMessage || FRIENDLY_MESSAGES.WITHDRAWAL_PERMISSION_FORBIDDEN.friendlyMessage,
+              "WITHDRAWAL_PERMISSION_FORBIDDEN",
+              undefined,
+              undefined,
+              400
+            );
+          }
+          if (!inspected.isValid) {
+            throw new UnifiedError(
+              inspected.errorMessage || FRIENDLY_MESSAGES.PERMISSION_VERIFICATION_FAILED.friendlyMessage,
+              inspected.errorCode || "PERMISSION_VERIFICATION_FAILED",
+              undefined,
+              undefined,
+              400
+            );
+          }
+        }
+        if (!permCheck.isValid) {
+          throw new UnifiedError(
+            FRIENDLY_MESSAGES.PERMISSION_VERIFICATION_FAILED.friendlyMessage,
+            "PERMISSION_VERIFICATION_FAILED",
+            undefined,
+            undefined,
+            400
+          );
+        }
         if (permCheck.readOnly) {
           throw new UnifiedError(
             "Your Bybit API key is Read-Only. Trading permissions are required.",
@@ -630,8 +673,8 @@ export async function handleConnectExchange(
       c.status(400);
       return c.json({
         success: false,
-        code: "INVALID_REQUEST" as ExchangeErrorCode,
-        message: "Invalid environment. Supported values: mainnet, testnet, demo.",
+        code: "INVALID_ENVIRONMENT" as ExchangeErrorCode,
+        message: "Invalid or missing environment. Supported values: mainnet, testnet, demo.",
         hint: "Supported environment values are mainnet, testnet, or demo.",
       });
     }
@@ -662,6 +705,48 @@ export async function handleConnectExchange(
       provider = await ExchangeManager.createUncachedProvider(exchangeName as ExchangeName, providerConfig);
       if (typeof provider.checkApiKeyPermissions === "function") {
         const permCheck = await provider.checkApiKeyPermissions();
+        if (permCheck.hasWithdrawPermission || permCheck.withdrawalVerificationStatus === "ENABLED") {
+          throw new UnifiedError(
+            FRIENDLY_MESSAGES.WITHDRAWAL_PERMISSION_FORBIDDEN.friendlyMessage,
+            "WITHDRAWAL_PERMISSION_FORBIDDEN",
+            undefined,
+            undefined,
+            400
+          );
+        }
+        if (permCheck.withdrawalVerificationStatus !== "DISABLED") {
+          const inspected = PermissionValidator.inspectBybitPermissions(
+            { readOnly: permCheck.readOnly ? 1 : 0, permissions: permCheck.permissions },
+            normEnv
+          );
+          if (inspected.hasWithdrawPermission || inspected.withdrawalVerificationStatus === "ENABLED") {
+            throw new UnifiedError(
+              inspected.errorMessage || FRIENDLY_MESSAGES.WITHDRAWAL_PERMISSION_FORBIDDEN.friendlyMessage,
+              "WITHDRAWAL_PERMISSION_FORBIDDEN",
+              undefined,
+              undefined,
+              400
+            );
+          }
+          if (!inspected.isValid) {
+            throw new UnifiedError(
+              inspected.errorMessage || FRIENDLY_MESSAGES.PERMISSION_VERIFICATION_FAILED.friendlyMessage,
+              inspected.errorCode || "PERMISSION_VERIFICATION_FAILED",
+              undefined,
+              undefined,
+              400
+            );
+          }
+        }
+        if (!permCheck.isValid) {
+          throw new UnifiedError(
+            FRIENDLY_MESSAGES.PERMISSION_VERIFICATION_FAILED.friendlyMessage,
+            "PERMISSION_VERIFICATION_FAILED",
+            undefined,
+            undefined,
+            400
+          );
+        }
         if (permCheck.readOnly) {
           throw new UnifiedError(
             "Your Bybit API key is Read-Only. Trading permissions are required.",
@@ -757,6 +842,14 @@ export async function handleConnectExchange(
       }
     }
 
+    // Capture previous exchange config before D1 update so we can evict any old cached provider slot
+    let previousUserConfig: { exchange_name: string | null; exchange_environment: string | null; exchange_region: string | null } | null = null;
+    try {
+      previousUserConfig = await c.env.DB.prepare(
+        "SELECT exchange_name, exchange_environment, exchange_region FROM users WHERE id = ?"
+      ).bind(userId).first();
+    } catch (_) {}
+
     // Now commit to D1 with deterministic failure recovery
     try {
       await c.env.DB.prepare(
@@ -790,9 +883,46 @@ export async function handleConnectExchange(
     // Invalidate any previously cached provider instance for this user/slot
     try {
       await ExchangeManager.disconnectProvider(exchangeName, providerConfig);
+      if (previousUserConfig?.exchange_name) {
+        const prevEnv = normalizeEnvironment(previousUserConfig.exchange_environment);
+        if (prevEnv) {
+          await ExchangeManager.disconnectProvider(previousUserConfig.exchange_name as ExchangeName, {
+            environment: prevEnv,
+            region: resolveCanonicalRoutingRegion(previousUserConfig.exchange_region),
+          });
+        }
+      }
     } catch (_) {}
 
     USER_EXCHANGE_ROUTING_CACHE.delete(userId);
+
+    // Deterministically invalidate cached credentials in the user's TradingBot Durable Object
+    // regardless of whether the bot was active or inactive during credential replacement.
+    let reloadSucceeded = false;
+    let lastReloadError: string = "Unknown reload error";
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const reloadRes = await bot.fetch(new Request("http://bot/reload-credentials", { method: "POST" }));
+        if (reloadRes.ok) {
+          reloadSucceeded = true;
+          break;
+        }
+        lastReloadError = `Bot reload-credentials returned HTTP ${reloadRes.status}`;
+      } catch (reloadErr: any) {
+        lastReloadError = reloadErr?.message || String(reloadErr);
+      }
+    }
+
+    if (!reloadSucceeded) {
+      console.error(`[exchange-auth] Failed to invalidate DO cached credentials for user=${userId} after D1 update: ${lastReloadError}`);
+      c.status(503);
+      return c.json({
+        success: false,
+        code: "CREDENTIAL_CACHE_INVALIDATION_FAILED",
+        message: "Credentials were saved, but trading bot credential cache invalidation did not complete. Please retry.",
+        hint: "Retry connecting to ensure the background trading session reloads your updated credentials.",
+      });
+    }
 
     return c.json({ success: true, message: "Exchange connected successfully", exchangeName, environment: normEnv, region: resolvedRegion });
   } catch (e: unknown) {
@@ -815,6 +945,19 @@ export async function handleGetExchangeStatus(
     const payload = c.get("jwtPayload") as { sub: string };
     const userId = payload.sub;
 
+    const queryEnv = c.req?.query?.("environment");
+    if (queryEnv !== undefined && !normalizeEnvironment(queryEnv)) {
+      c.status(400);
+      return c.json({
+        success: false,
+        isConnected: false,
+        code: "INVALID_ENVIRONMENT",
+        exchangeName: null,
+        environment: null,
+        message: "Invalid or unsupported exchange environment.",
+      });
+    }
+
     const user = await c.env.DB.prepare(
       "SELECT exchange_name, exchange_environment, exchange_region, exchange_connection_status, exchange_api_key_encrypted, exchange_api_secret_encrypted, exchange_api_secret_iv FROM users WHERE id = ?",
     )
@@ -829,7 +972,7 @@ export async function handleGetExchangeStatus(
         exchange_api_secret_iv: string | null;
       }>();
 
-    const isConnected = Boolean(
+    const hasConnectedRecord = Boolean(
       user?.exchange_name &&
       user?.exchange_name.toLowerCase() === "bybit" &&
       user?.exchange_api_key_encrypted &&
@@ -838,10 +981,25 @@ export async function handleGetExchangeStatus(
       user?.exchange_connection_status === "CONNECTED"
     );
 
+    const canonicalEnv = normalizeEnvironment(user?.exchange_environment);
+    if (hasConnectedRecord && !canonicalEnv) {
+      c.status(400);
+      return c.json({
+        success: false,
+        isConnected: false,
+        code: "INVALID_ENVIRONMENT",
+        exchangeName: null,
+        environment: null,
+        message: "Exchange environment is missing or invalid. Please reconnect your exchange account.",
+      });
+    }
+
+    const isConnected = Boolean(hasConnectedRecord && canonicalEnv);
+
     return c.json({
       isConnected,
       exchangeName: isConnected ? "bybit" : (user?.exchange_name ?? null),
-      environment: isConnected ? (user?.exchange_environment ?? "demo") : null,
+      environment: isConnected ? canonicalEnv : null,
       region: user?.exchange_region ?? null,
     });
   } catch (e: unknown) {
@@ -903,6 +1061,28 @@ export async function handleGetExchangeBalances(
       });
     }
 
+    const queryEnv = c.req?.query?.("environment");
+    if (queryEnv !== undefined && !normalizeEnvironment(queryEnv)) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        message: "Invalid or unsupported exchange environment.",
+        hint: "Select either Demo or Mainnet when connecting your exchange account.",
+      });
+    }
+
+    const environment = normalizeEnvironment(user.exchange_environment);
+    if (!environment) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        message: "Exchange environment is missing or invalid. Please reconnect your exchange in settings.",
+        hint: "Select either Demo or Mainnet when connecting your exchange account.",
+      });
+    }
+
     try {
       decryptedKey = await decrypt(
         { iv: user.exchange_api_key_iv, encrypted: user.exchange_api_key_encrypted, salt: user.exchange_api_key_salt },
@@ -930,7 +1110,6 @@ export async function handleGetExchangeBalances(
       );
     }
 
-    const environment = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
       environment,
       apiKey: decryptedKey,
@@ -961,10 +1140,11 @@ export async function handleGetExchangeBalances(
     const classified = classifyException(e, exchangeId);
     console.error(`[exchange-balance] exception (${classified.technicalDetail}):`, e);
     if (isPermanentAuthFailure(classified.code)) {
-      if (user?.exchange_name && decryptedKey && decryptedSecret) {
+      const normEnv = normalizeEnvironment(user?.exchange_environment);
+      if (user?.exchange_name && normEnv && decryptedKey && decryptedSecret) {
         try {
           await ExchangeManager.invalidateUserProvider(user.exchange_name, {
-            environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
+            environment: normEnv,
             apiKey: decryptedKey,
             secret: decryptedSecret,
             password: decryptedPassphrase,
@@ -1090,7 +1270,7 @@ export async function handleGetPersonalizedMarketCandidates(
         )
           .bind(userId)
           .first();
-        if (user && user.exchange_name) {
+        if (user && user.exchange_name && normalizeEnvironment(user.exchange_environment)) {
           USER_EXCHANGE_ROUTING_CACHE.set(userId, {
             exchange_name: user.exchange_name,
             exchange_environment: user.exchange_environment,
@@ -1138,7 +1318,33 @@ export async function handleGetPersonalizedMarketCandidates(
         stack: new Error("No exchange connected").stack
       });
     }
-    console.log(`[DIAGNOSTIC] Stage 3: Exchange record loaded: exchange_name=${user.exchange_name}, env=${user.exchange_environment}`);
+    const queryEnvOverride = c.req?.query?.("environment");
+    if (queryEnvOverride !== undefined && !normalizeEnvironment(queryEnvOverride)) {
+      USER_EXCHANGE_ROUTING_CACHE.delete(userId);
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        stage: "3. Exchange record loaded",
+        error: "Invalid or unsupported exchange environment.",
+        message: "Invalid or unsupported exchange environment.",
+      });
+    }
+
+    const canonicalEnv = normalizeEnvironment(user.exchange_environment);
+    if (!canonicalEnv) {
+      USER_EXCHANGE_ROUTING_CACHE.delete(userId);
+      console.error(`[DIAGNOSTIC] Stage 3 FAILED: Invalid or missing exchange_environment for userId=${userId}`);
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        stage: "3. Exchange record loaded",
+        error: "Exchange environment is missing or invalid. Please reconnect your exchange account.",
+        message: "Exchange environment is missing or invalid. Please reconnect your exchange account.",
+      });
+    }
+    console.log(`[DIAGNOSTIC] Stage 3: Exchange record loaded: exchange_name=${user.exchange_name}, env=${canonicalEnv}`);
 
     const queryBudget = c.req.query("budget");
     const parsedBudget = queryBudget ? parseFloat(queryBudget) : null;
@@ -1154,7 +1360,6 @@ export async function handleGetPersonalizedMarketCandidates(
     const userAllocation = parsedBudget;
     const queryOrderType = String(c.req.query("orderType") || "ALL").toUpperCase();
     const canonicalExchange = String(user.exchange_name || "bybit").toLowerCase();
-    const canonicalEnv = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
     const canonicalRegion = resolveCanonicalRoutingRegion(user.exchange_region);
     const baseCacheKey = `${userId}_${canonicalExchange}_${canonicalEnv}_${canonicalRegion}_${queryOrderType}_${String(userAllocation)}`;
 
@@ -1204,7 +1409,7 @@ export async function handleGetPersonalizedMarketCandidates(
     // Stage 7: fetchTickers completed via PublicMarketDataService & anonymous adapter
     currentStage = "7. fetchTickers completed";
     const exchangeName = (user.exchange_name || "bybit") as ExchangeName;
-    const environment = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
+    const environment = canonicalEnv;
     const region = resolveCanonicalRoutingRegion(user.exchange_region);
     const publicService = PublicMarketDataService.getInstance();
     const publicAdapter = await ExchangeManager.getProvider(exchangeName, {
@@ -1738,7 +1943,16 @@ export async function handleGetMarketOpportunities(
 
     const rawExchangeName = typeof user?.exchange_name === "string" ? user.exchange_name.toLowerCase().trim() : "";
     const exchangeName: ExchangeName = (rawExchangeName as ExchangeName) || "bybit";
-    const environment = normalizeEnvironment(user?.exchange_environment) ?? "mainnet";
+    const environment = normalizeEnvironment(user?.exchange_environment);
+    if (!environment) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        error: "Exchange environment is missing or invalid. Please connect an exchange first.",
+        message: "Exchange environment is missing or invalid. Please connect an exchange first.",
+      });
+    }
     const region = resolveCanonicalRoutingRegion(user?.exchange_region);
 
     const publicCacheKey = buildPublicOpportunityCacheKey(
@@ -1900,7 +2114,15 @@ export async function handleGetTicker(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const normEnv = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
+    const normEnv = normalizeEnvironment(user.exchange_environment);
+    if (!normEnv) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        error: "Exchange environment is missing or invalid. Please reconnect your exchange first.",
+      });
+    }
     const normReg = resolveCanonicalRoutingRegion(user.exchange_region);
     const tickerCacheKey = `${user.exchange_name}:${normEnv}:${normReg}:${symbol}`;
     const cachedTicker = TICKER_CACHE.get(tickerCacheKey);
@@ -1997,7 +2219,15 @@ export async function handleGetKlines(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
-    const normEnv = normalizeEnvironment(user.exchange_environment) ?? "mainnet";
+    const normEnv = normalizeEnvironment(user.exchange_environment);
+    if (!normEnv) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        error: "Exchange environment is missing or invalid. Please reconnect your exchange first.",
+      });
+    }
     const normReg = resolveCanonicalRoutingRegion(user.exchange_region);
     const klinesCacheKey = `${user.exchange_name}:${normEnv}:${normReg}:${symbol}:${interval}:${limit}`;
     const cachedKlines = KLINES_CACHE.get(klinesCacheKey);
@@ -2037,6 +2267,34 @@ export async function handleGetTechnicalAnalysis(
     if (!symbol || !strategy) {
       c.status(400);
       return c.json({ error: "symbol and strategy are required" });
+    }
+
+    if (config && config.environment !== undefined && !normalizeEnvironment(config.environment)) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        error: "Invalid or unsupported exchange environment.",
+        message: "Invalid or unsupported exchange environment.",
+      });
+    }
+
+    // Fail closed if the user's exchange record has a missing, blank, null, or unsupported environment
+    if (c.env.DB) {
+      try {
+        const preCheckUser = await c.env.DB.prepare(
+          "SELECT exchange_name, exchange_environment FROM users WHERE id = ?"
+        ).bind(userId).first<{ exchange_name: string | null; exchange_environment: string | null }>();
+        if (preCheckUser && preCheckUser.exchange_name && !normalizeEnvironment(preCheckUser.exchange_environment)) {
+          c.status(400);
+          return c.json({
+            success: false,
+            code: "INVALID_ENVIRONMENT",
+            error: "Exchange environment is missing or invalid. Please reconnect your exchange first.",
+            message: "Exchange environment is missing or invalid. Please reconnect your exchange first.",
+          });
+        }
+      } catch (_) {}
     }
 
     // Authoritative Single-Brain Projection: Proxy analysis snapshot from user's TradingBot DO
@@ -2120,6 +2378,17 @@ export async function handleGetTechnicalAnalysis(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
+    const normEnv = normalizeEnvironment(user.exchange_environment);
+    if (!normEnv) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        error: "Exchange environment is missing or invalid. Please reconnect your exchange first.",
+        message: "Exchange environment is missing or invalid. Please reconnect your exchange first.",
+      });
+    }
+
     let apiKey: string | undefined = undefined;
     if (c.env.ENCRYPTION_KEY && user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
       try {
@@ -2163,7 +2432,7 @@ export async function handleGetTechnicalAnalysis(
     }
 
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
+      environment: normEnv,
       apiKey,
       secret,
       password,
@@ -2716,6 +2985,17 @@ export async function handleTriggerManualTradeAlert(
       return c.json({ error: "No exchange connected. Please connect an exchange first." });
     }
 
+    const normEnv = normalizeEnvironment(user.exchange_environment);
+    if (!normEnv) {
+      c.status(400);
+      return c.json({
+        success: false,
+        code: "INVALID_ENVIRONMENT",
+        error: "Exchange environment is missing or invalid. Please reconnect your exchange first.",
+        message: "Exchange environment is missing or invalid. Please reconnect your exchange first.",
+      });
+    }
+
     let apiKey: string | undefined = undefined;
     if (c.env.ENCRYPTION_KEY && user.exchange_api_key_iv && user.exchange_api_key_encrypted) {
       apiKey = await decrypt(
@@ -2743,7 +3023,7 @@ export async function handleTriggerManualTradeAlert(
     }
 
     const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normalizeEnvironment(user.exchange_environment) ?? "mainnet",
+      environment: normEnv,
       apiKey,
       secret,
       password,

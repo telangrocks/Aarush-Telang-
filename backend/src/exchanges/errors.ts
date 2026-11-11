@@ -14,6 +14,9 @@ export type ExchangeErrorCode =
   | "SPOT_TRADING_NOT_ENABLED"
   | "PERMISSION_DENIED"
   | "READ_ONLY_API_KEY"
+  | "WITHDRAWAL_PERMISSION_FORBIDDEN"
+  | "PERMISSION_VERIFICATION_FAILED"
+  | "INVALID_ENVIRONMENT"
   | "INVALID_SIGNATURE"
   | "TIMESTAMP_OUT_OF_SYNC"
   | "ACCOUNT_SUSPENDED"
@@ -55,6 +58,21 @@ export const FRIENDLY_MESSAGES: Record<ExchangeErrorCode, ExchangeErrorInfo> = {
     code: "READ_ONLY_API_KEY",
     friendlyMessage: "Your Bybit API key is Read-Only. Trading permissions are required.",
     hint: "Please generate or update your Bybit API key with 'Trade' permissions (Orders and Positions) enabled.",
+  },
+  WITHDRAWAL_PERMISSION_FORBIDDEN: {
+    code: "WITHDRAWAL_PERMISSION_FORBIDDEN",
+    friendlyMessage: "Security Policy Violation: API keys with withdrawal permission enabled are rejected. CryptoPulse never requires withdrawal access.",
+    hint: "Disable 'Withdraw' permission on your Bybit API key (or create a new key with only Read and Orders/Positions enabled) and reconnect.",
+  },
+  PERMISSION_VERIFICATION_FAILED: {
+    code: "PERMISSION_VERIFICATION_FAILED",
+    friendlyMessage: "Unable to verify API key permissions from exchange response. Connection rejected for safety.",
+    hint: "Ensure your Bybit API key is valid and returns a standard V5 permission set without withdrawal access.",
+  },
+  INVALID_ENVIRONMENT: {
+    code: "INVALID_ENVIRONMENT",
+    friendlyMessage: "The specified exchange environment is missing or unsupported.",
+    hint: "Select a valid exchange environment ('demo' or 'mainnet') and try again.",
   },
   INVALID_API_KEY: {
     code: "INVALID_API_KEY",

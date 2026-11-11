@@ -81,9 +81,14 @@ export class ExchangeManager {
    * Creates a fresh, uncached Exchange Provider instance for validation flows.
    */
   public static async createUncachedProvider(exchangeId: string, config: ProviderConfig): Promise<IExchangeProvider> {
+    const canonicalEnv = ExchangeRoutingResolver.getCanonicalEnvironment(config?.environment);
+    const normalizedConfig: ProviderConfig = {
+      ...config,
+      environment: canonicalEnv,
+    };
     const provider = ExchangeRegistry.create(exchangeId);
     const res = await this.orchestrator.execute(provider, 'connect', async (p) => {
-      await p.connect(config);
+      await p.connect(normalizedConfig);
     });
     if (res.isFailure) {
       throw new Error(res.error.message);
