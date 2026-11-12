@@ -1,7 +1,7 @@
 import { Env } from './index';
 import { ExchangeManager, ExchangeName, ExchangeEnvironment } from './exchanges';
 import { ValidationErrorReason } from './exchanges/types';
-import { PriceNormalizer } from './utils/PriceNormalizer';
+import { PriceNormalizer, NormalizedPrices } from './utils/PriceNormalizer';
 import { Ticker } from './exchanges/models/NormalizedDomain';
 import BigNumber from 'bignumber.js';
 
@@ -3340,17 +3340,51 @@ export class TradingBot {
                 triggerPrice = PriceNormalizer.normalizeLimitPrice(triggerPrice, tickSize, targetSideEnum);
               }
 
-              if (target.takeProfit !== undefined || target.stopLoss !== undefined) {
-                const normResult = PriceNormalizer.normalizeTradePrices({
-                  entryPrice: limitPrice || triggerPrice || currentPrice,
-                  theoreticalSL: target.stopLoss !== undefined ? target.stopLoss : (targetSideEnum === 'BUY' ? currentPrice * 0.9 : currentPrice * 1.1),
-                  theoreticalTP: target.takeProfit !== undefined ? target.takeProfit : (targetSideEnum === 'BUY' ? currentPrice * 1.1 : currentPrice * 0.9),
-                  tickSize: tickSize,
-                  minAllowedPrice: tickSize,
-                  side: targetSideEnum
-                });
-                if (target.takeProfit !== undefined) target.takeProfit = normResult.takeProfit;
-                if (target.stopLoss !== undefined) target.stopLoss = normResult.stopLoss;
+              // Strict Execution Protection: Validate that approved SL and TP remain valid relative to current market price
+              // Never silently modify approved SL or TP! Reject with HTTP 409 if market price has breached boundaries.
+              const isExecutionBuy = targetSideEnum === 'BUY';
+              if (isExecutionBuy) {
+                if (target.stopLoss !== undefined && currentPrice <= target.stopLoss) {
+                  console.error(`[SAFETY GATE: FATAL] Execution rejected: Current market price ($${currentPrice}) has breached or equaled approved Stop Loss ($${target.stopLoss}) for BUY on ${orderSymbol}. AlertId: ${target.id}`);
+                  await releasePreReservation('PRICE_BREACHED_STOP_LOSS');
+                  return new Response(JSON.stringify({
+                    success: false,
+                    code: 'PRICE_BREACHED_STOP_LOSS',
+                    error: 'PRICE_BREACHED_STOP_LOSS',
+                    message: `Execution rejected: Current market price ($${currentPrice}) has breached the approved Stop Loss ($${target.stopLoss}). A fresh TradeAlert is required.`
+                  }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+                }
+                if (target.takeProfit !== undefined && currentPrice >= target.takeProfit) {
+                  console.error(`[SAFETY GATE: FATAL] Execution rejected: Current market price ($${currentPrice}) has reached or exceeded approved Take Profit ($${target.takeProfit}) for BUY on ${orderSymbol}. AlertId: ${target.id}`);
+                  await releasePreReservation('PRICE_BREACHED_TAKE_PROFIT');
+                  return new Response(JSON.stringify({
+                    success: false,
+                    code: 'PRICE_BREACHED_TAKE_PROFIT',
+                    error: 'PRICE_BREACHED_TAKE_PROFIT',
+                    message: `Execution rejected: Current market price ($${currentPrice}) has reached the approved Take Profit ($${target.takeProfit}). A fresh TradeAlert is required.`
+                  }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+                }
+              } else {
+                if (target.stopLoss !== undefined && currentPrice >= target.stopLoss) {
+                  console.error(`[SAFETY GATE: FATAL] Execution rejected: Current market price ($${currentPrice}) has breached or equaled approved Stop Loss ($${target.stopLoss}) for SELL on ${orderSymbol}. AlertId: ${target.id}`);
+                  await releasePreReservation('PRICE_BREACHED_STOP_LOSS');
+                  return new Response(JSON.stringify({
+                    success: false,
+                    code: 'PRICE_BREACHED_STOP_LOSS',
+                    error: 'PRICE_BREACHED_STOP_LOSS',
+                    message: `Execution rejected: Current market price ($${currentPrice}) has breached the approved Stop Loss ($${target.stopLoss}). A fresh TradeAlert is required.`
+                  }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+                }
+                if (target.takeProfit !== undefined && currentPrice <= target.takeProfit) {
+                  console.error(`[SAFETY GATE: FATAL] Execution rejected: Current market price ($${currentPrice}) has reached or fallen below approved Take Profit ($${target.takeProfit}) for SELL on ${orderSymbol}. AlertId: ${target.id}`);
+                  await releasePreReservation('PRICE_BREACHED_TAKE_PROFIT');
+                  return new Response(JSON.stringify({
+                    success: false,
+                    code: 'PRICE_BREACHED_TAKE_PROFIT',
+                    error: 'PRICE_BREACHED_TAKE_PROFIT',
+                    message: `Execution rejected: Current market price ($${currentPrice}) has reached the approved Take Profit ($${target.takeProfit}). A fresh TradeAlert is required.`
+                  }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+                }
               }
 
               // [SAFETY GATE: MANDATORY APPROVED QUANTITY INVARIANT BEFORE TRADE VALIDATION]
@@ -7085,11 +7119,117 @@ export class TradingBot {
                         const targetEntryPrice = setupSnapshot?.targetEntryPrice ?? ((await this.state.storage.get('targetEntryPrice')) as number | undefined);
                         const alertSignalPrice = sig.signalPrice || price;
                         const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
-                        const alertStopLoss = sig.stopLoss || alertSignalPrice * 0.99;
-                        const alertTakeProfit = sig.takeProfit || alertSignalPrice * 1.01;
-                        const estimatedPnl = Math.abs(alertTakeProfit - alertSignalPrice) * (alertSignalPrice > 0 ? size / alertSignalPrice : 0);
 
-                        // --- AUTONOMOUS TICKSIZE NORMALIZATION FIX (Single-Symbol Lookup with Stage 1 Hoisting) ---
+                        // 1. Strict Signal Price & Direction Validation
+                        const isBuySignal = (sig.type as 'BUY' | 'SELL') === 'BUY';
+                        const isSellSignal = (sig.type as 'BUY' | 'SELL') === 'SELL';
+                        if ((!isBuySignal && !isSellSignal) || !Number.isFinite(alertSignalPrice) || alertSignalPrice <= 0) {
+                          alertIsExecutable = false;
+                          alertIneligibilityReason = 'INVALID_SIGNAL_PARAMETERS';
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INVALID_SIGNAL_PARAMETERS');
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            symbol: currentSymbol,
+                            strategyId: alertStrategyKey,
+                            payload: {
+                              passed: false,
+                              gate: 'INVALID_SIGNAL_PARAMETERS',
+                              signalType: sig.type,
+                              signalPrice: alertSignalPrice,
+                              rejectionReason: 'Signal missing valid direction or positive entry price'
+                            }
+                          });
+                          console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) rejected: Invalid signal parameters (type: ${sig.type}, price: ${alertSignalPrice}). Skipping alert creation.`);
+                          break;
+                        }
+
+                        // 2. Strict Strategy-Derived Risk Distance Extraction (Zero Generic Fallbacks)
+                        let rawSlDist: number | null = null;
+                        const hasExplicitSl = sig.stopLoss !== undefined && sig.stopLoss !== null;
+                        if (hasExplicitSl) {
+                          const isSlFiniteNumber = typeof sig.stopLoss === 'number' && Number.isFinite(sig.stopLoss) && sig.stopLoss > 0;
+                          const isSlValidSide = isBuySignal ? (sig.stopLoss < alertSignalPrice) : (sig.stopLoss > alertSignalPrice);
+                          if (isSlFiniteNumber && isSlValidSide) {
+                            if (sig.riskAssessment && typeof sig.riskAssessment.stopLossDistance === 'number' && Number.isFinite(sig.riskAssessment.stopLossDistance) && sig.riskAssessment.stopLossDistance > 0) {
+                              rawSlDist = sig.riskAssessment.stopLossDistance;
+                            } else {
+                              rawSlDist = isBuySignal ? (alertSignalPrice - sig.stopLoss) : (sig.stopLoss - alertSignalPrice);
+                            }
+                          } else {
+                            // Explicit SL supplied but invalid, non-finite, non-positive, or on wrong side -> STRICT REJECTION
+                            rawSlDist = null;
+                          }
+                        } else {
+                          // SL genuinely absent -> use valid positive finite riskAssessment distance if available
+                          if (sig.riskAssessment && typeof sig.riskAssessment.stopLossDistance === 'number' && Number.isFinite(sig.riskAssessment.stopLossDistance) && sig.riskAssessment.stopLossDistance > 0) {
+                            rawSlDist = sig.riskAssessment.stopLossDistance;
+                          }
+                        }
+
+                        let rawTpDist: number | null = null;
+                        const hasExplicitTp = sig.takeProfit !== undefined && sig.takeProfit !== null;
+                        if (hasExplicitTp) {
+                          const isTpFiniteNumber = typeof sig.takeProfit === 'number' && Number.isFinite(sig.takeProfit) && sig.takeProfit > 0;
+                          const isTpValidSide = isBuySignal ? (sig.takeProfit > alertSignalPrice) : (sig.takeProfit < alertSignalPrice);
+                          if (isTpFiniteNumber && isTpValidSide) {
+                            if (sig.riskAssessment && typeof sig.riskAssessment.takeProfitDistance === 'number' && Number.isFinite(sig.riskAssessment.takeProfitDistance) && sig.riskAssessment.takeProfitDistance > 0) {
+                              rawTpDist = sig.riskAssessment.takeProfitDistance;
+                            } else {
+                              rawTpDist = isBuySignal ? (sig.takeProfit - alertSignalPrice) : (alertSignalPrice - sig.takeProfit);
+                            }
+                          } else {
+                            // Explicit TP supplied but invalid, non-finite, non-positive, or on wrong side -> STRICT REJECTION
+                            rawTpDist = null;
+                          }
+                        } else {
+                          // TP genuinely absent -> use valid positive finite riskAssessment distance if available
+                          if (sig.riskAssessment && typeof sig.riskAssessment.takeProfitDistance === 'number' && Number.isFinite(sig.riskAssessment.takeProfitDistance) && sig.riskAssessment.takeProfitDistance > 0) {
+                            rawTpDist = sig.riskAssessment.takeProfitDistance;
+                          }
+                        }
+
+                        // 3. Strict Fail-Closed Gate: Reject missing, invalid, non-positive, NaN, or infinite risk distances
+                        if (
+                          rawSlDist === null ||
+                          rawTpDist === null ||
+                          !Number.isFinite(rawSlDist) ||
+                          !Number.isFinite(rawTpDist) ||
+                          rawSlDist <= 0 ||
+                          rawTpDist <= 0
+                        ) {
+                          alertIsExecutable = false;
+                          alertIneligibilityReason = 'MISSING_STRATEGY_RISK_DISTANCES';
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'MISSING_STRATEGY_RISK_DISTANCES');
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            symbol: currentSymbol,
+                            strategyId: alertStrategyKey,
+                            payload: {
+                              passed: false,
+                              gate: 'MISSING_STRATEGY_RISK_DISTANCES',
+                              signalPrice: alertSignalPrice,
+                              stopLoss: sig.stopLoss,
+                              takeProfit: sig.takeProfit,
+                              riskAssessment: sig.riskAssessment,
+                              rejectionReason: 'Strategy signal missing valid ATR risk distances or has invalid/reversed risk boundaries'
+                            }
+                          });
+                          console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) rejected: Missing or invalid strategy risk distances (SL dist: ${rawSlDist}, TP dist: ${rawTpDist}). Skipping alert creation.`);
+                          break;
+                        }
+
+                        const effectiveSlDistance = rawSlDist;
+                        const effectiveTpDistance = rawTpDist;
+
+                        // --- AUTONOMOUS TICKSIZE AND LOT METADATA RETRIEVAL ---
                         if (!marketFetchAttempted) {
                           marketFetchAttempted = true;
                           hoistedMarket =
@@ -7139,17 +7279,6 @@ export class TradingBot {
 
                         const minAllowedPrice = (minPrice && minPrice > 0) ? minPrice : tickSize;
 
-                        const normalized = PriceNormalizer.normalizeTradePrices({
-                          entryPrice: alertSignalPrice,
-                          theoreticalSL: alertStopLoss,
-                          theoreticalTP: alertTakeProfit,
-                          tickSize,
-                          minAllowedPrice,
-                          side: sig.type as 'BUY' | 'SELL'
-                        });
-                        // ---------------------------------------------
-
-                        // --- AUTONOMOUS EXECUTION ELIGIBILITY EVALUATION ---
                         let stepSize: number | undefined;
                         let minOrderQty: number | undefined;
                         let minNotional: number | undefined;
@@ -7198,6 +7327,9 @@ export class TradingBot {
 
                         let eligibilityResult: any = null;
                         let freshTickerPrice: number | null = null;
+                        let normalized: NormalizedPrices | null = null;
+                        let approvedAlertEntryPrice: number | null = null;
+
                         if (alertIsExecutable) {
                           const isLotMetadataValid =
                             stepSize !== undefined && Number.isFinite(stepSize) && stepSize > 0 &&
@@ -7215,7 +7347,7 @@ export class TradingBot {
                             const validStepSize = stepSize!;
                             const validMinOrderQty = minOrderQty!;
 
-                            // Requirement 1 & 2: Fetch latest Bybit ticker immediately before ExecutionEligibilityGate.evaluate()
+                            // Fetch latest Bybit ticker immediately before alert-price anchoring and eligibility evaluation
                             try {
                               const freshTicker = await adapter.fetchTicker(currentSymbol);
                               const rawPrice = (typeof (freshTicker as any)?.last?.toNumber === 'function')
@@ -7251,9 +7383,61 @@ export class TradingBot {
                               break;
                             }
 
+                            // Re-anchor strategy SL and TP distances to the fresh ticker price
+                            const resolvedEntryPrice = (isLimitAlert && alertTargetPrice !== undefined && alertTargetPrice > 0)
+                              ? alertTargetPrice
+                              : freshTickerPrice;
+                            approvedAlertEntryPrice = resolvedEntryPrice;
+                            const theoreticalSL = isBuySignal
+                              ? (resolvedEntryPrice - effectiveSlDistance)
+                              : (resolvedEntryPrice + effectiveSlDistance);
+                            const theoreticalTP = isBuySignal
+                              ? (resolvedEntryPrice + effectiveTpDistance)
+                              : (resolvedEntryPrice - effectiveTpDistance);
+
+                            // Normalize Entry, SL and TP using the instrument's actual Bybit tick size
+                            normalized = PriceNormalizer.normalizeTradePrices({
+                              entryPrice: resolvedEntryPrice,
+                              theoreticalSL,
+                              theoreticalTP,
+                              tickSize,
+                              minAllowedPrice,
+                              side: sig.type as 'BUY' | 'SELL'
+                            });
+
+                            // Validate that Entry, SL and TP are valid and strictly on the correct sides of Entry
+                            const isValidRiskBoundaries = isBuySignal
+                              ? (normalized.stopLoss < resolvedEntryPrice && resolvedEntryPrice < normalized.takeProfit && normalized.stopLoss >= minAllowedPrice)
+                              : (normalized.takeProfit < resolvedEntryPrice && resolvedEntryPrice < normalized.stopLoss && normalized.takeProfit >= minAllowedPrice);
+
+                            if (!isValidRiskBoundaries) {
+                              alertIsExecutable = false;
+                              alertIneligibilityReason = 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE';
+                              recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE');
+                              this.telemetrySink.emit({
+                                userId,
+                                category: 'SAFETY',
+                                component: 'TradingBot',
+                                eventName: 'FINAL_DISPATCH_GATE',
+                                severity: 'WARN',
+                                symbol: currentSymbol,
+                                strategyId: alertStrategyKey,
+                                payload: {
+                                  passed: false,
+                                  gate: 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE',
+                                  currentPrice: resolvedEntryPrice,
+                                  stopLoss: normalized.stopLoss,
+                                  takeProfit: normalized.takeProfit,
+                                  rejectionReason: 'Fresh price invalidates intended risk boundaries (SL or TP crossed entry)'
+                                }
+                              });
+                              console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) rejected: Fresh price ($${resolvedEntryPrice}) invalidates risk boundaries (SL=$${normalized.stopLoss}, TP=$${normalized.takeProfit}). Skipping alert creation.`);
+                              break;
+                            }
+
                             eligibilityResult = ExecutionEligibilityGate.evaluate({
                               tradeAmountUsdt: size,
-                              currentPrice: freshTickerPrice,
+                              currentPrice: resolvedEntryPrice,
                               qtyStep: validStepSize,
                               minOrderQty: validMinOrderQty,
                               minNotional: resolvedMinNotional,
@@ -7275,7 +7459,7 @@ export class TradingBot {
                                   passed: false,
                                   gate: 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE',
                                   budget: size,
-                                  currentPrice: freshTickerPrice,
+                                  currentPrice: approvedAlertEntryPrice,
                                   qtyStep: validStepSize,
                                   rejectionReason: eligibilityResult.rejectionReason,
                                 }
@@ -7370,8 +7554,8 @@ export class TradingBot {
                           ? eligibilityResult.postRoundingNotional
                           : (alertIsExecutable ? size : undefined);
 
-                        const effectiveAlertEstimatedPnl = alertIsExecutable
-                          ? Math.abs(alertTakeProfit - alertSignalPrice) * (eligibilityResult?.quantizedQty ?? (alertSignalPrice > 0 ? size / alertSignalPrice : 0))
+                        const effectiveAlertEstimatedPnl = (alertIsExecutable && normalized && approvedAlertEntryPrice)
+                          ? Math.abs(normalized.takeProfit - approvedAlertEntryPrice) * (eligibilityResult?.quantizedQty ?? (approvedAlertEntryPrice > 0 ? size / approvedAlertEntryPrice : 0))
                           : undefined;
 
                         recordStrategyStatus(result.strategyId, 'TRADE_QUALIFIED');
@@ -7380,9 +7564,9 @@ export class TradingBot {
                           symbol: currentSymbol,
                           signalPrice: alertSignalPrice,
                           targetEntryPrice: alertTargetPrice,
-                          entryPrice: freshTickerPrice || alertSignalPrice,
-                          stopLoss: normalized.stopLoss,
-                          takeProfit: normalized.takeProfit,
+                          entryPrice: approvedAlertEntryPrice || alertSignalPrice,
+                          stopLoss: normalized!.stopLoss,
+                          takeProfit: normalized!.takeProfit,
                           estimatedPnl: effectiveAlertEstimatedPnl,
                           positionSize: effectiveAlertPositionSize,
                           quantity: alertIsExecutable ? eligibilityResult?.quantizedQty : undefined,

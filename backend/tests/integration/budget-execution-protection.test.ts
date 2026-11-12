@@ -385,5 +385,158 @@ describe('Budget-to-Execution Protection and Ticker Verification Gates', () => {
       expect(data.stopLoss).toBe(0.23);
       expect(data.takeProfit).toBe(0.20);
     });
+
+    it('rejects execution with HTTP 409 PRICE_BREACHED_STOP_LOSS when market price breaches stop loss before BUY execution', async () => {
+      const alert: TradeAlert = {
+        id: 'alert_sl_breach',
+        symbol: 'INIT/USDT',
+        signalPrice: 0.22,
+        entryPrice: 0.22,
+        stopLoss: 0.21,
+        takeProfit: 0.25,
+        estimatedPnl: 1.37,
+        positionSize: 10.0,
+        requestedBudget: 10.0,
+        quantity: 45,
+        effectiveNotional: 9.9,
+        strategy: 'ScalperV2',
+        side: 'BUY',
+        timestamp: new Date().toISOString(),
+        status: 'pending',
+        generation: 1,
+        source: 'AUTONOMOUS',
+      };
+      mockStorage.set('alerts', [alert]);
+
+      // Price drops to or below Stop Loss (0.209 <= 0.21)
+      mockAdapter.fetchTicker.mockResolvedValue({ last: 0.209 });
+
+      const req = new Request('http://bot/execute-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          alertId: 'alert_sl_breach',
+          symbol: 'INIT/USDT',
+          side: 'BUY',
+          quantity: 45,
+          positionSizeUsdt: 10.0,
+          entryIntent: 'IMMEDIATE',
+          requireApprovedQuantity: true,
+        }),
+      });
+
+      const res = await bot.fetch(req);
+      expect(res.status).toBe(409);
+      const data = await res.json<any>();
+      expect(data.code).toBe('PRICE_BREACHED_STOP_LOSS');
+      expect(data.error).toBe('PRICE_BREACHED_STOP_LOSS');
+      expect(ExchangeManager.executeIdempotentOrder).not.toHaveBeenCalled();
+
+      const storedAlerts = mockStorage.get('alerts');
+      expect(storedAlerts[0].status).toBe('failed');
+    });
+
+    it('rejects execution with HTTP 409 PRICE_BREACHED_TAKE_PROFIT when market price breaches take profit before BUY execution', async () => {
+      const alert: TradeAlert = {
+        id: 'alert_tp_breach',
+        symbol: 'INIT/USDT',
+        signalPrice: 0.22,
+        entryPrice: 0.22,
+        stopLoss: 0.21,
+        takeProfit: 0.25,
+        estimatedPnl: 1.37,
+        positionSize: 10.0,
+        requestedBudget: 10.0,
+        quantity: 40,
+        effectiveNotional: 8.8,
+        strategy: 'ScalperV2',
+        side: 'BUY',
+        timestamp: new Date().toISOString(),
+        status: 'pending',
+        generation: 1,
+        source: 'AUTONOMOUS',
+      };
+      mockStorage.set('alerts', [alert]);
+
+      // Price moves to or above Take Profit (0.251 >= 0.25)
+      // Note: 40 * 0.251 = 10.04 > 10, so let's make quantity 35 so budget is 35 * 0.251 = 8.785 <= 10.0
+      // That isolates the TP breach check
+      alert.quantity = 35;
+      mockAdapter.fetchTicker.mockResolvedValue({ last: 0.251 });
+
+      const req = new Request('http://bot/execute-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          alertId: 'alert_tp_breach',
+          symbol: 'INIT/USDT',
+          side: 'BUY',
+          quantity: 35,
+          positionSizeUsdt: 10.0,
+          entryIntent: 'IMMEDIATE',
+          requireApprovedQuantity: true,
+        }),
+      });
+
+      const res = await bot.fetch(req);
+      expect(res.status).toBe(409);
+      const data = await res.json<any>();
+      expect(data.code).toBe('PRICE_BREACHED_TAKE_PROFIT');
+      expect(data.error).toBe('PRICE_BREACHED_TAKE_PROFIT');
+      expect(ExchangeManager.executeIdempotentOrder).not.toHaveBeenCalled();
+
+      const storedAlerts = mockStorage.get('alerts');
+      expect(storedAlerts[0].status).toBe('failed');
+    });
+
+    it('rejects execution with HTTP 409 PRICE_BREACHED_STOP_LOSS when market price breaches stop loss before SELL execution', async () => {
+      const alert: TradeAlert = {
+        id: 'alert_sell_sl_breach',
+        symbol: 'INIT/USDT',
+        signalPrice: 0.22,
+        entryPrice: 0.22,
+        stopLoss: 0.23,
+        takeProfit: 0.20,
+        estimatedPnl: 0.90,
+        positionSize: 10.0,
+        requestedBudget: 10.0,
+        quantity: 40,
+        effectiveNotional: 8.8,
+        strategy: 'ScalperV2',
+        side: 'SELL',
+        timestamp: new Date().toISOString(),
+        status: 'pending',
+        generation: 1,
+        source: 'AUTONOMOUS',
+      };
+      mockStorage.set('alerts', [alert]);
+
+      // For SELL, price rising to or above SL breaches SL: 0.231 >= 0.23
+      mockAdapter.fetchTicker.mockResolvedValue({ last: 0.231 });
+
+      const req = new Request('http://bot/execute-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          alertId: 'alert_sell_sl_breach',
+          symbol: 'INIT/USDT',
+          side: 'SELL',
+          quantity: 40,
+          positionSizeUsdt: 10.0,
+          entryIntent: 'IMMEDIATE',
+          requireApprovedQuantity: true,
+        }),
+      });
+
+      const res = await bot.fetch(req);
+      expect(res.status).toBe(409);
+      const data = await res.json<any>();
+      expect(data.code).toBe('PRICE_BREACHED_STOP_LOSS');
+      expect(data.error).toBe('PRICE_BREACHED_STOP_LOSS');
+      expect(ExchangeManager.executeIdempotentOrder).not.toHaveBeenCalled();
+
+      const storedAlerts = mockStorage.get('alerts');
+      expect(storedAlerts[0].status).toBe('failed');
+    });
   });
 });

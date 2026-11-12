@@ -271,4 +271,36 @@ class TradeAlertMetadataTest {
         val exactDiff = 500.0 - 500.0
         assertFalse(exactDiff > 0.5)
     }
+
+    // ── 7. Price Display Precision by Bybit Tick Size ───────────────────────────
+
+    @Test
+    fun testFormatPrice_preservesExactBybitTickSizePrecision_INIT() {
+        val tickSize = 0.00001 // INIT 5 decimals
+        assertEquals("0.21949", formatPrice(0.21949, tickSize))
+        assertEquals("0.21729", formatPrice(0.21729, tickSize))
+        assertEquals("0.22607", formatPrice(0.22607, tickSize))
+    }
+
+    @Test
+    fun testFormatPrice_preservesExactBybitTickSizePrecision_PEPE() {
+        val tickSize = 0.000001 // 1000PEPE 6 decimals
+        assertEquals("0.005374", formatPrice(0.005374, tickSize))
+        assertEquals("0.005535", formatPrice(0.005535, tickSize))
+        assertEquals("0.005320", formatPrice(0.005320, tickSize))
+    }
+
+    @Test
+    fun testFormatPrice_preservesExactBybitTickSizePrecision_SOL_and_BTC() {
+        assertEquals("83.55", formatPrice(83.55, 0.01))
+        assertEquals("95432.1", formatPrice(95432.1, 0.1))
+        assertEquals("100", formatPrice(100.0, 1.0))
+    }
+
+    @Test
+    fun testFormatPrice_fallbackWithoutTickSize_doesNotTruncate() {
+        assertEquals("0.21949", formatPrice(0.21949, null))
+        assertEquals("0.005374", formatPrice(0.005374, null))
+        assertEquals("0.00", formatPrice(0.0, null))
+    }
 }

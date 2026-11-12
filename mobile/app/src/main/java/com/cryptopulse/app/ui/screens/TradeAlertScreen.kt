@@ -669,7 +669,7 @@ fun TradeAlertScreen(
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
                                 // 4. Entry Price
-                                SummaryRow("Entry Price", "${formatPrice(entryPrice)} USDT", Color.White, "trade_alert_entry")
+                                SummaryRow("Entry Price", "${formatPrice(entryPrice, candidate.tickSize)} USDT", Color.White, "trade_alert_entry")
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
                                 // 5. Requested Budget
@@ -697,11 +697,11 @@ fun TradeAlertScreen(
                                 }
 
                                 // 8. Stop Loss
-                                SummaryRow("Stop Loss", "${formatPrice(stopLossPrice)} USDT", Color(0xFFFF3D57), "trade_alert_stop_loss")
+                                SummaryRow("Stop Loss", "${formatPrice(stopLossPrice, candidate.tickSize)} USDT", Color(0xFFFF3D57), "trade_alert_stop_loss")
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
                                 // 9. Take Profit
-                                SummaryRow("Take Profit", "${formatPrice(takeProfitPrice)} USDT", Color(0xFF00FFA3), "trade_alert_take_profit")
+                                SummaryRow("Take Profit", "${formatPrice(takeProfitPrice, candidate.tickSize)} USDT", Color(0xFF00FFA3), "trade_alert_take_profit")
                                 HorizontalDivider(color = Color(0x22142B47), thickness = 0.8.dp)
 
                                 // 10. Estimated P&L
@@ -765,15 +765,17 @@ fun TradeAlertScreen(
     }
 }
 
-private fun formatPrice(price: Double): String {
-    return when {
-        price <= 0.0 -> "0.00"
-        price < 0.0001 -> "%.8f".format(price)
-        price < 0.01 -> "%.6f".format(price)
-        price < 1.0 -> "%.4f".format(price)
-        price < 10.0 -> "%.3f".format(price)
-        else -> "%.2f".format(price)
+internal fun formatPrice(price: Double, tickSize: Double? = null): String {
+    if (price <= 0.0 || !price.isFinite()) return "0.00"
+    if (tickSize != null && tickSize.isFinite() && tickSize > 0.0) {
+        val tickStr = java.math.BigDecimal.valueOf(tickSize).stripTrailingZeros().toPlainString()
+        val decimals = if (tickStr.contains(".")) tickStr.substringAfter(".").length else 0
+        return String.format(java.util.Locale.US, "%.${decimals}f", price)
     }
+    val priceStr = java.math.BigDecimal.valueOf(price).stripTrailingZeros().toPlainString()
+    val naturalDecimals = if (priceStr.contains(".")) priceStr.substringAfter(".").length else 2
+    val targetDecimals = naturalDecimals.coerceIn(2, 8)
+    return String.format(java.util.Locale.US, "%.${targetDecimals}f", price)
 }
 
 @Composable

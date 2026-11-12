@@ -14,47 +14,49 @@ vi.mock("../../src/crypto", () => ({
 // Mock exchanges adapter with multi-market support
 const mockFetchMarket = vi.fn();
 const mockFetchMarkets = vi.fn();
+const mockFetchKlines = vi.fn().mockImplementation((sym: string) => {
+  const basePrice = sym.includes('GRAM') ? 1.249 : 50000;
+  const step = sym.includes('GRAM') ? 0.01 : 10.0;
+  const now = Date.now();
+  const stepMs = 3600000;
+  return Promise.resolve(
+    Array.from({ length: 60 }, (_, i) => {
+      const openTime = now - (60 - i) * stepMs;
+      const price = basePrice + i * step;
+      return {
+        openTime,
+        timestamp: openTime,
+        closeTime: openTime + stepMs,
+        open: price,
+        high: price + step * 0.5,
+        low: price - step * 0.5,
+        close: price,
+        volume: 1000
+      };
+    })
+  );
+});
+const mockFetchTicker = vi.fn().mockImplementation((sym: string) => {
+  const price = sym.includes('GRAM') ? 1.249 : 50000;
+  return Promise.resolve({
+    symbol: sym.replace('/', ''),
+    last: price,
+    bid: price * 0.999,
+    ask: price * 1.001,
+    high: price * 1.05,
+    low: price * 0.95,
+    volume: 1000,
+    quoteVolume: 5000000
+  });
+});
 vi.mock("../../src/exchanges", async (importOriginal) => {
   const actual: any = await importOriginal();
   return {
     ...actual,
     ExchangeManager: {
       getProvider: vi.fn().mockResolvedValue({
-        fetchTicker: vi.fn().mockImplementation((sym: string) => {
-          const price = sym.includes('GRAM') ? 1.249 : 50000;
-          return Promise.resolve({
-            symbol: sym.replace('/', ''),
-            last: price,
-            bid: price * 0.999,
-            ask: price * 1.001,
-            high: price * 1.05,
-            low: price * 0.95,
-            volume: 1000,
-            quoteVolume: 5000000
-          });
-        }),
-        fetchKlines: vi.fn().mockImplementation((sym: string) => {
-          const basePrice = sym.includes('GRAM') ? 1.249 : 50000;
-          const step = sym.includes('GRAM') ? 0.01 : 10.0;
-          const now = Date.now();
-          const stepMs = 3600000;
-          return Promise.resolve(
-            Array.from({ length: 60 }, (_, i) => {
-              const openTime = now - (60 - i) * stepMs;
-              const price = basePrice + i * step;
-              return {
-                openTime,
-                timestamp: openTime,
-                closeTime: openTime + stepMs,
-                open: price,
-                high: price + step * 0.5,
-                low: price - step * 0.5,
-                close: price,
-                volume: 1000
-              };
-            })
-          );
-        }),
+        fetchTicker: (...args: any[]) => mockFetchTicker(...args),
+        fetchKlines: (...args: any[]) => mockFetchKlines(...args),
         fetchBalance: vi.fn().mockResolvedValue({ free: { USDT: 10000 }, total: { USDT: 10000 } }),
         fetchMarkets: (...args: any[]) => mockFetchMarkets(...args),
         fetchMarket: (...args: any[]) => mockFetchMarket(...args),
@@ -427,6 +429,19 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
         }
       ];
 
+      mockFetchTicker.mockImplementation((sym: string) => {
+        const price = sym.includes('GRAM') ? 1.249 : 50000;
+        return Promise.resolve({
+          symbol: sym.replace('/', ''),
+          last: price,
+          bid: price * 0.999,
+          ask: price * 1.001,
+          high: price * 1.05,
+          low: price * 0.95,
+          volume: 1000,
+          quoteVolume: 5000000
+        });
+      });
       mockFetchMarkets.mockResolvedValue(marketsList);
       mockFetchMarket.mockImplementation(async (sym: string) => {
         return marketsList.find(m => m.symbol === sym || m.id === sym.replace('/', '')) || null;
@@ -545,4 +560,617 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
       );
     });
   });
+
+        // --------------------------------------------------------------------------
+  // AC-10: Strict Strategy Risk Distance & Fail-Closed Safety Suite
+  // --------------------------------------------------------------------------
+  describe("AC-10: Strict Strategy Risk Distance & Fail-Closed Safety Suite", () => {
+    let mockStorage: Map<string, any>;
+    let mockState: any;
+    let mockEnv: any;
+
+    beforeEach(() => {
+      mockStorage = new Map();
+      mockState = {
+        id: { toString: () => "mock-do-id" },
+        storage: {
+          get: async (keyOrKeys: string | string[]) => {
+            if (Array.isArray(keyOrKeys)) {
+              const res = new Map();
+              for (const k of keyOrKeys) {
+                if (mockStorage.has(k)) res.set(k, mockStorage.get(k));
+              }
+              return res;
+            }
+            return mockStorage.get(keyOrKeys);
+          },
+          put: async (keyOrEntries: string | Record<string, any>, val?: any) => {
+            if (typeof keyOrEntries === 'string') {
+              mockStorage.set(keyOrEntries, val);
+            } else if (keyOrEntries && typeof keyOrEntries === 'object') {
+              for (const [k, v] of Object.entries(keyOrEntries)) {
+                mockStorage.set(k, v);
+              }
+            }
+          },
+          delete: async (key: string) => mockStorage.delete(key),
+          transaction: async (cb: any) => cb({
+            get: async (keyOrKeys: string | string[]) => {
+              if (Array.isArray(keyOrKeys)) {
+                const res = new Map();
+                for (const k of keyOrKeys) {
+                  if (mockStorage.has(k)) res.set(k, mockStorage.get(k));
+                }
+                return res;
+              }
+              return mockStorage.get(keyOrKeys);
+            },
+            put: async (keyOrEntries: string | Record<string, any>, val?: any) => {
+              if (typeof keyOrEntries === 'string') {
+                mockStorage.set(keyOrEntries, val);
+              } else if (keyOrEntries && typeof keyOrEntries === 'object') {
+                for (const [k, v] of Object.entries(keyOrEntries)) {
+                  mockStorage.set(k, v);
+                }
+              }
+            },
+            delete: async (key: string) => mockStorage.delete(key),
+          }),
+          setAlarm: vi.fn(),
+          deleteAlarm: vi.fn(),
+          list: async () => mockStorage,
+        },
+        blockConcurrencyWhile: async (cb: any) => cb()
+      };
+
+      mockEnv = {
+        DB: {
+          prepare: vi.fn().mockImplementation(() => ({
+            bind: vi.fn().mockReturnValue({
+              all: vi.fn().mockResolvedValue({ results: [] }),
+              run: vi.fn().mockResolvedValue({ success: true }),
+              first: vi.fn().mockResolvedValue({
+                exchange_name: 'bybit',
+                exchange_environment: 'testnet',
+                exchange_region: 'global',
+                exchange_api_key_iv: 'iv',
+                exchange_api_key_encrypted: 'enc',
+                exchange_api_key_salt: 'salt',
+                exchange_api_secret_encrypted: 'mock_secret',
+                exchange_api_secret_iv: 'mock_iv',
+              })
+            }),
+            all: vi.fn().mockResolvedValue({ results: [] }),
+            run: vi.fn().mockResolvedValue({ success: true }),
+            first: vi.fn().mockResolvedValue(null)
+          }))
+        },
+        ENCRYPTION_KEY: "mock_key_0123456789012345678901",
+        FCM_SERVER_KEY: "mock_fcm_key",
+        ENVIRONMENT: "test",
+        GLOBAL_TRADING_HALT: "false"
+      };
+
+      mockStorage.set("isActive", true);
+      mockStorage.set("userId", "user-risk-test");
+      mockStorage.set("strategy", "ScalperV2");
+      mockStorage.set("positionSize", 10.0);
+      mockStorage.set("monitoredSymbols", ["BTC/USDT"]);
+      mockStorage.set("lock:alarmGeneration", 1);
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId: 'user-risk-test',
+        budgetUsdt: 10.0,
+        approvedSymbols: ['BTC/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'testnet',
+        accountFingerprint: 'bybit:testnet',
+        orderType: 'ALL',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 3600_000,
+        symbolMetadataSnapshot: {}
+      });
+
+      mockFetchMarkets.mockResolvedValue([
+        {
+          id: 'BTCUSDT',
+          symbol: 'BTC/USDT',
+          quote: 'USDT',
+          active: true,
+          category: 'linear',
+          precision: { amount: 0.00001, price: 0.1 },
+          limits: { cost: { min: 5.0 }, amount: { min: 0.00001, max: 1000 } }
+        }
+      ]);
+      mockFetchMarket.mockResolvedValue({
+        id: 'BTCUSDT',
+        symbol: 'BTC/USDT',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        precision: { amount: 0.00001, price: 0.1 },
+        limits: { cost: { min: 5.0 }, amount: { min: 0.00001, max: 1000 } }
+      });
+      mockFetchTicker.mockImplementation((sym: string) => {
+        return Promise.resolve({
+          symbol: 'BTCUSDT',
+          last: 50000.0,
+          bid: 49999.0,
+          ask: 50001.0,
+          high: 51000.0,
+          low: 49000.0,
+          volume: 1000,
+          quoteVolume: 50000000
+        });
+      });
+      mockFetchKlines.mockImplementation((sym: string) => {
+        const basePrice = 50000;
+        const step = 10.0;
+        const now = Date.now();
+        const stepMs = 3600000;
+        return Promise.resolve(
+          Array.from({ length: 60 }, (_, i) => {
+            const openTime = now - (60 - i) * stepMs;
+            const price = basePrice + i * step;
+            return {
+              openTime,
+              timestamp: openTime,
+              closeTime: openTime + stepMs,
+              open: price,
+              high: price + step * 0.5,
+              low: price - step * 0.5,
+              close: price,
+              volume: 1000
+            };
+          })
+        );
+      });
+    });
+
+    it("1 & 7: Re-anchors valid BUY strategy risk distances to fresh price while preserving ATR distances", async () => {
+      mockFetchTicker.mockImplementation(() => Promise.resolve({ symbol: 'BTCUSDT', last: 50500.0 }));
+      mockExecuteCycle.mockResolvedValueOnce([{
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'BUY',
+            signalPrice: 50000.0,
+            stopLoss: 49000.0,
+            takeProfit: 52000.0,
+            timeframe: '5m',
+            riskAssessment: {
+              stopLossDistance: 1000.0,
+              takeProfitDistance: 2000.0,
+              riskRewardRatio: 2.0
+            }
+          }
+        }
+      }]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      await bot.alarm();
+
+      const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+      const alert = alerts.find(a => a.symbol === 'BTC/USDT');
+      expect(alert).toBeDefined();
+      expect(alert?.side).toBe('BUY');
+      expect(alert?.entryPrice).toBe(50500.0);
+      expect(alert?.stopLoss).toBe(49500.0);
+      expect(alert?.takeProfit).toBe(52500.0);
+      expect(alert?.entryPrice! - alert?.stopLoss!).toBe(1000.0);
+      expect(alert?.takeProfit! - alert?.entryPrice!).toBe(2000.0);
+    });
+
+    it("2 & 7: Re-anchors valid SELL strategy risk distances to fresh price while preserving ATR distances", async () => {
+      const now = Date.now();
+      const stepMs = 3600000;
+      const bearishKlines = Array.from({ length: 60 }, (_, i) => {
+        const openTime = now - (60 - i) * stepMs;
+        const price = 55000.0 - i * 10.0;
+        return {
+          openTime,
+          timestamp: openTime,
+          closeTime: openTime + stepMs,
+          open: price,
+          high: price + 5.0,
+          low: price - 5.0,
+          close: price,
+          volume: 1000
+        };
+      });
+
+      mockFetchKlines.mockResolvedValue(bearishKlines);
+      mockFetchTicker.mockImplementation(() => Promise.resolve({ symbol: 'BTCUSDT', last: 49500.0 }));
+
+      mockExecuteCycle.mockResolvedValueOnce([{
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'SELL',
+            signalPrice: 50000.0,
+            stopLoss: 51000.0,
+            takeProfit: 48000.0,
+            timeframe: '5m',
+            riskAssessment: {
+              stopLossDistance: 1000.0,
+              takeProfitDistance: 2000.0,
+              riskRewardRatio: 2.0
+            }
+          }
+        }
+      }]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      await bot.alarm();
+
+      const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+      const alert = alerts.find(a => a.symbol === 'BTC/USDT');
+      expect(alert).toBeDefined();
+      expect(alert?.side).toBe('SELL');
+      expect(alert?.entryPrice).toBe(49500.0);
+      expect(alert?.stopLoss).toBe(50500.0);
+      expect(alert?.takeProfit).toBe(47500.0);
+      expect(alert?.stopLoss! - alert?.entryPrice!).toBe(1000.0);
+      expect(alert?.entryPrice! - alert?.takeProfit!).toBe(2000.0);
+    });
+
+    it("3 & 6: Fails closed when risk assessment and explicit SL/TP are missing (zero alert, zero FCM)", async () => {
+      mockExecuteCycle.mockResolvedValueOnce([{
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'BUY',
+            signalPrice: 50000.0,
+            stopLoss: null,
+            takeProfit: null,
+            timeframe: '5m',
+            riskAssessment: null
+          }
+        }
+      }]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      const emitSpy = vi.spyOn((bot as any).telemetrySink, 'emit');
+      await bot.alarm();
+
+      const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+      expect(alerts).toHaveLength(0);
+      expect(emitSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventName: 'FINAL_DISPATCH_GATE',
+          payload: expect.objectContaining({
+            gate: 'MISSING_STRATEGY_RISK_DISTANCES',
+            passed: false
+          })
+        })
+      );
+    });
+
+    it("4 & 6: Fails closed when risk distances are zero, negative, NaN or infinite", async () => {
+      const invalidDistances = [
+        { sl: 0, tp: 1000 },
+        { sl: -100, tp: 1000 },
+        { sl: NaN, tp: 1000 },
+        { sl: Infinity, tp: 1000 },
+        { sl: 1000, tp: 0 },
+        { sl: 1000, tp: -50 },
+        { sl: 1000, tp: NaN },
+        { sl: 1000, tp: Infinity }
+      ];
+
+      for (const dist of invalidDistances) {
+        mockStorage.set("alerts", []);
+        mockExecuteCycle.mockResolvedValueOnce([{
+          strategyId: 'ScalperV2',
+          confidenceScore: 90,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000.0,
+              timeframe: '5m',
+              riskAssessment: {
+                stopLossDistance: dist.sl,
+                takeProfitDistance: dist.tp
+              }
+            }
+          }
+        }]);
+
+        const bot = new TradingBot(mockState, mockEnv);
+        await bot.alarm();
+
+        const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+        expect(alerts).toHaveLength(0);
+      }
+    });
+
+    it("5 & 6: Fails closed when BUY signal has SL above entry or TP below entry", async () => {
+      mockExecuteCycle.mockResolvedValueOnce([{
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'BUY',
+            signalPrice: 50000.0,
+            stopLoss: 51000.0,
+            takeProfit: 52000.0,
+            timeframe: '5m'
+          }
+        }
+      }]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      const emitSpy = vi.spyOn((bot as any).telemetrySink, 'emit');
+      await bot.alarm();
+
+      const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+      expect(alerts).toHaveLength(0);
+      expect(emitSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventName: 'FINAL_DISPATCH_GATE',
+          payload: expect.objectContaining({
+            gate: 'MISSING_STRATEGY_RISK_DISTANCES',
+            passed: false
+          })
+        })
+      );
+    });
+
+    it("5 & 6: Fails closed when SELL signal has SL below entry or TP above entry", async () => {
+      const now = Date.now();
+      const stepMs = 3600000;
+      const bearishKlines = Array.from({ length: 60 }, (_, i) => {
+        const openTime = now - (60 - i) * stepMs;
+        const price = 55000.0 - i * 10.0;
+        return {
+          openTime,
+          timestamp: openTime,
+          closeTime: openTime + stepMs,
+          open: price,
+          high: price + 5.0,
+          low: price - 5.0,
+          close: price,
+          volume: 1000
+        };
+      });
+
+      mockFetchKlines.mockResolvedValue(bearishKlines);
+
+      mockExecuteCycle.mockResolvedValueOnce([{
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'SELL',
+            signalPrice: 50000.0,
+            stopLoss: 49000.0,
+            takeProfit: 48000.0,
+            timeframe: '5m'
+          }
+        }
+      }]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      const emitSpy = vi.spyOn((bot as any).telemetrySink, 'emit');
+      await bot.alarm();
+
+      const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+      expect(alerts).toHaveLength(0);
+      expect(emitSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventName: 'FINAL_DISPATCH_GATE',
+          payload: expect.objectContaining({
+            gate: 'MISSING_STRATEGY_RISK_DISTANCES',
+            passed: false
+          })
+        })
+      );
+    });
+
+    // ── Focused Regression Tests for Micro-Correction ─────────────────────────
+
+    it("REG-01: Rejects signal with valid riskAssessment when explicit SL is NaN", async () => {
+      mockExecuteCycle.mockResolvedValueOnce([{
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'BUY',
+            signalPrice: 50000.0,
+            stopLoss: NaN, // Explicit NaN SL must be strictly rejected
+            takeProfit: 52000.0,
+            timeframe: '5m',
+            riskAssessment: {
+              stopLossDistance: 1000.0,
+              takeProfitDistance: 2000.0
+            }
+          }
+        }
+      }]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      const emitSpy = vi.spyOn((bot as any).telemetrySink, 'emit');
+      await bot.alarm();
+
+      const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+      expect(alerts).toHaveLength(0);
+      expect(emitSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventName: 'FINAL_DISPATCH_GATE',
+          payload: expect.objectContaining({
+            gate: 'MISSING_STRATEGY_RISK_DISTANCES',
+            passed: false
+          })
+        })
+      );
+    });
+
+    it("REG-02: Rejects signal with valid riskAssessment when explicit TP is infinite", async () => {
+      mockExecuteCycle.mockResolvedValueOnce([{
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'BUY',
+            signalPrice: 50000.0,
+            stopLoss: 49000.0,
+            takeProfit: Infinity, // Explicit Infinity TP must be strictly rejected
+            timeframe: '5m',
+            riskAssessment: {
+              stopLossDistance: 1000.0,
+              takeProfitDistance: 2000.0
+            }
+          }
+        }
+      }]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      const emitSpy = vi.spyOn((bot as any).telemetrySink, 'emit');
+      await bot.alarm();
+
+      const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+      expect(alerts).toHaveLength(0);
+      expect(emitSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventName: 'FINAL_DISPATCH_GATE',
+          payload: expect.objectContaining({
+            gate: 'MISSING_STRATEGY_RISK_DISTANCES',
+            passed: false
+          })
+        })
+      );
+    });
+
+    it("REG-03: Rejects signal when explicit SL or TP is zero or negative", async () => {
+      const explicitZeroOrNegativeCases = [
+        { sl: 0, tp: 52000.0 },
+        { sl: -100.0, tp: 52000.0 },
+        { sl: 49000.0, tp: 0 },
+        { sl: 49000.0, tp: -50.0 },
+      ];
+
+      for (const tc of explicitZeroOrNegativeCases) {
+        mockStorage.set("alerts", []);
+        mockExecuteCycle.mockResolvedValueOnce([{
+          strategyId: 'ScalperV2',
+          confidenceScore: 90,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000.0,
+              stopLoss: tc.sl,
+              takeProfit: tc.tp,
+              timeframe: '5m',
+              riskAssessment: {
+                stopLossDistance: 1000.0,
+                takeProfitDistance: 2000.0
+              }
+            }
+          }
+        }]);
+
+        const bot = new TradingBot(mockState, mockEnv);
+        await bot.alarm();
+
+        const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+        expect(alerts).toHaveLength(0);
+      }
+    });
+
+    it("REG-04: Rejects explicit wrong-side SL/TP despite valid riskAssessment distances", async () => {
+      // Inverted BUY SL (51000 >= entry 50000) despite valid riskAssessment
+      mockExecuteCycle.mockResolvedValueOnce([{
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'BUY',
+            signalPrice: 50000.0,
+            stopLoss: 51000.0,
+            takeProfit: 52000.0,
+            timeframe: '5m',
+            riskAssessment: {
+              stopLossDistance: 1000.0,
+              takeProfitDistance: 2000.0
+            }
+          }
+        }
+      }]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      const emitSpy = vi.spyOn((bot as any).telemetrySink, 'emit');
+      await bot.alarm();
+
+      const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+      expect(alerts).toHaveLength(0);
+      expect(emitSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventName: 'FINAL_DISPATCH_GATE',
+          payload: expect.objectContaining({
+            gate: 'MISSING_STRATEGY_RISK_DISTANCES',
+            passed: false
+          })
+        })
+      );
+    });
+
+    it("REG-05: Genuinely absent explicit SL/TP with valid riskAssessment succeeds and uses ATR distances", async () => {
+      mockFetchTicker.mockImplementation(() => Promise.resolve({ symbol: 'BTCUSDT', last: 50000.0 }));
+      mockExecuteCycle.mockResolvedValueOnce([{
+        strategyId: 'ScalperV2',
+        confidenceScore: 90,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: {
+            type: 'BUY',
+            signalPrice: 50000.0,
+            stopLoss: null, // Genuinely absent
+            takeProfit: null, // Genuinely absent
+            timeframe: '5m',
+            riskAssessment: {
+              stopLossDistance: 1000.0,
+              takeProfitDistance: 2000.0,
+              riskRewardRatio: 2.0
+            }
+          }
+        }
+      }]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      await bot.alarm();
+
+      const alerts: TradeAlert[] = mockStorage.get("alerts") || [];
+      const alert = alerts.find(a => a.symbol === 'BTC/USDT');
+      expect(alert).toBeDefined();
+      expect(alert?.entryPrice).toBe(50000.0);
+      expect(alert?.stopLoss).toBe(49000.0);
+      expect(alert?.takeProfit).toBe(52000.0);
+    });
+  });
+
 });
