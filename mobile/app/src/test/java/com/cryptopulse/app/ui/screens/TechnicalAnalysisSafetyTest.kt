@@ -107,4 +107,59 @@ class TechnicalAnalysisSafetyTest {
         assertEquals("EMA Confirmation_0", keys[0])
         assertEquals("EMA Confirmation_1", keys[1])
     }
+
+    @Test
+    fun `BUDGET_INSUFFICIENT_AT_CURRENT_PRICE displays exact trade skipped message`() {
+        val message = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "BLOCKED_BY_EXISTING_GATE",
+            suppressionReason = "BUDGET_INSUFFICIENT_AT_CURRENT_PRICE",
+            signalType = "BUY"
+        )
+        assertEquals("TRADE SKIPPED: Budget insufficient at current market price.", message)
+    }
+
+    @Test
+    fun `INSUFFICIENT_BUDGET and BELOW_MIN_NOTIONAL also display exact trade skipped message`() {
+        val msg1 = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "BLOCKED_BY_EXISTING_GATE",
+            suppressionReason = "INSUFFICIENT_BUDGET",
+            signalType = "BUY"
+        )
+        assertEquals("TRADE SKIPPED: Budget insufficient at current market price.", msg1)
+
+        val msg2 = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "BLOCKED_BY_EXISTING_GATE",
+            suppressionReason = "BELOW_MIN_NOTIONAL",
+            signalType = "SELL"
+        )
+        assertEquals("TRADE SKIPPED: Budget insufficient at current market price.", msg2)
+    }
+
+    @Test
+    fun `TICKER_UNAVAILABLE is kept distinct and does not falsely claim insufficient budget`() {
+        val message = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "BLOCKED_BY_EXISTING_GATE",
+            suppressionReason = "TICKER_UNAVAILABLE",
+            signalType = "BUY"
+        )
+        assertEquals("ENTRY QUALIFICATION: BLOCKED (TICKER_UNAVAILABLE)", message)
+        assertNotEquals("TRADE SKIPPED: Budget insufficient at current market price.", message)
+    }
+
+    @Test
+    fun `qualified strategies display qualification status with signal type`() {
+        val msgBuy = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "TRADE_QUALIFIED",
+            suppressionReason = null,
+            signalType = "BUY"
+        )
+        assertEquals("ENTRY QUALIFICATION: QUALIFIED (BUY)", msgBuy)
+
+        val msgSell = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "TRADE_ALERT_CREATED",
+            suppressionReason = null,
+            signalType = "SELL"
+        )
+        assertEquals("ENTRY QUALIFICATION: QUALIFIED (SELL)", msgSell)
+    }
 }

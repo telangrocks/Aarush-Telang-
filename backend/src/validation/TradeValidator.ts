@@ -12,6 +12,7 @@ export interface TradeValidationParams {
   tradeValueUsdt?: number;
   quantity?: number;
   isApprovedQuantity?: boolean;
+  maxBudgetUsdt?: number;
   stopLoss?: number;
   takeProfit?: number;
 }
@@ -267,6 +268,20 @@ export class TradeValidator {
         postRoundingNotional: postRoundingNotionalBN.toNumber(),
         metrics: { durationMs: performance.now() - startTime, stepReached: 7 },
       };
+    }
+
+    if (params.maxBudgetUsdt !== undefined && params.maxBudgetUsdt > 0) {
+      const maxBudgetBN = new BigNumber(params.maxBudgetUsdt);
+      if (postRoundingNotionalBN.isGreaterThan(maxBudgetBN)) {
+        return {
+          isValid: false,
+          errorCode: ValidationErrorReason.BUDGET_EXCEEDED,
+          errorMessage: `Order value ($${postRoundingNotionalBN.toFixed(4)} USDT) exceeds approved budget ($${maxBudgetBN.toFixed(4)} USDT).`,
+          quantizedQuantity: roundedQtyBN.toNumber(),
+          postRoundingNotional: postRoundingNotionalBN.toNumber(),
+          metrics: { durationMs: performance.now() - startTime, stepReached: 7 },
+        };
+      }
     }
 
     if (rules.maxPosition && postRoundingNotionalBN.isGreaterThan(rules.maxPosition)) {

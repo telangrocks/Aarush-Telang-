@@ -433,6 +433,12 @@ private fun StrategyScoreCard(
     val isPending = qualificationStatus == "PENDING" || score == null
     val isFailed = qualificationStatus in listOf("FAILED", "THRESHOLD_NOT_MET", "NOT_MET")
 
+    val statusText = resolveStrategyScoreCardStatusText(
+        qualificationStatus = qualificationStatus,
+        suppressionReason = suppressionReason,
+        signalType = signalType
+    )
+
     val displayStatus = when {
         isQualified -> if (!signalType.isNullOrBlank()) "QUALIFIED ($signalType)" else "QUALIFIED"
         isBlocked -> if (!suppressionReason.isNullOrBlank()) "BLOCKED ($suppressionReason)" else "BLOCKED BY SAFETY GATE"
@@ -586,7 +592,7 @@ private fun StrategyScoreCard(
                 }
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    text = "ENTRY QUALIFICATION: $displayStatus",
+                    text = statusText,
                     color = badgeTextColor,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
@@ -595,6 +601,35 @@ private fun StrategyScoreCard(
             }
         }
     }
+}
+
+internal fun resolveStrategyScoreCardStatusText(
+    qualificationStatus: String,
+    suppressionReason: String?,
+    signalType: String?
+): String {
+    if (suppressionReason in listOf("BUDGET_INSUFFICIENT_AT_CURRENT_PRICE", "INSUFFICIENT_BUDGET", "BELOW_MIN_NOTIONAL")) {
+        return "TRADE SKIPPED: Budget insufficient at current market price."
+    }
+    val isQualified = qualificationStatus in listOf("TRADE_QUALIFIED", "TRADE_ALERT_CREATED", "FCM_DISPATCHED")
+    val isBlocked = qualificationStatus == "BLOCKED_BY_EXISTING_GATE"
+    val isConfigMissing = qualificationStatus == "CONFIGURATION_MISSING"
+    val isNoDirectional = qualificationStatus == "NO_DIRECTIONAL_SIGNAL"
+    val isThresholdMet = qualificationStatus == "THRESHOLD_MET"
+    val isPending = qualificationStatus == "PENDING"
+    val isFailed = qualificationStatus in listOf("FAILED", "THRESHOLD_NOT_MET", "NOT_MET")
+
+    val displayStatus = when {
+        isQualified -> if (!signalType.isNullOrBlank()) "QUALIFIED ($signalType)" else "QUALIFIED"
+        isBlocked -> if (!suppressionReason.isNullOrBlank()) "BLOCKED ($suppressionReason)" else "BLOCKED BY SAFETY GATE"
+        isConfigMissing -> "CONFIG MISSING"
+        isNoDirectional -> "NO DIRECTIONAL SIGNAL"
+        isThresholdMet -> "THRESHOLD MET (EVALUATING)"
+        isFailed -> "NOT MET"
+        isPending -> "EVALUATION PENDING"
+        else -> qualificationStatus.replace("_", " ")
+    }
+    return "ENTRY QUALIFICATION: $displayStatus"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

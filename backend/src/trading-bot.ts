@@ -1,5 +1,6 @@
 import { Env } from './index';
 import { ExchangeManager, ExchangeName, ExchangeEnvironment } from './exchanges';
+import { ValidationErrorReason } from './exchanges/types';
 import { PriceNormalizer } from './utils/PriceNormalizer';
 import { Ticker } from './exchanges/models/NormalizedDomain';
 import BigNumber from 'bignumber.js';
@@ -3375,6 +3376,7 @@ export class TradingBot {
                 markPrice: currentPrice,
                 quantity: approvedQuantity,
                 isApprovedQuantity: true,
+                maxBudgetUsdt: approvedRecord.budgetUsdt,
                 tradeValueUsdt: undefined
               }, {
                 schemaVersion: "2.0",
@@ -3399,6 +3401,15 @@ export class TradingBot {
 
               if (!rulesRes.isValid) {
                 console.error(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_FAILED] errorCode=${rulesRes.errorCode} errorMessage=${rulesRes.errorMessage}`);
+                if (rulesRes.errorCode === ValidationErrorReason.BUDGET_EXCEEDED) {
+                  await releasePreReservation('BUDGET_EXCEEDED_AT_EXECUTION');
+                  return new Response(JSON.stringify({
+                    success: false,
+                    code: 'BUDGET_EXCEEDED_AT_EXECUTION',
+                    error: 'BUDGET_EXCEEDED_AT_EXECUTION',
+                    message: rulesRes.errorMessage || `Order value exceeds approved budget.`
+                  }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+                }
                 throw new Error(rulesRes.errorMessage || `Order validation failed: ${rulesRes.errorCode}`);
               }
 
@@ -3552,6 +3563,20 @@ export class TradingBot {
               }
               if (executionSnapshot.takeProfit) req.takeProfit = executionSnapshot.takeProfit;
               if (executionSnapshot.stopLoss) req.stopLoss = executionSnapshot.stopLoss;
+
+              // Pre-Dispatch Execution Budget Safety Check
+              const executablePrice = orderType === 'MARKET' ? currentPrice : (limitPrice || currentPrice);
+              const estimatedExecutionNotional = new BigNumber(executionSnapshot.quantizedQuantity).multipliedBy(executablePrice);
+              if (estimatedExecutionNotional.isGreaterThan(new BigNumber(approvedRecord.budgetUsdt))) {
+                console.error(`[SAFETY GATE: FATAL] Execution rejected: Estimated execution notional ($${estimatedExecutionNotional.toFixed(4)} USDT) exceeds approved budget ($${approvedRecord.budgetUsdt} USDT). AlertId: ${target.id}`);
+                await releasePreReservation('BUDGET_EXCEEDED_AT_EXECUTION');
+                return new Response(JSON.stringify({
+                  success: false,
+                  code: 'BUDGET_EXCEEDED_AT_EXECUTION',
+                  error: 'BUDGET_EXCEEDED_AT_EXECUTION',
+                  message: `Execution rejected: Estimated execution notional ($${estimatedExecutionNotional.toFixed(4)} USDT) exceeds approved budget ($${new BigNumber(approvedRecord.budgetUsdt).toFixed(4)} USDT) due to market price drift.`
+                }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+              }
 
               // Phase 3: Final Dispatch Safety Gate
               try {
@@ -4321,6 +4346,13 @@ export class TradingBot {
             await this.logAuditEvent(userId, 'TRADE_FAILED', { symbol: orderSymbol, side, message: orderResult.message, clientOrderId });
           }
 
+          const estimatedExecutionNotionalVal = executionSnapshot
+            ? new BigNumber(executionSnapshot.quantizedQuantity).multipliedBy(executionSnapshot.limitPrice || executionSnapshot.signalPrice).toNumber()
+            : undefined;
+          const actualFillNotionalVal = (typeof orderResult.price === 'number' && typeof orderResult.filledQuantity === 'number')
+            ? new BigNumber(orderResult.filledQuantity).multipliedBy(orderResult.price).toNumber()
+            : undefined;
+
           return new Response(JSON.stringify({
             success: orderResult.success,
             message: orderResult.message,
@@ -4333,6 +4365,8 @@ export class TradingBot {
             executionPrice: orderResult.price,
             quantity: orderResult.quantity,
             filledQuantity: orderResult.filledQuantity ?? orderResult.quantity,
+            estimatedNotional: estimatedExecutionNotionalVal,
+            actualFillNotional: actualFillNotionalVal,
             stopLoss: executionSnapshot?.stopLoss ?? target.stopLoss,
             takeProfit: executionSnapshot?.takeProfit ?? target.takeProfit,
             status: orderResult.status,
@@ -7163,6 +7197,7 @@ export class TradingBot {
                         const resolvedMinNotional = (minNotional !== undefined && minNotional > 0) ? minNotional : 5.0;
 
                         let eligibilityResult: any = null;
+                        let freshTickerPrice: number | null = null;
                         if (alertIsExecutable) {
                           const isLotMetadataValid =
                             stepSize !== undefined && Number.isFinite(stepSize) && stepSize > 0 &&
@@ -7179,29 +7214,24 @@ export class TradingBot {
                           } else {
                             const validStepSize = stepSize!;
                             const validMinOrderQty = minOrderQty!;
-                            eligibilityResult = ExecutionEligibilityGate.evaluate({
-                              tradeAmountUsdt: size,
-                              currentPrice: alertSignalPrice,
-                              qtyStep: validStepSize,
-                              minOrderQty: validMinOrderQty,
-                              minNotional: resolvedMinNotional,
-                              maxOrderQty: applicableAlertMaxOrderQty,
-                            });
 
-                            if (!eligibilityResult.isExecutable) {
-                              alertIsExecutable = false;
-                              const reasonText = eligibilityResult.rejectionReason || '';
-                              if (reasonText.includes('minNotional') || reasonText.includes('Trade amount')) {
-                                alertIneligibilityReason = 'BELOW_MIN_NOTIONAL';
-                              } else if (reasonText.includes('minOrderQty') || reasonText.includes('Quantized qty')) {
-                                alertIneligibilityReason = 'MIN_ORDER_QTY_UNMET';
-                              } else if (eligibilityResult.quantizedQty < validMinOrderQty) {
-                                alertIneligibilityReason = 'MIN_ORDER_QTY_UNMET';
-                              } else if (eligibilityResult.postRoundingNotional < resolvedMinNotional || size < resolvedMinNotional) {
-                                alertIneligibilityReason = 'BELOW_MIN_NOTIONAL';
-                              } else {
-                                alertIneligibilityReason = eligibilityResult.rejectionReason || 'EXECUTION_INELIGIBLE';
+                            // Requirement 1 & 2: Fetch latest Bybit ticker immediately before ExecutionEligibilityGate.evaluate()
+                            try {
+                              const freshTicker = await adapter.fetchTicker(currentSymbol);
+                              const rawPrice = (typeof (freshTicker as any)?.last?.toNumber === 'function')
+                                ? (freshTicker as any).last.toNumber()
+                                : (typeof (freshTicker as any)?.last === 'number' ? (freshTicker as any).last : null);
+                              if (rawPrice !== null && Number.isFinite(rawPrice) && rawPrice > 0) {
+                                freshTickerPrice = rawPrice;
                               }
+                            } catch (tickerErr: any) {
+                              console.warn(`[trading-bot] Failed to fetch fresh Bybit ticker for ${currentSymbol}:`, tickerErr?.message || tickerErr);
+                            }
+
+                            if (!freshTickerPrice || freshTickerPrice <= 0) {
+                              alertIsExecutable = false;
+                              alertIneligibilityReason = 'TICKER_UNAVAILABLE';
+                              recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'TICKER_UNAVAILABLE');
                               this.telemetrySink.emit({
                                 userId,
                                 category: 'SAFETY',
@@ -7212,15 +7242,46 @@ export class TradingBot {
                                 strategyId: alertStrategyKey,
                                 payload: {
                                   passed: false,
-                                  gate: 'EXECUTION_INELIGIBLE',
+                                  gate: 'TICKER_UNAVAILABLE',
+                                  symbol: currentSymbol,
+                                  rejectionReason: 'Fresh Bybit market ticker unavailable or non-positive'
+                                }
+                              });
+                              console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) rejected: Fresh ticker price unavailable. Skipping alert creation.`);
+                              break;
+                            }
+
+                            eligibilityResult = ExecutionEligibilityGate.evaluate({
+                              tradeAmountUsdt: size,
+                              currentPrice: freshTickerPrice,
+                              qtyStep: validStepSize,
+                              minOrderQty: validMinOrderQty,
+                              minNotional: resolvedMinNotional,
+                              maxOrderQty: applicableAlertMaxOrderQty,
+                            });
+
+                            if (!eligibilityResult.isExecutable) {
+                              alertIsExecutable = false;
+                              alertIneligibilityReason = 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE';
+                              this.telemetrySink.emit({
+                                userId,
+                                category: 'SAFETY',
+                                component: 'TradingBot',
+                                eventName: 'FINAL_DISPATCH_GATE',
+                                severity: 'WARN',
+                                symbol: currentSymbol,
+                                strategyId: alertStrategyKey,
+                                payload: {
+                                  passed: false,
+                                  gate: 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE',
                                   budget: size,
-                                  currentPrice: alertSignalPrice,
+                                  currentPrice: freshTickerPrice,
                                   qtyStep: validStepSize,
                                   rejectionReason: eligibilityResult.rejectionReason,
                                 }
                               });
-                              console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) is execution-ineligible (${alertIneligibilityReason}). Skipping alert creation.`);
-                              recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', alertIneligibilityReason || 'EXECUTION_INELIGIBLE');
+                              console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) is execution-ineligible (BUDGET_INSUFFICIENT_AT_CURRENT_PRICE: ${eligibilityResult.rejectionReason}). Skipping alert creation.`);
+                              recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE');
                               break;
                             }
                           }
@@ -7319,7 +7380,7 @@ export class TradingBot {
                           symbol: currentSymbol,
                           signalPrice: alertSignalPrice,
                           targetEntryPrice: alertTargetPrice,
-                          entryPrice: alertSignalPrice,
+                          entryPrice: freshTickerPrice || alertSignalPrice,
                           stopLoss: normalized.stopLoss,
                           takeProfit: normalized.takeProfit,
                           estimatedPnl: effectiveAlertEstimatedPnl,

@@ -518,7 +518,7 @@ describe("P0: Budget-Aware Execution Eligibility & Multi-Ticker Continuation Acc
           symbol: 'GRAM/USDT',
           payload: expect.objectContaining({
             passed: false,
-            gate: 'EXECUTION_INELIGIBLE',
+            gate: 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE',
             budget: 5.0,
             currentPrice: 1.249,
             qtyStep: 0.1,
