@@ -49,7 +49,7 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
     // Generate 520 markets
     const markets: any[] = [];
     
-    // 479 valid linear perpetuals + 1 SOXL/USDT
+    // 479 valid linear perpetuals + 1 ZEC/USDT (verified native crypto perpetual)
     for (let i = 1; i <= 479; i++) {
       markets.push({
         id: `COIN${i}USDT`,
@@ -63,9 +63,9 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
       });
     }
     markets.push({
-      id: 'SOXLUSDT',
-      symbol: 'SOXL/USDT',
-      base: 'SOXL',
+      id: 'ZECUSDT',
+      symbol: 'ZEC/USDT',
+      base: 'ZEC',
       quote: 'USDT',
       active: true,
       category: 'linear',
@@ -162,11 +162,79 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
     const result = await scanner.scan();
 
     expect(result.universeSize).toBe(523);
-    // 523 - 10 stablecoins - 10 leveraged - 3 commodities - 10 spot - 10 inactive = 480 eligible (including SOXL)
+    // 523 - 10 stablecoins - 10 leveraged - 3 commodities - 10 spot - 10 inactive = 480 eligible (including verified native crypto ZEC)
     expect(result.eligibleCount).toBe(480);
     // All tickers had $500k turnover (< $1,000,000 threshold), so 0 quality candidates
     expect(result.qualityCount).toBe(0);
     expect(result.allQualifiedOpportunities.length).toBe(0);
+  });
+
+  it('strictly filters out tokenized equities and TradFi ETFs (NVDA, SOXL) in Stage 1 Hard Filtering', async () => {
+    const markets = [
+      {
+        id: 'NVDAUSDT',
+        symbol: 'NVDA/USDT',
+        base: 'NVDA',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        contractType: 'LinearPerpetual',
+      },
+      {
+        id: 'SOXLUSDT',
+        symbol: 'SOXL/USDT',
+        base: 'SOXL',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        contractType: 'LinearPerpetual',
+      },
+      {
+        id: 'BTCUSDT',
+        symbol: 'BTC/USDT',
+        base: 'BTC',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        contractType: 'LinearPerpetual',
+      },
+      {
+        id: 'SOLUSDT',
+        symbol: 'SOL/USDT',
+        base: 'SOL',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        contractType: 'LinearPerpetual',
+      },
+    ];
+
+    const mockProvider = {
+      fetchMarkets: vi.fn().mockResolvedValue(markets),
+      fetchTickers: vi.fn().mockImplementation((symbols: string[]) => {
+        return Promise.resolve(
+          symbols.map((sym) => ({
+            symbol: sym,
+            last: 100.0,
+            bid: 99.99,
+            ask: 100.01,
+            quoteVolume: 5_000_000,
+            high: 105.0,
+            low: 95.0,
+            timestamp: Date.now(),
+          }))
+        );
+      }),
+      fetchCandles: vi.fn().mockResolvedValue([]),
+    } as unknown as IExchangeProvider & ICandleProvider;
+
+    const scanner = new MarketOpportunityScanner(mockProvider);
+    const result = await scanner.scan({ markets });
+
+    expect(result.universeSize).toBe(4);
+    // Only BTC and SOL survive Stage 1; NVDA and SOXL are excluded
+    expect(result.eligibleCount).toBe(2);
+    expect(result.universeSize - result.eligibleCount).toBe(2);
   });
 
   it('discovers both LONG and SHORT opportunities across multi-timeframe analysis', async () => {

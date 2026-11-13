@@ -42,7 +42,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       });
 
       await adapter.createOrder({
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'buy',
         type: 'market',
         amount: new BigNumber('0.16'),
@@ -57,7 +57,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       expect(capturedBody.timeInForce).toBeUndefined(); // Strictly omitted for Market orders in Bybit V5 even if IOC passed
       expect(capturedBody.positionIdx).toBe(0);
       expect(capturedBody.qty).toBe('0.16');
-      expect(capturedBody.symbol).toBe('SOXLUSDT');
+      expect(capturedBody.symbol).toBe('ZECUSDT');
     });
 
     it('F-09: Limit orders include timeInForce: GTC', async () => {
@@ -99,7 +99,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       });
 
       await adapter.createOrder({
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'buy',
         type: 'market',
         amount: new BigNumber('0.16'),
@@ -257,7 +257,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         approvalGeneration: 1,
         userId: 'user-f08-test',
         budgetUsdt: 10,
-        approvedSymbols: ['SOXL', 'SOXLUSDT', 'SOXL/USDT'],
+        approvedSymbols: ['ZEC', 'ZECUSDT', 'ZEC/USDT'],
         approvalState: 'FINAL_APPROVED',
         exchangeName: 'bybit',
         environment: 'demo',
@@ -271,9 +271,9 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         isInitialized: true,
         isActive: true,
         userId: 'user-f08-test',
-        coinId: 'SOXL/USDT',
+        coinId: 'ZEC/USDT',
         strategy: 'scalper-v2',
-        monitoredSymbols: ['SOXL/USDT'],
+        monitoredSymbols: ['ZEC/USDT'],
         activePositions: [],
         alerts: [],
         activeIntents: new Map(),
@@ -282,11 +282,11 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue({
         fetchTicker: vi.fn().mockResolvedValue({
           last: new BigNumber(62.14),
-          symbol: 'SOXL/USDT',
+          symbol: 'ZEC/USDT',
         }),
         fetchMarket: vi.fn().mockResolvedValue({
-          id: 'SOXLUSDT',
-          symbol: 'SOXL/USDT',
+          id: 'ZECUSDT',
+          symbol: 'ZEC/USDT',
           category: 'linear',
           precision: { amount: 0.01, price: 0.01 },
           limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
@@ -316,7 +316,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-inflight-1';
       const targetAlert = {
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -334,7 +334,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -347,7 +347,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-filled-1';
       const completedAlert = {
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'filled',
         entryPrice: 62.14,
@@ -366,7 +366,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -380,7 +380,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-unknown-1';
       const targetAlert = {
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -398,7 +398,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -411,7 +411,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-delayed-vis-1';
       const targetAlert = {
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -433,7 +433,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -448,7 +448,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-retry-test-1';
       const targetAlert = {
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'failed',
         entryPrice: 62.14,
@@ -472,7 +472,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           alertId,
-          symbol: 'SOXL/USDT',
+          symbol: 'ZEC/USDT',
           side: 'BUY',
           entryIntent: 'IMMEDIATE',
         }),
@@ -496,7 +496,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-recon-test-1';
       const targetAlert = {
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'failed',
         entryPrice: 62.14,
@@ -523,7 +523,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -537,7 +537,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-recon-fail-1';
       const targetAlert = {
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'failed',
         entryPrice: 62.14,
@@ -559,7 +559,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -572,7 +572,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-delayed-vis-1';
       const targetAlert = {
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -594,7 +594,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -705,7 +705,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-partial-closed-1';
       const targetAlert = {
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'failed',
         timestamp: new Date().toISOString(),
@@ -720,7 +720,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       mockStorage.set(`intent:order:${alertId}`, {
         intentId: alertId,
         alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         status: 'FAILED',
         actualExecutedQuantity: '0.08', // Partial fill!
         actualOrderId: 'bybit-ord-part-1',
@@ -732,7 +732,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         approvalGeneration: 1,
         userId: 'user-part-test',
         budgetUsdt: 10,
-        approvedSymbols: ['SOXL', 'SOXLUSDT', 'SOXL/USDT'],
+        approvedSymbols: ['ZEC', 'ZECUSDT', 'ZEC/USDT'],
         approvalState: 'FINAL_APPROVED',
         exchangeName: 'bybit',
         environment: 'demo',
@@ -778,9 +778,9 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         isInitialized: true,
         isActive: true,
         userId: 'user-part-test',
-        coinId: 'SOXL/USDT',
+        coinId: 'ZEC/USDT',
         strategy: 'scalper-v2',
-        monitoredSymbols: ['SOXL/USDT'],
+        monitoredSymbols: ['ZEC/USDT'],
         activePositions: [],
         alerts: [targetAlert],
         activeIntents: new Map([[alertId, mockStorage.get(`intent:order:${alertId}`)]]),
@@ -916,7 +916,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         approvalGeneration: 1,
         userId: 'user-f09-test',
         budgetUsdt: 10,
-        approvedSymbols: ['SOXL', 'SOXLUSDT', 'SOXL/USDT'],
+        approvedSymbols: ['ZEC', 'ZECUSDT', 'ZEC/USDT'],
         approvalState: 'FINAL_APPROVED',
         exchangeName: 'bybit',
         environment: 'demo',
@@ -930,9 +930,9 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
         isInitialized: true,
         isActive: true,
         userId: 'user-f09-test',
-        coinId: 'SOXL/USDT',
+        coinId: 'ZEC/USDT',
         strategy: 'scalper-v2',
-        monitoredSymbols: ['SOXL/USDT'],
+        monitoredSymbols: ['ZEC/USDT'],
         activePositions: [],
         alerts: [],
         activeIntents: new Map(),
@@ -956,8 +956,8 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
           ask: 62.15,
         }),
         fetchMarket: vi.fn().mockResolvedValue({
-          id: 'SOXLUSDT',
-          symbol: 'SOXL/USDT',
+          id: 'ZECUSDT',
+          symbol: 'ZEC/USDT',
           category: 'linear',
           precision: { amount: 0.01, price: 0.01 },
           limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } },
@@ -973,13 +973,13 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
 
     it('submits order with positionIdx 0 when account is verified in One-Way mode', async () => {
       fetchPositionsMock.mockResolvedValue([
-        { symbol: 'SOXL/USDT', positionIdx: 0, size: new BigNumber(0) },
+        { symbol: 'ZEC/USDT', positionIdx: 0, size: new BigNumber(0) },
       ]);
 
       const alertId = 'alert-f09-oneway';
       mockStorage.set('alerts', [{
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -991,7 +991,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -1004,14 +1004,14 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
 
     it('submits BUY order with positionIdx 1 when account is verified in Hedge mode', async () => {
       fetchPositionsMock.mockResolvedValue([
-        { symbol: 'SOXL/USDT', positionIdx: 1, size: new BigNumber(0) },
-        { symbol: 'SOXL/USDT', positionIdx: 2, size: new BigNumber(0) },
+        { symbol: 'ZEC/USDT', positionIdx: 1, size: new BigNumber(0) },
+        { symbol: 'ZEC/USDT', positionIdx: 2, size: new BigNumber(0) },
       ]);
 
       const alertId = 'alert-f09-hedge-buy';
       mockStorage.set('alerts', [{
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -1023,7 +1023,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -1036,14 +1036,14 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
 
     it('submits SELL order with positionIdx 2 when account is verified in Hedge mode', async () => {
       fetchPositionsMock.mockResolvedValue([
-        { symbol: 'SOXL/USDT', positionIdx: 1, size: new BigNumber(0) },
-        { symbol: 'SOXL/USDT', positionIdx: 2, size: new BigNumber(0) },
+        { symbol: 'ZEC/USDT', positionIdx: 1, size: new BigNumber(0) },
+        { symbol: 'ZEC/USDT', positionIdx: 2, size: new BigNumber(0) },
       ]);
 
       const alertId = 'alert-f09-hedge-sell';
       mockStorage.set('alerts', [{
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'SELL',
         status: 'pending',
         entryPrice: 62.14,
@@ -1055,7 +1055,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'SELL' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'SELL' }),
       });
 
       const response = await bot.fetch(req);
@@ -1072,7 +1072,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-f09-empty';
       mockStorage.set('alerts', [{
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -1084,7 +1084,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -1098,13 +1098,13 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
 
     it('refuses order submission and fails closed when positionIdx is missing in position records', async () => {
       fetchPositionsMock.mockResolvedValue([
-        { symbol: 'SOXL/USDT', size: new BigNumber(0) }, // missing positionIdx
+        { symbol: 'ZEC/USDT', size: new BigNumber(0) }, // missing positionIdx
       ]);
 
       const alertId = 'alert-f09-missing-idx';
       mockStorage.set('alerts', [{
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -1116,7 +1116,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -1130,13 +1130,13 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
 
     it('refuses order submission and fails closed when position data has malformed positionIdx', async () => {
       fetchPositionsMock.mockResolvedValue([
-        { symbol: 'SOXL/USDT', positionIdx: 'hedge_corrupted', size: new BigNumber(0) },
+        { symbol: 'ZEC/USDT', positionIdx: 'hedge_corrupted', size: new BigNumber(0) },
       ]);
 
       const alertId = 'alert-f09-malformed';
       mockStorage.set('alerts', [{
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -1148,7 +1148,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -1162,14 +1162,14 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
 
     it('refuses order submission and fails closed when conflicting position modes are detected (both 0 and 1/2)', async () => {
       fetchPositionsMock.mockResolvedValue([
-        { symbol: 'SOXL/USDT', positionIdx: 0, size: new BigNumber(0) },
-        { symbol: 'SOXL/USDT', positionIdx: 1, size: new BigNumber(0) },
+        { symbol: 'ZEC/USDT', positionIdx: 0, size: new BigNumber(0) },
+        { symbol: 'ZEC/USDT', positionIdx: 1, size: new BigNumber(0) },
       ]);
 
       const alertId = 'alert-f09-conflict';
       mockStorage.set('alerts', [{
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -1181,7 +1181,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -1199,7 +1199,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-f09-query-fail';
       mockStorage.set('alerts', [{
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -1211,7 +1211,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);
@@ -1230,7 +1230,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const alertId = 'alert-f09-wal-cleanup';
       mockStorage.set('alerts', [{
         id: alertId,
-        symbol: 'SOXL/USDT',
+        symbol: 'ZEC/USDT',
         side: 'BUY',
         status: 'pending',
         entryPrice: 62.14,
@@ -1242,7 +1242,7 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId, symbol: 'SOXL/USDT', side: 'BUY' }),
+        body: JSON.stringify({ alertId, symbol: 'ZEC/USDT', side: 'BUY' }),
       });
 
       const response = await bot.fetch(req);

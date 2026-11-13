@@ -5,9 +5,10 @@
  * - Stablecoin filtering
  * - Leveraged / inverse token filtering
  * - Commodity instrument filtering (ISO 4217 precious metals & energy linear contracts)
+ * - TradFi equity & ETF filtering (Tokenized US stocks, leveraged & traditional ETFs)
  *
  * Preserves dynamic discovery: No whitelist of native crypto tokens is used.
- * Standard crypto tokens (BTC, ETH, SOL, etc.) and ETF perpetuals (SOXL) remain eligible.
+ * Native crypto tokens (BTC, ETH, SOL, NEAR, ZEC, etc.) remain eligible.
  */
 
 export const STABLECOINS: ReadonlySet<string> = new Set([
@@ -33,6 +34,20 @@ export const COMMODITY_BASE_ASSETS: ReadonlySet<string> = new Set([
   'BRENT', // Brent Crude Oil
 ]);
 
+/**
+ * TradFi equity and ETF base assets explicitly excluded from Linear Perpetual universe.
+ * Bybit V5 Linear instruments classify tokenized equities and ETFs under category="linear"
+ * and contractType="LinearPerpetual" alongside crypto. Therefore, equity & ETF exclusion
+ * is enforced by base asset identification.
+ */
+export const TRADFI_EQUITY_AND_ETF_BASE_ASSETS: ReadonlySet<string> = new Set([
+  // High-cap & volatile tokenized equities
+  'NVDA', 'TSLA', 'AAPL', 'MSFT', 'AMZN', 'GOOGL', 'GOOG', 'META',
+  'COIN', 'MSTR', 'AMD', 'NFLX', 'PLTR', 'INTC', 'BABA', 'DIS',
+  // Leveraged & traditional ETFs / Index perpetuals
+  'SOXL', 'SOXS', 'QQQ', 'SPY', 'IWM', 'TQQQ', 'SQQQ', 'ARKK',
+]);
+
 const KNOWN_QUOTES = ['USDT', 'USDC', 'BUSD', 'USD', 'BTC', 'ETH', 'EUR', 'INR'] as const;
 
 /**
@@ -41,6 +56,7 @@ const KNOWN_QUOTES = ['USDT', 'USDC', 'BUSD', 'USD', 'BTC', 'ETH', 'EUR', 'INR']
  * - "BTC-USDT" -> "BTC"
  * - "BTC_USDT" -> "BTC"
  * - "BTCUSDT"  -> "BTC"
+ * - "NVDAUSDT" -> "NVDA"
  * - "SOXLUSDT" -> "SOXL"
  * - "XAUUSDT"  -> "XAU"
  */
@@ -77,7 +93,12 @@ export function isExcludedAsset(symbolStr: string): boolean {
     return true;
   }
 
-  // 3. Leveraged / Inverse Tokens
+  // 3. TradFi Equities & ETFs (Tokenized stocks, leveraged & traditional ETFs)
+  if (TRADFI_EQUITY_AND_ETF_BASE_ASSETS.has(base) || TRADFI_EQUITY_AND_ETF_BASE_ASSETS.has(clean)) {
+    return true;
+  }
+
+  // 4. Leveraged / Inverse Tokens
   if (LEVERAGED_TOKEN_REGEX.test(clean) || LEVERAGED_TOKEN_REGEX.test(base)) {
     return true;
   }
