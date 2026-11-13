@@ -1,6 +1,7 @@
 package com.cryptopulse.app.ui.auth
 
 import com.cryptopulse.app.core.network.*
+import com.cryptopulse.app.core.error.NetworkError
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 
@@ -210,6 +211,9 @@ class ExchangeViewModel @Inject constructor(
 
     private val _executionState = MutableStateFlow<ExecutionUiState>(ExecutionUiState.Idle)
     val executionState: StateFlow<ExecutionUiState> = _executionState.asStateFlow()
+
+    private val _isDismissingAlert = MutableStateFlow(false)
+    val isDismissingAlert: StateFlow<Boolean> = _isDismissingAlert.asStateFlow()
 
     private var executionPollingJob: Job? = null
 
@@ -751,23 +755,77 @@ class ExchangeViewModel @Inject constructor(
         startLiveTicker(alert.symbol)
     }
 
-    fun dismissCurrentAlert() {
-        stopLiveTicker()
-        tradeAlertManager.dismissOrExecuteAlert()
-        executionPollingJob?.cancel()
-        executionPollingJob = null
-        _executionState.value = ExecutionUiState.Idle
-        val alertId = _pendingAlert.value?.get("id") as? String
-        if (alertId != null) {
-            viewModelScope.launch {
-                val token = tokenManager.getToken()
-                if (token != null) {
-                    botRepository.acknowledgeAlert(alertId)
-                }
+    fun dismissCurrentAlert(onDismissed: (() -> Unit)? = null) {
+        if (isProcessingTrade || _isDismissingAlert.value) return
+
+        val alertId = (_pendingAlert.value?.get("id") as? String)?.trim().orEmpty()
+        if (alertId.isEmpty()) {
+            stopLiveTicker()
+            tradeAlertManager.dismissOrExecuteAlert()
+            executionPollingJob?.cancel()
+            executionPollingJob = null
+            _executionState.value = ExecutionUiState.Idle
+            if (!isProcessingTrade) {
+                _pendingAlert.value = null
             }
+            onDismissed?.invoke()
+            return
         }
-        if (!isProcessingTrade) {
-            _pendingAlert.value = null
+
+        _isDismissingAlert.value = true
+        _tradeError.value = null
+
+        viewModelScope.launch {
+            try {
+                val token = tokenManager.getToken()
+                if (token == null) {
+                    _tradeError.value = "Authentication required. Please sign in again to dismiss alert."
+                    _isDismissingAlert.value = false
+                    return@launch
+                }
+
+                when (val result = botRepository.dismissAlert(alertId)) {
+                    is NetworkResult.Success -> {
+                        Log.d("ExchangeViewModel", "Trade alert $alertId successfully dismissed on backend.")
+                        stopLiveTicker()
+                        tradeAlertManager.dismissOrExecuteAlert()
+                        executionPollingJob?.cancel()
+                        executionPollingJob = null
+                        _executionState.value = ExecutionUiState.Idle
+                        if (!isProcessingTrade) {
+                            _pendingAlert.value = null
+                        }
+                        _isDismissingAlert.value = false
+                        onDismissed?.invoke()
+                    }
+                    is NetworkResult.Error -> {
+                        val errorMessage = when (val err = result.error) {
+                            is NetworkError.HttpError -> {
+                                if (err.code == 409) {
+                                    "Cannot dismiss alert: trade execution has already started and dismissal is not allowed."
+                                } else if (err.code == 404) {
+                                    "Alert not found on server (HTTP 404). Dismissal failed. Please retry."
+                                } else if (err.code >= 500) {
+                                    "Server error (${err.code}) while dismissing alert. Please retry."
+                                } else {
+                                    err.message.ifBlank { "Failed to dismiss alert (HTTP ${err.code}). Please retry." }
+                                }
+                            }
+                            is NetworkError.Timeout -> "Connection timeout while dismissing alert. Please check your network and retry."
+                            is NetworkError.NotFound -> "Alert not found on server. Dismissal failed. Please retry."
+                            is NetworkError.Unauthorized, is NetworkError.Forbidden -> "Session expired or unauthorized. Please re-authenticate."
+                            else -> "Network failure while dismissing alert. Please check your connection and retry."
+                        }
+                        Log.w("ExchangeViewModel", "Failed to dismiss trade alert $alertId on backend: $errorMessage")
+                        _tradeError.value = errorMessage
+                        _isDismissingAlert.value = false
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ExchangeViewModel", "Exception while dismissing trade alert $alertId", e)
+                _tradeError.value = "An unexpected error occurred while dismissing the alert: ${e.message}. Please retry."
+                _isDismissingAlert.value = false
+            }
         }
     }
 
@@ -784,7 +842,7 @@ class ExchangeViewModel @Inject constructor(
     }
 
     fun executeCurrentTrade() {
-        if (isProcessingTrade) return
+        if (isProcessingTrade || _isDismissingAlert.value) return
 
         val alert = _pendingAlert.value
         if (alert == null) {

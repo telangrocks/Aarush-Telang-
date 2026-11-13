@@ -2912,6 +2912,47 @@ export async function handleAcknowledgeAlert(
   }
 }
 
+export async function handleDismissAlert(
+  c: Context<{ Bindings: Env }>,
+): Promise<Response> {
+  try {
+    const payload = c.get("jwtPayload") as { sub: string };
+    const userId = payload.sub;
+
+    let alertId = c.req.param("alertId");
+    if (!alertId) {
+      try {
+        const body = await c.req.json<{ alertId?: string }>();
+        alertId = body?.alertId;
+      } catch (_) {}
+    }
+
+    if (!alertId) {
+      c.status(400);
+      return c.json({ success: false, error: "alertId is required" });
+    }
+
+    const botId = c.env.TRADING_BOTS.idFromName(userId);
+    const bot = c.env.TRADING_BOTS.get(botId);
+
+    const response = await bot.fetch(
+      new Request("http://bot/dismiss-alert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alertId, userId }),
+      }),
+    );
+
+    const data = await response.json<{ success: boolean; message?: string; error?: string; status?: string }>();
+    c.status(response.status as any);
+    return c.json(data);
+  } catch (e: unknown) {
+    const error = e as Error;
+    c.status(500);
+    return c.json({ success: false, message: error.message || "Failed to dismiss alert" });
+  }
+}
+
 export async function handleGetExecutionStatus(
   c: Context<{ Bindings: Env }>,
 ): Promise<Response> {

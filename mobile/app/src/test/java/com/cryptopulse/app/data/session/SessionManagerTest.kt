@@ -403,6 +403,7 @@ private class FakeBotRepoForSession : BotRepository {
     override suspend fun stopTrade() = NetworkResult.Success(Unit)
     override suspend fun getAlerts() = NetworkResult.Success(emptyList<com.cryptopulse.app.domain.models.BotAlert>())
     override suspend fun acknowledgeAlert(alertId: String) = NetworkResult.Success(Unit)
+    override suspend fun dismissAlert(alertId: String) = NetworkResult.Success(Unit)
     override fun updateAnalysisState(snapshot: com.cryptopulse.app.domain.models.AnalysisSnapshot?) {}
     override fun updateConnectionState(connected: Boolean) {}
     override fun startObserving() { isObserving = true }

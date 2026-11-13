@@ -259,6 +259,7 @@ fun TradeAlertScreen(
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val scope = rememberCoroutineScope()
     val executionState by viewModel.executionState.collectAsState()
+    val isDismissing by viewModel.isDismissingAlert.collectAsState()
     val tradeError by viewModel.tradeError.collectAsState(initial = null)
     val isUnknownState by viewModel.isUnknownState.collectAsState()
 
@@ -280,13 +281,17 @@ fun TradeAlertScreen(
         }
     }
 
-    BackHandler(enabled = !hasNavigated) {
-        hasNavigated = true
+    BackHandler(enabled = !hasNavigated && !isDismissing && !isExecuting) {
         if (executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed) {
+            hasNavigated = true
             viewModel.dismissExecutionConfirmation { onBack() }
         } else {
-            viewModel.dismissCurrentAlert()
-            onBack()
+            viewModel.dismissCurrentAlert {
+                if (!hasNavigated) {
+                    hasNavigated = true
+                    onBack()
+                }
+            }
         }
     }
 
@@ -306,17 +311,24 @@ fun TradeAlertScreen(
                 TopAppBar(
                     title = {},
                     navigationIcon = {
-                        IconButton(onClick = {
-                            if (!hasNavigated) {
-                                hasNavigated = true
-                            if (executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed) {
-                                viewModel.dismissExecutionConfirmation { onBack() }
-                            } else {
-                                viewModel.dismissCurrentAlert()
-                                onBack()
-                            }
-                            }
-                        }) {
+                        IconButton(
+                            onClick = {
+                                if (!hasNavigated && !isDismissing && !isExecuting) {
+                                    if (executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed) {
+                                        hasNavigated = true
+                                        viewModel.dismissExecutionConfirmation { onBack() }
+                                    } else {
+                                        viewModel.dismissCurrentAlert {
+                                            if (!hasNavigated) {
+                                                hasNavigated = true
+                                                onBack()
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            enabled = !hasNavigated && !isDismissing && !isExecuting
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.ArrowBack,
                                 contentDescription = "Back",
@@ -426,22 +438,22 @@ fun TradeAlertScreen(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                                     ) {
+                                        val cancelText = if (isDismissing) "DISMISSING" else if (tradeError != null) "RETRY DISMISS" else "CANCEL"
                                         TradeAlertCyberButton(
-                                            text = if (tradeError != null) "RETRY" else "CANCEL",
+                                            text = cancelText,
                                             onClick = {
-                                                if (tradeError != null) {
-                                                    viewModel.clearTradeError()
-                                                    scope.launch {
-                                                        viewModel.executeCurrentTrade()
+                                                viewModel.clearTradeError()
+                                                viewModel.dismissCurrentAlert {
+                                                    if (!hasNavigated) {
+                                                        hasNavigated = true
+                                                        onBack()
                                                     }
-                                                } else {
-                                                    viewModel.dismissCurrentAlert()
-                                                    onBack()
                                                 }
                                             },
                                             leadingIcon = if (tradeError != null) Icons.Default.Refresh else Icons.Default.Close,
                                             modifier = Modifier.weight(1f),
-                                            enabled = !isExecuting,
+                                            enabled = !isExecuting && !isDismissing,
+                                            isLoading = isDismissing,
                                             testTag = "trade_alert_cancel_button",
                                         )
                                         val isQuantityValid = quantity != null && quantity.isFinite() && quantity > 0.0
@@ -460,7 +472,7 @@ fun TradeAlertScreen(
                                             },
                                             leadingIcon = buttonIcon,
                                             modifier = Modifier.weight(1f),
-                                            enabled = !isExecuting && isAlertExecutable,
+                                            enabled = !isExecuting && !isDismissing && isAlertExecutable,
                                             testTag = "trade_alert_trade_button",
                                         )
                                     }

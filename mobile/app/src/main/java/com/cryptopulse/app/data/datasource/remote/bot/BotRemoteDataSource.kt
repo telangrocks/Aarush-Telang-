@@ -18,6 +18,7 @@ interface BotRemoteDataSource {
     suspend fun stopTrade(): NetworkResult<StopTradeResponseDto>
     suspend fun getAlerts(): NetworkResult<List<BotAlertDto>>
     suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto): NetworkResult<AcknowledgeAlertResponseDto>
+    suspend fun dismissAlert(request: DismissAlertRequestDto): NetworkResult<DismissAlertResponseDto>
     suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto>
 }
 
@@ -50,6 +51,9 @@ class RetrofitBotRemoteDataSource @Inject constructor(
 
     override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto): NetworkResult<AcknowledgeAlertResponseDto> =
         safeApiCall { tradingBotService.acknowledgeAlert(request) }
+
+    override suspend fun dismissAlert(request: DismissAlertRequestDto): NetworkResult<DismissAlertResponseDto> =
+        safeApiCall { tradingBotService.dismissAlert(request) }
 
     override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionStatusDto> =
         safeApiCall { tradingBotService.getExecutionStatus(positionId) }

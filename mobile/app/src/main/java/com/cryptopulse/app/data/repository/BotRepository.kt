@@ -302,6 +302,13 @@ class BotRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
+        when (val result = botRemoteDataSource.dismissAlert(DismissAlertRequestDto(alertId))) {
+            is NetworkResult.Success -> NetworkResult.Success(Unit)
+            is NetworkResult.Error -> result
+        }
+    }
+
     override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {
         _analysisState.value = snapshot
     }

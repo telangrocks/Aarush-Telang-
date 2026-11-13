@@ -153,6 +153,7 @@ class Stage2_6_ManualTradeRemovalSafetyTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}
@@ -215,6 +216,7 @@ class Stage2_6_ManualTradeRemovalSafetyTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}

@@ -14,6 +14,7 @@ export default defineConfig({
       "tests/durable-object/multi-strategy-alert-qualification.test.ts",
       "tests/durable-object/budget-execution-eligibility.test.ts",
       "tests/durable-object/duplicate-ticker-lifecycle.test.ts",
+      "tests/durable-object/alert-dismissal.test.ts",
       "tests/stress/**/*.test.ts",
       "tests/reliability/**/*.test.ts"
     ],

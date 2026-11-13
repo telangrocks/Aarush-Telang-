@@ -74,7 +74,7 @@ export interface TradeAlert {
   strategy: string;
   side: 'BUY' | 'SELL';
   timestamp: string;
-  status: 'pending' | 'acknowledged' | 'submitted' | 'partially_filled' | 'filled' | 'executed' | 'expired' | 'failed';
+  status: 'pending' | 'acknowledged' | 'submitted' | 'partially_filled' | 'filled' | 'executed' | 'expired' | 'failed' | 'dismissed';
   generation?: number;
   approvalGeneration?: number;
   source?: 'MANUAL' | 'AUTONOMOUS';
@@ -2229,6 +2229,95 @@ export class TradingBot {
           await this.persistState('alerts', this.pruneAlerts(alerts));
         }
         return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }
+      case '/dismiss-alert': {
+        try {
+          const body = await request.json<{ alertId?: string; userId?: string }>().catch(() => ({}) as any);
+          const alertId = body?.alertId;
+          const requestUserId = body?.userId;
+
+          if (!alertId) {
+            return new Response(
+              JSON.stringify({ success: false, error: 'ALERT_ID_REQUIRED', message: 'alertId is required' }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // User ownership validation if specified
+          const doUserId = (this.runtimeState.userId as string) || ((await this.state.storage.get('userId')) as string);
+          if (requestUserId && doUserId && requestUserId !== doUserId) {
+            return new Response(
+              JSON.stringify({ success: false, error: 'UNAUTHORIZED', message: 'Alert does not belong to user' }),
+              { status: 403, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          const alerts = ((await this.state.storage.get<TradeAlert[]>('alerts')) || this.runtimeState.alerts || []) as TradeAlert[];
+          this.runtimeState.alerts = alerts;
+          const alert = alerts.find((a) => a.id === alertId);
+
+          if (!alert) {
+            return new Response(
+              JSON.stringify({ success: false, error: 'ALERT_NOT_FOUND', message: `Alert ${alertId} not found` }),
+              { status: 404, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Idempotency: if already dismissed, return success
+          if (alert.status === 'dismissed') {
+            return new Response(
+              JSON.stringify({ success: true, message: 'Alert already dismissed', alertId: alert.id, status: 'dismissed' }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Disallow dismissal if already in trade execution lifecycle
+          const nonDismissibleStatuses: TradeAlert['status'][] = ['submitted', 'partially_filled', 'filled', 'executed'];
+          if (nonDismissibleStatuses.includes(alert.status)) {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                error: 'EXECUTION_IN_PROGRESS',
+                message: `Cannot dismiss alert ${alertId}: alert has already entered trade execution (status: ${alert.status}).`,
+                status: alert.status
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Check if active WAL intent exists for this alert
+          const existingIntent = ((await this.state.storage.get(`intent:order:${alertId}`)) as any) || this.runtimeState.activeIntents.get(alertId);
+          if (existingIntent && ['INTENT_PERSISTED', 'PENDING', 'DISPATCHING', 'DISPATCHED', 'OPEN', 'PARTIALLY_FILLED', 'FILLED', 'COMPLETED'].includes(existingIntent.status)) {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                error: 'EXECUTION_IN_PROGRESS',
+                message: `Cannot dismiss alert ${alertId}: active trade intent exists (intent status: ${existingIntent.status}).`,
+                status: alert.status
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Transition alert status to dismissed
+          alert.status = 'dismissed';
+          const pruned = this.pruneAlerts(alerts);
+          await this.persistState('alerts', pruned);
+          this.runtimeState.alerts = alerts;
+
+          console.log(`[ALERT_DISMISSED] id=${alert.id} symbol=${alert.symbol} strategy=${alert.strategy} timestamp=${new Date().toISOString()}`);
+
+          return new Response(
+            JSON.stringify({ success: true, message: 'Alert dismissed successfully', alertId: alert.id, status: 'dismissed' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        } catch (err: any) {
+          console.error(`[ALERT_DISMISSAL_ERROR] error=${err?.message || err}`);
+          return new Response(
+            JSON.stringify({ success: false, error: 'INTERNAL_ERROR', message: err?.message || 'Failed to dismiss alert' }),
+            { status: 500, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
       }
       case '/execute-trade': {
         console.log(`[DIAGNOSTIC] [STAGE: EXECUTE_TRADE_REQUEST_RECEIVED] timestamp=${new Date().toISOString()}`);
@@ -6904,8 +6993,10 @@ export class TradingBot {
                         // Normalized-Ticker Single Active Alert Gate:
                         // Suppress if ANY active pending/acknowledged alert exists on this normalized ticker (< 5 min),
                         // across ALL strategies and timeframes (ONE NORMALIZED TICKER = AT MOST ONE ACTIVE TRADE OR ALERT).
+                        // Dismissed alerts are released from duplicate suppression immediately.
                         const existingActiveAlert = alerts.find(a =>
                           this.normalizeSymbol(a.symbol) === currentNorm &&
+                          a.status !== 'dismissed' &&
                           (a.status === 'pending' || a.status === 'acknowledged') &&
                           (nowMs - new Date(a.timestamp).getTime()) < 300_000
                         );
@@ -7541,7 +7632,7 @@ export class TradingBot {
                           return this.normalizeSymbol(intent.symbol) === currentNorm && isUnresolved;
                         });
                         const prePersistActiveAlert = (this.runtimeState.alerts || []).some(
-                          (a: any) => this.normalizeSymbol(a.symbol) === currentNorm && (a.status === 'pending' || a.status === 'acknowledged') && (Date.now() - new Date(a.timestamp).getTime()) < 300_000
+                          (a: any) => this.normalizeSymbol(a.symbol) === currentNorm && a.status !== 'dismissed' && (a.status === 'pending' || a.status === 'acknowledged') && (Date.now() - new Date(a.timestamp).getTime()) < 300_000
                         );
 
                         if (prePersistActivePosition || prePersistActiveIntent || prePersistActiveAlert) {

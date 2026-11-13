@@ -45,6 +45,7 @@ import {
   handleStopTradingBot,
   handleGetBotAlerts,
   handleAcknowledgeAlert,
+  handleDismissAlert,
   handleGetExecutionStatus,
   handleTriggerManualTradeAlert,
 } from "./handlers/exchange";
@@ -436,6 +437,8 @@ api.post("/trading-bot/stop", handleStopTradingBot);
 api.get("/trading-bot/alerts", handleGetBotAlerts);
 api.post("/trading-bot/alerts/:alertId/ack", handleAcknowledgeAlert);
 api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
+api.post("/trading-bot/alerts/:alertId/dismiss", handleDismissAlert);
+api.post("/trading-bot/alerts/dismiss", handleDismissAlert);
 api.get("/trading-bot/execution-status/:positionId", handleGetExecutionStatus);
 api.post("/trading-bot/manual-alert", handleTriggerManualTradeAlert);
 

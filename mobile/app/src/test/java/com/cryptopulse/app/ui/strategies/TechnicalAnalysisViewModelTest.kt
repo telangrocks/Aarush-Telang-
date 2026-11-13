@@ -82,6 +82,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
 
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
             override fun updateConnectionState(connected: Boolean) { _isConnected.value = connected }
@@ -649,6 +650,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { botAnalysisFlow.value = snapshot }
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}
@@ -759,6 +761,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}
@@ -851,6 +854,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}
@@ -936,6 +940,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}
@@ -1029,6 +1034,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { botAnalysisFlow.value = snapshot }
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}
@@ -1098,6 +1104,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}
@@ -1157,6 +1164,7 @@ class TechnicalAnalysisViewModelTest {
                 override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
                 override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
                 override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
                     override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
                 override fun updateConnectionState(connected: Boolean) {}
                 override fun startObserving() {}
@@ -1212,6 +1220,7 @@ class TechnicalAnalysisViewModelTest {
                 override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
                 override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
                 override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
                     override fun updateAnalysisState(snapshot: AnalysisSnapshot?) { _analysisState.value = snapshot }
                 override fun updateConnectionState(connected: Boolean) {}
                 override fun startObserving() {}
@@ -1389,6 +1398,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}
@@ -1438,6 +1448,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}
@@ -1488,6 +1499,7 @@ class TechnicalAnalysisViewModelTest {
             override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
             override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
             override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
             override fun updateConnectionState(connected: Boolean) {}
             override fun startObserving() {}

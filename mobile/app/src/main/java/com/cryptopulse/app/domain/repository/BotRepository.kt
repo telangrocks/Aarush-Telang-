@@ -34,6 +34,7 @@ interface BotRepository {
     suspend fun stopTrade(): NetworkResult<Unit>
     suspend fun getAlerts(): NetworkResult<List<BotAlert>>
     suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit>
+    suspend fun dismissAlert(alertId: String): NetworkResult<Unit>
 
     fun updateAnalysisState(snapshot: AnalysisSnapshot?)
     fun updateConnectionState(connected: Boolean)
