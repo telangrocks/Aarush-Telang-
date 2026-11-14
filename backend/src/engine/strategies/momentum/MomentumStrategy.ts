@@ -59,9 +59,70 @@ export class MomentumStrategy implements IStrategy {
   public evaluate(context: Readonly<StrategyContext>, targetTimeframe: Timeframe): EvaluationResult {
     const MIN_CLOSED_CANDLES = 201;
 
-    // Helper: Derive candle close time deterministically
+    // Helper: Derive candle close time deterministically; return NaN if timestamps are non-finite/missing
     const getCandleCloseTime = (c: NormalizedCandle, tf: string): number => {
-      return (c as any).closeTime ?? ((c.openTime ?? c.timestamp ?? 0) + CandleValidator.timeframeToMs(tf));
+      if (!c || typeof c !== 'object') return NaN;
+      const rawClose = (c as any).closeTime;
+      if (rawClose !== undefined) {
+        return typeof rawClose === 'number' && Number.isFinite(rawClose) ? rawClose : NaN;
+      }
+      const baseTime = c.openTime ?? c.timestamp;
+      if (typeof baseTime !== 'number' || !Number.isFinite(baseTime)) {
+        return NaN;
+      }
+      return baseTime + CandleValidator.timeframeToMs(tf);
+    };
+
+    const isValidOhlcCandle = (c: NormalizedCandle | undefined): boolean => {
+      if (!c || typeof c !== 'object') return false;
+      if (
+        !Number.isFinite(c.open) || c.open <= 0 ||
+        !Number.isFinite(c.high) || c.high <= 0 ||
+        !Number.isFinite(c.low) || c.low <= 0 ||
+        !Number.isFinite(c.close) || c.close <= 0
+      ) {
+        return false;
+      }
+      if (c.high < c.low) return false;
+      if (c.volume !== undefined && (!Number.isFinite(c.volume) || c.volume < 0)) return false;
+      return true;
+    };
+
+    const hasFiniteRequiredIndicators = (indicatorSnap: any, tf: Timeframe): boolean => {
+      const tfInd = indicatorSnap?.timeframes?.[tf];
+      if (!tfInd) return false;
+      const emaFast = tfInd.ema?.[this.config.conditionConfig.emaFastPeriod];
+      const emaSlow = tfInd.ema?.[this.config.conditionConfig.emaSlowPeriod];
+      const rsi = tfInd.rsi?.[this.config.conditionConfig.rsiPeriod];
+      const macd = tfInd.macd?.[this.config.conditionConfig.macdKey];
+      const atr = tfInd.atr?.[this.config.conditionConfig.atrPeriod];
+
+      if (!Array.isArray(emaFast) || emaFast.length < 2) return false;
+      if (!Array.isArray(emaSlow) || emaSlow.length < 2) return false;
+      if (!Array.isArray(rsi) || rsi.length === 0) return false;
+      if (!Array.isArray(macd) || macd.length === 0) return false;
+      if (!Array.isArray(atr) || atr.length === 0) return false;
+
+      const fLast = emaFast[emaFast.length - 1];
+      const fPrev = emaFast[emaFast.length - 2];
+      const sLast = emaSlow[emaSlow.length - 1];
+      const sPrev = emaSlow[emaSlow.length - 2];
+      const rsiLast = rsi[rsi.length - 1];
+      const macdLast = macd[macd.length - 1];
+      const atrLast = atr[atr.length - 1];
+
+      return (
+        Number.isFinite(fLast) && fLast > 0 &&
+        Number.isFinite(fPrev) && fPrev > 0 &&
+        Number.isFinite(sLast) && sLast > 0 &&
+        Number.isFinite(sPrev) && sPrev > 0 &&
+        Number.isFinite(rsiLast) &&
+        Boolean(macdLast) &&
+        Number.isFinite(macdLast.macdLine) &&
+        Number.isFinite(macdLast.signalLine) &&
+        Number.isFinite(macdLast.histogram) &&
+        Number.isFinite(atrLast) && atrLast >= 0
+      );
     };
 
     // 0. Fail-Closed Validation: Ensure targetTimeframe is supported by manifest
@@ -82,19 +143,36 @@ export class MomentumStrategy implements IStrategy {
 
     // 1. Snapshot Evaluation Reference Time (T & T_previous)
     const rawCandles = context.marketSnapshot?.candles?.[targetTimeframe];
-    if (!rawCandles || rawCandles.length === 0) {
+    if (!Array.isArray(rawCandles) || rawCandles.length === 0 || !Number.isFinite(context.timestamp)) {
       return {
         strategyId: this.manifest.id,
         timestamp: context.timestamp,
         confidenceScore: 0,
         hasSignal: false,
         metadata: {
-          reasoning: [`[TIMEFRAME DATA] Missing required candle data for timeframe ${targetTimeframe}`],
+          reasoning: [`[TIMEFRAME DATA] Missing or invalid required candle data for timeframe ${targetTimeframe}`],
           signal: null,
           strategyConfig: this.config,
           targetTimeframe,
         }
       };
+    }
+
+    for (let i = 0; i < rawCandles.length; i++) {
+      if (!Number.isFinite(getCandleCloseTime(rawCandles[i], targetTimeframe))) {
+        return {
+          strategyId: this.manifest.id,
+          timestamp: context.timestamp,
+          confidenceScore: 0,
+          hasSignal: false,
+          metadata: {
+            reasoning: [`[TIMEFRAME DATA] Invalid candle timestamp in ${targetTimeframe} series`],
+            signal: null,
+            strategyConfig: this.config,
+            targetTimeframe,
+          }
+        };
+      }
     }
 
     // Filter forming candles: only closed candles at or before context.timestamp
@@ -114,6 +192,22 @@ export class MomentumStrategy implements IStrategy {
       };
     }
 
+    // Strict OHLC validation across the entire closed candle series before any indicator calculation
+    if (closedCandlesAtRef.some(c => !isValidOhlcCandle(c))) {
+      return {
+        strategyId: this.manifest.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: {
+          reasoning: [`[TIMEFRAME DATA] Invalid OHLC candle data detected in ${targetTimeframe} series`],
+          signal: null,
+          strategyConfig: this.config,
+          targetTimeframe,
+        }
+      };
+    }
+
     const latestClosed = closedCandlesAtRef[closedCandlesAtRef.length - 1];
     const T = getCandleCloseTime(latestClosed, targetTimeframe);
     const tfMs = CandleValidator.timeframeToMs(targetTimeframe);
@@ -123,7 +217,7 @@ export class MomentumStrategy implements IStrategy {
     const currentCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
       [targetTimeframe]: closedCandlesAtRef,
     };
-    const closedCandlesAtPrev = rawCandles.filter(c => getCandleCloseTime(c, targetTimeframe) <= T_previous);
+    const closedCandlesAtPrev = closedCandlesAtRef.filter(c => getCandleCloseTime(c, targetTimeframe) <= T_previous);
     const previousCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
       [targetTimeframe]: closedCandlesAtPrev,
     };
@@ -143,8 +237,42 @@ export class MomentumStrategy implements IStrategy {
 
     // Current technical evaluation
     const currentIndicatorSnapshot = this.indicatorEngine.evaluate(snapshotCurrent);
+    if (!hasFiniteRequiredIndicators(currentIndicatorSnapshot, targetTimeframe)) {
+      return {
+        strategyId: this.manifest.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: {
+          reasoning: [`[INDICATOR DATA] Non-finite or unavailable required indicator values on ${targetTimeframe}`],
+          signal: null,
+          indicatorSnapshot: currentIndicatorSnapshot,
+          strategyConfig: this.config,
+          targetTimeframe,
+        }
+      };
+    }
     const currentConditionResult = this.conditionEngine.evaluate(currentIndicatorSnapshot);
     const currentConfidenceScore = this.confidenceEngine.evaluate(currentConditionResult);
+    if (
+      !Number.isFinite(currentConfidenceScore?.overallScore) ||
+      !Number.isFinite(currentConfidenceScore?.timeframes?.[targetTimeframe]?.score)
+    ) {
+      return {
+        strategyId: this.manifest.id,
+        timestamp: context.timestamp,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: {
+          reasoning: [`[CONFIDENCE DATA] Non-finite confidence score evaluated on ${targetTimeframe}`],
+          signal: null,
+          indicatorSnapshot: currentIndicatorSnapshot,
+          conditionResult: currentConditionResult,
+          strategyConfig: this.config,
+          targetTimeframe,
+        }
+      };
+    }
 
     // Previous technical evaluation
     let previousIndicatorSnapshot: any = null;
@@ -155,18 +283,32 @@ export class MomentumStrategy implements IStrategy {
 
     if (hasValidPreviousData) {
       previousIndicatorSnapshot = this.indicatorEngine.evaluate(snapshotPrevious);
-      previousConditionResult = this.conditionEngine.evaluate(previousIndicatorSnapshot);
-      previousConfidenceScore = this.confidenceEngine.evaluate(previousConditionResult);
+      if (hasFiniteRequiredIndicators(previousIndicatorSnapshot, targetTimeframe)) {
+        previousConditionResult = this.conditionEngine.evaluate(previousIndicatorSnapshot);
+        previousConfidenceScore = this.confidenceEngine.evaluate(previousConditionResult);
+      }
     }
 
     // 4. Pure Market Alignment Helper (Authoritative on targetTimeframe Trigger)
     const evaluateMarketAlignment = (
+      indicatorSnap: any,
       conditionRes: ConditionResult,
       confidenceSc: ConfidenceScore,
       entryCandles: NormalizedCandle[]
     ): { isAlignedBuy: boolean; isAlignedSell: boolean } => {
+      if (
+        !hasFiniteRequiredIndicators(indicatorSnap, targetTimeframe) ||
+        !Number.isFinite(confidenceSc?.overallScore) ||
+        !Number.isFinite(confidenceSc?.timeframes?.[targetTimeframe]?.score)
+      ) {
+        return { isAlignedBuy: false, isAlignedSell: false };
+      }
+
       // Check targetTimeframe SignalEngine trigger with nominal risk (pure market evaluation)
-      const lastClose = entryCandles[entryCandles.length - 1]?.close || 0;
+      const lastClose = entryCandles[entryCandles.length - 1]?.close;
+      if (!Number.isFinite(lastClose) || lastClose <= 0) {
+        return { isAlignedBuy: false, isAlignedSell: false };
+      }
       const nominalRisk: RiskAssessment = {
         timestamp: context.timestamp,
         stopLossDistance: lastClose * 0.02,
@@ -191,8 +333,20 @@ export class MomentumStrategy implements IStrategy {
         nominalRisk
       );
 
-      const hasBuyTrigger = triggerSignal?.type === SignalType.BUY;
-      const hasSellTrigger = triggerSignal?.type === SignalType.SELL;
+      const tfTrend = conditionRes.timeframes[targetTimeframe]?.trend;
+      const hasBullishTrend = Boolean(
+        tfTrend &&
+        tfTrend.priceAboveEMA === true &&
+        (tfTrend.trendDirection === 'UP' || tfTrend.emaCrossoverState === 'BULLISH')
+      );
+      const hasBearishTrend = Boolean(
+        tfTrend &&
+        tfTrend.priceAboveEMA === false &&
+        (tfTrend.trendDirection === 'DOWN' || tfTrend.emaCrossoverState === 'BEARISH')
+      );
+
+      const hasBuyTrigger = triggerSignal?.type === SignalType.BUY && hasBullishTrend;
+      const hasSellTrigger = triggerSignal?.type === SignalType.SELL && hasBearishTrend;
 
       return {
         isAlignedBuy: hasBuyTrigger,
@@ -202,14 +356,23 @@ export class MomentumStrategy implements IStrategy {
 
     // Evaluate market alignment at T and T_previous
     const currentAlignment = evaluateMarketAlignment(
+      currentIndicatorSnapshot,
       currentConditionResult,
       currentConfidenceScore,
       currentCandlesRecord[targetTimeframe]!
     );
 
     let previousAlignment = { isAlignedBuy: false, isAlignedSell: false };
-    if (hasValidPreviousData && previousConditionResult && previousConfidenceScore) {
+    if (
+      hasValidPreviousData &&
+      previousIndicatorSnapshot &&
+      previousConditionResult &&
+      previousConfidenceScore &&
+      Number.isFinite(previousConfidenceScore.overallScore) &&
+      Number.isFinite(previousConfidenceScore?.timeframes?.[targetTimeframe]?.score)
+    ) {
       previousAlignment = evaluateMarketAlignment(
+        previousIndicatorSnapshot,
         previousConditionResult,
         previousConfidenceScore,
         previousCandlesRecord[targetTimeframe]!
@@ -247,10 +410,12 @@ export class MomentumStrategy implements IStrategy {
 
     // 5. Evaluate Current Real Risk Gates
     const entryCandles = currentCandlesRecord[targetTimeframe]!;
-    const latestCandleClose = entryCandles[entryCandles.length - 1]?.close || 0;
-    const currentPrice = latestCandleClose > 0 ? latestCandleClose : context.marketSnapshot.currentPrice || 0;
+    const latestCandleClose = entryCandles[entryCandles.length - 1]?.close;
+    const currentPrice = (Number.isFinite(latestCandleClose) && latestCandleClose > 0)
+      ? latestCandleClose
+      : (Number.isFinite(context.marketSnapshot.currentPrice) ? context.marketSnapshot.currentPrice : 0);
 
-    if (currentPrice <= 0) {
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
       if (isEdgeBuy) {
         this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY });
       } else if (isEdgeSell) {
@@ -283,9 +448,9 @@ export class MomentumStrategy implements IStrategy {
     // ATR risk calculation strictly on targetTimeframe ATR
     const tfIndicators = currentIndicatorSnapshot.timeframes[targetTimeframe];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
-    const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
+    const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : NaN;
 
-    if (!currentAtr || currentAtr <= 0) {
+    if (!Number.isFinite(currentAtr) || currentAtr <= 0) {
       if (isEdgeBuy) {
         this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY });
       } else if (isEdgeSell) {

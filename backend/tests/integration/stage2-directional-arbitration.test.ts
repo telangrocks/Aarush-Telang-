@@ -128,14 +128,15 @@ describe('Stage 2 Directional & Multi-Timeframe Arbitration Suite', () => {
     it('2. Mandatory Safety Condition B: Strategy-specific regime permissions enforce strictly', () => {
       const snapshot: MarketSnapshot = {
         symbol: 'BTC/USDT',
-        timestamp: Date.now(),
         currentPrice: 50000,
         volume24h: 1000,
         quoteVolume24h: 50000000,
         candles: {
+          '5m': generateCandles(60, 'UP'),
           '1h': generateCandles(60, 'UP'),
           '4h': generateCandles(60, 'UP'),
         } as any,
+        timestamp: Date.now(),
       };
 
       // In TRENDING: Breakout, Momentum, VWAP allowed; MeanReversion HARD-REJECTED
@@ -193,26 +194,28 @@ describe('Stage 2 Directional & Multi-Timeframe Arbitration Suite', () => {
     it('5. BUY/SELL Directional Symmetry across Trend Strategies', () => {
       const bullSnapshot: MarketSnapshot = {
         symbol: 'BTC/USDT',
-        timestamp: Date.now(),
         currentPrice: 50000,
         volume24h: 1000,
         quoteVolume24h: 50000000,
         candles: {
+          '5m': generateCandles(60, 'UP'),
           '1h': generateCandles(60, 'UP'),
           '4h': generateCandles(60, 'UP'),
         } as any,
+        timestamp: Date.now(),
       };
 
       const bearSnapshot: MarketSnapshot = {
         symbol: 'BTC/USDT',
-        timestamp: Date.now(),
         currentPrice: 50000,
         volume24h: 1000,
         quoteVolume24h: 50000000,
         candles: {
+          '5m': generateCandles(60, 'DOWN'),
           '1h': generateCandles(60, 'DOWN'),
           '4h': generateCandles(60, 'DOWN'),
         } as any,
+        timestamp: Date.now(),
       };
 
       // Bullish HTF: BUY passes, SELL rejects
@@ -294,42 +297,45 @@ describe('Stage 2 Directional & Multi-Timeframe Arbitration Suite', () => {
       // 1h MISSING, 4h BULLISH: Trend BUY passes
       const missing1hSnapshot: MarketSnapshot = {
         symbol: 'BTC/USDT',
-        timestamp: Date.now(),
         currentPrice: 50000,
         volume24h: 1000,
         quoteVolume24h: 50000000,
         candles: {
+          '5m': generateCandles(60, 'UP'),
           '1h': [],
           '4h': generateCandles(60, 'UP'),
         } as any,
+        timestamp: Date.now(),
       };
       expect(DirectionalMtfArbitrator.evaluateCandidate(createCandidateResult('Momentum', 'BUY'), missing1hSnapshot, trendingRegime).passed).toBe(true);
 
       // 1h BULLISH, 4h MISSING: Trend BUY passes
       const missing4hSnapshot: MarketSnapshot = {
         symbol: 'BTC/USDT',
-        timestamp: Date.now(),
         currentPrice: 50000,
         volume24h: 1000,
         quoteVolume24h: 50000000,
         candles: {
+          '5m': generateCandles(60, 'UP'),
           '1h': generateCandles(60, 'UP'),
           '4h': [],
         } as any,
+        timestamp: Date.now(),
       };
       expect(DirectionalMtfArbitrator.evaluateCandidate(createCandidateResult('Momentum', 'BUY'), missing4hSnapshot, trendingRegime).passed).toBe(true);
 
       // Both MISSING: Rejects with INSUFFICIENT_HTF_DATA
       const blackoutSnapshot: MarketSnapshot = {
         symbol: 'BTC/USDT',
-        timestamp: Date.now(),
         currentPrice: 50000,
         volume24h: 1000,
         quoteVolume24h: 50000000,
         candles: {
+          '5m': generateCandles(60, 'UP'),
           '1h': [],
           '4h': [],
         } as any,
+        timestamp: Date.now(),
       };
       const blackoutRes = DirectionalMtfArbitrator.evaluateCandidate(createCandidateResult('Momentum', 'BUY'), blackoutSnapshot, trendingRegime);
       expect(blackoutRes.passed).toBe(false);
@@ -338,14 +344,15 @@ describe('Stage 2 Directional & Multi-Timeframe Arbitration Suite', () => {
       // 1h NEUTRAL, 4h MISSING: Incomplete data without confirmation rejects Trend BUY
       const neutralMissingSnapshot: MarketSnapshot = {
         symbol: 'BTC/USDT',
-        timestamp: Date.now(),
         currentPrice: 50000,
         volume24h: 1000,
         quoteVolume24h: 50000000,
         candles: {
+          '5m': generateCandles(60, 'UP'),
           '1h': generateCandles(60, 'FLAT'),
           '4h': [],
         } as any,
+        timestamp: Date.now(),
       };
       const neutMissRes = DirectionalMtfArbitrator.evaluateCandidate(createCandidateResult('Momentum', 'BUY'), neutralMissingSnapshot, trendingRegime);
       expect(neutMissRes.passed).toBe(false);
@@ -358,14 +365,15 @@ describe('Stage 2 Directional & Multi-Timeframe Arbitration Suite', () => {
       // - Under VWAP rules: 1h BEARISH + 4h BULLISH would PASS (Rule 3: only double opposing rejects)
       const mixedHtfSnapshot: MarketSnapshot = {
         symbol: 'BTC/USDT',
-        timestamp: Date.now(),
         currentPrice: 50000,
         volume24h: 1000,
         quoteVolume24h: 50000000,
         candles: {
+          '5m': generateCandles(60, 'UP'),
           '1h': generateCandles(60, 'DOWN'), // BEARISH
           '4h': generateCandles(60, 'UP'),   // BULLISH
         } as any,
+        timestamp: Date.now(),
       };
 
       // 1. ScalperV2 and supported aliases ('scalper-v2', 'scalping', 'scalperv2')
@@ -500,6 +508,34 @@ describe('Stage 2 Directional & Multi-Timeframe Arbitration Suite', () => {
       );
       expect(missingIdRes.passed).toBe(false);
       expect(missingIdRes.gate).toBe('INSUFFICIENT_HTF_DATA');
+    });
+
+    it('8c. Non-Momentum strategies (ScalperV2, Breakout, MeanReversion, VWAP) retain existing arbitration rules', () => {
+      const htfOnlyBullSnapshot: MarketSnapshot = {
+        symbol: 'BTC/USDT',
+        currentPrice: 50000,
+        volume24h: 1000,
+        quoteVolume24h: 50000000,
+        candles: {
+          '1h': generateCandles(60, 'UP'),
+          '4h': generateCandles(60, 'UP'),
+        } as any,
+        timestamp: Date.now(),
+      };
+
+      expect(DirectionalMtfArbitrator.evaluateCandidate(createCandidateResult('ScalperV2', 'BUY'), htfOnlyBullSnapshot, trendingRegime).passed).toBe(true);
+      expect(DirectionalMtfArbitrator.evaluateCandidate(createCandidateResult('Breakout', 'BUY'), htfOnlyBullSnapshot, trendingRegime).passed).toBe(true);
+      expect(DirectionalMtfArbitrator.evaluateCandidate(createCandidateResult('VWAP', 'BUY'), htfOnlyBullSnapshot, rangingRegime).passed).toBe(true);
+      expect(DirectionalMtfArbitrator.evaluateCandidate(createCandidateResult('MeanReversion', 'BUY'), htfOnlyBullSnapshot, rangingRegime).passed).toBe(true);
+
+      // Contrast: Momentum strictly fails closed when entry candles are missing on the exact same HTF-only snapshot
+      const momentumWithoutEntry = DirectionalMtfArbitrator.evaluateCandidate(
+        createCandidateResult('Momentum', 'BUY', '5m'),
+        htfOnlyBullSnapshot,
+        trendingRegime
+      );
+      expect(momentumWithoutEntry.passed).toBe(false);
+      expect(momentumWithoutEntry.gate).toBe('INSUFFICIENT_HTF_DATA');
     });
   });
 

@@ -3,6 +3,8 @@ import { TradingBot, TradeAlert } from '../../src/trading-bot';
 import { sendTradeNotification } from '../../src/handlers/notifications';
 import { ExchangeManager } from '../../src/exchanges';
 import { StrategyRegistry } from '../../src/engine/strategies/StrategyRegistry';
+import { DirectionalMtfArbitrator } from '../../src/engine/arbitration/DirectionalMtfArbitrator';
+import { MarketRegime, MarketRegimeEngine } from '../../src/engine/regime/MarketRegimeEngine';
 
 vi.mock('../../src/crypto', () => ({
   decrypt: vi.fn().mockResolvedValue('mocked_secret_key'),
@@ -993,6 +995,601 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
       const gateRejections = mockStorage.get('gateRejections');
       expect(Object.keys(gateRejections?.strategyRejections || {})).toHaveLength(0);
       expect(Object.keys(gateRejections?.symbolRejections || {})).toHaveLength(0);
+    });
+
+    it('33. Momentum entry-timeframe ADX protection across 5m, 15m, 1h and 4h: rejects ADX < 20 and approves ADX >= 20', async () => {
+      const trendingRegime: MarketRegime = {
+        regime: 'TRENDING',
+        score: 85,
+        allowTrendStrategies: true,
+        allowMeanReversion: false,
+      };
+      const strongTrendCandles = generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000, 100);
+      const flatLowAdxCandles = Array.from({ length: 60 }, (_, i) => {
+        const openTime = FIXED_ANCHOR_TIME - (60 - i) * 300_000;
+        return {
+          timestamp: openTime,
+          openTime,
+          closeTime: openTime + 300_000,
+          open: 100,
+          high: 100.1,
+          low: 99.9,
+          close: 100,
+          volume: 1000,
+        };
+      });
+
+      for (const tf of ['5m', '15m', '1h', '4h'] as const) {
+        const candidate = {
+          strategyId: 'Momentum',
+          timestamp: FIXED_ANCHOR_TIME,
+          confidenceScore: 88,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: tf,
+            signal: {
+              symbol: 'BTC/USDT',
+              timeframe: tf,
+              type: 'BUY',
+              confidenceScore: 88,
+              signalPrice: 50000,
+              stopLoss: 49000,
+              takeProfit: 52000,
+              riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+            },
+          },
+        } as any;
+
+        // 1. Weak ADX (< 20) on entry timeframe -> rejected
+        const weakSnapshot: any = {
+          symbol: 'BTC/USDT',
+          timestamp: FIXED_ANCHOR_TIME,
+          currentPrice: 50000,
+          volume24h: 1000,
+          quoteVolume24h: 50000000,
+          candles: {
+            '5m': strongTrendCandles,
+            '15m': strongTrendCandles,
+            '1h': strongTrendCandles,
+            '4h': strongTrendCandles,
+            [tf]: flatLowAdxCandles,
+          },
+        };
+        const weakRes = DirectionalMtfArbitrator.evaluateCandidate(candidate, weakSnapshot, trendingRegime);
+        expect(weakRes.passed).toBe(false);
+        expect(['REGIME_PROHIBITED', 'HTF_CONFLICT']).toContain(weakRes.gate);
+
+        // 2. Strong ADX (>= 20) across entry and HTF timeframes -> approved
+        const strongSnapshot: any = {
+          ...weakSnapshot,
+          candles: {
+            '5m': strongTrendCandles,
+            '15m': strongTrendCandles,
+            '1h': strongTrendCandles,
+            '4h': strongTrendCandles,
+          },
+        };
+        const strongRes = DirectionalMtfArbitrator.evaluateCandidate(candidate, strongSnapshot, trendingRegime);
+        expect(strongRes.passed).toBe(true);
+        expect(strongRes.gate).toBe('PASS');
+      }
+    });
+
+    it('34. Momentum fail-closed on insufficient (< 35) or invalid entry candles and enforces self-HTF confirmation on 1h and 4h', () => {
+      const trendingRegime: MarketRegime = {
+        regime: 'TRENDING',
+        score: 85,
+        allowTrendStrategies: true,
+        allowMeanReversion: false,
+      };
+      const strongTrendCandles = generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000, 100);
+      const flatCandles = Array.from({ length: 60 }, (_, i) => ({
+        timestamp: FIXED_ANCHOR_TIME - (60 - i) * 3600_000,
+        openTime: FIXED_ANCHOR_TIME - (60 - i) * 3600_000,
+        closeTime: FIXED_ANCHOR_TIME - (59 - i) * 3600_000,
+        open: 100,
+        high: 100.1,
+        low: 99.9,
+        close: 100,
+        volume: 1000,
+      }));
+
+      for (const tf of ['5m', '15m', '1h', '4h'] as const) {
+        const candidate = {
+          strategyId: 'Momentum',
+          timestamp: FIXED_ANCHOR_TIME,
+          confidenceScore: 88,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: tf,
+            signal: {
+              symbol: 'BTC/USDT',
+              timeframe: tf,
+              type: 'BUY',
+              confidenceScore: 88,
+              signalPrice: 50000,
+            },
+          },
+        } as any;
+
+        // Insufficient entry candles (20 < 35) must fail closed with INSUFFICIENT_HTF_DATA
+        const shortSnapshot: any = {
+          symbol: 'BTC/USDT',
+          timestamp: FIXED_ANCHOR_TIME,
+          currentPrice: 50000,
+          volume24h: 1000,
+          quoteVolume24h: 50000000,
+          candles: {
+            '5m': strongTrendCandles,
+            '15m': strongTrendCandles,
+            '1h': strongTrendCandles,
+            '4h': strongTrendCandles,
+            [tf]: strongTrendCandles.slice(0, 20),
+          },
+        };
+        const shortRes = DirectionalMtfArbitrator.evaluateCandidate(candidate, shortSnapshot, trendingRegime);
+        expect(shortRes.passed).toBe(false);
+        expect(shortRes.gate).toBe('INSUFFICIENT_HTF_DATA');
+
+        // Invalid numeric candle (close <= 0 / NaN) in entry series must fail closed
+        const invalidCandles = strongTrendCandles.map(c => ({ ...c }));
+        invalidCandles[invalidCandles.length - 1].close = NaN;
+        const invalidSnapshot: any = {
+          ...shortSnapshot,
+          candles: {
+            ...shortSnapshot.candles,
+            [tf]: invalidCandles,
+          },
+        };
+        const invalidRes = DirectionalMtfArbitrator.evaluateCandidate(candidate, invalidSnapshot, trendingRegime);
+        expect(invalidRes.passed).toBe(false);
+        expect(invalidRes.gate).toBe('INSUFFICIENT_HTF_DATA');
+      }
+
+      // Self-HTF enforcement: 1h candidate rejected when 1h is NEUTRAL even if 4h is BULLISH
+      const candidate1h = {
+        strategyId: 'Momentum',
+        timestamp: FIXED_ANCHOR_TIME,
+        confidenceScore: 88,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '1h',
+          signal: { symbol: 'BTC/USDT', timeframe: '1h', type: 'BUY', confidenceScore: 88, signalPrice: 50000 },
+        },
+      } as any;
+      const neutral1hBull4hSnapshot: any = {
+        symbol: 'BTC/USDT',
+        timestamp: FIXED_ANCHOR_TIME,
+        currentPrice: 50000,
+        volume24h: 1000,
+        quoteVolume24h: 50000000,
+        candles: {
+          '1h': flatCandles,
+          '4h': strongTrendCandles,
+        },
+      };
+      const self1hRes = DirectionalMtfArbitrator.evaluateCandidate(candidate1h, neutral1hBull4hSnapshot, trendingRegime);
+      expect(self1hRes.passed).toBe(false);
+      expect(self1hRes.gate).toBe('HTF_CONFLICT');
+
+      // Self-HTF enforcement: 4h candidate rejected when 4h is NEUTRAL even if 1h is BULLISH
+      const candidate4h = {
+        strategyId: 'Momentum',
+        timestamp: FIXED_ANCHOR_TIME,
+        confidenceScore: 88,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '4h',
+          signal: { symbol: 'BTC/USDT', timeframe: '4h', type: 'BUY', confidenceScore: 88, signalPrice: 50000 },
+        },
+      } as any;
+      const bull1hNeutral4hSnapshot: any = {
+        symbol: 'BTC/USDT',
+        timestamp: FIXED_ANCHOR_TIME,
+        currentPrice: 50000,
+        volume24h: 1000,
+        quoteVolume24h: 50000000,
+        candles: {
+          '1h': strongTrendCandles,
+          '4h': flatCandles,
+        },
+      };
+      const self4hRes = DirectionalMtfArbitrator.evaluateCandidate(candidate4h, bull1hNeutral4hSnapshot, trendingRegime);
+      expect(self4hRes.passed).toBe(false);
+      expect(self4hRes.gate).toBe('HTF_CONFLICT');
+    });
+
+    it('35. Momentum centralized rejection suppression: suppresses repeated 15s cycles, allows Breakout fallback, survives DO restart, and re-evaluates on next closed candle', async () => {
+      let currentEndTime = FIXED_ANCHOR_TIME;
+      const flat5mCandles = Array.from({ length: 60 }, (_, i) => {
+        const openTime = currentEndTime - (60 - i) * 300_000;
+        return {
+          timestamp: openTime,
+          openTime,
+          closeTime: openTime + 300_000,
+          open: 100,
+          high: 100.1,
+          low: 99.9,
+          close: 100,
+          volume: 1000,
+        };
+      });
+
+      let useWeak5m = true;
+      mockAdapter.fetchKlines.mockImplementation(async (_sym: string, tf: string) => {
+        if (tf === '5m' && useWeak5m) {
+          return flat5mCandles.map((c, i) => ({
+            ...c,
+            timestamp: currentEndTime - (60 - i) * 300_000,
+            openTime: currentEndTime - (60 - i) * 300_000,
+            closeTime: currentEndTime - (59 - i) * 300_000,
+          }));
+        }
+        return generateDeterministicCandles(60, currentEndTime, 300_000);
+      });
+
+      const bot1 = setupBot('BTC/USDT', { strategy: 'Momentum' });
+      const logAuditSpy = vi.spyOn(bot1 as any, 'logAuditEvent');
+
+      vi.spyOn((bot1 as any).orchestrator, 'executeCycle').mockImplementation(async (_sym: string, _tf: any, _cfg: any, _bal: any, ctx: any) => {
+        if (ctx?.isCandidateSuppressed?.('Momentum', '5m')) {
+          return [];
+        }
+        return [
+          {
+            strategyId: 'Momentum',
+            confidenceScore: 88,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '5m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 50000,
+                stopLoss: 49000,
+                takeProfit: 52000,
+                timeframe: '5m',
+                riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+              },
+            },
+          },
+        ];
+      });
+
+      // Cycle 1: Momentum 5m rejected at Gate 4.5 due to weak 5m ADX (< 20)
+      await bot1.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+      expect(logAuditSpy).toHaveBeenCalledTimes(1);
+      const rejections1 = mockStorage.get('gateRejections');
+      expect(rejections1?.strategyRejections?.['BTCUSDT:momentum:5m']).toBeDefined();
+
+      // Cycle 2 (15s later, same closed 5m candle): suppressed before re-evaluation
+      await bot1.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+      expect(logAuditSpy).toHaveBeenCalledTimes(1);
+
+      // Cycle 3: Simulate DO restart on same closed candle; Momentum remains suppressed while Breakout remains eligible
+      const bot2 = new TradingBot(mockState, mockEnv);
+      vi.spyOn((bot2 as any).orchestrator, 'executeCycle').mockImplementation(async (_sym: string, _tf: any, _cfg: any, _bal: any, ctx: any) => {
+        const candidates: any[] = [];
+        if (!ctx?.isCandidateSuppressed?.('Momentum', '5m')) {
+          candidates.push({
+            strategyId: 'Momentum',
+            confidenceScore: 92,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '5m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 50000,
+                stopLoss: 49000,
+                takeProfit: 52000,
+                timeframe: '5m',
+                riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+              },
+            },
+          });
+        }
+        if (!ctx?.isCandidateSuppressed?.('Breakout', '15m')) {
+          candidates.push({
+            strategyId: 'Breakout',
+            confidenceScore: 84,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '15m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 50000,
+                stopLoss: 49200,
+                takeProfit: 51800,
+                timeframe: '15m',
+                riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+              },
+            },
+          });
+        }
+        return candidates;
+      });
+
+      await bot2.alarm();
+      const alertsAfterFallback = mockStorage.get('alerts') as TradeAlert[];
+      expect(alertsAfterFallback).toHaveLength(1);
+      expect(alertsAfterFallback[0].strategy).toBe('Breakout_NEW');
+
+      // Clear alerts and advance to next closed 5m candle with strong ADX -> Momentum is re-evaluated and creates alert
+      mockStorage.set('alerts', []);
+      (bot2 as any).runtimeState.alerts = [];
+      useWeak5m = false;
+      currentEndTime = FIXED_ANCHOR_TIME + 300_000;
+
+      await bot2.alarm();
+      const alertsNextCandle = mockStorage.get('alerts') as TradeAlert[];
+      expect(alertsNextCandle).toHaveLength(1);
+      expect(alertsNextCandle[0].strategy).toBe('Momentum_NEW');
+    });
+
+    it('36. Momentum rejects missing, non-array, empty entryCandles and missing, unsupported, or inconsistent entry timeframes across 5m/15m/1h/4h', () => {
+      const trendingRegime: MarketRegime = {
+        regime: 'TRENDING',
+        score: 85,
+        allowTrendStrategies: true,
+        allowMeanReversion: false,
+      };
+      const strongCandles = generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000, 100);
+
+      for (const tf of ['5m', '15m', '1h', '4h'] as const) {
+        const candidate: any = {
+          strategyId: 'Momentum',
+          timestamp: FIXED_ANCHOR_TIME,
+          confidenceScore: 88,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: tf,
+            signal: { symbol: 'BTC/USDT', timeframe: tf, type: 'BUY', confidenceScore: 88, signalPrice: 50000 },
+          },
+        };
+
+        for (const badEntry of [undefined, null, {}, 'bad-array', []]) {
+          const snap: any = {
+            symbol: 'BTC/USDT',
+            timestamp: FIXED_ANCHOR_TIME,
+            currentPrice: 50000,
+            volume24h: 1000,
+            quoteVolume24h: 50000000,
+            candles: {
+              '5m': strongCandles,
+              '15m': strongCandles,
+              '1h': strongCandles,
+              '4h': strongCandles,
+              [tf]: badEntry,
+            },
+          };
+          const res = DirectionalMtfArbitrator.evaluateCandidate(candidate, snap, trendingRegime);
+          expect(res.passed).toBe(false);
+          expect(res.gate).toBe('INSUFFICIENT_HTF_DATA');
+        }
+      }
+
+      const fullSnap: any = {
+        symbol: 'BTC/USDT',
+        timestamp: FIXED_ANCHOR_TIME,
+        currentPrice: 50000,
+        volume24h: 1000,
+        quoteVolume24h: 50000000,
+        candles: { '5m': strongCandles, '15m': strongCandles, '1h': strongCandles, '4h': strongCandles },
+      };
+
+      const badCandidates = [
+        { targetTimeframe: undefined, sigTf: undefined },
+        { targetTimeframe: '1m', sigTf: '1m' },
+        { targetTimeframe: '30m', sigTf: '30m' },
+        { targetTimeframe: '5m', sigTf: '15m' },
+      ];
+      for (const { targetTimeframe, sigTf } of badCandidates) {
+        const res = DirectionalMtfArbitrator.evaluateCandidate({
+          strategyId: 'Momentum',
+          timestamp: FIXED_ANCHOR_TIME,
+          confidenceScore: 88,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe,
+            signal: { symbol: 'BTC/USDT', timeframe: sigTf, type: 'BUY', confidenceScore: 88, signalPrice: 50000 },
+          },
+        } as any, fullSnap, trendingRegime);
+        expect(res.passed).toBe(false);
+        expect(res.gate).toBe('INSUFFICIENT_HTF_DATA');
+      }
+    });
+
+    it('37. Momentum rejects full-series invalid OHLC (index 0 & trailing), missing OHLC fields, high < low, and non-finite ADX output', () => {
+      const trendingRegime: MarketRegime = {
+        regime: 'TRENDING',
+        score: 85,
+        allowTrendStrategies: true,
+        allowMeanReversion: false,
+      };
+      const strongCandles = generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000, 100);
+      const candidate: any = {
+        strategyId: 'Momentum',
+        timestamp: FIXED_ANCHOR_TIME,
+        confidenceScore: 88,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: { symbol: 'BTC/USDT', timeframe: '5m', type: 'BUY', confidenceScore: 88, signalPrice: 50000 },
+        },
+      };
+
+      const mutators: Array<(c: any) => void> = [
+        c => { c.open = Number.NaN; },
+        c => { c.high = Number.POSITIVE_INFINITY; },
+        c => { c.low = Number.NEGATIVE_INFINITY; },
+        c => { c.close = 0; },
+        c => { c.open = -1; },
+        c => { c.high = 80; c.low = 90; },
+        c => { delete c.open; },
+        c => { delete c.high; },
+        c => { delete c.low; },
+      ];
+
+      for (const idx of [0, 59]) {
+        for (const mutate of mutators) {
+          const entryCopy = strongCandles.map(c => ({ ...c }));
+          mutate(entryCopy[idx]);
+          const snap: any = {
+            symbol: 'BTC/USDT',
+            timestamp: FIXED_ANCHOR_TIME,
+            currentPrice: 50000,
+            volume24h: 1000,
+            quoteVolume24h: 50000000,
+            candles: { '5m': entryCopy, '1h': strongCandles, '4h': strongCandles },
+          };
+          const res = DirectionalMtfArbitrator.evaluateCandidate(candidate, snap, trendingRegime);
+          expect(res.passed).toBe(false);
+          expect(res.gate).toBe('INSUFFICIENT_HTF_DATA');
+        }
+      }
+
+      // Invalid HTF candle at index 0 with 4h absent must not resolve 1h BULLISH
+      const badHtfCopy = strongCandles.map(c => ({ ...c }));
+      badHtfCopy[0].high = Number.NEGATIVE_INFINITY;
+      const badHtfSnap: any = {
+        symbol: 'BTC/USDT',
+        timestamp: FIXED_ANCHOR_TIME,
+        currentPrice: 50000,
+        volume24h: 1000,
+        quoteVolume24h: 50000000,
+        candles: { '5m': strongCandles, '1h': badHtfCopy, '4h': [] },
+      };
+      const badHtfRes = DirectionalMtfArbitrator.evaluateCandidate(candidate, badHtfSnap, trendingRegime);
+      expect(badHtfRes.passed).toBe(false);
+      expect(badHtfRes.gate).toBe('INSUFFICIENT_HTF_DATA');
+
+      // Non-finite ADX output must fail closed rather than slipping past `< 20` comparison
+      const validSnap: any = {
+        symbol: 'BTC/USDT',
+        timestamp: FIXED_ANCHOR_TIME,
+        currentPrice: 50000,
+        volume24h: 1000,
+        quoteVolume24h: 50000000,
+        candles: { '5m': strongCandles, '1h': strongCandles, '4h': strongCandles },
+      };
+      for (const badAdx of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        const adxSpy = vi.spyOn(MarketRegimeEngine, 'calculateAdx').mockReturnValue(badAdx);
+        try {
+          const res = DirectionalMtfArbitrator.evaluateCandidate(candidate, validSnap, trendingRegime);
+          expect(res.passed).toBe(false);
+          expect(res.gate).toBe('INSUFFICIENT_HTF_DATA');
+        } finally {
+          adxSpy.mockRestore();
+        }
+      }
+    });
+
+    it('38. Momentum excludes forming candles (> snapshot.timestamp) and rechecks minimum counts on entry and HTF', () => {
+      const trendingRegime: MarketRegime = {
+        regime: 'TRENDING',
+        score: 85,
+        allowTrendStrategies: true,
+        allowMeanReversion: false,
+      };
+      const strongCandles = generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000, 100);
+      const flatClosed35 = Array.from({ length: 35 }, (_, i) => {
+        const openTime = FIXED_ANCHOR_TIME - (35 - i) * 300_000;
+        return {
+          timestamp: openTime,
+          openTime,
+          closeTime: openTime + 300_000,
+          open: 100,
+          high: 100.1,
+          low: 99.9,
+          close: 100,
+          volume: 1000,
+        };
+      });
+      // Forming candle closes 5m AFTER evaluation snapshot timestamp with extreme trend spike
+      const formingSpikeCandle = {
+        timestamp: FIXED_ANCHOR_TIME,
+        openTime: FIXED_ANCHOR_TIME,
+        closeTime: FIXED_ANCHOR_TIME + 300_000,
+        open: 100,
+        high: 300,
+        low: 100,
+        close: 295,
+        volume: 50000,
+      };
+
+      const candidate: any = {
+        strategyId: 'Momentum',
+        timestamp: FIXED_ANCHOR_TIME,
+        confidenceScore: 88,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '5m',
+          signal: { symbol: 'BTC/USDT', timeframe: '5m', type: 'BUY', confidenceScore: 88, signalPrice: 50000 },
+        },
+      };
+
+      // Case A: 35 flat closed candles + 1 huge forming candle -> excluded -> ADX < 20 rejects
+      const flatPlusFormingSnap: any = {
+        symbol: 'BTC/USDT',
+        timestamp: FIXED_ANCHOR_TIME,
+        currentPrice: 50000,
+        volume24h: 1000,
+        quoteVolume24h: 50000000,
+        candles: {
+          '5m': [...flatClosed35, formingSpikeCandle],
+          '1h': strongCandles,
+          '4h': strongCandles,
+        },
+      };
+      const resFlatForming = DirectionalMtfArbitrator.evaluateCandidate(candidate, flatPlusFormingSnap, trendingRegime);
+      expect(resFlatForming.passed).toBe(false);
+      expect(resFlatForming.gate).toBe('REGIME_PROHIBITED');
+
+      // Case B: 34 valid closed candles + 1 forming candle -> excluded -> 34 < 35 -> INSUFFICIENT_HTF_DATA
+      const closed34PlusFormingSnap: any = {
+        symbol: 'BTC/USDT',
+        timestamp: FIXED_ANCHOR_TIME,
+        currentPrice: 50000,
+        volume24h: 1000,
+        quoteVolume24h: 50000000,
+        candles: {
+          '5m': [...strongCandles.slice(0, 34), formingSpikeCandle],
+          '1h': strongCandles,
+          '4h': strongCandles,
+        },
+      };
+      const res34Forming = DirectionalMtfArbitrator.evaluateCandidate(candidate, closed34PlusFormingSnap, trendingRegime);
+      expect(res34Forming.passed).toBe(false);
+      expect(res34Forming.gate).toBe('INSUFFICIENT_HTF_DATA');
+
+      // Case C: 49 closed 1h candles + 1 forming 1h candle with 4h missing -> 49 < 50 -> INSUFFICIENT_HTF_DATA
+      const closed49Htf = generateDeterministicCandles(49, FIXED_ANCHOR_TIME, 3600_000, 100);
+      const forming1h = {
+        timestamp: FIXED_ANCHOR_TIME,
+        openTime: FIXED_ANCHOR_TIME,
+        closeTime: FIXED_ANCHOR_TIME + 3600_000,
+        open: 200,
+        high: 250,
+        low: 199,
+        close: 245,
+        volume: 5000,
+      };
+      const htfFormingSnap: any = {
+        symbol: 'BTC/USDT',
+        timestamp: FIXED_ANCHOR_TIME,
+        currentPrice: 50000,
+        volume24h: 1000,
+        quoteVolume24h: 50000000,
+        candles: {
+          '5m': strongCandles,
+          '1h': [...closed49Htf, forming1h],
+          '4h': [],
+        },
+      };
+      const resHtfForming = DirectionalMtfArbitrator.evaluateCandidate(candidate, htfFormingSnap, trendingRegime);
+      expect(resHtfForming.passed).toBe(false);
+      expect(resHtfForming.gate).toBe('INSUFFICIENT_HTF_DATA');
     });
   });
 });

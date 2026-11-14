@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { IndicatorEngine } from '../../indicator/IndicatorEngine';
 import { MomentumStrategy } from './MomentumStrategy';
 import { DEFAULT_MOMENTUM_CONFIG } from './MomentumConfig';
 import { StrategyContext } from '../../context/StrategyContext';
@@ -764,6 +765,341 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     if (resBar2.hasSignal) {
       expect(resBar2.metadata.signal?.type).toBe(SignalType.SELL);
       expect(resBar2.metadata.reasoning.some((r: string) => r.includes('[5M EDGE RECOVERY] Recovered SELL event'))).toBe(true);
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 17: Strong bullish edge transition across all 4 supported timeframes (5m, 15m, 1h, 4h)
+  // --------------------------------------------------------------------------
+  it('17. Emits valid BUY signal on strong bullish edge transition across all 4 timeframes (5m, 15m, 1h, 4h)', () => {
+    const timeframes: Array<'5m' | '15m' | '1h' | '4h'> = ['5m', '15m', '1h', '4h'];
+
+    for (const tf of timeframes) {
+      const tfMs = CandleValidator.timeframeToMs(tf);
+      const flatBase = createFlatCandles(249, tf, BASE_TIME - tfMs, 100);
+      const surgeCandle: NormalizedCandle = {
+        openTime: BASE_TIME - tfMs,
+        timestamp: BASE_TIME - tfMs,
+        open: 100,
+        high: 126,
+        low: 100,
+        close: 125,
+        volume: 50000,
+      };
+      const snapshot = buildMtfSnapshot({
+        [tf]: [...flatBase, surgeCandle],
+      }, BASE_TIME, 125);
+
+      const strategy = new MomentumStrategy();
+      const result = strategy.evaluate(new StrategyContext(snapshot, 10000).freeze(), tf);
+
+      expect(result.hasSignal).toBe(true);
+      expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+      expect(result.confidenceScore).toBeGreaterThanOrEqual(70);
+      expect(result.metadata.conditionResult?.timeframes?.[tf]?.trend.priceAboveEMA).toBe(true);
+      expect(result.metadata.conditionResult?.timeframes?.[tf]?.trend.trendDirection).toBe('UP');
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 18: Strong bearish edge transition across all 4 supported timeframes (5m, 15m, 1h, 4h)
+  // --------------------------------------------------------------------------
+  it('18. Emits valid SELL signal on strong bearish edge transition across all 4 timeframes (5m, 15m, 1h, 4h)', () => {
+    const timeframes: Array<'5m' | '15m' | '1h' | '4h'> = ['5m', '15m', '1h', '4h'];
+
+    for (const tf of timeframes) {
+      const tfMs = CandleValidator.timeframeToMs(tf);
+      const flatBase = createFlatCandles(249, tf, BASE_TIME - tfMs, 100);
+      const dropCandle: NormalizedCandle = {
+        openTime: BASE_TIME - tfMs,
+        timestamp: BASE_TIME - tfMs,
+        open: 100,
+        high: 100,
+        low: 79,
+        close: 80,
+        volume: 50000,
+      };
+      const snapshot = buildMtfSnapshot({
+        [tf]: [...flatBase, dropCandle],
+      }, BASE_TIME, 80);
+
+      const strategy = new MomentumStrategy();
+      const result = strategy.evaluate(new StrategyContext(snapshot, 10000).freeze(), tf);
+
+      expect(result.hasSignal).toBe(true);
+      expect(result.metadata.signal?.type).toBe(SignalType.SELL);
+      expect(result.confidenceScore).toBeGreaterThanOrEqual(70);
+      expect(result.metadata.conditionResult?.timeframes?.[tf]?.trend.priceAboveEMA).toBe(false);
+      expect(result.metadata.conditionResult?.timeframes?.[tf]?.trend.trendDirection).toBe('DOWN');
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 19: Counter-trend bullish spike while EMA(50) < EMA(200) is blocked
+  // --------------------------------------------------------------------------
+  it('19. Rejects counter-trend BUY spike when price > EMA(50) but EMA(50) < EMA(200) (downtrend)', () => {
+    const bearishBase5m = createBearishCandles(249, '5m', BASE_TIME - 300000, 1000);
+    // Bearish base ends at 504 with EMA(50) ~ 553 < EMA(200) ~ 701.
+    // A counter-trend rally candle to 600 puts price above EMA(50) with strong MACD/RSI/ATR/volume (longScore=85),
+    // but EMA(50) remains well below EMA(200) (trendDirection === 'DOWN').
+    const rallyCandle: NormalizedCandle = {
+      openTime: BASE_TIME - 300000,
+      timestamp: BASE_TIME - 300000,
+      open: 504,
+      high: 605,
+      low: 502,
+      close: 600,
+      volume: 50000,
+    };
+    const snapshot = buildMtfSnapshot({
+      '5m': [...bearishBase5m, rallyCandle],
+    }, BASE_TIME, 600);
+
+    const context = new StrategyContext(snapshot, 10000).freeze();
+    const resDefault = defaultStrategy.evaluate(context, '5m');
+    const resRelaxed = testStrategy.evaluate(context, '5m');
+
+    expect(resDefault.metadata.conditionResult?.timeframes?.['5m']?.trend.priceAboveEMA).toBe(true);
+    expect(resDefault.metadata.conditionResult?.timeframes?.['5m']?.trend.trendDirection).toBe('DOWN');
+    expect(resDefault.hasSignal).toBe(false);
+    expect(resDefault.metadata.signal).toBeNull();
+    expect(resRelaxed.hasSignal).toBe(false);
+    expect(resRelaxed.metadata.signal).toBeNull();
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 20: Counter-trend bearish drop while EMA(50) > EMA(200) is blocked
+  // --------------------------------------------------------------------------
+  it('20. Rejects counter-trend SELL drop when price < EMA(50) but EMA(50) > EMA(200) (uptrend)', () => {
+    const bullishBase5m = createBullishCandles(249, '5m', BASE_TIME - 300000, 500);
+    // Bullish base ends at 996 with EMA(50) ~ 946 > EMA(200) ~ 798.
+    // A sharp drop to 890 puts price below EMA(50) with strong bearish MACD/RSI/ATR/volume (shortScore=70),
+    // but EMA(50) remains well above EMA(200) (trendDirection === 'UP').
+    const pullbackCandle: NormalizedCandle = {
+      openTime: BASE_TIME - 300000,
+      timestamp: BASE_TIME - 300000,
+      open: 996,
+      high: 997,
+      low: 888,
+      close: 890,
+      volume: 50000,
+    };
+    const snapshot = buildMtfSnapshot({
+      '5m': [...bullishBase5m, pullbackCandle],
+    }, BASE_TIME, 890);
+
+    const context = new StrategyContext(snapshot, 10000).freeze();
+    const resDefault = defaultStrategy.evaluate(context, '5m');
+    const resRelaxed = testStrategy.evaluate(context, '5m');
+
+    expect(resDefault.metadata.conditionResult?.timeframes?.['5m']?.trend.priceAboveEMA).toBe(false);
+    expect(resDefault.metadata.conditionResult?.timeframes?.['5m']?.trend.trendDirection).toBe('UP');
+    expect(resDefault.hasSignal).toBe(false);
+    expect(resDefault.metadata.signal).toBeNull();
+    expect(resRelaxed.hasSignal).toBe(false);
+    expect(resRelaxed.metadata.signal).toBeNull();
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 21: Flat sideways market produces no signal across all 4 timeframes
+  // --------------------------------------------------------------------------
+  it('21. Flat sideways market (EMA(50) === EMA(200)) produces no signal across 5m, 15m, 1h, 4h', () => {
+    const timeframes: Array<'5m' | '15m' | '1h' | '4h'> = ['5m', '15m', '1h', '4h'];
+
+    for (const tf of timeframes) {
+      const snapshot = buildMtfSnapshot({
+        [tf]: createFlatCandles(250, tf, BASE_TIME, 100),
+      }, BASE_TIME, 100);
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const resDefault = defaultStrategy.evaluate(context, tf);
+      const resRelaxed = testStrategy.evaluate(context, tf);
+
+      expect(resDefault.hasSignal).toBe(false);
+      expect(resDefault.metadata.signal).toBeNull();
+      expect(resRelaxed.hasSignal).toBe(false);
+      expect(resRelaxed.metadata.signal).toBeNull();
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 22: Bearish SELL edge transition with EMA(50) < EMA(200) recovers on Bar 2 and suppresses Bar 3
+  // --------------------------------------------------------------------------
+  it('22. Bearish SELL edge transition (EMA(50) < EMA(200)) rejected by zero balance at Bar 1 recovers at Bar 2 and suppresses Bar 3', () => {
+    const strategy = new MomentumStrategy();
+
+    const flat5m = createFlatCandles(249, '5m', BASE_TIME - 300000, 100);
+    const dropBar1: NormalizedCandle = {
+      openTime: BASE_TIME - 300000,
+      timestamp: BASE_TIME - 300000,
+      open: 100,
+      high: 100,
+      low: 79,
+      close: 80,
+      volume: 50000,
+    };
+    const candlesBar1 = [...flat5m, dropBar1];
+    const snapBar1 = buildMtfSnapshot({ '5m': candlesBar1 }, BASE_TIME, 80);
+
+    const zeroBalCtx = {
+      marketSnapshot: snapBar1,
+      timestamp: BASE_TIME,
+      accountBalance: 0,
+      freeze: () => zeroBalCtx,
+    } as any;
+
+    const resBar1 = strategy.evaluate(zeroBalCtx, '5m');
+    expect(resBar1.hasSignal).toBe(false);
+
+    // Bar 2: Bearish trend persists (EMA(50) < EMA(200), price < EMA(50)), balance restored
+    const dropBar2: NormalizedCandle = {
+      openTime: BASE_TIME,
+      timestamp: BASE_TIME,
+      open: 80,
+      high: 80.5,
+      low: 74,
+      close: 75,
+      volume: 50000,
+    };
+    const candlesBar2 = [...candlesBar1, dropBar2];
+    const snapBar2 = buildMtfSnapshot({ '5m': candlesBar2 }, BASE_TIME + 300000, 75);
+
+    const resBar2 = strategy.evaluate(new StrategyContext(snapBar2, 10000).freeze(), '5m');
+    expect(resBar2.hasSignal).toBe(true);
+    expect(resBar2.metadata.signal?.type).toBe(SignalType.SELL);
+    expect(resBar2.metadata.reasoning.some((r: string) => r.includes('[5M EDGE RECOVERY] Recovered SELL event'))).toBe(true);
+
+    // Bar 3: Continuation suppressed
+    const dropBar3: NormalizedCandle = {
+      openTime: BASE_TIME + 300000,
+      timestamp: BASE_TIME + 300000,
+      open: 75,
+      high: 75.5,
+      low: 69,
+      close: 70,
+      volume: 50000,
+    };
+    const candlesBar3 = [...candlesBar2, dropBar3];
+    const snapBar3 = buildMtfSnapshot({ '5m': candlesBar3 }, BASE_TIME + 600000, 70);
+
+    const resBar3 = strategy.evaluate(new StrategyContext(snapBar3, 10000).freeze(), '5m');
+    expect(resBar3.hasSignal).toBe(false);
+    expect(resBar3.metadata.reasoning.some((r: string) => r.includes('[5M CONTINUATION] Trend continuation suppressed'))).toBe(true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 23: Non-array rawCandles fails closed cleanly
+  // --------------------------------------------------------------------------
+  it('23. Fails closed when rawCandles is non-array, null, undefined, or context timestamp is non-finite', () => {
+    const strategy = new MomentumStrategy();
+    for (const invalidCandles of [undefined, null, {}, 'not-an-array', 123]) {
+      const snap = {
+        ...buildMtfSnapshot({}),
+        candles: { '5m': invalidCandles } as any,
+      };
+      const ctx = {
+        marketSnapshot: snap,
+        timestamp: BASE_TIME,
+        accountBalance: 10000,
+        freeze: () => ctx,
+      } as any;
+      const res = strategy.evaluate(ctx, '5m');
+      expect(res.hasSignal).toBe(false);
+      expect(res.metadata.signal).toBeNull();
+    }
+
+    const validSnap = buildMtfSnapshot({ '5m': createBullishCandles(250, '5m', BASE_TIME) }, BASE_TIME);
+    const nanTsCtx = {
+      marketSnapshot: validSnap,
+      timestamp: Number.NaN,
+      accountBalance: 10000,
+      freeze: () => nanTsCtx,
+    } as any;
+    const nanTsRes = strategy.evaluate(nanTsCtx, '5m');
+    expect(nanTsRes.hasSignal).toBe(false);
+    expect(nanTsRes.metadata.signal).toBeNull();
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 24: Strict OHLC validation across entire closed series (including index 0)
+  // --------------------------------------------------------------------------
+  it('24. Rejects NaN, +/-Infinity, zero, negative, missing fields, or high < low anywhere in closed candle series', () => {
+    const tfMs = CandleValidator.timeframeToMs('5m');
+    const buildValidTriggerCandles = () => {
+      const flatBase = createFlatCandles(249, '5m', BASE_TIME - tfMs, 100);
+      const surgeCandle: NormalizedCandle = {
+        openTime: BASE_TIME - tfMs,
+        timestamp: BASE_TIME - tfMs,
+        open: 100,
+        high: 126,
+        low: 100,
+        close: 125,
+        volume: 50000,
+      };
+      return [...flatBase, surgeCandle];
+    };
+
+    const mutations: Array<{ name: string; mutate: (c: NormalizedCandle) => void }> = [
+      { name: 'open NaN at index 0', mutate: c => { c.open = Number.NaN; } },
+      { name: 'high +Infinity at index 0', mutate: c => { c.high = Number.POSITIVE_INFINITY; } },
+      { name: 'low -Infinity at index 0', mutate: c => { c.low = Number.NEGATIVE_INFINITY; } },
+      { name: 'close 0 at index 0', mutate: c => { c.close = 0; } },
+      { name: 'open negative at index 0', mutate: c => { c.open = -5; } },
+      { name: 'high < low at index 0', mutate: c => { c.high = 90; c.low = 95; } },
+      { name: 'missing high field at index 0', mutate: c => { delete (c as any).high; } },
+      { name: 'missing low field at index 0', mutate: c => { delete (c as any).low; } },
+    ];
+
+    for (const { mutate } of mutations) {
+      const candles = buildValidTriggerCandles().map(c => ({ ...c }));
+      mutate(candles[0]);
+      const snap = buildMtfSnapshot({ '5m': candles }, BASE_TIME, 125);
+      const res = new MomentumStrategy().evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+      expect(res.hasSignal).toBe(false);
+      expect(res.metadata.signal).toBeNull();
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 25: Non-finite indicator outputs fail closed before signal qualification
+  // --------------------------------------------------------------------------
+  it('25. Rejects non-finite EMA, ATR, RSI, or MACD outputs fail-closed', () => {
+    const tfMs = CandleValidator.timeframeToMs('5m');
+    const candles = [
+      ...createFlatCandles(249, '5m', BASE_TIME - tfMs, 100),
+      {
+        openTime: BASE_TIME - tfMs,
+        timestamp: BASE_TIME - tfMs,
+        open: 100,
+        high: 126,
+        low: 100,
+        close: 125,
+        volume: 50000,
+      } as NormalizedCandle,
+    ];
+    const snap = buildMtfSnapshot({ '5m': candles }, BASE_TIME, 125);
+
+    const origEval = IndicatorEngine.prototype.evaluate;
+    for (const mode of ['emaFastInf', 'atrNaN', 'rsiNaN', 'macdNaN'] as const) {
+      const spy = vi.spyOn(IndicatorEngine.prototype, 'evaluate').mockImplementation(function (this: IndicatorEngine, s: MarketSnapshot) {
+        const res = origEval.call(this, s);
+        const cloned = structuredClone(res);
+        const ind = cloned.timeframes['5m'];
+        if (ind) {
+          if (mode === 'emaFastInf') ind.ema[50][ind.ema[50].length - 1] = Number.POSITIVE_INFINITY;
+          if (mode === 'atrNaN') ind.atr[14][ind.atr[14].length - 1] = Number.NaN;
+          if (mode === 'rsiNaN') ind.rsi[14][ind.rsi[14].length - 1] = Number.NaN;
+          if (mode === 'macdNaN') ind.macd['12,26,9'][ind.macd['12,26,9'].length - 1].histogram = Number.NaN;
+        }
+        return cloned;
+      });
+      try {
+        const res = new MomentumStrategy().evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
+        expect(res.hasSignal).toBe(false);
+        expect(res.metadata.signal).toBeNull();
+      } finally {
+        spy.mockRestore();
+      }
     }
   });
 });
