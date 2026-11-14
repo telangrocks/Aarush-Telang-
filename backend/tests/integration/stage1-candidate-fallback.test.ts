@@ -1915,5 +1915,240 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
         meanRevEvalSpy.mockRestore();
       }
     });
+
+    it('41. VWAP exercises real StrategyOrchestrator.executeCycle() with centralized MarketRegime gate, gateRejections suppression across 15s cycles, DO restart, fallback, and 15m rollover', async () => {
+      const now = Date.now();
+      const initialAnchor15m = now - (now % 900_000) - 900_000;
+      let currentEndTime = initialAnchor15m;
+      let isVolatileBlocked = true;
+      let enableBreakoutFallback = false;
+
+      const buildFlat5mCandles = (endTime: number) =>
+        Array.from({ length: 60 }, (_, i) => {
+          const openTime = endTime - (60 - i) * 300_000;
+          const close = 100 + (i % 2 === 0 ? 0.05 : -0.05);
+          return {
+            timestamp: openTime,
+            openTime,
+            closeTime: openTime + 300_000,
+            open: 100,
+            high: 100.15,
+            low: 99.85,
+            close,
+            volume: 1000,
+          };
+        });
+
+      const buildVwap15mCandles = (endTime: number) => {
+        const stepMs = 900_000;
+        const candles: any[] = [];
+        // Bars 0..25: heavy volume around 100.0 anchors cumulative VWAP near 100.0
+        for (let i = 0; i < 60; i++) {
+          const openTime = initialAnchor15m - (60 - i) * stepMs;
+          let open = 100.0;
+          let close = 100.0;
+          let high = 100.05;
+          let low = 99.95;
+          let volume = 500;
+
+          if (i <= 25) {
+            open = 100.0;
+            close = 100.0;
+            high = 100.05;
+            low = 99.95;
+            volume = 10000;
+          } else if (i <= 57) {
+            // Subtle decline keeping EMA20 < EMA50 and close slightly below 100.0
+            const step = i - 25;
+            close = Number((100.01 - step * 0.002).toFixed(4));
+            open = Number((close + 0.01).toFixed(4));
+            high = Math.max(open, close) + 0.03;
+            low = Math.min(open, close) - 0.03;
+            volume = 400;
+          } else if (i === 58) {
+            // Prior bar closes at VWAP (>= previousVwap ~ 100.0) so Bar 59 triggers genuine SELL crossover
+            open = 100.0;
+            close = 100.02;
+            high = 100.06;
+            low = 99.98;
+            volume = 500;
+          } else {
+            // Bar 59 (initialAnchor15m): high-volume breakdown below VWAP (SELL)
+            open = 100.02;
+            close = 99.72;
+            high = 100.05;
+            low = 99.68;
+            volume = 4000;
+          }
+
+          candles.push({
+            timestamp: openTime,
+            openTime,
+            closeTime: openTime + stepMs,
+            open,
+            high,
+            low,
+            close,
+            volume,
+          });
+        }
+
+        if (endTime > initialAnchor15m) {
+          // Bar 60 (rollover candle): high-volume surge crossing back above VWAP (BUY) and flipping EMA20 > EMA50
+          candles.push({
+            timestamp: initialAnchor15m,
+            openTime: initialAnchor15m,
+            closeTime: initialAnchor15m + stepMs,
+            open: 99.72,
+            high: 101.4,
+            low: 99.7,
+            close: 101.2,
+            volume: 6500,
+          });
+        }
+
+        return candles.slice(-60);
+      };
+
+      const buildHtfUptrendCandles = (endTime: number, stepMs: number, volatileLowScore: boolean) =>
+        Array.from({ length: 60 }, (_, i) => {
+          const openTime = endTime - (60 - i) * stepMs;
+          const close = Number((100 + i * 0.2).toFixed(4));
+          const wick = volatileLowScore && i <= 10 ? 0.76 : 0.5;
+          return {
+            timestamp: openTime,
+            openTime,
+            closeTime: openTime + stepMs,
+            open: Number((close - 0.1).toFixed(4)),
+            high: Number((close + wick).toFixed(4)),
+            low: Number((close - wick).toFixed(4)),
+            close,
+            volume: 1000,
+          };
+        });
+
+      mockAdapter.fetchTicker.mockImplementation(async () => ({
+        symbol: 'BTCUSDT',
+        last: currentEndTime > initialAnchor15m ? 101.2 : 99.72,
+      }));
+      mockAdapter.fetchKlines.mockImplementation(async (_sym: string, tf: string) => {
+        if (tf === '15m') {
+          return buildVwap15mCandles(currentEndTime);
+        }
+        if (tf === '5m') {
+          return buildFlat5mCandles(currentEndTime);
+        }
+        const stepMs = tf === '4h' ? 14_400_000 : 3600_000;
+        return buildHtfUptrendCandles(currentEndTime, stepMs, isVolatileBlocked);
+      });
+
+      const makeNoSignalSpy = (strategyId: string) => (_ctx: any, tf: any) => ({
+        strategyId,
+        timestamp: currentEndTime,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: { reasoning: ['Isolated for VWAP integration flow'], signal: null, targetTimeframe: tf },
+      });
+
+      // Keep real StrategyOrchestrator.executeCycle() and real VWAPStrategy.evaluate() unmocked.
+      // Isolate unrelated strategies so Cycles 1-2 test VWAP Gate 4.5 rejection/suppression and Cycle 3 tests Breakout fallback.
+      const orchExecuteProtoSpy = vi.spyOn(StrategyOrchestrator.prototype, 'executeCycle');
+      const scalperSpy = vi.spyOn(ScalperV2Strategy.prototype, 'evaluate').mockImplementation(makeNoSignalSpy('ScalperV2'));
+      const momentumSpy = vi.spyOn(MomentumStrategy.prototype, 'evaluate').mockImplementation(makeNoSignalSpy('Momentum'));
+      const meanRevSpy = vi.spyOn(MeanReversionStrategy.prototype, 'evaluate').mockImplementation(makeNoSignalSpy('MeanReversion'));
+      const breakoutSpy = vi.spyOn(BreakoutStrategy.prototype, 'evaluate').mockImplementation((_ctx: any, tf: any) => {
+        if (enableBreakoutFallback && tf === '15m') {
+          return {
+            strategyId: 'Breakout',
+            timestamp: currentEndTime,
+            confidenceScore: 86,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '15m',
+              signal: {
+                symbol: 'BTC/USDT',
+                type: 'BUY',
+                signalPrice: 99.72,
+                entryPrice: 99.72,
+                stopLoss: 97.72,
+                takeProfit: 103.72,
+                timeframe: '15m',
+                confidenceScore: 86,
+                riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+                reasoning: ['Breakout fallback BUY during VWAP volatility block'],
+              },
+            },
+          } as any;
+        }
+        return makeNoSignalSpy('Breakout')(_ctx, tf);
+      });
+      const vwapEvalSpy = vi.spyOn(VWAPStrategy.prototype, 'evaluate');
+
+      try {
+        expect(StrategyRegistry.getInstance().normalizeStrategyId('vwap')).toBe('VWAP');
+        const bot1 = setupBot('BTC/USDT', { strategy: 'vwap', positionSize: 100 });
+        const logAuditSpy = vi.spyOn(bot1 as any, 'logAuditEvent');
+
+        // Cycle 1: Real orchestrator + real VWAP emits 15m SELL -> rejected by Gate 4.5 (VOLATILE score 69 < 70 => REGIME_PROHIBITED)
+        await bot1.alarm();
+        expect(orchExecuteProtoSpy).toHaveBeenCalledTimes(1);
+        expect(vwapEvalSpy.mock.calls.map(c => c[1])).toContain('15m');
+        expect(mockStorage.get('alerts')).toHaveLength(0);
+        expect(logAuditSpy).toHaveBeenCalledTimes(1);
+
+        const rejections1 = mockStorage.get('gateRejections');
+        expect(rejections1?.strategyRejections?.['BTCUSDT:vwap:15m']).toBeDefined();
+        expect(rejections1?.strategyRejections?.['BTCUSDT:vwap:15m']?.gate).toBe('REGIME_PROHIBITED');
+        expect(rejections1?.strategyRejections?.['BTCUSDT:vwap:15m']?.candleTimestamp).toBe(initialAnchor15m - 900_000);
+        expect(rejections1?.strategyRejections?.['BTCUSDT:vwap:15m']?.strategyId).toBe('vwap');
+        expect(rejections1?.strategyRejections?.['BTCUSDT:vwap:15m']?.timeframe).toBe('15m');
+
+        // Cycle 2 (15s repeat on same closed 15m candle): Real StrategyOrchestrator skips VWAP 15m BEFORE evaluate()
+        vwapEvalSpy.mockClear();
+        await bot1.alarm();
+        expect(orchExecuteProtoSpy).toHaveBeenCalledTimes(2);
+        expect(vwapEvalSpy.mock.calls.map(c => c[1])).not.toContain('15m');
+        expect(mockStorage.get('alerts')).toHaveLength(0);
+        expect(logAuditSpy).toHaveBeenCalledTimes(1);
+
+        // Cycle 3 (Durable Object restart): VWAP 15m stays suppressed while Breakout fallback still creates alert
+        vwapEvalSpy.mockClear();
+        enableBreakoutFallback = true;
+        const bot2 = new TradingBot(mockState, mockEnv);
+        await bot2.alarm();
+        expect(orchExecuteProtoSpy).toHaveBeenCalledTimes(3);
+        expect(vwapEvalSpy.mock.calls.map(c => c[1])).not.toContain('15m');
+
+        const alertsAfterFallback = mockStorage.get('alerts') as TradeAlert[];
+        expect(alertsAfterFallback).toHaveLength(1);
+        expect(alertsAfterFallback[0].strategy).toBe('Breakout_NEW');
+
+        // Cycle 4 (Next closed 15m candle + calm TRENDING 1h): stale DO suppression cleared, real VWAP 15m re-evaluates and creates alert
+        mockStorage.set('alerts', []);
+        (bot2 as any).runtimeState.alerts = [];
+        enableBreakoutFallback = false;
+        isVolatileBlocked = false;
+        currentEndTime = initialAnchor15m + 900_000;
+        vwapEvalSpy.mockClear();
+
+        await bot2.alarm();
+        expect(orchExecuteProtoSpy).toHaveBeenCalledTimes(4);
+        expect(vwapEvalSpy.mock.calls.map(c => c[1])).toContain('15m');
+
+        const alertsAfterRollover = mockStorage.get('alerts') as TradeAlert[];
+        expect(alertsAfterRollover).toHaveLength(1);
+        expect(alertsAfterRollover[0].strategy).toBe('VWAP_NEW');
+        expect(alertsAfterRollover[0].timeframe).toBe('15m');
+        const rejectionsAfterRollover = mockStorage.get('gateRejections');
+        expect(rejectionsAfterRollover?.strategyRejections?.['BTCUSDT:vwap:15m']).toBeUndefined();
+      } finally {
+        orchExecuteProtoSpy.mockRestore();
+        scalperSpy.mockRestore();
+        momentumSpy.mockRestore();
+        meanRevSpy.mockRestore();
+        breakoutSpy.mockRestore();
+        vwapEvalSpy.mockRestore();
+      }
+    });
   });
 });

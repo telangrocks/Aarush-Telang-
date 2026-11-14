@@ -2070,4 +2070,361 @@ describe('VWAPStrategy', () => {
     });
   });
 
+  describe('Input Validation, Non-Finite Guards & Risk Output Safety Suite', () => {
+    const config = {
+      ...DEFAULT_VWAP_CONFIG,
+      vwapRules: {
+        ...DEFAULT_VWAP_CONFIG.vwapRules,
+        minVolumeMultiplier: 1.2
+      },
+      signalRules: {
+        minConfidenceScore: 70,
+        allowedRiskClassifications: ['LOW', 'MEDIUM']
+      }
+    };
+
+    const tfMs = 15 * 60 * 1000;
+
+    const makeBuyCrossoverCandles = (count = 20) =>
+      Array.from({ length: count }).map((_, i) => ({
+        timestamp: i * tfMs, // Includes timestamp 0 on index 0
+        open: 99,
+        high: 102,
+        low: 98,
+        close: i === count - 1 ? 101 : 99,
+        volume: i === count - 1 ? 2000 : 1000
+      }));
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('rejects invalid context, invalid evaluation timestamp, and missing/whitespace/non-string symbol safely', () => {
+      const strategy = new VWAPStrategy(config);
+      const candles = makeBuyCrossoverCandles();
+      const baseSnapshot = {
+        symbol: 'BTC/USDT',
+        timestamp: 20 * tfMs,
+        currentPrice: 101,
+        volume24h: 10000,
+        quoteVolume24h: 1000000,
+        metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 105, lowPrice24h: 95 },
+        candles: { '15m': candles }
+      };
+
+      const resNullCtx = strategy.evaluate(null as any, '15m');
+      expect(resNullCtx.hasSignal).toBe(false);
+      expect(resNullCtx.confidenceScore).toBe(0);
+
+      for (const badTs of [NaN, Infinity, -1, '1000' as any]) {
+        const resBadTs = strategy.evaluate({
+          accountBalance: 1000,
+          timestamp: badTs,
+          marketSnapshot: { ...baseSnapshot, timestamp: badTs }
+        } as any, '15m');
+        expect(resBadTs.hasSignal).toBe(false);
+        expect(Number.isFinite(resBadTs.timestamp)).toBe(true);
+        expect(resBadTs.metadata.reasoning).toContain('Invalid evaluation timestamp for VWAP');
+      }
+
+      for (const badSym of ['', '   ', undefined as any, null as any, 123 as any]) {
+        const resBadSym = strategy.evaluate({
+          accountBalance: 1000,
+          timestamp: 20 * tfMs,
+          marketSnapshot: { ...baseSnapshot, symbol: badSym }
+        } as any, '15m');
+        expect(resBadSym.hasSignal).toBe(false);
+        expect(resBadSym.confidenceScore).toBe(0);
+        expect(resBadSym.metadata.reasoning).toContain('Missing or invalid symbol for VWAP');
+      }
+    });
+
+    it('rejects non-array rawCandles, null elements, and missing/non-finite/negative candle timestamps while preserving timestamp 0', () => {
+      const strategy = new VWAPStrategy(config);
+      const baseContext = (candles15m: any, ts = 20 * tfMs) => ({
+        accountBalance: 1000,
+        timestamp: ts,
+        marketSnapshot: {
+          symbol: 'BTC/USDT',
+          timestamp: ts,
+          currentPrice: 101,
+          volume24h: 10000,
+          quoteVolume24h: 1000000,
+          metadata: {},
+          candles: { '15m': candles15m }
+        }
+      }) as any;
+
+      const resNonArray = strategy.evaluate(baseContext({ length: 2 }), '15m');
+      expect(resNonArray.hasSignal).toBe(false);
+      expect(resNonArray.metadata.reasoning).toContain('[TIMEFRAME DATA] Missing required candle data for timeframe 15m');
+
+      const validWithZeroTs = makeBuyCrossoverCandles(20);
+      expect(validWithZeroTs[0].timestamp).toBe(0);
+
+      const withNullBar = [...validWithZeroTs];
+      withNullBar[5] = null as any;
+      expect(strategy.evaluate(baseContext(withNullBar), '15m').metadata.reasoning).toContain(
+        '[TIMEFRAME DATA] Invalid candle timestamp in 15m series'
+      );
+
+      const withMissingTsBar = [...validWithZeroTs];
+      withMissingTsBar[10] = { open: 99, high: 102, low: 98, close: 99, volume: 1000 } as any;
+      expect(strategy.evaluate(baseContext(withMissingTsBar), '15m').metadata.reasoning).toContain(
+        '[TIMEFRAME DATA] Invalid candle timestamp in 15m series'
+      );
+
+      const withNaNCloseTime = [...validWithZeroTs];
+      withNaNCloseTime[10] = { ...withNaNCloseTime[10], closeTime: NaN } as any;
+      expect(strategy.evaluate(baseContext(withNaNCloseTime), '15m').metadata.reasoning).toContain(
+        '[TIMEFRAME DATA] Invalid candle timestamp in 15m series'
+      );
+
+      // Verify timestamp 0 on candle 0 remains valid and reaches evaluation normally
+      const twoCandlesStartingAtZero = [
+        { timestamp: 0, open: 99, high: 100, low: 98, close: 99, volume: 1000 },
+        { timestamp: tfMs, open: 99, high: 102, low: 98, close: 101, volume: 2000 }
+      ];
+      vi.spyOn(VWAPCalculator, 'calculate').mockReturnValue([100, 100]);
+      vi.spyOn((strategy as any).indicatorEngine, 'evaluate').mockReturnValue({
+        timestamp: 2 * tfMs,
+        timeframes: {
+          '15m': {
+            close: [99, 101],
+            sma: {},
+            ema: { 20: [101], 50: [99] },
+            rsi: { 14: [55] },
+            macd: { '12,26,9': [] },
+            atr: { 14: [1.5] },
+            volume: [{ averageVolume: 1000, volumeChangePercent: 100 }]
+          }
+        }
+      } as any);
+      vi.spyOn((strategy as any).confidenceEngine, 'evaluate').mockReturnValue({
+        timestamp: 2 * tfMs,
+        overallScore: 80,
+        overallLongScore: 80,
+        overallShortScore: 15,
+        timeframes: {
+          '15m': { score: 80, longScore: 80, shortScore: 15, level: 'HIGH', factors: {} as any, explanation: [] }
+        }
+      } as any);
+      vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValue({
+        riskClassification: 'LOW',
+        stopLossDistance: 2.0,
+        takeProfitDistance: 4.0,
+        positionSizeRecommendation: 100
+      } as any);
+
+      const zeroTsRes = strategy.evaluate(baseContext(twoCandlesStartingAtZero, 2 * tfMs), '15m');
+      expect(zeroTsRes.hasSignal).toBe(true);
+      expect(zeroTsRes.metadata.signal?.type).toBe(SignalType.BUY);
+    });
+
+    it('rejects invalid current/previous closed candle close without falling back to snapshot.currentPrice or currentPrice', () => {
+      const strategy = new VWAPStrategy(config);
+
+      for (const badClose of [0, NaN, -10, Infinity]) {
+        const candles = makeBuyCrossoverCandles();
+        candles[candles.length - 1] = { ...candles[candles.length - 1], close: badClose };
+        const ctx = new StrategyContext({
+          symbol: 'BTC/USDT',
+          timestamp: 20 * tfMs,
+          currentPrice: 101, // Valid snapshot price must NOT mask corrupted candle close
+          volume24h: 10000,
+          quoteVolume24h: 1000000,
+          metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 105, lowPrice24h: 95 },
+          candles: { '15m': candles } as any
+        }, 1000).freeze();
+
+        const res = strategy.evaluate(ctx, '15m');
+        expect(res.hasSignal).toBe(false);
+        expect(res.confidenceScore).toBe(0);
+        expect(res.metadata.reasoning).toContain('Invalid or missing current price');
+      }
+
+      for (const badPrevClose of [0, NaN, -10, Infinity]) {
+        const candles = makeBuyCrossoverCandles();
+        candles[candles.length - 2] = { ...candles[candles.length - 2], close: badPrevClose };
+        const ctx = new StrategyContext({
+          symbol: 'BTC/USDT',
+          timestamp: 20 * tfMs,
+          currentPrice: 101,
+          volume24h: 10000,
+          quoteVolume24h: 1000000,
+          metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 105, lowPrice24h: 95 },
+          candles: { '15m': candles } as any
+        }, 1000).freeze();
+
+        const res = strategy.evaluate(ctx, '15m');
+        expect(res.hasSignal).toBe(false);
+        expect(res.confidenceScore).toBe(0);
+        expect(res.metadata.reasoning).toContain('Invalid or missing previous candle close price');
+      }
+    });
+
+    it('rejects corrupted historical OHLCV before IndicatorEngine runs and blocks non-finite/negative accountBalance', () => {
+      const strategy = new VWAPStrategy(config);
+      const indSpy = vi.spyOn((strategy as any).indicatorEngine, 'evaluate');
+
+      const badHistoryCandles = makeBuyCrossoverCandles();
+      badHistoryCandles[5] = { ...badHistoryCandles[5], high: 90, low: 105 };
+      const ctxBadHistory = new StrategyContext({
+        symbol: 'BTC/USDT',
+        timestamp: 20 * tfMs,
+        currentPrice: 101,
+        volume24h: 10000,
+        quoteVolume24h: 1000000,
+        metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 105, lowPrice24h: 95 },
+        candles: { '15m': badHistoryCandles } as any
+      }, 1000).freeze();
+
+      const resBadHistory = strategy.evaluate(ctxBadHistory, '15m');
+      expect(resBadHistory.hasSignal).toBe(false);
+      expect(resBadHistory.metadata.reasoning).toContain('Invalid VWAP calculation: non-finite or corrupted candle inputs detected');
+      expect(indSpy).not.toHaveBeenCalled();
+
+      const validCandles = makeBuyCrossoverCandles();
+      for (const badBalance of [Infinity, -50, NaN]) {
+        const ctxBadBal = {
+          accountBalance: badBalance,
+          timestamp: 20 * tfMs,
+          marketSnapshot: {
+            symbol: 'BTC/USDT',
+            timestamp: 20 * tfMs,
+            currentPrice: 101,
+            volume24h: 10000,
+            quoteVolume24h: 1000000,
+            metadata: {},
+            candles: { '15m': validCandles }
+          }
+        } as any;
+
+        const resBal = strategy.evaluate(ctxBadBal, '15m');
+        expect(resBal.hasSignal).toBe(false);
+        expect(resBal.confidenceScore).toBe(0);
+        expect(resBal.metadata.reasoning).toContain('Account balance is zero or unconfigured');
+      }
+    });
+
+    it('fails closed on non-finite Model C scores (NaN / Infinity) without emitting a signal', () => {
+      const strategy = new VWAPStrategy(config);
+      const candles = makeBuyCrossoverCandles();
+      const ctx = new StrategyContext({
+        symbol: 'BTC/USDT',
+        timestamp: 20 * tfMs,
+        currentPrice: 101,
+        volume24h: 10000,
+        quoteVolume24h: 1000000,
+        metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 105, lowPrice24h: 95 },
+        candles: { '15m': candles } as any
+      }, 1000).freeze();
+
+      vi.spyOn(VWAPCalculator, 'calculate').mockReturnValue(Array.from({ length: 20 }, () => 100));
+      vi.spyOn((strategy as any).indicatorEngine, 'evaluate').mockReturnValue({
+        timestamp: 20 * tfMs,
+        timeframes: {
+          '15m': {
+            close: [99, 101],
+            sma: {},
+            ema: { 20: [102], 50: [98] },
+            rsi: { 14: [55] },
+            macd: { '12,26,9': [] },
+            atr: { 14: [2.0] },
+            volume: [{ averageVolume: 1000, volumeChangePercent: 100 }]
+          }
+        }
+      } as any);
+      vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValue({
+        riskClassification: 'LOW',
+        stopLossDistance: 2.0,
+        takeProfitDistance: 4.0,
+        positionSizeRecommendation: 100
+      } as any);
+
+      for (const badPair of [
+        { score: NaN, longScore: NaN, shortScore: 20 },
+        { score: 85, longScore: 85, shortScore: NaN },
+        { score: Infinity, longScore: Infinity, shortScore: 10 }
+      ]) {
+        vi.spyOn((strategy as any).confidenceEngine, 'evaluate').mockReturnValue({
+          timestamp: 20 * tfMs,
+          overallScore: badPair.score,
+          overallLongScore: badPair.longScore,
+          overallShortScore: badPair.shortScore,
+          timeframes: {
+            '15m': { score: badPair.score, longScore: badPair.longScore, shortScore: badPair.shortScore, level: 'HIGH', factors: {} as any, explanation: [] }
+          }
+        } as any);
+
+        const res = strategy.evaluate(ctx, '15m');
+        expect(res.hasSignal).toBe(false);
+        expect(res.metadata.signal).toBeNull();
+        expect(Number.isFinite(res.confidenceScore)).toBe(true);
+        expect(res.metadata.reasoning).toContain('VWAP: Model C confidence rejected BUY setup');
+      }
+    });
+
+    it('rejects invalid risk outputs and non-positive or inverted stopLoss/takeProfit bounds', () => {
+      const strategy = new VWAPStrategy(config);
+      const candles = makeBuyCrossoverCandles();
+      const ctx = new StrategyContext({
+        symbol: 'BTC/USDT',
+        timestamp: 20 * tfMs,
+        currentPrice: 101,
+        volume24h: 10000,
+        quoteVolume24h: 1000000,
+        metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 105, lowPrice24h: 95 },
+        candles: { '15m': candles } as any
+      }, 1000).freeze();
+
+      vi.spyOn(VWAPCalculator, 'calculate').mockReturnValue(Array.from({ length: 20 }, () => 100));
+      vi.spyOn((strategy as any).indicatorEngine, 'evaluate').mockReturnValue({
+        timestamp: 20 * tfMs,
+        timeframes: {
+          '15m': {
+            close: [99, 101],
+            sma: {},
+            ema: { 20: [102], 50: [98] },
+            rsi: { 14: [55] },
+            macd: { '12,26,9': [] },
+            atr: { 14: [2.0] },
+            volume: [{ averageVolume: 1000, volumeChangePercent: 100 }]
+          }
+        }
+      } as any);
+      vi.spyOn((strategy as any).confidenceEngine, 'evaluate').mockReturnValue({
+        timestamp: 20 * tfMs,
+        overallScore: 84,
+        overallLongScore: 84,
+        overallShortScore: 15,
+        timeframes: {
+          '15m': { score: 84, longScore: 84, shortScore: 15, level: 'HIGH', factors: {} as any, explanation: [] }
+        }
+      } as any);
+
+      vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
+        riskClassification: 'LOW',
+        stopLossDistance: 2.0,
+        takeProfitDistance: 4.0,
+        positionSizeRecommendation: 0
+      } as any);
+      const resZeroSize = strategy.evaluate(ctx, '15m');
+      expect(resZeroSize.hasSignal).toBe(false);
+      expect(resZeroSize.metadata.signal).toBeNull();
+      expect(resZeroSize.metadata.reasoning).toContain('VWAP: Invalid or non-finite risk assessment outputs');
+
+      vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
+        riskClassification: 'LOW',
+        stopLossDistance: 105.0, // currentPrice (101) - 105 <= 0 -> invalid BUY stopLoss
+        takeProfitDistance: 20.0,
+        positionSizeRecommendation: 100
+      } as any);
+      const resNegativeSl = strategy.evaluate(ctx, '15m');
+      expect(resNegativeSl.hasSignal).toBe(false);
+      expect(resNegativeSl.metadata.signal).toBeNull();
+      expect(resNegativeSl.metadata.reasoning).toContain('VWAP: Calculated stopLoss/takeProfit bounds are invalid or non-positive');
+    });
+  });
+
 });
