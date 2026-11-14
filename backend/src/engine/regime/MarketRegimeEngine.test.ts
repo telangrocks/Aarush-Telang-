@@ -84,9 +84,11 @@ describe('MarketRegimeEngine', () => {
     expect(MarketRegimeEngine.isStrategyAllowed('momentum', rangingRegime).allowed).toBe(false);
     expect(MarketRegimeEngine.isStrategyAllowed('Momentum', rangingRegime).allowed).toBe(false);
 
-    // ScalperV2 score check (>60)
-    expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', { regime: 'RANGING', score: 65, allowTrendStrategies: false, allowMeanReversion: true }).allowed).toBe(true);
+    // ScalperV2 requires TRENDING regime authorization (allowTrendStrategies: true) AND score >= 60
+    expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', { regime: 'RANGING', score: 65, allowTrendStrategies: false, allowMeanReversion: true }).allowed).toBe(false);
     expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', { regime: 'RANGING', score: 45, allowTrendStrategies: false, allowMeanReversion: true }).allowed).toBe(false);
+    expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', { regime: 'TRENDING', score: 65, allowTrendStrategies: true, allowMeanReversion: false }).allowed).toBe(true);
+    expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', { regime: 'TRENDING', score: 45, allowTrendStrategies: true, allowMeanReversion: false }).allowed).toBe(false);
 
     // VWAP volatility check
     expect(MarketRegimeEngine.isStrategyAllowed('VWAP', { regime: 'VOLATILE', score: 50, allowTrendStrategies: true, allowMeanReversion: false }).allowed).toBe(false);

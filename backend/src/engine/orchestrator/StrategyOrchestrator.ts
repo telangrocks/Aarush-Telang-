@@ -36,11 +36,17 @@ export class StrategyOrchestrator {
     strategyId?: string,
     config?: Record<string, any>,
     accountBalance: number = 1000,
-    telemetryContext?: { userId: string; cycleId: string; sink?: BackendDiagnosticSink }
+    telemetryContext?: {
+      userId: string;
+      cycleId: string;
+      sink?: BackendDiagnosticSink;
+      isCandidateSuppressed?: (strategyId: string, timeframe: Timeframe, snapshot: MarketSnapshot) => boolean;
+    }
   ): Promise<EvaluationResult[]> {
     const cycleStart = performance.now();
     let successfulEvaluations = 0;
     let failedEvaluations = 0;
+    let skippedEvaluations = 0;
     let buySignals = 0;
     let sellSignals = 0;
 
@@ -127,6 +133,10 @@ export class StrategyOrchestrator {
         const strategy = registry.createStrategy(strategyId, config)!;
         this.logger.info(`[Orchestrator] Evaluating strategy: ${strategyId} (with config overrides)`);
         for (const tf of strategy.manifest.supportedTimeframes) {
+          if (telemetryContext?.isCandidateSuppressed?.(strategyId, tf as Timeframe, snapshot)) {
+            skippedEvaluations++;
+            continue;
+          }
           const { result, success } = this.evaluateWithTelemetry(strategy, strategyId, tf, symbol, frozenContext, telemetryContext);
           if (result) results.push(result);
           tallySignal(result, success);
@@ -178,6 +188,10 @@ export class StrategyOrchestrator {
 
           this.logger.info(`[Orchestrator] Evaluating strategy: ${id}${hasExplicitOverrides ? ' (with config overrides)' : ''}`);
           for (const tf of strategyToEvaluate.manifest.supportedTimeframes) {
+            if (telemetryContext?.isCandidateSuppressed?.(id, tf as Timeframe, snapshot)) {
+              skippedEvaluations++;
+              continue;
+            }
             const { result, success } = this.evaluateWithTelemetry(strategyToEvaluate, id, tf, symbol, frozenContext, telemetryContext);
             if (result) results.push(result);
             tallySignal(result, success);
@@ -189,10 +203,10 @@ export class StrategyOrchestrator {
       const cycleEvent: OrchestratorCycleEvent = {
         type: 'ORCHESTRATOR_CYCLE',
         symbol,
-        totalStrategies: successfulEvaluations + failedEvaluations,
+        totalStrategies: successfulEvaluations + failedEvaluations + skippedEvaluations,
         successfulEvaluations,
         failedEvaluations,
-        skippedEvaluations: 0,
+        skippedEvaluations,
         buySignals,
         sellSignals,
         totalDurationMs: cycleDuration,

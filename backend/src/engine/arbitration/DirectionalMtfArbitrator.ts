@@ -57,6 +57,18 @@ export class DirectionalMtfArbitrator {
     const isUpTrend = fLast > sLast;
     const isDownTrend = fLast < sLast;
 
+    // Require genuine trend strength on HTF: weak ADX (< 20) or non-trending ADX (< 25)
+    // combined with negligible EMA(20)/EMA(50) separation (< 0.25%) resolves to NEUTRAL.
+    const highs = candles.map(c => (typeof c.high === 'number' && !isNaN(c.high) && c.high > 0) ? c.high : c.close);
+    const lows = candles.map(c => (typeof c.low === 'number' && !isNaN(c.low) && c.low > 0) ? c.low : c.close);
+    const closes = candles.map(c => c.close);
+    const adx = MarketRegimeEngine.calculateAdx(highs, lows, closes, 14);
+    const emaSepPct = sLast > 0 ? (Math.abs(fLast - sLast) / sLast) * 100 : 0;
+
+    if (adx < 20 || (adx < 25 && emaSepPct < 0.25)) {
+      return 'NEUTRAL';
+    }
+
     const isUp = isUpTrend || isBullCrossover;
     const isDown = isDownTrend || isBearCrossover;
 
@@ -168,6 +180,40 @@ export class DirectionalMtfArbitrator {
           gate: 'INSUFFICIENT_HTF_DATA',
           reasoning: `Trend ${side} rejected for ${strategyId}: Incomplete HTF data with zero confirming timeframe (1h=${htf1h}, 4h=${htf4h}).`
         };
+      }
+
+      // 1C. Both higher timeframes NEUTRAL provides zero directional trend confirmation
+      if (!hasConfirming) {
+        return {
+          passed: false,
+          gate: 'HTF_CONFLICT',
+          reasoning: `Trend ${side} rejected for ${strategyId}: Lacks higher-timeframe directional confirmation (1h=${htf1h}, 4h=${htf4h}).`
+        };
+      }
+
+      // 1D. ScalperV2 entry-timeframe trend-strength verification when entry candles are present
+      if (strategyId === 'ScalperV2') {
+        const entryTf = (candidate?.metadata?.targetTimeframe || sig?.timeframe || '5m') as keyof MarketSnapshot['candles'];
+        const entryCandles = snapshot?.candles?.[entryTf];
+        if (Array.isArray(entryCandles) && entryCandles.length >= 35) {
+          const eHighs = entryCandles.map(c => (typeof c.high === 'number' && !isNaN(c.high) && c.high > 0) ? c.high : c.close);
+          const eLows = entryCandles.map(c => (typeof c.low === 'number' && !isNaN(c.low) && c.low > 0) ? c.low : c.close);
+          const eCloses = entryCandles.map(c => c.close);
+          const entryAdx = MarketRegimeEngine.calculateAdx(eHighs, eLows, eCloses, 14);
+          const ema9 = calculateEMA(entryCandles, 9);
+          const ema21 = calculateEMA(entryCandles, 21);
+          const f9 = ema9[ema9.length - 1] || 0;
+          const s21 = ema21[ema21.length - 1] || 0;
+          const entryEmaSepPct = s21 > 0 ? (Math.abs(f9 - s21) / s21) * 100 : 0;
+
+          if (entryAdx < 20 || (entryAdx < 25 && entryEmaSepPct < 0.25)) {
+            return {
+              passed: false,
+              gate: 'REGIME_PROHIBITED',
+              reasoning: `ScalperV2 ${side} rejected on ${String(entryTf)}: Insufficient entry trend strength (ADX=${entryAdx}, EMA9/21 separation=${entryEmaSepPct.toFixed(4)}%).`
+            };
+          }
+        }
       }
 
       return {

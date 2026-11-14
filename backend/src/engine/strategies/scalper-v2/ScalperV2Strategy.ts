@@ -13,6 +13,12 @@ import { StrategyManifest } from '../StrategyManifest';
 import { CandleValidator } from '../../../infrastructure/exchange/CandleValidator';
 import { MarketSnapshot, NormalizedCandle } from '../../market-data/MarketSnapshot';
 import { Timeframe } from '../../market-data/Timeframe';
+import { MarketRegimeEngine } from '../../regime/MarketRegimeEngine';
+
+const MIN_EMA_SEPARATION_PCT = 0.25;
+const MIN_TREND_ADX = 20;
+const MAX_RECENT_EMA_CROSSOVERS = 1;
+const RECENT_CROSSOVER_LOOKBACK_BARS = 12;
 
 /**
  * Derives the candle close timestamp in milliseconds.
@@ -262,14 +268,20 @@ export class ScalperV2Strategy implements IStrategy {
           }
           availableMacroTimeframes.push(mtf);
 
+          const mtfCandles = currentCandlesRecord[mtf] || [];
+          const mtfInd = indicatorSnapshot.timeframes[mtf];
+          const mtfTrendCheck = this.evaluateTimeframeTrendStrength(mtf, mtfCandles, mtfInd);
+
           const isUp = tfCond.trend.trendDirection === 'UP' || tfCond.trend.emaCrossoverState === 'BULLISH';
           const isDown = tfCond.trend.trendDirection === 'DOWN' || tfCond.trend.emaCrossoverState === 'BEARISH';
 
           let mtfDirection: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
-          if (isUp && !isDown) {
-            mtfDirection = 'BULLISH';
-          } else if (isDown && !isUp) {
-            mtfDirection = 'BEARISH';
+          if (mtfTrendCheck.isGenuineTrend) {
+            if (isUp && !isDown) {
+              mtfDirection = 'BULLISH';
+            } else if (isDown && !isUp) {
+              mtfDirection = 'BEARISH';
+            }
           }
 
           if (candidateType === SignalType.BUY) {
@@ -291,6 +303,8 @@ export class ScalperV2Strategy implements IStrategy {
           }
         }
 
+        const entryTrendCheck = this.evaluateTimeframeTrendStrength(targetTimeframe, candles, tfIndicators);
+
         // Fail-closed & Non-perfect Agreement arbitration
         if (availableMacroTimeframes.length === 0) {
           reasoning.push(`[MTF CONFIRMATION] ${candidateType} rejected: Missing required higher-timeframe data (1h, 4h) for confirmation`);
@@ -298,6 +312,8 @@ export class ScalperV2Strategy implements IStrategy {
           reasoning.push(`[MTF CONFIRMATION] ${candidateType} rejected: Conflicted by higher timeframe (${conflictingTimeframes.join(', ')}) direction`);
         } else if (confirmingTimeframes.length === 0) {
           reasoning.push(`[MTF CONFIRMATION] ${candidateType} rejected: Lacks higher-timeframe confirmation (${availableMacroTimeframes.join(', ')} neutral)`);
+        } else if (!entryTrendCheck.isGenuineTrend) {
+          reasoning.push(`[TREND VALIDATION] ${candidateType} rejected on ${targetTimeframe}: ${entryTrendCheck.reason}`);
         } else {
           activeSignal = tradingSignal;
           reasoning.push(`[MTF CONFIRMATION] ${candidateType} confirmed by broader market direction (${confirmingTimeframes.join(', ')})`);
@@ -341,5 +357,82 @@ export class ScalperV2Strategy implements IStrategy {
         }
       }
     };
+  }
+
+  /**
+   * Validates that a timeframe exhibits genuine trend strength rather than
+   * ranging, choppy EMA whipsaws, weak ADX, or non-trending volatility.
+   */
+  private evaluateTimeframeTrendStrength(
+    tf: Timeframe,
+    tfCandles: NormalizedCandle[],
+    tfInd: any
+  ): { isGenuineTrend: boolean; reason?: string } {
+    if (!Array.isArray(tfCandles) || tfCandles.length < 28 || !tfInd) {
+      return { isGenuineTrend: false, reason: `Insufficient candle or indicator data on ${tf}` };
+    }
+
+    const fastPeriod = this.config.conditionConfig.emaFastPeriod;
+    const slowPeriod = this.config.conditionConfig.emaSlowPeriod;
+    const fastArr: number[] = tfInd.ema?.[fastPeriod] || [];
+    const slowArr: number[] = tfInd.ema?.[slowPeriod] || [];
+
+    if (fastArr.length === 0 || slowArr.length === 0) {
+      return { isGenuineTrend: false, reason: `EMA(${fastPeriod}) or EMA(${slowPeriod}) unavailable on ${tf}` };
+    }
+
+    const fLast = fastArr[fastArr.length - 1];
+    const sLast = slowArr[slowArr.length - 1];
+    const emaSepPct = sLast > 0 ? (Math.abs(fLast - sLast) / sLast) * 100 : 0;
+
+    let recentCrossovers = 0;
+    const offset = fastArr.length - slowArr.length;
+    const startIdx = Math.max(1, slowArr.length - RECENT_CROSSOVER_LOOKBACK_BARS);
+    for (let i = startIdx; i < slowArr.length; i++) {
+      const prevDiff = fastArr[i - 1 + offset] - slowArr[i - 1];
+      const currDiff = fastArr[i + offset] - slowArr[i];
+      if ((prevDiff <= 0 && currDiff > 0) || (prevDiff >= 0 && currDiff < 0)) {
+        recentCrossovers++;
+      }
+    }
+
+    if (recentCrossovers > MAX_RECENT_EMA_CROSSOVERS) {
+      return {
+        isGenuineTrend: false,
+        reason: `Choppy EMA(${fastPeriod})/EMA(${slowPeriod}) crossovers detected on ${tf} (${recentCrossovers} crossovers in last ${RECENT_CROSSOVER_LOOKBACK_BARS} bars)`
+      };
+    }
+
+    if (emaSepPct < MIN_EMA_SEPARATION_PCT) {
+      return {
+        isGenuineTrend: false,
+        reason: `Negligible EMA(${fastPeriod})/EMA(${slowPeriod}) separation on ${tf} (${emaSepPct.toFixed(4)}% < ${MIN_EMA_SEPARATION_PCT}%)`
+      };
+    }
+
+    const highs = tfCandles.map(c => c.high);
+    const lows = tfCandles.map(c => c.low);
+    const closes = tfCandles.map(c => c.close);
+    const atrArr: number[] = tfInd.atr?.[this.config.conditionConfig.atrPeriod] || [];
+    const tfAtr = atrArr.length > 0 ? atrArr[atrArr.length - 1] : 0;
+
+    const adx = MarketRegimeEngine.calculateAdx(highs, lows, closes, 14);
+    if (adx < MIN_TREND_ADX) {
+      return {
+        isGenuineTrend: false,
+        reason: `Weak ADX trend strength on ${tf} (ADX=${adx} < ${MIN_TREND_ADX})`
+      };
+    }
+
+    const regime = MarketRegimeEngine.evaluate(highs, lows, closes, tfAtr);
+    const regimeCheck = MarketRegimeEngine.isStrategyAllowed(this.manifest.id, regime);
+    if (!regimeCheck.allowed) {
+      return {
+        isGenuineTrend: false,
+        reason: regimeCheck.reason || `Non-trending market regime (${regime.regime}, score=${regime.score}) on ${tf}`
+      };
+    }
+
+    return { isGenuineTrend: true };
   }
 }

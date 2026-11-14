@@ -627,4 +627,372 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
       reasoning: ['Trend continuation confirmed'],
     });
   });
+
+  // ==========================================================================
+  // OBJECTIVE 2 MANDATORY SCENARIOS: CLOSED-CANDLE GATE REJECTION SUPPRESSION
+  // ==========================================================================
+  describe('Objective 2 Mandatory Closed-Candle Gate Rejection Scenarios', () => {
+    const FIXED_ANCHOR_TIME = 1789000000000 - (1789000000000 % (4 * 3600 * 1000));
+
+    function generateDeterministicCandles(count: number, endTime: number, stepMs = 300_000, startPrice = 100) {
+      const candles: any[] = [];
+      for (let i = 0; i < count; i++) {
+        const price = startPrice + i * 1.5;
+        const openTime = endTime - (count - i) * stepMs;
+        candles.push({
+          timestamp: openTime,
+          openTime,
+          closeTime: openTime + stepMs,
+          open: price,
+          high: price + 0.5,
+          low: price - 0.5,
+          close: price,
+          volume: 1000,
+        });
+      }
+      return candles;
+    }
+
+    it('26. Same rejected candidate, same closed candle, 15-second alarm repeats -> no repeated evaluation or alert', async () => {
+      mockAdapter.fetchKlines.mockImplementation(async () => generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000));
+      const bot = setupBot();
+      const logAuditSpy = vi.spyOn(bot as any, 'logAuditEvent');
+
+      // Cycle 1: ScalperV2 is rejected by RISK_GATE_REJECTED (EXTREME)
+      vi.spyOn((bot as any).orchestrator, 'executeCycle').mockImplementation(async (_sym: string, _tf: any, _cfg: any, _bal: any, ctx: any) => {
+        if (ctx?.isCandidateSuppressed?.('ScalperV2', '5m')) {
+          return [];
+        }
+        return [
+          {
+            strategyId: 'ScalperV2',
+            confidenceScore: 90,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '5m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 50000,
+                stopLoss: 49500,
+                takeProfit: 51000,
+                timeframe: '5m',
+                riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'EXTREME' },
+              },
+            },
+          },
+        ];
+      });
+
+      await bot.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+      expect(logAuditSpy).toHaveBeenCalledTimes(1);
+
+      // Cycle 2 (15s later, same closed candle): suppressed before evaluation / gate re-entry
+      await bot.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+      expect(logAuditSpy).toHaveBeenCalledTimes(1); // Not re-evaluated or re-rejected!
+    });
+
+    it('27. New eligible candle closes -> previously rejected candidate may be evaluated again and generates alert', async () => {
+      let currentEndTime = FIXED_ANCHOR_TIME;
+      mockAdapter.fetchKlines.mockImplementation(async () => generateDeterministicCandles(60, currentEndTime, 300_000));
+      const bot = setupBot();
+
+      let riskClassification: 'EXTREME' | 'LOW' = 'EXTREME';
+      vi.spyOn((bot as any).orchestrator, 'executeCycle').mockImplementation(async (_sym: string, _tf: any, _cfg: any, _bal: any, ctx: any) => {
+        if (ctx?.isCandidateSuppressed?.('ScalperV2', '5m')) {
+          return [];
+        }
+        return [
+          {
+            strategyId: 'ScalperV2',
+            confidenceScore: 90,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '5m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 50000,
+                stopLoss: 49500,
+                takeProfit: 51000,
+                timeframe: '5m',
+                riskAssessment: { positionSizeRecommendation: 100, riskClassification },
+              },
+            },
+          },
+        ];
+      });
+
+      // Cycle 1: Rejected on candle T0
+      await bot.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+
+      // Cycle 2: Same candle T0 -> still suppressed even if riskClassification were LOW
+      riskClassification = 'LOW';
+      await bot.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+
+      // Cycle 3: New 5m candle closes (T0 + 300_000ms) -> re-evaluated and creates alert!
+      currentEndTime = FIXED_ANCHOR_TIME + 300_000;
+      await bot.alarm();
+      const alerts = mockStorage.get('alerts') as TradeAlert[];
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].strategy).toBe('ScalperV2_NEW');
+    });
+
+    it('28. Strategy-specific rejection -> same strategy suppressed for that candle while another strategy remains eligible', async () => {
+      mockAdapter.fetchKlines.mockImplementation(async () => generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000));
+      const bot = setupBot();
+
+      // Cycle 1: Only ScalperV2 signals, rejected by RISK_GATE_REJECTED
+      const execSpy = vi.spyOn((bot as any).orchestrator, 'executeCycle').mockResolvedValueOnce([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 92,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000,
+              stopLoss: 49500,
+              takeProfit: 51000,
+              timeframe: '5m',
+              riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'EXTREME' },
+            },
+          },
+        },
+      ]);
+
+      await bot.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+
+      // Cycle 2 (same candle): ScalperV2 is suppressed for this candle, while Momentum produces a valid signal and succeeds
+      execSpy.mockResolvedValueOnce([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 95,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000,
+              stopLoss: 49500,
+              takeProfit: 51000,
+              timeframe: '5m',
+              riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+            },
+          },
+        },
+        {
+          strategyId: 'Momentum',
+          confidenceScore: 85,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '15m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000,
+              stopLoss: 49000,
+              takeProfit: 52000,
+              timeframe: '15m',
+              riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+            },
+          },
+        },
+      ]);
+
+      await bot.alarm();
+      const alerts = mockStorage.get('alerts') as TradeAlert[];
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].strategy).toBe('Momentum_NEW');
+    });
+
+    it('29. Symbol-wide safety rejection -> another strategy cannot bypass it on the same closed candle', async () => {
+      mockAdapter.fetchKlines.mockImplementation(async () => generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000));
+      // Budget $2 is below minimum notional ($5) -> symbol-wide safety rejection (BUDGET_INSUFFICIENT_AT_CURRENT_PRICE)
+      const bot = setupBot('BTC/USDT', { positionSize: 2 });
+
+      const execSpy = vi.spyOn((bot as any).orchestrator, 'executeCycle').mockResolvedValue([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 90,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000,
+              stopLoss: 49500,
+              takeProfit: 51000,
+              timeframe: '5m',
+              riskAssessment: { positionSizeRecommendation: 2, riskClassification: 'LOW' },
+            },
+          },
+        },
+        {
+          strategyId: 'Momentum',
+          confidenceScore: 88,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '15m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000,
+              stopLoss: 49000,
+              takeProfit: 52000,
+              timeframe: '15m',
+              riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+            },
+          },
+        },
+      ]);
+
+      // Cycle 1: Symbol-wide safety rejection recorded against closed candle
+      await bot.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+      expect(execSpy).toHaveBeenCalledTimes(1);
+
+      // Cycle 2 (same closed candle): Symbol-wide rejection prevents executeCycle and blocks any strategy from bypassing it
+      await bot.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+      expect(execSpy).toHaveBeenCalledTimes(1); // Skipped entirely on Cycle 2!
+    });
+
+    it('30. Dismissed alert -> existing duplicate-suppression protection remains effective for same strategy', async () => {
+      mockAdapter.fetchKlines.mockImplementation(async () => generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000));
+      const dismissedAlert: TradeAlert = {
+        id: 'dismissed-scalper-1',
+        symbol: 'BTC/USDT',
+        signalPrice: 50000,
+        entryPrice: 50000,
+        stopLoss: 49500,
+        takeProfit: 51000,
+        positionSize: 100,
+        strategy: 'ScalperV2_NEW',
+        side: 'BUY',
+        timestamp: new Date().toISOString(),
+        status: 'dismissed',
+        timeframe: '5m',
+      };
+      const bot = setupBot('BTC/USDT', { alerts: [dismissedAlert] });
+      vi.spyOn((bot as any).orchestrator, 'executeCycle').mockResolvedValue([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 92,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000,
+              stopLoss: 49500,
+              takeProfit: 51000,
+              timeframe: '5m',
+              riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+            },
+          },
+        },
+      ]);
+
+      await bot.alarm();
+      const alerts = mockStorage.get('alerts') as TradeAlert[];
+      // Same strategy/timeframe must remain suppressed within 5m cooldown after dismissal
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].id).toBe('dismissed-scalper-1');
+    });
+
+    it('31. Rejection state survives Durable Object restart/alarm cycles and is cleaned up safely on new candle', async () => {
+      let currentEndTime = FIXED_ANCHOR_TIME;
+      mockAdapter.fetchKlines.mockImplementation(async () => generateDeterministicCandles(60, currentEndTime, 300_000));
+
+      // Bot instance 1 records strategy rejection
+      const bot1 = setupBot();
+      vi.spyOn((bot1 as any).orchestrator, 'executeCycle').mockResolvedValue([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 90,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000,
+              stopLoss: 49500,
+              takeProfit: 51000,
+              timeframe: '5m',
+              riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'EXTREME' },
+            },
+          },
+        },
+      ]);
+      await bot1.alarm();
+      const persistedRejections1 = mockStorage.get('gateRejections');
+      expect(persistedRejections1).toBeDefined();
+      expect(Object.keys(persistedRejections1.strategyRejections)).toHaveLength(1);
+
+      // Simulate DO cold-start / re-instantiation from storage on same candle
+      const bot2 = new TradingBot(mockState, mockEnv);
+      vi.spyOn((bot2 as any).orchestrator, 'executeCycle').mockResolvedValue([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 90,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000,
+              stopLoss: 49500,
+              takeProfit: 51000,
+              timeframe: '5m',
+              riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+            },
+          },
+        },
+      ]);
+      await bot2.alarm();
+      expect(mockStorage.get('alerts')).toHaveLength(0); // Still suppressed after DO restart on same candle!
+
+      // Advance candle -> stale rejection record is cleaned up from storage and candidate is evaluated
+      currentEndTime = FIXED_ANCHOR_TIME + 300_000;
+      await bot2.alarm();
+      const persistedRejectionsAfterCleanup = mockStorage.get('gateRejections');
+      expect(Object.keys(persistedRejectionsAfterCleanup.strategyRejections)).toHaveLength(0);
+      expect(mockStorage.get('alerts')).toHaveLength(1);
+    });
+
+    it('32. FCM delivery failure is not treated as an internal gate rejection', async () => {
+      mockAdapter.fetchKlines.mockImplementation(async () => generateDeterministicCandles(60, FIXED_ANCHOR_TIME, 300_000));
+      (sendTradeNotification as any).mockResolvedValueOnce({ success: false, error: 'FCM_TIMEOUT' });
+
+      const bot = setupBot();
+      vi.spyOn((bot as any).orchestrator, 'executeCycle').mockResolvedValue([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 92,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: {
+              type: 'BUY',
+              signalPrice: 50000,
+              stopLoss: 49500,
+              takeProfit: 51000,
+              timeframe: '5m',
+              riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+            },
+          },
+        },
+      ]);
+
+      await bot.alarm();
+      const alerts = mockStorage.get('alerts') as TradeAlert[];
+      expect(alerts).toHaveLength(1);
+      const gateRejections = mockStorage.get('gateRejections');
+      expect(Object.keys(gateRejections?.strategyRejections || {})).toHaveLength(0);
+      expect(Object.keys(gateRejections?.symbolRejections || {})).toHaveLength(0);
+    });
+  });
 });

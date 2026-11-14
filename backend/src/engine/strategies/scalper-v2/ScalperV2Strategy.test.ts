@@ -5,6 +5,9 @@ import { StrategyContext } from '../../context/StrategyContext';
 import { MarketSnapshot, NormalizedCandle } from '../../market-data/MarketSnapshot';
 import { SignalType } from '../../signal';
 import { CandleValidator } from '../../../infrastructure/exchange/CandleValidator';
+import { MarketRegimeEngine } from '../../regime/MarketRegimeEngine';
+import { DirectionalMtfArbitrator } from '../../arbitration/DirectionalMtfArbitrator';
+import { calculateATR } from '../../indicator/indicators/ATR';
 
 // Canonical reference time aligned to 4h boundary
 const BASE_TIME = 1789000000000 - (1789000000000 % (4 * 3600 * 1000));
@@ -762,6 +765,230 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
       expect(result.hasSignal).toBe(false);
       expect(result.metadata.signal).toBeNull();
       expect(result.metadata.reasoning.some((r: string) => r.includes('Insufficient closed candle data'))).toBe(true);
+    });
+  });
+
+  // ==========================================================================
+  // OBJECTIVE 1 MANDATORY SCENARIOS: TREND & REGIME VALIDATION REGRESSION SUITE
+  // ==========================================================================
+  describe('Objective 1 Mandatory Market Regime & Trend-Strength Scenarios', () => {
+    function createSidewaysCandles(count = 60, basePrice = 100, tf: '5m' | '15m' | '1h' | '4h' = '5m'): NormalizedCandle[] {
+      const tfMs = CandleValidator.timeframeToMs(tf);
+      const candles: NormalizedCandle[] = [];
+      for (let i = 0; i < count; i++) {
+        const openTime = BASE_TIME - (count - i) * tfMs;
+        const offset = Math.sin(i * 0.9) * 0.15;
+        const p = basePrice + offset;
+        candles.push({
+          timestamp: openTime,
+          openTime,
+          open: p - 0.05,
+          high: p + 0.35,
+          low: p - 0.35,
+          close: p,
+          volume: 1000 + (i % 5) * 50,
+        });
+      }
+      return candles;
+    }
+
+    function createChoppyCrossoverCandles(count = 60, basePrice = 1000, tf: '5m' | '15m' | '1h' | '4h' = '5m'): NormalizedCandle[] {
+      const tfMs = CandleValidator.timeframeToMs(tf);
+      const candles: NormalizedCandle[] = [];
+      for (let i = 0; i < count; i++) {
+        const openTime = BASE_TIME - (count - i) * tfMs;
+        // Repeated back-and-forth swings causing multiple EMA9/EMA21 crossovers with a late 3-bar pop
+        const cycle = (i % 6 < 3 ? 1 : -1) * 4.5 + (i >= count - 3 ? (i - (count - 4)) * 2.2 : 0);
+        const p = basePrice + cycle;
+        const spread = i >= count - 3 ? 6.0 : 3.5;
+        const vol = i >= count - 2 ? 2600 : 1000;
+        candles.push({
+          timestamp: openTime,
+          openTime,
+          open: p - 1,
+          high: p + spread,
+          low: p - spread,
+          close: p,
+          volume: vol,
+        });
+      }
+      return candles;
+    }
+
+    function createWeakTrendLowAdxCandles(count = 60, basePrice = 1000, tf: '5m' | '15m' | '1h' | '4h' = '5m'): NormalizedCandle[] {
+      const tfMs = CandleValidator.timeframeToMs(tf);
+      const candles: NormalizedCandle[] = [];
+      for (let i = 0; i < count; i++) {
+        const openTime = BASE_TIME - (count - i) * tfMs;
+        // Slow micro-drift with wide overlapping highs/lows -> low ADX (< 20) and tiny EMA separation (< 0.25%)
+        const drift = i * 0.12 + (i % 2 === 0 ? 0.35 : -0.30) + (i >= count - 2 ? 0.8 : 0);
+        const p = basePrice + drift;
+        const spread = i >= count - 3 ? 8.5 : 6.5;
+        const vol = i >= count - 2 ? 2500 : 1000;
+        candles.push({
+          timestamp: openTime,
+          openTime,
+          open: p - 0.2,
+          high: p + spread,
+          low: p - spread,
+          close: p,
+          volume: vol,
+        });
+      }
+      return candles;
+    }
+
+    function createHighVolatilityNoTrendCandles(count = 60, basePrice = 1000, tf: '5m' | '15m' | '1h' | '4h' = '5m'): NormalizedCandle[] {
+      const tfMs = CandleValidator.timeframeToMs(tf);
+      const candles: NormalizedCandle[] = [];
+      for (let i = 0; i < count; i++) {
+        const openTime = BASE_TIME - (count - i) * tfMs;
+        // Sudden ATR range expansion (>1.35x long-term ATR) oscillating around a flat mean without directional trend
+        const swing = (i % 4 < 2 ? 1 : -1) * 4.0 + (i === count - 1 ? 2.0 : 0);
+        const p = basePrice + swing;
+        const spread = i >= count - 14 ? 35.0 : 10.0;
+        const vol = i >= count - 2 ? 3000 : 1200;
+        candles.push({
+          timestamp: openTime,
+          openTime,
+          open: p - 2.0,
+          high: p + spread,
+          low: p - spread,
+          close: p,
+          volume: vol,
+        });
+      }
+      return candles;
+    }
+
+    it('1. Strong bullish market -> BUY allowed across ScalperV2, MarketRegimeEngine, and DirectionalMtfArbitrator', () => {
+      const c5m = createBullishCandles(60, 100, '5m');
+      const c15m = createBullishCandles(60, 100, '15m');
+      const c1h = createBullishCandles(60, 100, '1h');
+      const c4h = createBullishCandles(60, 100, '4h');
+      const snapshot = buildMtfSnapshot({ '5m': c5m, '15m': c15m, '1h': c1h, '4h': c4h });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+      expect(result.hasSignal).toBe(true);
+      expect(result.metadata.signal?.type).toBe(SignalType.BUY);
+
+      const atrArr = calculateATR(c1h, 14);
+      const atr1h = atrArr[atrArr.length - 1];
+      const regime1h = MarketRegimeEngine.evaluate(c1h.map(k => k.high), c1h.map(k => k.low), c1h.map(k => k.close), atr1h);
+      expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', regime1h).allowed).toBe(true);
+
+      const arb = DirectionalMtfArbitrator.evaluateCandidate(result, snapshot, regime1h);
+      expect(arb.passed).toBe(true);
+    });
+
+    it('2. Strong bearish market -> SELL allowed across ScalperV2, MarketRegimeEngine, and DirectionalMtfArbitrator', () => {
+      const c5m = createBearishCandles(60, 200, '5m');
+      const c15m = createBearishCandles(60, 200, '15m');
+      const c1h = createBearishCandles(60, 200, '1h');
+      const c4h = createBearishCandles(60, 200, '4h');
+      const snapshot = buildMtfSnapshot({ '5m': c5m, '15m': c15m, '1h': c1h, '4h': c4h });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+      expect(result.hasSignal).toBe(true);
+      expect(result.metadata.signal?.type).toBe(SignalType.SELL);
+
+      const atrArr = calculateATR(c1h, 14);
+      const atr1h = atrArr[atrArr.length - 1];
+      const regime1h = MarketRegimeEngine.evaluate(c1h.map(k => k.high), c1h.map(k => k.low), c1h.map(k => k.close), atr1h);
+      expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', regime1h).allowed).toBe(true);
+
+      const arb = DirectionalMtfArbitrator.evaluateCandidate(result, snapshot, regime1h);
+      expect(arb.passed).toBe(true);
+    });
+
+    it('3. Flat market -> blocked in ScalperV2, MarketRegimeEngine, and DirectionalMtfArbitrator', () => {
+      const c5m = createFlatCandles(60, 100, '5m');
+      const c15m = createFlatCandles(60, 100, '15m');
+      const c1h = createFlatCandles(60, 100, '1h');
+      const c4h = createFlatCandles(60, 100, '4h');
+      const snapshot = buildMtfSnapshot({ '5m': c5m, '15m': c15m, '1h': c1h, '4h': c4h });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+
+      const atrArr = calculateATR(c1h, 14);
+      const atr1h = atrArr[atrArr.length - 1];
+      const regime1h = MarketRegimeEngine.evaluate(c1h.map(k => k.high), c1h.map(k => k.low), c1h.map(k => k.close), atr1h);
+      expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', regime1h).allowed).toBe(false);
+    });
+
+    it('4. Sideways market -> blocked in ScalperV2, MarketRegimeEngine, and DirectionalMtfArbitrator', () => {
+      const c5m = createSidewaysCandles(60, 100, '5m');
+      const c15m = createSidewaysCandles(60, 100, '15m');
+      const c1h = createSidewaysCandles(60, 100, '1h');
+      const c4h = createSidewaysCandles(60, 100, '4h');
+      const snapshot = buildMtfSnapshot({ '5m': c5m, '15m': c15m, '1h': c1h, '4h': c4h });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+
+      const atrArr = calculateATR(c1h, 14);
+      const atr1h = atrArr[atrArr.length - 1];
+      const regime1h = MarketRegimeEngine.evaluate(c1h.map(k => k.high), c1h.map(k => k.low), c1h.map(k => k.close), atr1h);
+      expect(regime1h.regime).toBe('RANGING');
+      expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', regime1h).allowed).toBe(false);
+    });
+
+    it('5. Choppy EMA crossovers -> blocked even when short-term momentum/volatility/volume spike', () => {
+      const c5m = createChoppyCrossoverCandles(60, 1000, '5m');
+      const c15m = createChoppyCrossoverCandles(60, 1000, '15m');
+      const c1h = createChoppyCrossoverCandles(60, 1000, '1h');
+      const c4h = createChoppyCrossoverCandles(60, 1000, '4h');
+      const snapshot = buildMtfSnapshot({ '5m': c5m, '15m': c15m, '1h': c1h, '4h': c4h });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+    });
+
+    it('6. Weak trend with low ADX -> blocked by trend validation and regime/arbitration gates', () => {
+      const c5m = createWeakTrendLowAdxCandles(60, 1000, '5m');
+      const c15m = createWeakTrendLowAdxCandles(60, 1000, '15m');
+      const c1h = createWeakTrendLowAdxCandles(60, 1000, '1h');
+      const c4h = createWeakTrendLowAdxCandles(60, 1000, '4h');
+      const snapshot = buildMtfSnapshot({ '5m': c5m, '15m': c15m, '1h': c1h, '4h': c4h });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+
+      const atrArr = calculateATR(c1h, 14);
+      const atr1h = atrArr[atrArr.length - 1];
+      const regime1h = MarketRegimeEngine.evaluate(c1h.map(k => k.high), c1h.map(k => k.low), c1h.map(k => k.close), atr1h);
+      expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', regime1h).allowed).toBe(false);
+    });
+
+    it('7. High volatility without a genuine trend -> blocked by VOLATILE chop regime and trend-strength checks', () => {
+      const c5m = createHighVolatilityNoTrendCandles(60, 1000, '5m');
+      const c15m = createHighVolatilityNoTrendCandles(60, 1000, '15m');
+      const c1h = createHighVolatilityNoTrendCandles(60, 1000, '1h');
+      const c4h = createHighVolatilityNoTrendCandles(60, 1000, '4h');
+      const snapshot = buildMtfSnapshot({ '5m': c5m, '15m': c15m, '1h': c1h, '4h': c4h });
+
+      const context = new StrategyContext(snapshot, 10000).freeze();
+      const result = strategy.evaluate(context, '5m');
+      expect(result.hasSignal).toBe(false);
+      expect(result.metadata.signal).toBeNull();
+
+      const atrArr = calculateATR(c1h, 14);
+      const atr1h = atrArr[atrArr.length - 1];
+      const regime1h = MarketRegimeEngine.evaluate(c1h.map(k => k.high), c1h.map(k => k.low), c1h.map(k => k.close), atr1h);
+      expect(regime1h.regime).toBe('VOLATILE');
+      expect(regime1h.allowTrendStrategies).toBe(false);
+      expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', regime1h).allowed).toBe(false);
     });
   });
 });

@@ -94,7 +94,7 @@ export class MarketRegimeEngine {
     if (atrExpansionRatio > 1.35) {
       regime = "VOLATILE";
       score = Math.min(95, Math.round(50 + (atrExpansionRatio - 1.0) * 50));
-    } else if (adx >= 25 || emaSlope >= 0.5) {
+    } else if (adx >= 25 || (adx >= 20 && emaSlope >= 0.5)) {
       regime = "TRENDING";
       score = Math.min(98, Math.round(40 + adx * 1.1 + emaSlope * 5));
     } else {
@@ -128,6 +128,9 @@ export class MarketRegimeEngine {
         return { allowed: false, reason: `Strategy '${strategy}' requires RANGING market (current regime: ${regime.regime}, ADX score: ${regime.score})` };
       }
     } else if (normalized === 'ScalperV2') {
+      if (!regime.allowTrendStrategies) {
+        return { allowed: false, reason: `Strategy '${strategy}' requires TRENDING market (current regime: ${regime.regime}, ADX score: ${regime.score})` };
+      }
       if (regime.score < 60) {
         return { allowed: false, reason: `Scalping requires market regime score > 60 (current score: ${regime.score})` };
       }

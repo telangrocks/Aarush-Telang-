@@ -572,6 +572,19 @@ const ALLOWED_WAL_TRANSITIONS: Record<string, ReadonlySet<string>> = {
 
 const EMERGENCY_CLOSE_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 300_000] as const;
 
+export interface GateRejectionRecord {
+  candleTimestamp: number;
+  gate: string;
+  rejectedAt: number;
+  timeframe?: string;
+  strategyId?: string;
+}
+
+export interface GateRejectionState {
+  strategyRejections: Record<string, GateRejectionRecord>;
+  symbolRejections: Record<string, GateRejectionRecord>;
+}
+
 export interface TradingBotRuntimeState {
   isInitialized: boolean;
   isActive: boolean;
@@ -591,6 +604,7 @@ export interface TradingBotRuntimeState {
   approvedCandidateRecord?: ApprovedCandidateRecord | null;
   discoveryApprovalRecord?: ApprovedCandidateRecord | null;
   candidateApprovalGeneration?: number;
+  gateRejections?: GateRejectionState;
 }
 
 export class TradingBot {
@@ -600,7 +614,8 @@ export class TradingBot {
     monitoredSymbols: [],
     activePositions: [], alerts: [], symbolCooldowns: {}, activeIntents: new Map(),
     pendingPositionSync: null,
-    lastAccountBalance: undefined
+    lastAccountBalance: undefined,
+    gateRejections: { strategyRejections: {}, symbolRejections: {} }
   };
   private isAlarmRunning: boolean = false;
   private scannerState: any = {};
@@ -841,7 +856,7 @@ export class TradingBot {
   private async ensureInitialized() {
     if (this.runtimeState.isInitialized) return;
     await this.state.blockConcurrencyWhile(async () => {
-      const keys = ['isActive', 'userId', 'strategy', 'strategyConfig', 'setupSnapshot', 'positionSize', 'coinId', 'monitoredSymbols', 'activePositions', 'alerts', 'symbolCooldowns', 'pendingPositionSync', 'lastAccountBalance', 'lock:alarmGeneration', 'lock:unprotectedExposure', 'approvedCandidateRecord', 'discoveryApprovalRecord', 'candidateApprovalGeneration'];
+      const keys = ['isActive', 'userId', 'strategy', 'strategyConfig', 'setupSnapshot', 'positionSize', 'coinId', 'monitoredSymbols', 'activePositions', 'alerts', 'symbolCooldowns', 'pendingPositionSync', 'lastAccountBalance', 'lock:alarmGeneration', 'lock:unprotectedExposure', 'approvedCandidateRecord', 'discoveryApprovalRecord', 'candidateApprovalGeneration', 'gateRejections'];
       let vals: any = null;
       try {
         vals = await this.state.storage.get<any>(keys);
@@ -890,6 +905,15 @@ export class TradingBot {
       this.runtimeState.pendingPositionSync = (await getVal('pendingPositionSync')) || null;
       this.runtimeState.lastAccountBalance = (await getVal('lastAccountBalance')) ?? undefined;
       this.runtimeState.approvedCandidateRecord = (await getVal('approvedCandidateRecord')) || null;
+      const storedGateRejections = await getVal('gateRejections');
+      this.runtimeState.gateRejections = {
+        strategyRejections: (storedGateRejections && typeof storedGateRejections.strategyRejections === 'object' && storedGateRejections.strategyRejections)
+          ? { ...storedGateRejections.strategyRejections }
+          : {},
+        symbolRejections: (storedGateRejections && typeof storedGateRejections.symbolRejections === 'object' && storedGateRejections.symbolRejections)
+          ? { ...storedGateRejections.symbolRejections }
+          : {},
+      };
 
       const intentMap = await this.state.storage.list({ prefix: 'intent:order:' });
       for (const [k, v] of intentMap.entries()) {
@@ -927,6 +951,202 @@ export class TradingBot {
   private async persistState(key: string, value: any) {
     (this.runtimeState as any)[key] = value;
     await this.state.storage.put(key, value);
+  }
+
+  private getGateRejectionsState(): GateRejectionState {
+    if (!this.runtimeState.gateRejections || typeof this.runtimeState.gateRejections !== 'object') {
+      this.runtimeState.gateRejections = {
+        strategyRejections: {},
+        symbolRejections: {},
+      };
+    }
+    if (!this.runtimeState.gateRejections.strategyRejections || typeof this.runtimeState.gateRejections.strategyRejections !== 'object') {
+      this.runtimeState.gateRejections.strategyRejections = {};
+    }
+    if (!this.runtimeState.gateRejections.symbolRejections || typeof this.runtimeState.gateRejections.symbolRejections !== 'object') {
+      this.runtimeState.gateRejections.symbolRejections = {};
+    }
+    return this.runtimeState.gateRejections;
+  }
+
+  private static timeframeToDurationMs(timeframe?: string): number {
+    const tf = String(timeframe || '5m').trim();
+    const unit = tf.slice(-1);
+    const amount = parseInt(tf.slice(0, -1), 10) || 1;
+    switch (unit) {
+      case 'm':
+        return amount * 60 * 1000;
+      case 'h':
+        return amount * 60 * 60 * 1000;
+      case 'd':
+      case 'D':
+        return amount * 24 * 60 * 60 * 1000;
+      default:
+        return 5 * 60 * 1000;
+    }
+  }
+
+  private static normalizeCandleTimestampForTimeframe(rawTs: number, timeframe?: string): number {
+    if (!Number.isFinite(rawTs) || rawTs <= 0) return 0;
+    const tfMs = TradingBot.timeframeToDurationMs(timeframe);
+    if (rawTs >= tfMs && rawTs % 60_000 !== 0) {
+      return Math.floor(rawTs / tfMs) * tfMs;
+    }
+    return rawTs;
+  }
+
+  private resolveClosedCandleTimestamp(snapshot: any, timeframe?: string, candidateResult?: any): number {
+    const tf = typeof timeframe === 'string' && timeframe.trim() ? timeframe.trim() : undefined;
+    if (tf && snapshot?.candles && Array.isArray(snapshot.candles[tf]) && snapshot.candles[tf].length > 0) {
+      const candles = snapshot.candles[tf];
+      const last = candles[candles.length - 1];
+      const rawTs = Number(last?.openTime ?? last?.timestamp ?? 0);
+      if (Number.isFinite(rawTs) && rawTs > 0) {
+        return TradingBot.normalizeCandleTimestampForTimeframe(rawTs, tf);
+      }
+    }
+
+    const sigTs = Number(candidateResult?.metadata?.signal?.timestamp ?? 0);
+    if (Number.isFinite(sigTs) && sigTs > 0) {
+      return TradingBot.normalizeCandleTimestampForTimeframe(sigTs, tf);
+    }
+
+    if (snapshot?.candles && typeof snapshot.candles === 'object') {
+      for (const fallbackTf of ['5m', '15m', '1h', '4h']) {
+        const arr = snapshot.candles[fallbackTf];
+        if (Array.isArray(arr) && arr.length > 0) {
+          const last = arr[arr.length - 1];
+          const rawTs = Number(last?.openTime ?? last?.timestamp ?? 0);
+          if (Number.isFinite(rawTs) && rawTs > 0) {
+            return TradingBot.normalizeCandleTimestampForTimeframe(rawTs, tf || fallbackTf);
+          }
+        }
+      }
+    }
+
+    const snapTs = Number(snapshot?.timestamp ?? 0);
+    if (Number.isFinite(snapTs) && snapTs > 0) {
+      return TradingBot.normalizeCandleTimestampForTimeframe(snapTs, tf || '5m');
+    }
+    return 0;
+  }
+
+  private resolveSymbolCandleTimestamp(snapshot: any, fallbackTimeframe?: string, candidateResult?: any): number {
+    if (snapshot?.candles && typeof snapshot.candles === 'object') {
+      for (const preferredTf of ['5m', '15m', '1h', '4h']) {
+        const arr = snapshot.candles[preferredTf];
+        if (Array.isArray(arr) && arr.length > 0) {
+          const last = arr[arr.length - 1];
+          const rawTs = Number(last?.openTime ?? last?.timestamp ?? 0);
+          if (Number.isFinite(rawTs) && rawTs > 0) {
+            return TradingBot.normalizeCandleTimestampForTimeframe(rawTs, preferredTf);
+          }
+        }
+      }
+    }
+    return this.resolveClosedCandleTimestamp(snapshot, fallbackTimeframe, candidateResult);
+  }
+
+  private async cleanupStaleGateRejections(normSymbol: string, snapshot: any, nowMs: number = Date.now()): Promise<void> {
+    const state = this.getGateRejectionsState();
+    let mutated = false;
+    const maxAgeMs = 24 * 60 * 60 * 1000;
+
+    const currentSymbolCandleTs = this.resolveSymbolCandleTimestamp(snapshot);
+    for (const [symKey, record] of Object.entries(state.symbolRejections)) {
+      if (!record || typeof record.candleTimestamp !== 'number' || (nowMs - (record.rejectedAt || 0)) > maxAgeMs) {
+        delete state.symbolRejections[symKey];
+        mutated = true;
+        continue;
+      }
+      if (symKey === normSymbol && currentSymbolCandleTs > 0 && record.candleTimestamp !== currentSymbolCandleTs) {
+        delete state.symbolRejections[symKey];
+        mutated = true;
+      }
+    }
+
+    for (const [stratKey, record] of Object.entries(state.strategyRejections)) {
+      if (!record || typeof record.candleTimestamp !== 'number' || (nowMs - (record.rejectedAt || 0)) > maxAgeMs) {
+        delete state.strategyRejections[stratKey];
+        mutated = true;
+        continue;
+      }
+      if (stratKey.startsWith(`${normSymbol}:`)) {
+        const parts = stratKey.split(':');
+        const tf = parts[2] || record.timeframe || '5m';
+        const currentTfCandleTs = this.resolveClosedCandleTimestamp(snapshot, tf);
+        if (currentTfCandleTs > 0 && record.candleTimestamp !== currentTfCandleTs) {
+          delete state.strategyRejections[stratKey];
+          mutated = true;
+        }
+      }
+    }
+
+    if (mutated) {
+      await this.persistState('gateRejections', state);
+    }
+  }
+
+  private isSymbolRejectedForCandle(normSymbol: string, candleTimestamp: number): GateRejectionRecord | null {
+    if (!candleTimestamp || candleTimestamp <= 0) return null;
+    const state = this.getGateRejectionsState();
+    const record = state.symbolRejections[normSymbol];
+    if (record && record.candleTimestamp === candleTimestamp) {
+      return record;
+    }
+    return null;
+  }
+
+  private isStrategyRejectedForCandle(normSymbol: string, strategyId: string, timeframe: string, candleTimestamp: number): GateRejectionRecord | null {
+    if (!candleTimestamp || candleTimestamp <= 0) return null;
+    const normStrat = StrategyRegistry.getInstance().normalizeStrategyId(strategyId).toLowerCase();
+    const tf = String(timeframe || '').trim();
+    const key = `${normSymbol}:${normStrat}:${tf}`;
+    const state = this.getGateRejectionsState();
+    const record = state.strategyRejections[key];
+    if (record && record.candleTimestamp === candleTimestamp) {
+      return record;
+    }
+    return null;
+  }
+
+  private async recordStrategyGateRejection(
+    normSymbol: string,
+    strategyId: string,
+    timeframe: string,
+    candleTimestamp: number,
+    gate: string,
+    nowMs: number = Date.now()
+  ): Promise<void> {
+    if (!candleTimestamp || candleTimestamp <= 0) return;
+    const normStrat = StrategyRegistry.getInstance().normalizeStrategyId(strategyId).toLowerCase();
+    const tf = String(timeframe || '').trim();
+    const key = `${normSymbol}:${normStrat}:${tf}`;
+    const state = this.getGateRejectionsState();
+    state.strategyRejections[key] = {
+      gate,
+      candleTimestamp,
+      rejectedAt: nowMs,
+      timeframe: tf,
+      strategyId: normStrat,
+    };
+    await this.persistState('gateRejections', state);
+  }
+
+  private async recordSymbolGateRejection(
+    normSymbol: string,
+    candleTimestamp: number,
+    gate: string,
+    nowMs: number = Date.now()
+  ): Promise<void> {
+    if (!candleTimestamp || candleTimestamp <= 0) return;
+    const state = this.getGateRejectionsState();
+    state.symbolRejections[normSymbol] = {
+      gate,
+      candleTimestamp,
+      rejectedAt: nowMs,
+    };
+    await this.persistState('gateRejections', state);
   }
 
   public normalizeAlertsRecovery(alerts: TradeAlert[], nowMs: number = Date.now()): { alerts: TradeAlert[]; modified: boolean } {
@@ -6825,10 +7045,25 @@ export class TradingBot {
                 let hoistedMarket: any = null;
                 let marketFetchAttempted = false;
                 try {
+                  const snapshot = await dataEngine.getSnapshot(currentSymbol, cycleTimeframes, cycleCandleLimit);
+                  const currentNormSymbol = this.normalizeSymbol(currentSymbol);
+                  await this.cleanupStaleGateRejections(currentNormSymbol, snapshot, Date.now());
+                  const symbolCandleTimestamp = this.resolveSymbolCandleTimestamp(snapshot);
+                  const activeSymbolRejection = this.isSymbolRejectedForCandle(currentNormSymbol, symbolCandleTimestamp);
+                  if (activeSymbolRejection) {
+                    legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: activeSymbolRejection.gate };
+                    console.log(`[SAFETY_GATE: LEVEL_1] Skipping evaluation for ${currentSymbol}: Symbol-wide rejection (${activeSymbolRejection.gate}) active for closed candle ${symbolCandleTimestamp}.`);
+                    continue;
+                  }
+
                   const results = await this.orchestrator.executeCycle(currentSymbol, undefined, strategyConfig, accountBalance, {
                     userId,
                     cycleId,
-                    sink: this.telemetrySink
+                    sink: this.telemetrySink,
+                    isCandidateSuppressed: (stratId: string, tf: Timeframe, snap: any) => {
+                      const tfCandleTs = this.resolveClosedCandleTimestamp(snap || snapshot, tf);
+                      return this.isStrategyRejectedForCandle(currentNormSymbol, stratId, tf, tfCandleTs) !== null;
+                    }
                   });
                   for (const r of results) {
                     if (r && r.metadata) {
@@ -6861,8 +7096,6 @@ export class TradingBot {
                   }
                   }
                   const currentState = this.orchestrator.getCurrentState();
-
-                  const snapshot = await dataEngine.getSnapshot(currentSymbol, cycleTimeframes, cycleCandleLimit);
 
                   // Stage 2: Evaluate 1h MarketRegime once per symbol from in-memory snapshot (0 extra fetches)
                   const snapshot1h = snapshot?.candles?.['1h'];
@@ -6943,17 +7176,59 @@ export class TradingBot {
 
                   for (const result of orderedActionableResults) {
                     if (result?.hasSignal && result.metadata?.signal) {
+                      const runtimeTargetTf = result.metadata?.targetTimeframe || result.metadata?.signal?.timeframe;
+                      const candidateCandleTs = this.resolveClosedCandleTimestamp(
+                        snapshot,
+                        typeof runtimeTargetTf === 'string' ? runtimeTargetTf : undefined,
+                        result
+                      );
+                      const effectiveSymbolCandleTs = symbolCandleTimestamp > 0 ? symbolCandleTimestamp : candidateCandleTs;
+
+                      const existingSymbolRej = this.isSymbolRejectedForCandle(currentNormSymbol, effectiveSymbolCandleTs);
+                      if (existingSymbolRej) {
+                        legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: existingSymbolRej.gate };
+                        recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', existingSymbolRej.gate);
+                        break;
+                      }
+
+                      if (typeof runtimeTargetTf === 'string' && runtimeTargetTf.trim()) {
+                        const existingStratRej = this.isStrategyRejectedForCandle(
+                          currentNormSymbol,
+                          result.strategyId,
+                          runtimeTargetTf,
+                          candidateCandleTs
+                        );
+                        if (existingStratRej) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: existingStratRej.gate };
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', existingStratRej.gate);
+                          continue;
+                        }
+                      }
+
                       const runtimeThreshold = result.metadata?.strategyConfig?.signalRules?.minConfidenceScore;
                       if (typeof runtimeThreshold !== 'number' || isNaN(runtimeThreshold) || runtimeThreshold <= 0) {
                         legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'CONFIGURATION_MISSING' };
                         recordStrategyStatus(result.strategyId, 'CONFIGURATION_MISSING', 'CONFIGURATION_MISSING');
+                        await this.recordStrategyGateRejection(
+                          currentNormSymbol,
+                          result.strategyId,
+                          typeof runtimeTargetTf === 'string' && runtimeTargetTf.trim() ? runtimeTargetTf : 'default',
+                          candidateCandleTs,
+                          'CONFIGURATION_MISSING'
+                        );
                         continue;
                       }
 
-                      const runtimeTargetTf = result.metadata?.targetTimeframe;
                       if (typeof runtimeTargetTf !== 'string' || !runtimeTargetTf.trim()) {
                         legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'CONFIGURATION_MISSING' };
                         recordStrategyStatus(result.strategyId, 'CONFIGURATION_MISSING', 'CONFIGURATION_MISSING');
+                        await this.recordStrategyGateRejection(
+                          currentNormSymbol,
+                          result.strategyId,
+                          'default',
+                          candidateCandleTs,
+                          'CONFIGURATION_MISSING'
+                        );
                         continue;
                       }
 
@@ -6966,6 +7241,13 @@ export class TradingBot {
                       if (!isAllowedSignal) {
                         legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'UNSUPPORTED_SHORT_SIGNAL' };
                         recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'UNSUPPORTED_SHORT_SIGNAL');
+                        await this.recordStrategyGateRejection(
+                          currentNormSymbol,
+                          result.strategyId,
+                          runtimeTargetTf,
+                          candidateCandleTs,
+                          'UNSUPPORTED_SHORT_SIGNAL'
+                        );
                         console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Strategy does not support short/SELL signals.`);
                         this.telemetrySink.emit({
                           userId,
@@ -6993,7 +7275,8 @@ export class TradingBot {
                         // Normalized-Ticker Single Active Alert Gate:
                         // Suppress if ANY active pending/acknowledged alert exists on this normalized ticker (< 5 min),
                         // across ALL strategies and timeframes (ONE NORMALIZED TICKER = AT MOST ONE ACTIVE TRADE OR ALERT).
-                        // Dismissed alerts are released from duplicate suppression immediately.
+                        // Dismissed alerts are released from symbol-wide duplicate suppression immediately so other strategies may evaluate,
+                        // while preserving same-strategy duplicate-suppression cooldown for the dismissed strategy itself.
                         const existingActiveAlert = alerts.find(a =>
                           this.normalizeSymbol(a.symbol) === currentNorm &&
                           a.status !== 'dismissed' &&
@@ -7023,6 +7306,23 @@ export class TradingBot {
                             }
                           });
                           break; // Ticker-wide rejection: stop evaluating further strategies for this ticker
+                        }
+
+                        const normCandidateStratId = registry.normalizeStrategyId(result.strategyId).toLowerCase();
+                        const existingDismissedSameStrategyAlert = alerts.find(a => {
+                          if (this.normalizeSymbol(a.symbol) !== currentNorm || a.status !== 'dismissed') return false;
+                          if ((nowMs - new Date(a.timestamp).getTime()) >= 300_000) return false;
+                          const rawAlertStrat = String(a.strategy || '').replace(/_NEW$/i, '');
+                          const normAlertStrat = registry.normalizeStrategyId(rawAlertStrat).toLowerCase();
+                          if (normAlertStrat !== normCandidateStratId) return false;
+                          if (a.timeframe && targetTimeframe && a.timeframe !== targetTimeframe) return false;
+                          return true;
+                        });
+                        if (existingDismissedSameStrategyAlert) {
+                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'DISMISSED_ALERT_COOLDOWN' };
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'DISMISSED_ALERT_COOLDOWN');
+                          console.log(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId} @ ${targetTimeframe}): Dismissed alert (${existingDismissedSameStrategyAlert.id}) cooldown active (<5m).`);
+                          continue; // Same-strategy dismissed cooldown -> allow other eligible strategies to evaluate
                         }
 
                         // Phase 1 Safety Gate (Level 1): Active / Unresolved In-Flight Intent Check (Cases 5 & 6)
@@ -7098,6 +7398,13 @@ export class TradingBot {
                         if (riskClass === 'EXTREME') {
                           legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'RISK_GATE_REJECTED' };
                           recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'RISK_GATE_REJECTED');
+                          await this.recordStrategyGateRejection(
+                            currentNorm,
+                            result.strategyId,
+                            targetTimeframe,
+                            candidateCandleTs,
+                            'RISK_GATE_REJECTED'
+                          );
                           console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): Risk classification is EXTREME.`);
                           this.telemetrySink.emit({
                             userId,
@@ -7135,6 +7442,7 @@ export class TradingBot {
                           alertIsExecutable = false;
                           alertIneligibilityReason = 'INSUFFICIENT_BUDGET';
                           recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INSUFFICIENT_BUDGET');
+                          await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'INSUFFICIENT_BUDGET');
                           console.warn(`[trading-bot] Trade opportunity detected for ${currentSymbol} (${result.strategyId}) with non-positive budget ($${size}). Skipping alert publication.`);
                           break;
                         }
@@ -7180,6 +7488,13 @@ export class TradingBot {
                         if (!arbitration.passed) {
                           legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: arbitration.gate };
                           recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', arbitration.gate || 'ARBITRATION_FAILED');
+                          await this.recordStrategyGateRejection(
+                            currentNorm,
+                            result.strategyId,
+                            targetTimeframe,
+                            candidateCandleTs,
+                            arbitration.gate || 'ARBITRATION_FAILED'
+                          );
                           console.warn(`[SAFETY_GATE: LEVEL_1] Suppressed TradeAlert for ${currentSymbol} (${result.strategyId}): ${arbitration.reasoning}`);
                           this.telemetrySink.emit({
                             userId,
@@ -7218,6 +7533,13 @@ export class TradingBot {
                           alertIsExecutable = false;
                           alertIneligibilityReason = 'INVALID_SIGNAL_PARAMETERS';
                           recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INVALID_SIGNAL_PARAMETERS');
+                          await this.recordStrategyGateRejection(
+                            currentNorm,
+                            result.strategyId,
+                            targetTimeframe,
+                            candidateCandleTs,
+                            'INVALID_SIGNAL_PARAMETERS'
+                          );
                           this.telemetrySink.emit({
                             userId,
                             category: 'SAFETY',
@@ -7295,6 +7617,13 @@ export class TradingBot {
                           alertIsExecutable = false;
                           alertIneligibilityReason = 'MISSING_STRATEGY_RISK_DISTANCES';
                           recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'MISSING_STRATEGY_RISK_DISTANCES');
+                          await this.recordStrategyGateRejection(
+                            currentNorm,
+                            result.strategyId,
+                            targetTimeframe,
+                            candidateCandleTs,
+                            'MISSING_STRATEGY_RISK_DISTANCES'
+                          );
                           this.telemetrySink.emit({
                             userId,
                             category: 'SAFETY',
@@ -7350,6 +7679,7 @@ export class TradingBot {
                         if (!tickSize || tickSize <= 0) {
                           legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'TICK_SIZE_UNAVAILABLE' };
                           recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'TICK_SIZE_UNAVAILABLE');
+                          await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'TICK_SIZE_UNAVAILABLE');
                           console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit tickSize unavailable.`);
                           this.telemetrySink.emit({
                             userId,
@@ -7432,6 +7762,7 @@ export class TradingBot {
                             alertIsExecutable = false;
                             alertIneligibilityReason = 'LOT_SIZE_METADATA_UNAVAILABLE';
                             recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'LOT_SIZE_METADATA_UNAVAILABLE');
+                            await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'LOT_SIZE_METADATA_UNAVAILABLE');
                             console.warn(`[trading-bot] Trade opportunity detected for ${currentSymbol} (${result.strategyId}) with invalid or missing lot size metadata. Skipping alert creation.`);
                             break;
                           } else {
@@ -7455,6 +7786,7 @@ export class TradingBot {
                               alertIsExecutable = false;
                               alertIneligibilityReason = 'TICKER_UNAVAILABLE';
                               recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'TICKER_UNAVAILABLE');
+                              await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'TICKER_UNAVAILABLE');
                               this.telemetrySink.emit({
                                 userId,
                                 category: 'SAFETY',
@@ -7505,6 +7837,13 @@ export class TradingBot {
                               alertIsExecutable = false;
                               alertIneligibilityReason = 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE';
                               recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE');
+                              await this.recordStrategyGateRejection(
+                                currentNorm,
+                                result.strategyId,
+                                targetTimeframe,
+                                candidateCandleTs,
+                                'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE'
+                              );
                               this.telemetrySink.emit({
                                 userId,
                                 category: 'SAFETY',
@@ -7557,6 +7896,7 @@ export class TradingBot {
                               });
                               console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) is execution-ineligible (BUDGET_INSUFFICIENT_AT_CURRENT_PRICE: ${eligibilityResult.rejectionReason}). Skipping alert creation.`);
                               recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE');
+                              await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE');
                               break;
                             }
                           }
