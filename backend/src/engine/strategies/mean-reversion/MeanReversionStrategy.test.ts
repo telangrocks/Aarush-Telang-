@@ -1184,4 +1184,246 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       }
     });
   });
+
+  // ==========================================================================
+  // 10. FAIL-CLOSED VALIDATION HARDENING (Tests 29 - 34)
+  // ==========================================================================
+  describe("Fail-Closed Validation Hardening", () => {
+    it("29. fails closed without throwing on invalid context timestamp, blank/missing symbol, non-array rawCandles, or null candle entry", () => {
+      const validSnap = createDefaultMtfSnapshot();
+
+      const badTsContext = {
+        timestamp: Number.NaN,
+        accountBalance: 10000,
+        marketSnapshot: { ...validSnap, timestamp: Number.NaN },
+      } as unknown as Readonly<StrategyContext>;
+      const resBadTs = strategy.evaluate(badTsContext, "5m");
+      expect(resBadTs.hasSignal).toBe(false);
+      expect(resBadTs.timestamp).toBe(0);
+      expect(resBadTs.metadata.reasoning[0]).toContain("Invalid evaluation timestamp");
+
+      const infTsContext = {
+        timestamp: Number.POSITIVE_INFINITY,
+        accountBalance: 10000,
+        marketSnapshot: { ...validSnap, timestamp: Number.POSITIVE_INFINITY },
+      } as unknown as Readonly<StrategyContext>;
+      const resInfTs = strategy.evaluate(infTsContext, "5m");
+      expect(resInfTs.hasSignal).toBe(false);
+      expect(resInfTs.metadata.reasoning[0]).toContain("Invalid evaluation timestamp");
+
+      const blankSymSnap = createDefaultMtfSnapshot();
+      (blankSymSnap as any).symbol = "   ";
+      const resBlankSym = strategy.evaluate(new StrategyContext(blankSymSnap, 10000).freeze(), "5m");
+      expect(resBlankSym.hasSignal).toBe(false);
+      expect(resBlankSym.metadata.reasoning[0]).toContain("Missing or invalid symbol");
+
+      const nonArraySnap = buildMtfSnapshot({}, BASE_TIME);
+      (nonArraySnap.candles as any)["5m"] = { length: 60 };
+      const resNonArray = strategy.evaluate(new StrategyContext(nonArraySnap, 10000).freeze(), "5m");
+      expect(resNonArray.hasSignal).toBe(false);
+      expect(resNonArray.metadata.reasoning[0]).toContain("Missing required candle data");
+
+      const nullElementCandles = createCandles(60, "5m", BASE_TIME);
+      (nullElementCandles as any)[10] = null;
+      const nullElemSnap = buildMtfSnapshot({ "5m": nullElementCandles }, BASE_TIME);
+      const resNullElem = strategy.evaluate(new StrategyContext(nullElemSnap, 10000).freeze(), "5m");
+      expect(resNullElem.hasSignal).toBe(false);
+      expect(resNullElem.metadata.reasoning[0]).toContain("Invalid candle timestamp");
+    });
+
+    it("30. rejects missing, zero, negative, or non-finite candle timestamps and clears pending recovery", () => {
+      const freshStrategy = new MeanReversionStrategy();
+      const tf5mMs = 5 * 60 * 1000;
+      const t0 = BASE_TIME - tf5mMs;
+      const t1 = BASE_TIME;
+      const t2 = BASE_TIME + tf5mMs;
+
+      // Bar T1: BUY setup transiently rejected for zero balance -> populates rejectedEdgeEvents
+      const snapT1 = createDefaultMtfSnapshot(60, t1);
+      mockIndicators(freshStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [22, 28],
+          [t2]: [22, 28],
+        },
+      });
+      freshStrategy.evaluate(createZeroBalanceContext(snapT1), "5m");
+      expect((freshStrategy as any).rejectedEdgeEvents.size).toBe(1);
+
+      const baseCandles = createCandles(61, "5m", t2);
+      const badTimestamps = [
+        baseCandles.map((c, idx) => idx === 5 ? { open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume } as any : c),
+        baseCandles.map((c, idx) => idx === 60 ? { ...c, closeTime: Number.NaN } : c),
+        baseCandles.map((c, idx) => idx === 60 ? { ...c, closeTime: Number.POSITIVE_INFINITY } : c),
+        baseCandles.map((c, idx) => idx === 0 ? { ...c, openTime: 0, timestamp: 0 } : c),
+        baseCandles.map((c, idx) => idx === 1 ? { ...c, openTime: -100, timestamp: -100 } : c),
+      ];
+
+      for (let i = 0; i < badTimestamps.length; i++) {
+        const strat = i === 0 ? freshStrategy : new MeanReversionStrategy();
+        const badSnap = buildMtfSnapshot({ "5m": badTimestamps[i] }, t2);
+        const res = strat.evaluate(new StrategyContext(badSnap, 10000).freeze(), "5m");
+        expect(res.hasSignal).toBe(false);
+        expect(res.metadata.reasoning[0]).toContain("Invalid candle timestamp");
+        if (i === 0) {
+          expect((freshStrategy as any).rejectedEdgeEvents.size).toBe(0);
+        }
+      }
+    });
+
+    it("31. fails closed on non-finite OHLC, high < low, negative/non-finite volume, earlier non-positive OHLC, and invalid close without ticker fallback", () => {
+      const freshStrategy = new MeanReversionStrategy();
+      mockIndicators(freshStrategy, { currentRsi5m: 28, previousRsi5m: 22 });
+
+      const baseCandles = createCandles(60, "5m", BASE_TIME);
+      const badSeries = [
+        baseCandles.map((c, idx) => idx === 59 ? { ...c, close: Number.NaN } : c),
+        baseCandles.map((c, idx) => idx === 59 ? { ...c, high: Number.POSITIVE_INFINITY } : c),
+        baseCandles.map((c, idx) => idx === 10 ? { ...c, low: Number.NEGATIVE_INFINITY } : c),
+        baseCandles.map((c, idx) => idx === 15 ? { ...c, high: 95, low: 105 } : c),
+        baseCandles.map((c, idx) => idx === 20 ? { ...c, volume: -1 } : c),
+        baseCandles.map((c, idx) => idx === 25 ? { ...c, volume: Number.POSITIVE_INFINITY } : c),
+        baseCandles.map((c, idx) => idx === 5 ? { ...c, open: 0, low: 0 } : c),
+        baseCandles.map((c, idx) => idx === 5 ? { ...c, close: -5 } : c),
+      ];
+
+      for (const series of badSeries) {
+        const snap = buildMtfSnapshot({ "5m": series }, BASE_TIME, 100);
+        const res = freshStrategy.evaluate(new StrategyContext(snap, 10000).freeze(), "5m");
+        expect(res.hasSignal).toBe(false);
+        expect(res.metadata.reasoning[0]).toContain("Invalid OHLC candle data");
+      }
+
+      // Zero close on latest closed candle must fail closed with "Invalid current price" even with valid snapshot.currentPrice > 0
+      const latestZero = createCandles(60, "5m", BASE_TIME).map((c, idx) =>
+        idx === 59 ? { ...c, open: 100, high: 101, low: 0, close: 0 } : c
+      );
+      const latestZeroSnap = buildMtfSnapshot({ "5m": latestZero }, BASE_TIME, 50000);
+      const resLatestZero = freshStrategy.evaluate(new StrategyContext(latestZeroSnap, 10000).freeze(), "5m");
+      expect(resLatestZero.hasSignal).toBe(false);
+      expect(resLatestZero.metadata.reasoning.some((r: string) => r.includes("Invalid current price"))).toBe(true);
+    });
+
+    it("32. rejects Infinity/-Infinity EMA separation and Infinity/-Infinity RSI values fail-closed", () => {
+      const snap = createDefaultMtfSnapshot();
+
+      // Infinity EMA20
+      const infEmaStrategy = new MeanReversionStrategy();
+      vi.spyOn((infEmaStrategy as any).indicatorEngine, "evaluate").mockImplementation((snapshot: any) => ({
+        timestamp: snapshot.timestamp,
+        timeframes: {
+          "5m": {
+            close: [100, 100],
+            sma: {},
+            ema: { 20: [Number.POSITIVE_INFINITY], 50: [100] },
+            rsi: { 14: snapshot.timestamp < BASE_TIME ? [50, 50] : [22, 28] },
+            macd: { "12,26,9": [] },
+            atr: { 14: [2.0] },
+            volume: [1000],
+          },
+        },
+      } as any));
+      const resInfEma = infEmaStrategy.evaluate(new StrategyContext(snap, 10000).freeze(), "5m");
+      expect(resInfEma.hasSignal).toBe(false);
+      expect(resInfEma.metadata.reasoning.some((r: string) => r.includes("EMA contains invalid or non-finite values"))).toBe(true);
+
+      // -Infinity / +Infinity RSI14
+      const infRsiStrategy = new MeanReversionStrategy();
+      mockIndicators(infRsiStrategy, { previousRsi5m: Number.NEGATIVE_INFINITY, currentRsi5m: 30 });
+      const resNegInfRsi = infRsiStrategy.evaluate(new StrategyContext(snap, 10000).freeze(), "5m");
+      expect(resNegInfRsi.hasSignal).toBe(false);
+      expect(resNegInfRsi.metadata.reasoning.some((r: string) => r.includes("RSI contains invalid or non-finite values"))).toBe(true);
+
+      mockIndicators(infRsiStrategy, { previousRsi5m: 80, currentRsi5m: Number.POSITIVE_INFINITY });
+      const resPosInfRsi = infRsiStrategy.evaluate(new StrategyContext(snap, 10000).freeze(), "5m");
+      expect(resPosInfRsi.hasSignal).toBe(false);
+      expect(resPosInfRsi.metadata.reasoning.some((r: string) => r.includes("RSI contains invalid or non-finite values"))).toBe(true);
+    });
+
+    it("33. rejects Infinity/-Infinity/negative accountBalance, Infinity ATR (without polluting recovery), and invalid allowedRiskClassifications", () => {
+      const snap = createDefaultMtfSnapshot();
+
+      // Infinity / negative / NaN accountBalance (bypassing StrategyContext default fallback)
+      const balStrategy = new MeanReversionStrategy();
+      mockIndicators(balStrategy, { currentRsi5m: 28, previousRsi5m: 22 });
+      for (const badBal of [Number.POSITIVE_INFINITY, Number.NaN, -500]) {
+        const badBalCtx = {
+          timestamp: snap.timestamp,
+          marketSnapshot: snap,
+          accountBalance: badBal,
+        } as unknown as Readonly<StrategyContext>;
+        const res = balStrategy.evaluate(badBalCtx, "5m");
+        expect(res.hasSignal).toBe(false);
+        expect(res.metadata.reasoning[0]).toContain("Account balance is zero or unconfigured");
+        expect((balStrategy as any).rejectedEdgeEvents.size).toBe(0);
+      }
+
+      // Infinity ATR must fail closed BEFORE RiskEngine and clear any prior pending recovery
+      const atrStrategy = new MeanReversionStrategy();
+      const tf5mMs = 5 * 60 * 1000;
+      const t0 = BASE_TIME - tf5mMs;
+      const t1 = BASE_TIME;
+      const t2 = BASE_TIME + tf5mMs;
+
+      mockIndicators(atrStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [22, 28],
+          [t2]: [22, 28],
+        },
+        atr5m: 2.0,
+      });
+      atrStrategy.evaluate(createZeroBalanceContext(createDefaultMtfSnapshot(60, t1)), "5m");
+      expect((atrStrategy as any).rejectedEdgeEvents.size).toBe(1);
+
+      mockIndicators(atrStrategy, {
+        rsiByTimestamp: {
+          [t0]: [50, 50],
+          [t1]: [22, 28],
+          [t2]: [22, 28],
+        },
+        atr5m: Number.POSITIVE_INFINITY,
+      });
+      const resInfAtr = atrStrategy.evaluate(new StrategyContext(createDefaultMtfSnapshot(61, t2), 10000).freeze(), "5m");
+      expect(resInfAtr.hasSignal).toBe(false);
+      expect(resInfAtr.metadata.reasoning.some((r: string) => r.includes("ATR is zero or unavailable"))).toBe(true);
+      expect((atrStrategy as any).rejectedEdgeEvents.size).toBe(0);
+
+      // Missing/non-array allowedRiskClassifications must fail closed without throwing
+      const badConfig = {
+        ...DEFAULT_MEAN_REVERSION_CONFIG,
+        signalRules: {
+          ...DEFAULT_MEAN_REVERSION_CONFIG.signalRules,
+          allowedRiskClassifications: undefined as any,
+        },
+      };
+      const cfgStrategy = new MeanReversionStrategy(badConfig);
+      mockIndicators(cfgStrategy, { currentRsi5m: 28, previousRsi5m: 22 });
+      const resBadCfg = cfgStrategy.evaluate(new StrategyContext(snap, 10000).freeze(), "5m");
+      expect(resBadCfg.hasSignal).toBe(false);
+      expect(resBadCfg.metadata.reasoning.some((r: string) => r.includes("Allowed risk classifications configuration is missing"))).toBe(true);
+    });
+
+    it("34. fails closed if RiskEngine outputs non-finite, zero, or non-positive SL/TP/sizing values", () => {
+      const snap = createDefaultMtfSnapshot();
+      const riskMutators = [
+        { riskClassification: "LOW", stopLossDistance: 0, takeProfitDistance: 5, maximumExposure: 10, positionSizeRecommendation: 10, explanation: [] },
+        { riskClassification: "LOW", stopLossDistance: 150, takeProfitDistance: 5, maximumExposure: 10, positionSizeRecommendation: 10, explanation: [] }, // BUY SL = 100 - 150 <= 0
+        { riskClassification: "LOW", stopLossDistance: 2, takeProfitDistance: Number.POSITIVE_INFINITY, maximumExposure: 10, positionSizeRecommendation: 10, explanation: [] },
+        { riskClassification: "LOW", stopLossDistance: 2, takeProfitDistance: 5, maximumExposure: 10, positionSizeRecommendation: 0, explanation: [] },
+        { riskClassification: "LOW", stopLossDistance: 2, takeProfitDistance: 5, maximumExposure: Number.NaN, positionSizeRecommendation: 10, explanation: [] },
+      ];
+
+      for (const badRisk of riskMutators) {
+        const strat = new MeanReversionStrategy();
+        mockIndicators(strat, { currentRsi5m: 28, previousRsi5m: 22 });
+        vi.spyOn((strat as any).riskEngine, "evaluate").mockReturnValue(badRisk as any);
+
+        const res = strat.evaluate(new StrategyContext(snap, 10000).freeze(), "5m");
+        expect(res.hasSignal).toBe(false);
+        expect(res.metadata.signal).toBeNull();
+        expect(res.metadata.reasoning.some((r: string) => r.includes("Invalid risk/SL/TP parameters"))).toBe(true);
+      }
+    });
+  });
 });

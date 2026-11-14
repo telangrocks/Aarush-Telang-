@@ -19,18 +19,46 @@ import { CandleValidator } from "../../../infrastructure/exchange/CandleValidato
  * In Bybit REST / standard exchange models, kline timestamp is open time.
  * If closeTime is not explicitly populated, closeTime = openTime + timeframeMs.
  */
-function getCandleCloseTime(candle: NormalizedCandle, tf: Timeframe): number {
-  if (typeof (candle as any).closeTime === "number" && (candle as any).closeTime > 0) {
-    return (candle as any).closeTime;
+function getCandleCloseTime(candle: NormalizedCandle | undefined, tf: Timeframe): number {
+  if (!candle || typeof candle !== "object") {
+    return NaN;
+  }
+  const rawClose = (candle as any).closeTime;
+  if (rawClose !== undefined) {
+    return typeof rawClose === "number" && Number.isFinite(rawClose) && rawClose > 0 ? rawClose : NaN;
   }
   const tfMs = CandleValidator.timeframeToMs(tf);
-  if (typeof candle.openTime === "number" && candle.openTime > 0) {
+  if (!Number.isFinite(tfMs) || tfMs <= 0) {
+    return NaN;
+  }
+  if (typeof candle.openTime === "number" && Number.isFinite(candle.openTime) && candle.openTime > 0) {
     return candle.openTime + tfMs;
   }
-  if (typeof candle.timestamp === "number" && candle.timestamp > 0) {
+  if (typeof candle.timestamp === "number" && Number.isFinite(candle.timestamp) && candle.timestamp > 0) {
     return candle.timestamp + tfMs;
   }
-  return 0;
+  return NaN;
+}
+
+function hasValidCandleStructure(c: NormalizedCandle | undefined): boolean {
+  if (!c || typeof c !== "object") {
+    return false;
+  }
+  if (
+    typeof c.open !== "number" || !Number.isFinite(c.open) ||
+    typeof c.high !== "number" || !Number.isFinite(c.high) ||
+    typeof c.low !== "number" || !Number.isFinite(c.low) ||
+    typeof c.close !== "number" || !Number.isFinite(c.close)
+  ) {
+    return false;
+  }
+  if (c.high < c.low) {
+    return false;
+  }
+  if (c.volume !== undefined && (typeof c.volume !== "number" || !Number.isFinite(c.volume) || c.volume < 0)) {
+    return false;
+  }
+  return true;
 }
 
 export class MeanReversionStrategy implements IStrategy {
@@ -77,15 +105,33 @@ export class MeanReversionStrategy implements IStrategy {
   public evaluate(context: Readonly<StrategyContext>, targetTimeframe: Timeframe): EvaluationResult {
     const MIN_CLOSED_CANDLES = 51;
 
-    // 0. Fail-Closed Validation: Ensure targetTimeframe is supported by manifest
+    // 0. Fail-Closed Validation: Ensure targetTimeframe is supported and context timestamp/symbol are valid
     if (!this.manifest.supportedTimeframes.includes(targetTimeframe)) {
       return this.createNoSignalResult(context, [`Unsupported timeframe ${targetTimeframe} for ${this.manifest.id}`], targetTimeframe);
     }
 
+    if (!context || typeof context.timestamp !== "number" || !Number.isFinite(context.timestamp)) {
+      return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Invalid evaluation timestamp for timeframe ${targetTimeframe}`], targetTimeframe);
+    }
+
+    const rawSymbol = context.marketSnapshot?.symbol;
+    if (typeof rawSymbol !== "string" || rawSymbol.trim().length === 0) {
+      return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Missing or invalid symbol for timeframe ${targetTimeframe}`], targetTimeframe);
+    }
+    const normalizedSymbol = rawSymbol.trim();
+    const stateKey = `${normalizedSymbol.toUpperCase()}:${targetTimeframe}`;
+
     // 1. Snapshot Evaluation Reference Time (T & T_previous)
     const rawCandles = context.marketSnapshot?.candles?.[targetTimeframe];
-    if (!rawCandles || rawCandles.length === 0) {
+    if (!Array.isArray(rawCandles) || rawCandles.length === 0) {
       return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Missing required candle data for timeframe ${targetTimeframe}`], targetTimeframe);
+    }
+
+    for (let i = 0; i < rawCandles.length; i++) {
+      if (!Number.isFinite(getCandleCloseTime(rawCandles[i], targetTimeframe))) {
+        this.rejectedEdgeEvents.delete(stateKey);
+        return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Invalid candle timestamp in ${targetTimeframe} series`], targetTimeframe);
+      }
     }
 
     // Filter forming candles: only closed candles at or before context.timestamp
@@ -94,7 +140,23 @@ export class MeanReversionStrategy implements IStrategy {
       return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Insufficient closed candle data for timeframe ${targetTimeframe} (got ${closedCandlesAtRef.length}, required >= ${MIN_CLOSED_CANDLES})`], targetTimeframe);
     }
 
+    // Structural & finite OHLCV check across closed series; preserve Test 21g error message ordering for latest close <= 0
+    if (closedCandlesAtRef.some(c => !hasValidCandleStructure(c))) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Invalid OHLC candle data detected in ${targetTimeframe} series`], targetTimeframe);
+    }
+
     const latestClosed = closedCandlesAtRef[closedCandlesAtRef.length - 1];
+    if (latestClosed.close <= 0) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.createNoSignalResult(context, ["Invalid current price (zero or negative)"], targetTimeframe);
+    }
+
+    if (closedCandlesAtRef.some(c => c.open <= 0 || c.high <= 0 || c.low <= 0 || c.close <= 0)) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.createNoSignalResult(context, [`[TIMEFRAME DATA] Invalid OHLC candle data detected in ${targetTimeframe} series`], targetTimeframe);
+    }
+
     const T = getCandleCloseTime(latestClosed, targetTimeframe);
     const tfMs = CandleValidator.timeframeToMs(targetTimeframe);
     const T_previous = T - tfMs;
@@ -103,7 +165,7 @@ export class MeanReversionStrategy implements IStrategy {
     const currentCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
       [targetTimeframe]: closedCandlesAtRef,
     };
-    const closedCandlesAtPrev = rawCandles.filter(c => getCandleCloseTime(c, targetTimeframe) <= T_previous);
+    const closedCandlesAtPrev = closedCandlesAtRef.filter(c => getCandleCloseTime(c, targetTimeframe) <= T_previous);
     const previousCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
       [targetTimeframe]: closedCandlesAtPrev,
     };
@@ -147,6 +209,7 @@ export class MeanReversionStrategy implements IStrategy {
       hasSellCurl: boolean;
       previousRsi: number;
       currentRsi: number;
+      hasNonFiniteIndicator?: boolean;
     } => {
       const tfReasoning: string[] = [];
       let sepTf = 0;
@@ -155,15 +218,25 @@ export class MeanReversionStrategy implements IStrategy {
       const ema20Arr = tfInd?.ema?.[this.config.conditionConfig.emaFastPeriod]; // 20
       const ema50Arr = tfInd?.ema?.[this.config.conditionConfig.emaSlowPeriod]; // 50
 
-      if (ema20Arr && ema50Arr && ema20Arr.length > 0 && ema50Arr.length > 0) {
+      if (Array.isArray(ema20Arr) && Array.isArray(ema50Arr) && ema20Arr.length > 0 && ema50Arr.length > 0) {
         const currentEma20 = ema20Arr[ema20Arr.length - 1];
         const currentEma50 = ema50Arr[ema50Arr.length - 1];
 
         if (
-          typeof currentEma20 === "number" && !isNaN(currentEma20) &&
-          typeof currentEma50 === "number" && !isNaN(currentEma50) && currentEma50 > 0
+          typeof currentEma20 !== "number" || !Number.isFinite(currentEma20) ||
+          typeof currentEma50 !== "number" || !Number.isFinite(currentEma50)
         ) {
-          sepTf = Math.abs(currentEma20 - currentEma50) / currentEma50 * 100;
+          tfReasoning.push(`[TIMEFRAME FAIL-CLOSED] ${targetTimeframe} EMA contains invalid or non-finite values.`);
+          return { isAlignedBuy: false, isAlignedSell: false, tfReasoning, separation: 0, hasBuyCurl: false, hasSellCurl: false, previousRsi: 0, currentRsi: 0, hasNonFiniteIndicator: true };
+        }
+
+        if (currentEma50 > 0) {
+          const computedSep = Math.abs(currentEma20 - currentEma50) / currentEma50 * 100;
+          if (!Number.isFinite(computedSep)) {
+            tfReasoning.push(`[TIMEFRAME FAIL-CLOSED] ${targetTimeframe} EMA separation is non-finite.`);
+            return { isAlignedBuy: false, isAlignedSell: false, tfReasoning, separation: 0, hasBuyCurl: false, hasSellCurl: false, previousRsi: 0, currentRsi: 0, hasNonFiniteIndicator: true };
+          }
+          sepTf = computedSep;
           if (sepTf <= this.config.trendFilter.maxEmaSeparationPercent) {
             tfReasoning.push(`[${tfUpper} INFO] EMA separation (${sepTf.toFixed(2)}%) <= ${this.config.trendFilter.maxEmaSeparationPercent}%.`);
           } else {
@@ -175,7 +248,7 @@ export class MeanReversionStrategy implements IStrategy {
       // Precision Reversal Trigger on targetTimeframe: 2-step RSI14 reversal
       const rsiArr = tfInd?.rsi?.[this.config.conditionConfig.rsiPeriod]; // 14
 
-      if (!rsiArr || rsiArr.length < 2) {
+      if (!Array.isArray(rsiArr) || rsiArr.length < 2) {
         tfReasoning.push(`[TIMEFRAME FAIL-CLOSED] ${targetTimeframe} entry trigger missing required RSI values.`);
         return { isAlignedBuy: false, isAlignedSell: false, tfReasoning, separation: sepTf, hasBuyCurl: false, hasSellCurl: false, previousRsi: 0, currentRsi: 0 };
       }
@@ -184,11 +257,11 @@ export class MeanReversionStrategy implements IStrategy {
       const currentRsi = rsiArr[rsiArr.length - 1];
 
       if (
-        typeof previousRsi !== "number" || isNaN(previousRsi) ||
-        typeof currentRsi !== "number" || isNaN(currentRsi)
+        typeof previousRsi !== "number" || !Number.isFinite(previousRsi) ||
+        typeof currentRsi !== "number" || !Number.isFinite(currentRsi)
       ) {
-        tfReasoning.push(`[TIMEFRAME FAIL-CLOSED] ${targetTimeframe} RSI contains invalid or NaN values.`);
-        return { isAlignedBuy: false, isAlignedSell: false, tfReasoning, separation: sepTf, hasBuyCurl: false, hasSellCurl: false, previousRsi: 0, currentRsi: 0 };
+        tfReasoning.push(`[TIMEFRAME FAIL-CLOSED] ${targetTimeframe} RSI contains invalid or non-finite values.`);
+        return { isAlignedBuy: false, isAlignedSell: false, tfReasoning, separation: sepTf, hasBuyCurl: false, hasSellCurl: false, previousRsi: 0, currentRsi: 0, hasNonFiniteIndicator: true };
       }
 
       let hasBuyCurl = false;
@@ -233,12 +306,34 @@ export class MeanReversionStrategy implements IStrategy {
     // Evaluate market alignment at T and T_previous
     const currentAlignment = evaluateMarketAlignment(currentIndicatorSnapshot);
 
-    let previousAlignment = { isAlignedBuy: false, isAlignedSell: false, tfReasoning: [] as string[], separation: 0, hasBuyCurl: false, hasSellCurl: false, previousRsi: 0, currentRsi: 0 };
+    let previousAlignment: ReturnType<typeof evaluateMarketAlignment> = {
+      isAlignedBuy: false,
+      isAlignedSell: false,
+      tfReasoning: [],
+      separation: 0,
+      hasBuyCurl: false,
+      hasSellCurl: false,
+      previousRsi: 0,
+      currentRsi: 0
+    };
     if (hasValidPreviousData && previousIndicatorSnapshot) {
       previousAlignment = evaluateMarketAlignment(previousIndicatorSnapshot);
     }
 
-    const stateKey = `${context.marketSnapshot.symbol.toUpperCase()}:${targetTimeframe}`;
+    if (currentAlignment.hasNonFiniteIndicator || (hasValidPreviousData && previousAlignment.hasNonFiniteIndicator)) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      const failureReasons = currentAlignment.hasNonFiniteIndicator
+        ? currentAlignment.tfReasoning
+        : previousAlignment.tfReasoning;
+      return this.createNoSignalResult(
+        context,
+        failureReasons,
+        targetTimeframe,
+        currentIndicatorSnapshot,
+        currentConditionResult,
+        currentConfidenceScore
+      );
+    }
 
     // Edge transition: emit only when transitioning from NOT ALIGNED to ALIGNED
     const isNewBuyEvent = currentAlignment.isAlignedBuy && !previousAlignment.isAlignedBuy;
@@ -321,15 +416,14 @@ export class MeanReversionStrategy implements IStrategy {
 
     // 5. Risk validation downstream of edge transition
     const entryCandles = currentCandlesRecord[targetTimeframe]!;
-    const latestCandleClose = entryCandles[entryCandles.length - 1]?.close || 0;
-    const currentPrice = latestCandleClose > 0 ? latestCandleClose : context.marketSnapshot.currentPrice || 0;
+    const currentPrice = entryCandles[entryCandles.length - 1]?.close;
 
-    if (currentPrice <= 0) {
+    if (typeof currentPrice !== "number" || !Number.isFinite(currentPrice) || currentPrice <= 0) {
       this.rejectedEdgeEvents.delete(stateKey);
       return this.createNoSignalResult(context, ["Invalid current price (zero or negative)"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
 
-    if (!context.accountBalance || context.accountBalance <= 0) {
+    if (context.accountBalance === undefined || context.accountBalance === null || context.accountBalance === 0) {
       if (isEdgeBuy) {
         this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
       } else if (isEdgeSell) {
@@ -338,12 +432,17 @@ export class MeanReversionStrategy implements IStrategy {
       return this.createNoSignalResult(context, ["Account balance is zero or unconfigured"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
 
-    // ATR risk calculation strictly on targetTimeframe ATR
-    const tfIndicators = currentIndicatorSnapshot.timeframes[targetTimeframe];
-    const atrArray = tfIndicators?.atr?.[this.config.conditionConfig.atrPeriod]; // 14
-    let currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
+    if (typeof context.accountBalance !== "number" || !Number.isFinite(context.accountBalance) || context.accountBalance < 0) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.createNoSignalResult(context, ["Account balance is zero or unconfigured"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
+    }
 
-    if (!currentAtr || currentAtr <= 0 || isNaN(currentAtr)) {
+    // ATR risk calculation strictly on targetTimeframe ATR
+    const tfIndicators = currentIndicatorSnapshot?.timeframes?.[targetTimeframe];
+    const atrArray = tfIndicators?.atr?.[this.config.conditionConfig.atrPeriod]; // 14
+    const currentAtr = (Array.isArray(atrArray) && atrArray.length > 0) ? atrArray[atrArray.length - 1] : NaN;
+
+    if (typeof currentAtr !== "number" || !Number.isFinite(currentAtr) || currentAtr <= 0) {
       this.rejectedEdgeEvents.delete(stateKey);
       return this.createNoSignalResult(context, ["ATR is zero or unavailable — cannot calculate risk parameters"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
@@ -357,7 +456,14 @@ export class MeanReversionStrategy implements IStrategy {
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 
     // Risk classification gate: LOW / MEDIUM only
-    if (!this.config.signalRules.allowedRiskClassifications.includes(riskAssessment.riskClassification)) {
+    const allowedRiskClassifications = this.config.signalRules?.allowedRiskClassifications;
+    if (!Array.isArray(allowedRiskClassifications)) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      reasoning.push("Mean Reversion: Allowed risk classifications configuration is missing or invalid");
+      return this.createNoSignalResult(context, reasoning, targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
+    }
+
+    if (!allowedRiskClassifications.includes(riskAssessment?.riskClassification)) {
       if (isEdgeBuy && currentAlignment.isAlignedBuy) {
         this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY, reason: 'DISALLOWED_RISK_CLASSIFICATION' });
       } else if (isEdgeSell && currentAlignment.isAlignedSell) {
@@ -365,7 +471,7 @@ export class MeanReversionStrategy implements IStrategy {
       } else {
         this.rejectedEdgeEvents.delete(stateKey);
       }
-      reasoning.push(`Mean Reversion: Risk classification ${riskAssessment.riskClassification} is not allowed by signal rules`);
+      reasoning.push(`Mean Reversion: Risk classification ${riskAssessment?.riskClassification} is not allowed by signal rules`);
       return this.createNoSignalResult(context, reasoning, targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
 
@@ -379,15 +485,17 @@ export class MeanReversionStrategy implements IStrategy {
       tfIndicators
     );
 
-    if (directionalScore < this.config.signalRules.minConfidenceScore) {
+    const minConfidenceScore = this.config.signalRules?.minConfidenceScore;
+    if (
+      typeof directionalScore !== "number" || !Number.isFinite(directionalScore) ||
+      typeof minConfidenceScore !== "number" || !Number.isFinite(minConfidenceScore) ||
+      directionalScore < minConfidenceScore
+    ) {
       // Quality rejection: clear pending recovery and fail closed
       this.rejectedEdgeEvents.delete(stateKey);
-      reasoning.push(`Mean Reversion confidence score (${directionalScore}) is below required minimum (${this.config.signalRules.minConfidenceScore}).`);
+      reasoning.push(`Mean Reversion confidence score (${directionalScore}) is below required minimum (${minConfidenceScore}).`);
       return this.createNoSignalResult(context, reasoning, targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
-
-    // Signal passed all validation, risk, and confidence gates: consume recovery state
-    this.rejectedEdgeEvents.delete(stateKey);
 
     const stopLoss = targetSignalType === SignalType.BUY
       ? currentPrice - riskAssessment.stopLossDistance
@@ -397,8 +505,25 @@ export class MeanReversionStrategy implements IStrategy {
       ? currentPrice + riskAssessment.takeProfitDistance
       : currentPrice - riskAssessment.takeProfitDistance;
 
+    const hasValidRiskOutputs =
+      typeof riskAssessment?.stopLossDistance === "number" && Number.isFinite(riskAssessment.stopLossDistance) && riskAssessment.stopLossDistance > 0 &&
+      typeof riskAssessment?.takeProfitDistance === "number" && Number.isFinite(riskAssessment.takeProfitDistance) && riskAssessment.takeProfitDistance > 0 &&
+      typeof riskAssessment?.positionSizeRecommendation === "number" && Number.isFinite(riskAssessment.positionSizeRecommendation) && riskAssessment.positionSizeRecommendation > 0 &&
+      typeof riskAssessment?.maximumExposure === "number" && Number.isFinite(riskAssessment.maximumExposure) && riskAssessment.maximumExposure > 0 &&
+      Number.isFinite(stopLoss) && stopLoss > 0 &&
+      Number.isFinite(takeProfit) && takeProfit > 0;
+
+    if (!hasValidRiskOutputs) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      reasoning.push("Invalid risk/SL/TP parameters computed — failing closed");
+      return this.createNoSignalResult(context, reasoning, targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
+    }
+
+    // Signal passed all validation, risk, and confidence gates: consume recovery state
+    this.rejectedEdgeEvents.delete(stateKey);
+
     const activeSignal: TradingSignal = {
-      symbol: context.marketSnapshot.symbol,
+      symbol: normalizedSymbol,
       timeframe: targetTimeframe,
       type: targetSignalType,
       confidenceScore: directionalScore,
@@ -569,7 +694,7 @@ export class MeanReversionStrategy implements IStrategy {
   }
 
   private createNoSignalResult(
-    context: Readonly<StrategyContext>,
+    context: Readonly<StrategyContext> | undefined,
     reasoning: string[],
     targetTimeframe?: Timeframe,
     indicatorSnapshot?: any,
@@ -577,17 +702,20 @@ export class MeanReversionStrategy implements IStrategy {
     confidenceScore?: any,
     customIndicators?: any[]
   ): EvaluationResult {
+    const safeTimestamp = (context && typeof context.timestamp === "number" && Number.isFinite(context.timestamp))
+      ? context.timestamp
+      : 0;
     return {
       strategyId: this.manifest.id,
-      timestamp: context.timestamp,
+      timestamp: safeTimestamp,
       confidenceScore: 0,
       hasSignal: false,
       metadata: {
         reasoning,
         signal: null,
         targetTimeframe,
-        indicatorSnapshot: indicatorSnapshot || { timestamp: context.timestamp, timeframes: {} },
-        conditionResult: conditionResult || { timestamp: context.timestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] },
+        indicatorSnapshot: indicatorSnapshot || { timestamp: safeTimestamp, timeframes: {} },
+        conditionResult: conditionResult || { timestamp: safeTimestamp, overallPass: false, totalConditions: 0, passedConditions: 0, conditions: [] },
         confidenceScore: confidenceScore || null,
         strategyConfig: this.config,
         customIndicators: customIndicators || []

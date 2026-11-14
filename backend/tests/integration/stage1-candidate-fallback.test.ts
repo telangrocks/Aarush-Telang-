@@ -3,6 +3,12 @@ import { TradingBot, TradeAlert } from '../../src/trading-bot';
 import { sendTradeNotification } from '../../src/handlers/notifications';
 import { ExchangeManager } from '../../src/exchanges';
 import { StrategyRegistry } from '../../src/engine/strategies/StrategyRegistry';
+import { StrategyOrchestrator } from '../../src/engine/orchestrator/StrategyOrchestrator';
+import { ScalperV2Strategy } from '../../src/engine/strategies/scalper-v2/ScalperV2Strategy';
+import { MomentumStrategy } from '../../src/engine/strategies/momentum/MomentumStrategy';
+import { BreakoutStrategy } from '../../src/engine/strategies/breakout/BreakoutStrategy';
+import { MeanReversionStrategy } from '../../src/engine/strategies/mean-reversion/MeanReversionStrategy';
+import { VWAPStrategy } from '../../src/engine/strategies/vwap/VWAPStrategy';
 import { DirectionalMtfArbitrator } from '../../src/engine/arbitration/DirectionalMtfArbitrator';
 import { MarketRegime, MarketRegimeEngine } from '../../src/engine/regime/MarketRegimeEngine';
 
@@ -1711,6 +1717,203 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
       expect(alertsAfterRollover[0].strategy).toBe('Breakout_NEW');
       const rejectionsAfterRollover = mockStorage.get('gateRejections');
       expect(rejectionsAfterRollover?.strategyRejections?.['BTCUSDT:breakout:15m']).toBeUndefined();
+    });
+
+    it('40. MeanReversion exercises real StrategyOrchestrator.executeCycle() with centralized MarketRegime gate, gateRejections suppression across 15s cycles, fallback, DO restart, and rollover', async () => {
+      const now = Date.now();
+      const initialAnchor15m = now - (now % 900_000) - 900_000;
+      let currentEndTime = initialAnchor15m;
+      let isRanging1h = false;
+      let enableBreakoutFallback = false;
+
+      const buildFlatCandles = (count: number, endTime: number, stepMs: number, basePrice = 100) =>
+        Array.from({ length: count }, (_, i) => {
+          const openTime = endTime - (count - i) * stepMs;
+          const delta = (i % 2 === 0 ? 0.05 : -0.05);
+          const close = basePrice + delta;
+          return {
+            timestamp: openTime,
+            openTime,
+            closeTime: openTime + stepMs,
+            open: basePrice,
+            high: basePrice + 0.15,
+            low: basePrice - 0.15,
+            close,
+            volume: 1000,
+          };
+        });
+
+      const buildMeanReversion15mBuyCandles = (endTime: number) => {
+        const stepMs = 900_000;
+        const candles: any[] = [];
+        let prevClose = 100;
+        for (let i = 0; i < 60; i++) {
+          const openTime = endTime - (60 - i) * stepMs;
+          let open = prevClose;
+          let close = prevClose;
+          let high = prevClose + 0.25;
+          let low = prevClose - 0.25;
+          let volume = 1000;
+
+          if (i < 44) {
+            close = 100 + ((i % 2 === 0) ? 0.05 : -0.05);
+            high = Math.max(open, close) + 0.2;
+            low = Math.min(open, close) - 0.2;
+          } else if (i < 59) {
+            close = Number((prevClose - 0.4).toFixed(4));
+            high = open + 0.15;
+            low = close - 0.15;
+          } else {
+            // Bar 59: decisive bounce out of oversold RSI(14) with volume expansion
+            close = Number((prevClose + 2.5).toFixed(4));
+            high = close + 0.4;
+            low = open - 0.2;
+            volume = 4000;
+          }
+
+          candles.push({
+            timestamp: openTime,
+            openTime,
+            closeTime: openTime + stepMs,
+            open,
+            high,
+            low,
+            close,
+            volume,
+          });
+          prevClose = close;
+        }
+        return candles;
+      };
+
+      mockAdapter.fetchTicker.mockResolvedValue({ symbol: 'BTCUSDT', last: 96.5 });
+      mockAdapter.fetchKlines.mockImplementation(async (_sym: string, tf: string) => {
+        if (tf === '15m') {
+          return buildMeanReversion15mBuyCandles(currentEndTime);
+        }
+        if (tf === '5m') {
+          return buildFlatCandles(60, currentEndTime, 300_000);
+        }
+        const stepMs = tf === '4h' ? 14_400_000 : 3600_000;
+        if (isRanging1h) {
+          return buildFlatCandles(60, currentEndTime, stepMs);
+        }
+        return generateDeterministicCandles(60, currentEndTime, stepMs);
+      });
+
+      const makeNoSignalSpy = (strategyId: string) => (_ctx: any, tf: any) => ({
+        strategyId,
+        timestamp: currentEndTime,
+        confidenceScore: 0,
+        hasSignal: false,
+        metadata: { reasoning: ['Isolated for MeanReversion integration flow'], signal: null, targetTimeframe: tf },
+      });
+
+      // Keep real StrategyOrchestrator.executeCycle() and real MeanReversionStrategy.evaluate() unmocked.
+      // Only isolate unrelated trend strategies so Cycles 1-2 test MeanReversion rejection/suppression and Cycle 3 tests Breakout fallback.
+      const orchExecuteProtoSpy = vi.spyOn(StrategyOrchestrator.prototype, 'executeCycle');
+      const scalperSpy = vi.spyOn(ScalperV2Strategy.prototype, 'evaluate').mockImplementation(makeNoSignalSpy('ScalperV2'));
+      const momentumSpy = vi.spyOn(MomentumStrategy.prototype, 'evaluate').mockImplementation(makeNoSignalSpy('Momentum'));
+      const vwapSpy = vi.spyOn(VWAPStrategy.prototype, 'evaluate').mockImplementation(makeNoSignalSpy('VWAP'));
+      const breakoutSpy = vi.spyOn(BreakoutStrategy.prototype, 'evaluate').mockImplementation((_ctx: any, tf: any) => {
+        if (enableBreakoutFallback && tf === '15m') {
+          return {
+            strategyId: 'Breakout',
+            timestamp: currentEndTime,
+            confidenceScore: 86,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '15m',
+              signal: {
+                symbol: 'BTC/USDT',
+                type: 'BUY',
+                signalPrice: 96.5,
+                entryPrice: 96.5,
+                stopLoss: 94.5,
+                takeProfit: 100.5,
+                timeframe: '15m',
+                confidenceScore: 86,
+                riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+                reasoning: ['Breakout fallback BUY'],
+              },
+            },
+          } as any;
+        }
+        return makeNoSignalSpy('Breakout')(_ctx, tf);
+      });
+      const meanRevEvalSpy = vi.spyOn(MeanReversionStrategy.prototype, 'evaluate');
+
+      try {
+        expect(StrategyRegistry.getInstance().normalizeStrategyId('mean-reversion')).toBe('MeanReversion');
+        const bot1 = setupBot('BTC/USDT', { strategy: 'mean-reversion', positionSize: 100 });
+        const logAuditSpy = vi.spyOn(bot1 as any, 'logAuditEvent');
+
+        // Cycle 1: Real orchestrator + real MeanReversion emits 15m BUY -> rejected by centralized MarketRegime gate (1h TRENDING -> REGIME_PROHIBITED)
+        await bot1.alarm();
+        expect(orchExecuteProtoSpy).toHaveBeenCalledTimes(1);
+        const cycle1Tfs = meanRevEvalSpy.mock.calls.map(c => c[1]);
+        expect(cycle1Tfs).toContain('15m');
+        expect(mockStorage.get('alerts')).toHaveLength(0);
+        expect(logAuditSpy).toHaveBeenCalledTimes(1);
+
+        const rejections1 = mockStorage.get('gateRejections');
+        expect(rejections1?.strategyRejections?.['BTCUSDT:meanreversion:15m']).toBeDefined();
+        expect(rejections1?.strategyRejections?.['BTCUSDT:meanreversion:15m']?.gate).toBe('REGIME_PROHIBITED');
+        expect(rejections1?.strategyRejections?.['BTCUSDT:meanreversion:15m']?.candleTimestamp).toBe(initialAnchor15m - 900_000);
+        expect(rejections1?.strategyRejections?.['BTCUSDT:meanreversion:15m']?.strategyId).toBe('meanreversion');
+        expect(rejections1?.strategyRejections?.['BTCUSDT:meanreversion:15m']?.timeframe).toBe('15m');
+        // Verify alias normalization when querying suppression state
+        expect((bot1 as any).isStrategyRejectedForCandle('BTCUSDT', 'mean-reversion', '15m', initialAnchor15m - 900_000)?.gate).toBe('REGIME_PROHIBITED');
+
+        // Cycle 2 (15s later, same closed 15m candle): Real StrategyOrchestrator.executeCycle skips MeanReversion 15m BEFORE evaluate()
+        meanRevEvalSpy.mockClear();
+        await bot1.alarm();
+        expect(orchExecuteProtoSpy).toHaveBeenCalledTimes(2);
+        const cycle2Tfs = meanRevEvalSpy.mock.calls.map(c => c[1]);
+        expect(cycle2Tfs).not.toContain('15m');
+        expect(mockStorage.get('alerts')).toHaveLength(0);
+        expect(logAuditSpy).toHaveBeenCalledTimes(1);
+
+        // Cycle 3: Durable Object restart restores gateRejections from DO storage -> MeanReversion 15m stays suppressed while Breakout fallback creates alert
+        meanRevEvalSpy.mockClear();
+        enableBreakoutFallback = true;
+        const bot2 = new TradingBot(mockState, mockEnv);
+        await bot2.alarm();
+        expect(orchExecuteProtoSpy).toHaveBeenCalledTimes(3);
+        const cycle3Tfs = meanRevEvalSpy.mock.calls.map(c => c[1]);
+        expect(cycle3Tfs).not.toContain('15m');
+
+        const alertsAfterFallback = mockStorage.get('alerts') as TradeAlert[];
+        expect(alertsAfterFallback).toHaveLength(1);
+        expect(alertsAfterFallback[0].strategy).toBe('Breakout_NEW');
+
+        // Cycle 4: Closed-candle rollover on 15m + 1h enters RANGING regime -> stale suppression cleared, real MeanReversion 15m re-evaluates and creates alert
+        mockStorage.set('alerts', []);
+        (bot2 as any).runtimeState.alerts = [];
+        enableBreakoutFallback = false;
+        isRanging1h = true;
+        currentEndTime = initialAnchor15m + 900_000;
+        meanRevEvalSpy.mockClear();
+
+        await bot2.alarm();
+        expect(orchExecuteProtoSpy).toHaveBeenCalledTimes(4);
+        const cycle4Tfs = meanRevEvalSpy.mock.calls.map(c => c[1]);
+        expect(cycle4Tfs).toContain('15m');
+
+        const alertsAfterRollover = mockStorage.get('alerts') as TradeAlert[];
+        expect(alertsAfterRollover).toHaveLength(1);
+        expect(alertsAfterRollover[0].strategy).toBe('MeanReversion_NEW');
+        expect(alertsAfterRollover[0].timeframe).toBe('15m');
+        const rejectionsAfterRollover = mockStorage.get('gateRejections');
+        expect(rejectionsAfterRollover?.strategyRejections?.['BTCUSDT:meanreversion:15m']).toBeUndefined();
+      } finally {
+        orchExecuteProtoSpy.mockRestore();
+        scalperSpy.mockRestore();
+        momentumSpy.mockRestore();
+        vwapSpy.mockRestore();
+        breakoutSpy.mockRestore();
+        meanRevEvalSpy.mockRestore();
+      }
     });
   });
 });
