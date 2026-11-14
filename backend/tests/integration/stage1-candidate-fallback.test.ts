@@ -1591,5 +1591,126 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
       expect(resHtfForming.passed).toBe(false);
       expect(resHtfForming.gate).toBe('INSUFFICIENT_HTF_DATA');
     });
+
+    it('39. Breakout reuses centralized MarketRegime gate and gateRejections suppression across 15s cycles, fallback, DO restart, and closed-candle rollover', async () => {
+      const anchor15m = FIXED_ANCHOR_TIME - (FIXED_ANCHOR_TIME % 900_000);
+      let currentEndTime = anchor15m;
+      let isRanging1h = true;
+
+      mockAdapter.fetchKlines.mockImplementation(async (_sym: string, tf: string) => {
+        if (tf === '1h' && isRanging1h) {
+          return Array.from({ length: 60 }, (_, i) => {
+            const openTime = currentEndTime - (60 - i) * 3600_000;
+            return {
+              timestamp: openTime,
+              openTime,
+              closeTime: openTime + 3600_000,
+              open: 100,
+              high: 100.1,
+              low: 99.9,
+              close: 100,
+              volume: 1000,
+            };
+          });
+        }
+        const stepMs = tf === '4h' ? 14_400_000 : (tf === '1h' ? 3600_000 : (tf === '15m' ? 900_000 : 300_000));
+        return generateDeterministicCandles(60, currentEndTime, stepMs);
+      });
+
+      const makeBreakoutCandidate = () => ({
+        strategyId: 'Breakout',
+        confidenceScore: 86,
+        hasSignal: true,
+        metadata: {
+          targetTimeframe: '15m',
+          signal: {
+            type: 'BUY',
+            signalPrice: 50000,
+            stopLoss: 49000,
+            takeProfit: 52000,
+            timeframe: '15m',
+            riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+          },
+        },
+      });
+
+      let breakoutEvalCount = 0;
+      const bot1 = setupBot('BTC/USDT', { strategy: 'Breakout' });
+      const logAuditSpy = vi.spyOn(bot1 as any, 'logAuditEvent');
+
+      vi.spyOn((bot1 as any).orchestrator, 'executeCycle').mockImplementation(async (_sym: string, _tf: any, _cfg: any, _bal: any, ctx: any) => {
+        if (ctx?.isCandidateSuppressed?.('Breakout', '15m')) {
+          return [];
+        }
+        breakoutEvalCount++;
+        return [makeBreakoutCandidate()];
+      });
+
+      // Cycle 1: Breakout 15m hits centralized MarketRegime gate (1h RANGING -> REGIME_PROHIBITED) and persists rejection
+      await bot1.alarm();
+      expect(breakoutEvalCount).toBe(1);
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+      expect(logAuditSpy).toHaveBeenCalledTimes(1);
+      const rejections1 = mockStorage.get('gateRejections');
+      expect(rejections1?.strategyRejections?.['BTCUSDT:breakout:15m']).toBeDefined();
+      expect(rejections1?.strategyRejections?.['BTCUSDT:breakout:15m']?.gate).toBe('REGIME_PROHIBITED');
+
+      // Cycle 2 (15s later, same closed 15m candle): suppressed before Breakout re-evaluation
+      await bot1.alarm();
+      expect(breakoutEvalCount).toBe(1);
+      expect(mockStorage.get('alerts')).toHaveLength(0);
+      expect(logAuditSpy).toHaveBeenCalledTimes(1);
+
+      // Cycle 3: Durable Object restart preserves Breakout suppression while allowing eligible fallback strategy (MeanReversion)
+      const bot2 = new TradingBot(mockState, mockEnv);
+      let enableMeanReversionFallback = true;
+      vi.spyOn((bot2 as any).orchestrator, 'executeCycle').mockImplementation(async (_sym: string, _tf: any, _cfg: any, _bal: any, ctx: any) => {
+        const candidates: any[] = [];
+        if (!ctx?.isCandidateSuppressed?.('Breakout', '15m')) {
+          breakoutEvalCount++;
+          candidates.push(makeBreakoutCandidate());
+        }
+        if (enableMeanReversionFallback && !ctx?.isCandidateSuppressed?.('MeanReversion', '15m')) {
+          candidates.push({
+            strategyId: 'MeanReversion',
+            confidenceScore: 84,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '15m',
+              signal: {
+                type: 'BUY',
+                signalPrice: 50000,
+                stopLoss: 49200,
+                takeProfit: 51500,
+                timeframe: '15m',
+                riskAssessment: { positionSizeRecommendation: 100, riskClassification: 'LOW' },
+              },
+            },
+          });
+        }
+        return candidates;
+      });
+
+      await bot2.alarm();
+      expect(breakoutEvalCount).toBe(1);
+      const alertsAfterFallback = mockStorage.get('alerts') as TradeAlert[];
+      expect(alertsAfterFallback).toHaveLength(1);
+      expect(alertsAfterFallback[0].strategy).toBe('MeanReversion_NEW');
+
+      // Cycle 4: Closed-candle rollover on 15m + 1h enters TRENDING regime -> stale suppression cleared, Breakout re-evaluates and emits alert
+      mockStorage.set('alerts', []);
+      (bot2 as any).runtimeState.alerts = [];
+      enableMeanReversionFallback = false;
+      isRanging1h = false;
+      currentEndTime = anchor15m + 900_000;
+
+      await bot2.alarm();
+      expect(breakoutEvalCount).toBe(2);
+      const alertsAfterRollover = mockStorage.get('alerts') as TradeAlert[];
+      expect(alertsAfterRollover).toHaveLength(1);
+      expect(alertsAfterRollover[0].strategy).toBe('Breakout_NEW');
+      const rejectionsAfterRollover = mockStorage.get('gateRejections');
+      expect(rejectionsAfterRollover?.strategyRejections?.['BTCUSDT:breakout:15m']).toBeUndefined();
+    });
   });
 });

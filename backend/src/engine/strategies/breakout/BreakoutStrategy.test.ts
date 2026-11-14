@@ -1186,4 +1186,160 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     expect(resBar2.metadata.signal?.stopLoss).toBeLessThan(140);
     expect(resBar2.metadata.signal?.takeProfit).toBeGreaterThan(140);
   });
+
+  // --------------------------------------------------------------------------
+  // TEST 25: Fails closed on invalid timestamp, symbol, or non-array candles
+  // --------------------------------------------------------------------------
+  it("25. Fails closed without throwing on non-finite timestamp, blank symbol, or non-array candle series", () => {
+    const validSnap = buildMtfSnapshot({
+      "5m": createBullishCandles(50, "5m", BASE_TIME),
+    }, BASE_TIME);
+
+    // Non-finite context timestamp (frozen invalid snapshot bypassing StrategyContext check)
+    const badTsContext = {
+      timestamp: NaN,
+      accountBalance: 10000,
+      marketSnapshot: { ...validSnap, timestamp: NaN },
+    } as unknown as Readonly<StrategyContext>;
+    const resBadTs = defaultStrategy.evaluate(badTsContext, "5m");
+    expect(resBadTs.hasSignal).toBe(false);
+    expect(resBadTs.confidenceScore).toBe(0);
+    expect(resBadTs.metadata.reasoning[0]).toContain("Invalid evaluation timestamp");
+
+    // Blank symbol
+    const blankSymSnap = buildMtfSnapshot({
+      "5m": createBullishCandles(50, "5m", BASE_TIME),
+    }, BASE_TIME);
+    (blankSymSnap as any).symbol = "   ";
+    const resBlankSym = defaultStrategy.evaluate(new StrategyContext(blankSymSnap, 10000).freeze(), "5m");
+    expect(resBlankSym.hasSignal).toBe(false);
+    expect(resBlankSym.metadata.reasoning[0]).toContain("Missing or invalid symbol");
+
+    // Non-array truthy candle container should fail closed cleanly (never throw rawCandles.filter)
+    const nonArraySnap = buildMtfSnapshot({}, BASE_TIME);
+    (nonArraySnap.candles as any)["5m"] = { length: 50 };
+    const resNonArray = defaultStrategy.evaluate(new StrategyContext(nonArraySnap, 10000).freeze(), "5m");
+    expect(resNonArray.hasSignal).toBe(false);
+    expect(resNonArray.metadata.reasoning[0]).toContain("Missing required candle data");
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 26: Missing, zero, or non-finite candle timestamps fail closed (never treated as 0 <= timestamp)
+  // --------------------------------------------------------------------------
+  it("26. Rejects missing, zero, or non-finite candle timestamps instead of admitting them at closeTime 0", () => {
+    const baseCandles = createBullishCandles(50, "5m", BASE_TIME);
+
+    const missingTsCandles = baseCandles.map((c, idx) =>
+      idx === 10
+        ? { open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume } as any
+        : c
+    );
+    const missingTsSnap = buildMtfSnapshot({ "5m": missingTsCandles }, BASE_TIME);
+    const resMissingTs = defaultStrategy.evaluate(new StrategyContext(missingTsSnap, 10000).freeze(), "5m");
+    expect(resMissingTs.hasSignal).toBe(false);
+    expect(resMissingTs.metadata.reasoning[0]).toContain("Invalid candle timestamp");
+
+    const nanCloseCandles = baseCandles.map((c, idx) =>
+      idx === baseCandles.length - 1 ? { ...c, closeTime: Number.NaN } : c
+    );
+    const nanCloseSnap = buildMtfSnapshot({ "5m": nanCloseCandles }, BASE_TIME);
+    const resNanClose = defaultStrategy.evaluate(new StrategyContext(nanCloseSnap, 10000).freeze(), "5m");
+    expect(resNanClose.hasSignal).toBe(false);
+    expect(resNanClose.metadata.reasoning[0]).toContain("Invalid candle timestamp");
+
+    const zeroTsCandles = baseCandles.map((c, idx) =>
+      idx === 0 ? { ...c, openTime: 0, timestamp: 0 } : c
+    );
+    const zeroTsSnap = buildMtfSnapshot({ "5m": zeroTsCandles }, BASE_TIME);
+    const resZeroTs = defaultStrategy.evaluate(new StrategyContext(zeroTsSnap, 10000).freeze(), "5m");
+    expect(resZeroTs.hasSignal).toBe(false);
+    expect(resZeroTs.metadata.reasoning[0]).toContain("Invalid candle timestamp");
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 27: Non-finite OHLC, negative prices, high < low, and invalid volume fail closed
+  // --------------------------------------------------------------------------
+  it("27. Fails closed on NaN, Infinity, -Infinity, negative OHLC, high < low, or invalid volume", () => {
+    const fiveMinMs = 5 * 60 * 1000;
+    const baseCandles = createBullishCandles(50, "5m", BASE_TIME);
+
+    // NaN close on final bar must fail closed (never silently fall back to snapshot.currentPrice)
+    const nanClose = baseCandles.map((c, idx) =>
+      idx === baseCandles.length - 1 ? { ...c, close: Number.NaN } : c
+    );
+    const nanSnap = buildMtfSnapshot({ "5m": nanClose }, BASE_TIME, 50000);
+    const resNan = defaultStrategy.evaluate(new StrategyContext(nanSnap, 10000).freeze(), "5m");
+    expect(resNan.hasSignal).toBe(false);
+    expect(resNan.metadata.reasoning[0]).toContain("Invalid OHLC candle data");
+
+    // Infinity high on final bar must fail closed
+    const infHigh = baseCandles.map((c, idx) =>
+      idx === baseCandles.length - 1 ? { ...c, high: Number.POSITIVE_INFINITY } : c
+    );
+    const infSnap = buildMtfSnapshot({ "5m": infHigh }, BASE_TIME);
+    const resInf = defaultStrategy.evaluate(new StrategyContext(infSnap, 10000).freeze(), "5m");
+    expect(resInf.hasSignal).toBe(false);
+    expect(resInf.metadata.reasoning[0]).toContain("Invalid OHLC candle data");
+
+    // Negative low
+    const negLow = baseCandles.map((c, idx) =>
+      idx === 15 ? { ...c, low: -10 } : c
+    );
+    const negSnap = buildMtfSnapshot({ "5m": negLow }, BASE_TIME);
+    const resNeg = defaultStrategy.evaluate(new StrategyContext(negSnap, 10000).freeze(), "5m");
+    expect(resNeg.hasSignal).toBe(false);
+    expect(resNeg.metadata.reasoning[0]).toContain("Invalid OHLC candle data");
+
+    // high < low inversion
+    const invertedRange = baseCandles.map((c, idx) =>
+      idx === 20 ? { ...c, high: 95, low: 105 } : c
+    );
+    const invSnap = buildMtfSnapshot({ "5m": invertedRange }, BASE_TIME);
+    const resInv = defaultStrategy.evaluate(new StrategyContext(invSnap, 10000).freeze(), "5m");
+    expect(resInv.hasSignal).toBe(false);
+    expect(resInv.metadata.reasoning[0]).toContain("Invalid OHLC candle data");
+
+    // Negative volume
+    const negVol = baseCandles.map((c, idx) =>
+      idx === 25 ? { ...c, volume: -1 } : c
+    );
+    const negVolSnap = buildMtfSnapshot({ "5m": negVol }, BASE_TIME + fiveMinMs);
+    const resNegVol = defaultStrategy.evaluate(new StrategyContext(negVolSnap, 10000).freeze(), "5m");
+    expect(resNegVol.hasSignal).toBe(false);
+    expect(resNegVol.metadata.reasoning[0]).toContain("Invalid OHLC candle data");
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 28: Earlier zero OHLC fails closed; latest zero close reports invalid price even with non-zero ticker
+  // --------------------------------------------------------------------------
+  it("28. Rejects earlier zero OHLC candles and enforces latest closed bar price positivity", () => {
+    const baseCandles = createBullishCandles(50, "5m", BASE_TIME);
+
+    // Zero OHLC on an earlier candle fails closed at candle validation
+    const earlyZero = baseCandles.map((c, idx) =>
+      idx === 5 ? { ...c, open: 0, close: 0 } : c
+    );
+    const earlySnap = buildMtfSnapshot({ "5m": earlyZero }, BASE_TIME);
+    const resEarly = defaultStrategy.evaluate(new StrategyContext(earlySnap, 10000).freeze(), "5m");
+    expect(resEarly.hasSignal).toBe(false);
+    expect(resEarly.metadata.reasoning[0]).toContain("Invalid OHLC candle data");
+
+    // Zero close on latest closed candle must still reject with "Invalid current price" even when snapshot.currentPrice > 0
+    const latestZero = [
+      ...baseCandles,
+      {
+        openTime: BASE_TIME,
+        timestamp: BASE_TIME,
+        open: 0,
+        high: 0,
+        low: 0,
+        close: 0,
+        volume: 10000,
+      },
+    ];
+    const latestSnap = buildMtfSnapshot({ "5m": latestZero }, BASE_TIME + 5 * 60 * 1000, 50000);
+    const resLatest = defaultStrategy.evaluate(new StrategyContext(latestSnap, 10000).freeze(), "5m");
+    expect(resLatest.hasSignal).toBe(false);
+    expect(resLatest.metadata.reasoning.some((r: string) => r.includes("Invalid current price"))).toBe(true);
+  });
 });

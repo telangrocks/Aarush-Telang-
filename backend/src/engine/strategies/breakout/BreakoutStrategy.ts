@@ -19,18 +19,47 @@ import { CandleValidator } from "../../../infrastructure/exchange/CandleValidato
  * In Bybit REST / standard exchange models, kline timestamp is open time.
  * If closeTime is not explicitly populated, closeTime = openTime + timeframeMs.
  */
-function getCandleCloseTime(candle: NormalizedCandle, tf: Timeframe): number {
-  if (typeof (candle as any).closeTime === 'number' && (candle as any).closeTime > 0) {
-    return (candle as any).closeTime;
+function getCandleCloseTime(candle: NormalizedCandle | undefined, tf: Timeframe): number {
+  if (!candle || typeof candle !== 'object') {
+    return NaN;
+  }
+  const rawClose = (candle as any).closeTime;
+  if (rawClose !== undefined) {
+    return typeof rawClose === 'number' && Number.isFinite(rawClose) && rawClose > 0 ? rawClose : NaN;
   }
   const tfMs = CandleValidator.timeframeToMs(tf);
-  if (typeof candle.openTime === "number" && candle.openTime > 0) {
+  if (!Number.isFinite(tfMs) || tfMs <= 0) {
+    return NaN;
+  }
+  if (typeof candle.openTime === "number" && Number.isFinite(candle.openTime) && candle.openTime > 0) {
     return candle.openTime + tfMs;
   }
-  if (typeof candle.timestamp === "number" && candle.timestamp > 0) {
+  if (typeof candle.timestamp === "number" && Number.isFinite(candle.timestamp) && candle.timestamp > 0) {
     return candle.timestamp + tfMs;
   }
-  return 0;
+  return NaN;
+}
+
+function isValidBreakoutOhlcCandle(c: NormalizedCandle | undefined, allowZeroPrice: boolean): boolean {
+  if (!c || typeof c !== 'object') return false;
+  if (
+    typeof c.open !== 'number' || !Number.isFinite(c.open) ||
+    typeof c.high !== 'number' || !Number.isFinite(c.high) ||
+    typeof c.low !== 'number' || !Number.isFinite(c.low) ||
+    typeof c.close !== 'number' || !Number.isFinite(c.close)
+  ) {
+    return false;
+  }
+  if (allowZeroPrice) {
+    if (c.open < 0 || c.high < 0 || c.low < 0 || c.close < 0) return false;
+  } else {
+    if (c.open <= 0 || c.high <= 0 || c.low <= 0 || c.close <= 0) return false;
+  }
+  if (c.high < c.low) return false;
+  if (c.volume !== undefined && (typeof c.volume !== 'number' || !Number.isFinite(c.volume) || c.volume < 0)) {
+    return false;
+  }
+  return true;
 }
 
 export class BreakoutStrategy implements IStrategy {
@@ -72,57 +101,136 @@ export class BreakoutStrategy implements IStrategy {
     this.signalEngine = new SignalEngine(config.signalRules);
   }
 
+  private buildRejectedEvaluation(
+    timestamp: number,
+    targetTimeframe: Timeframe,
+    reason: string,
+    extraMetadata: Record<string, unknown> = {}
+  ): EvaluationResult {
+    return {
+      strategyId: this.manifest.id,
+      timestamp: Number.isFinite(timestamp) ? timestamp : 0,
+      confidenceScore: 0,
+      hasSignal: false,
+      metadata: {
+        reasoning: [reason],
+        signal: null,
+        strategyConfig: this.config,
+        targetTimeframe,
+        ...extraMetadata,
+      },
+    };
+  }
+
+  private hasFiniteRequiredIndicators(indicatorSnap: any, tf: Timeframe): boolean {
+    const tfInd = indicatorSnap?.timeframes?.[tf];
+    if (!tfInd) return false;
+
+    const emaFast = tfInd.ema?.[this.config.conditionConfig.emaFastPeriod];
+    const emaSlow = tfInd.ema?.[this.config.conditionConfig.emaSlowPeriod];
+    const rsi = tfInd.rsi?.[this.config.conditionConfig.rsiPeriod];
+    const macd = tfInd.macd?.[this.config.conditionConfig.macdKey];
+    const atr = tfInd.atr?.[this.config.conditionConfig.atrPeriod];
+
+    if (!Array.isArray(emaFast) || emaFast.length < 2) return false;
+    if (!Array.isArray(emaSlow) || emaSlow.length < 2) return false;
+    if (!Array.isArray(rsi) || rsi.length === 0) return false;
+    if (!Array.isArray(macd) || macd.length === 0) return false;
+    if (!Array.isArray(atr) || atr.length === 0) return false;
+
+    const fLast = emaFast[emaFast.length - 1];
+    const fPrev = emaFast[emaFast.length - 2];
+    const sLast = emaSlow[emaSlow.length - 1];
+    const sPrev = emaSlow[emaSlow.length - 2];
+    const rsiLast = rsi[rsi.length - 1];
+    const macdLast = macd[macd.length - 1];
+    const atrLast = atr[atr.length - 1];
+
+    return (
+      typeof fLast === 'number' && Number.isFinite(fLast) && fLast >= 0 &&
+      typeof fPrev === 'number' && Number.isFinite(fPrev) && fPrev >= 0 &&
+      typeof sLast === 'number' && Number.isFinite(sLast) && sLast >= 0 &&
+      typeof sPrev === 'number' && Number.isFinite(sPrev) && sPrev >= 0 &&
+      typeof rsiLast === 'number' && Number.isFinite(rsiLast) &&
+      Boolean(macdLast) &&
+      typeof macdLast.macdLine === 'number' && Number.isFinite(macdLast.macdLine) &&
+      typeof macdLast.signalLine === 'number' && Number.isFinite(macdLast.signalLine) &&
+      typeof macdLast.histogram === 'number' && Number.isFinite(macdLast.histogram) &&
+      typeof atrLast === 'number' && Number.isFinite(atrLast) && atrLast >= 0
+    );
+  }
+
   public evaluate(context: Readonly<StrategyContext>, targetTimeframe: Timeframe): EvaluationResult {
     const MIN_CLOSED_CANDLES = 35; // Derived from MACD(12, 26, 9) signal line lookback requirement
 
-    // 0. Fail-Closed Validation: Ensure targetTimeframe is supported by manifest
+    // 0. Fail-Closed Validation: Ensure targetTimeframe is supported and context timestamp/symbol are valid
     if (!this.manifest.supportedTimeframes.includes(targetTimeframe)) {
-      return {
-        strategyId: this.manifest.id,
-        timestamp: context.timestamp,
-        confidenceScore: 0,
-        hasSignal: false,
-        metadata: {
-          reasoning: [`Unsupported timeframe ${targetTimeframe} for ${this.manifest.id}`],
-          signal: null,
-          strategyConfig: this.config,
-          targetTimeframe,
-        }
-      };
+      return this.buildRejectedEvaluation(
+        context?.timestamp,
+        targetTimeframe,
+        `Unsupported timeframe ${targetTimeframe} for ${this.manifest.id}`
+      );
     }
+
+    if (!context || typeof context.timestamp !== 'number' || !Number.isFinite(context.timestamp)) {
+      return this.buildRejectedEvaluation(
+        0,
+        targetTimeframe,
+        `[TIMEFRAME DATA] Invalid evaluation timestamp for timeframe ${targetTimeframe}`
+      );
+    }
+
+    const rawSymbol = context.marketSnapshot?.symbol;
+    if (typeof rawSymbol !== 'string' || rawSymbol.trim().length === 0) {
+      return this.buildRejectedEvaluation(
+        context.timestamp,
+        targetTimeframe,
+        `[TIMEFRAME DATA] Missing or invalid symbol for timeframe ${targetTimeframe}`
+      );
+    }
+
+    const stateKey = `${rawSymbol.toUpperCase()}:${targetTimeframe}`;
 
     // 1. Snapshot Evaluation Reference Time (T & T_previous)
     const rawCandles = context.marketSnapshot?.candles?.[targetTimeframe];
-    if (!rawCandles || rawCandles.length === 0) {
-      return {
-        strategyId: this.manifest.id,
-        timestamp: context.timestamp,
-        confidenceScore: 0,
-        hasSignal: false,
-        metadata: {
-          reasoning: [`[TIMEFRAME DATA] Missing required candle data for timeframe ${targetTimeframe}`],
-          signal: null,
-          strategyConfig: this.config,
+    if (!Array.isArray(rawCandles) || rawCandles.length === 0) {
+      return this.buildRejectedEvaluation(
+        context.timestamp,
+        targetTimeframe,
+        `[TIMEFRAME DATA] Missing required candle data for timeframe ${targetTimeframe}`
+      );
+    }
+
+    for (let i = 0; i < rawCandles.length; i++) {
+      if (!Number.isFinite(getCandleCloseTime(rawCandles[i], targetTimeframe))) {
+        this.rejectedEdgeEvents.delete(stateKey);
+        return this.buildRejectedEvaluation(
+          context.timestamp,
           targetTimeframe,
-        }
-      };
+          `[TIMEFRAME DATA] Invalid candle timestamp in ${targetTimeframe} series`
+        );
+      }
     }
 
     // Filter forming candles: only closed candles at or before context.timestamp
     const closedCandlesAtRef = rawCandles.filter(c => getCandleCloseTime(c, targetTimeframe) <= context.timestamp);
     if (closedCandlesAtRef.length < MIN_CLOSED_CANDLES) {
-      return {
-        strategyId: this.manifest.id,
-        timestamp: context.timestamp,
-        confidenceScore: 0,
-        hasSignal: false,
-        metadata: {
-          reasoning: [`[TIMEFRAME DATA] Insufficient closed candle data for timeframe ${targetTimeframe} (got ${closedCandlesAtRef.length}, required >= ${MIN_CLOSED_CANDLES})`],
-          signal: null,
-          strategyConfig: this.config,
-          targetTimeframe,
-        }
-      };
+      return this.buildRejectedEvaluation(
+        context.timestamp,
+        targetTimeframe,
+        `[TIMEFRAME DATA] Insufficient closed candle data for timeframe ${targetTimeframe} (got ${closedCandlesAtRef.length}, required >= ${MIN_CLOSED_CANDLES})`
+      );
+    }
+
+    // Validate OHLC and volume integrity across closed series before indicator calculations
+    // (Allow zero price only on the latest closed candle so Test 23 reports "Invalid current price")
+    if (closedCandlesAtRef.some((c, idx) => !isValidBreakoutOhlcCandle(c, idx === closedCandlesAtRef.length - 1))) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.buildRejectedEvaluation(
+        context.timestamp,
+        targetTimeframe,
+        `[TIMEFRAME DATA] Invalid OHLC candle data detected in ${targetTimeframe} series`
+      );
     }
 
     const latestClosed = closedCandlesAtRef[closedCandlesAtRef.length - 1];
@@ -134,7 +242,7 @@ export class BreakoutStrategy implements IStrategy {
     const currentCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
       [targetTimeframe]: closedCandlesAtRef,
     };
-    const closedCandlesAtPrev = rawCandles.filter(c => getCandleCloseTime(c, targetTimeframe) <= T_previous);
+    const closedCandlesAtPrev = closedCandlesAtRef.filter(c => getCandleCloseTime(c, targetTimeframe) <= T_previous);
     const previousCandlesRecord: Partial<Record<Timeframe, NormalizedCandle[]>> = {
       [targetTimeframe]: closedCandlesAtPrev,
     };
@@ -154,8 +262,34 @@ export class BreakoutStrategy implements IStrategy {
 
     // Current technical evaluation
     const currentIndicatorSnapshot = this.indicatorEngine.evaluate(snapshotCurrent);
+    if (!this.hasFiniteRequiredIndicators(currentIndicatorSnapshot, targetTimeframe)) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.buildRejectedEvaluation(
+        context.timestamp,
+        targetTimeframe,
+        `[INDICATOR DATA] Non-finite or missing required indicators evaluated on ${targetTimeframe}`,
+        { indicatorSnapshot: currentIndicatorSnapshot }
+      );
+    }
+
     const currentConditionResult = this.conditionEngine.evaluate(currentIndicatorSnapshot);
     const currentConfidenceScore = this.confidenceEngine.evaluate(currentConditionResult);
+
+    if (
+      !Number.isFinite(currentConfidenceScore?.overallScore) ||
+      !Number.isFinite(currentConfidenceScore?.timeframes?.[targetTimeframe]?.score)
+    ) {
+      this.rejectedEdgeEvents.delete(stateKey);
+      return this.buildRejectedEvaluation(
+        context.timestamp,
+        targetTimeframe,
+        `[CONFIDENCE DATA] Non-finite confidence score evaluated on ${targetTimeframe}`,
+        {
+          indicatorSnapshot: currentIndicatorSnapshot,
+          conditionResult: currentConditionResult,
+        }
+      );
+    }
 
     // Previous technical evaluation
     let previousIndicatorSnapshot: any = null;
@@ -166,8 +300,10 @@ export class BreakoutStrategy implements IStrategy {
 
     if (hasValidPreviousData) {
       previousIndicatorSnapshot = this.indicatorEngine.evaluate(snapshotPrevious);
-      previousConditionResult = this.conditionEngine.evaluate(previousIndicatorSnapshot);
-      previousConfidenceScore = this.confidenceEngine.evaluate(previousConditionResult);
+      if (this.hasFiniteRequiredIndicators(previousIndicatorSnapshot, targetTimeframe)) {
+        previousConditionResult = this.conditionEngine.evaluate(previousIndicatorSnapshot);
+        previousConfidenceScore = this.confidenceEngine.evaluate(previousConditionResult);
+      }
     }
 
     // 4. Pure Market Alignment Helper (Authoritative on targetTimeframe Trigger)
@@ -176,8 +312,18 @@ export class BreakoutStrategy implements IStrategy {
       confidenceSc: ConfidenceScore,
       entryCandles: NormalizedCandle[]
     ): { isAlignedBuy: boolean; isAlignedSell: boolean } => {
+      if (
+        !Number.isFinite(confidenceSc?.overallScore) ||
+        !Number.isFinite(confidenceSc?.timeframes?.[targetTimeframe]?.score)
+      ) {
+        return { isAlignedBuy: false, isAlignedSell: false };
+      }
+
       // Check targetTimeframe SignalEngine trigger with nominal risk (pure market evaluation)
-      const lastClose = entryCandles[entryCandles.length - 1]?.close || 0;
+      const lastClose = entryCandles[entryCandles.length - 1]?.close;
+      if (typeof lastClose !== 'number' || !Number.isFinite(lastClose) || lastClose <= 0) {
+        return { isAlignedBuy: false, isAlignedSell: false };
+      }
       const nominalRisk: RiskAssessment = {
         timestamp: context.timestamp,
         stopLossDistance: lastClose * 0.02,
@@ -219,15 +365,19 @@ export class BreakoutStrategy implements IStrategy {
     );
 
     let previousAlignment = { isAlignedBuy: false, isAlignedSell: false };
-    if (hasValidPreviousData && previousConditionResult && previousConfidenceScore) {
+    if (
+      hasValidPreviousData &&
+      previousConditionResult &&
+      previousConfidenceScore &&
+      Number.isFinite(previousConfidenceScore?.overallScore) &&
+      Number.isFinite(previousConfidenceScore?.timeframes?.[targetTimeframe]?.score)
+    ) {
       previousAlignment = evaluateMarketAlignment(
         previousConditionResult,
         previousConfidenceScore,
         previousCandlesRecord[targetTimeframe]!
       );
     }
-
-    const stateKey = `${context.marketSnapshot.symbol.toUpperCase()}:${targetTimeframe}`;
 
     // Edge transition: emit only when transitioning from NOT ALIGNED to ALIGNED
     const isNewBuyEvent = currentAlignment.isAlignedBuy && !previousAlignment.isAlignedBuy;
@@ -259,10 +409,19 @@ export class BreakoutStrategy implements IStrategy {
 
     // 5. Evaluate Current Real Risk Gates
     const entryCandles = currentCandlesRecord[targetTimeframe]!;
-    const latestCandleClose = entryCandles[entryCandles.length - 1]?.close || 0;
-    const currentPrice = latestCandleClose > 0 ? latestCandleClose : context.marketSnapshot.currentPrice || 0;
+    const latestCandleClose = entryCandles[entryCandles.length - 1]?.close;
+    const snapshotPrice = Number.isFinite(context.marketSnapshot.currentPrice) ? context.marketSnapshot.currentPrice : 0;
+    const currentPrice = (typeof latestCandleClose === 'number' && Number.isFinite(latestCandleClose) && latestCandleClose > 0)
+      ? latestCandleClose
+      : snapshotPrice;
 
-    if (currentPrice <= 0) {
+    if (
+      typeof latestCandleClose !== 'number' ||
+      !Number.isFinite(latestCandleClose) ||
+      latestCandleClose <= 0 ||
+      !Number.isFinite(currentPrice) ||
+      currentPrice <= 0
+    ) {
       // Permanent / invalid market data failure: clear any pending recovery and fail closed
       this.rejectedEdgeEvents.delete(stateKey);
       return {
@@ -274,7 +433,7 @@ export class BreakoutStrategy implements IStrategy {
       };
     }
 
-    if (!context.accountBalance || context.accountBalance <= 0) {
+    if (!context.accountBalance || !Number.isFinite(context.accountBalance) || context.accountBalance <= 0) {
       // Confirmed transient rejection: account balance unavailable/zero
       if (isEdgeBuy) {
         this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
@@ -293,9 +452,9 @@ export class BreakoutStrategy implements IStrategy {
     // ATR risk calculation strictly on targetTimeframe ATR
     const tfIndicators = currentIndicatorSnapshot.timeframes[targetTimeframe];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
-    const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : 0;
+    const currentAtr = (atrArray && atrArray.length > 0) ? atrArray[atrArray.length - 1] : NaN;
 
-    if (!currentAtr || currentAtr <= 0) {
+    if (typeof currentAtr !== 'number' || !Number.isFinite(currentAtr) || currentAtr <= 0) {
       // Unavailable indicator data: clear any pending recovery and fail closed
       this.rejectedEdgeEvents.delete(stateKey);
       return {
