@@ -11,6 +11,7 @@ import { EventBus, DomainEvent } from '../domain/events/EventBus';
 import { StructuredLogger, TelemetryTracer } from './telemetry/Telemetry';
 import { Ticker } from '../exchanges/models/NormalizedDomain';
 import { WebCryptoSigner } from './crypto/WebCryptoSigner';
+import { PublicMarketDataService } from './market-data/PublicMarketDataService';
 import BigNumber from 'bignumber.js';
 
 class MockOrderFilledEvent implements DomainEvent {
@@ -171,5 +172,48 @@ describe('Phase 1D – Production Stabilization & Runtime Validation Suite', () 
 
     const hmacBase64 = await WebCryptoSigner.hmacSha256Base64('secret', 'payload');
     expect(hmacBase64.length).toBeGreaterThan(0);
+  });
+
+  it('11. PublicMarketDataService propagates environment & region across DO endpoints without executeOrchestrated', async () => {
+    const requestedUrls: string[] = [];
+    const coordinatorNamespace = {
+      idFromName: (name: string) => name,
+      get: () => ({
+        fetch: async (req: Request) => {
+          requestedUrls.push(req.url);
+          const url = new URL(req.url);
+          if (url.pathname === '/opportunities') {
+            return Response.json({
+              timestamp: Date.now(),
+              executionDurationMs: 1,
+              universeSize: 1,
+              eligibleCount: 1,
+              qualityCount: 1,
+              screenedCount: 1,
+              allQualifiedOpportunities: [],
+              topOpportunities: [],
+              telemetry: {},
+            });
+          }
+          return Response.json([]);
+        },
+      }),
+    };
+
+    const service = PublicMarketDataService.getInstance();
+    service.clearCaches();
+    const fakeEnv: any = { PUBLIC_MARKET_COORDINATOR: coordinatorNamespace };
+
+    await service.getMarkets(fakeEnv, 'bybit', 'demo', 'india');
+    await service.getTickers(fakeEnv, 'bybit', 'demo', 'india');
+    await service.getKlines(fakeEnv, 'BTC/USDT', '5m', 50, 'bybit', 'demo', 'india');
+    await service.getOpportunities(fakeEnv, 'bybit', 'demo', 'india');
+
+    expect(requestedUrls).toEqual([
+      'http://coordinator/markets?environment=demo&region=india',
+      'http://coordinator/tickers?environment=demo&region=india',
+      'http://coordinator/klines?symbol=BTC%2FUSDT&interval=5m&limit=205&environment=demo&region=india',
+      'http://coordinator/opportunities?environment=demo&region=india',
+    ]);
   });
 });

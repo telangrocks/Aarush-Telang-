@@ -17,7 +17,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -147,7 +149,7 @@ class MainActivity : FragmentActivity() {
     private var pendingValidatedAlert: ValidatedAlertData? = null
     private var lastHandledAlertId: String? = null
     private var currentActiveAlertId: String? = null
-    private var isLoggingOut = false
+    private var isLoggingOut by mutableStateOf(false)
     private var lastRegisteredFcmToken: String? = null
     private var alertRoutingJob: kotlinx.coroutines.Job? = null
 
@@ -255,11 +257,18 @@ class MainActivity : FragmentActivity() {
                                 sessionManager.performLogout(this@MainActivity)
                             } finally {
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                    isLoggingOut = false
-                                    navController.navigate("auth") {
-                                        popUpTo(navController.graph.id) {
-                                            inclusive = true
+                                    try {
+                                        if (!isFinishing && !isDestroyed) {
+                                            navController.navigate("auth") {
+                                                popUpTo(navController.graph.id) {
+                                                    inclusive = true
+                                                }
+                                            }
                                         }
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("MainActivity", "Navigation to auth failed during logout: ${e.message}", e)
+                                    } finally {
+                                        isLoggingOut = false
                                     }
                                 }
                             }
@@ -536,20 +545,13 @@ class MainActivity : FragmentActivity() {
                                 val viewModel = sharedExchangeViewModel
                                 val technicalAnalysisViewModel = hiltViewModel<com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel>(parentEntry)
 
-                                val selectedCandidate by viewModel.selectedCandidate.collectAsState(initial = null)
-                                val candidates by viewModel.candidates.collectAsState(initial = emptyList())
+                                val selectedCandidate by viewModel.selectedCandidate.collectAsState()
+                                val candidates by viewModel.candidates.collectAsState()
                                 val candidate = selectedCandidate ?: candidates.firstOrNull()
 
                                 LaunchedEffect(candidate) {
-                                    if (candidate != null && selectedCandidate == null) {
+                                    if (!isLoggingOut && candidate != null && selectedCandidate == null) {
                                         viewModel.selectCandidate(candidate)
-                                    }
-                                }
-
-                                DisposableEffect(technicalAnalysisViewModel, candidate?.pairName) {
-                                    technicalAnalysisViewModel.onScreenStarted(candidate?.pairName)
-                                    onDispose {
-                                        technicalAnalysisViewModel.onScreenStopped()
                                     }
                                 }
 
@@ -562,7 +564,7 @@ class MainActivity : FragmentActivity() {
                                 val isLoadingPreview by technicalAnalysisViewModel.isLoadingPreview.collectAsState()
 
                                 LaunchedEffect(Unit) {
-                                    if (viewModel.selectedCandidate.value == null) {
+                                    if (!isLoggingOut && viewModel.selectedCandidate.value == null) {
                                         tradeSetupConfig?.let { config ->
                                             config.symbol?.let { sym ->
                                                 viewModel.restoreSession(sym, config.strategyId)
@@ -571,7 +573,7 @@ class MainActivity : FragmentActivity() {
                                     }
                                 }
 
-                                if (candidate == null) {
+                                if (isLoggingOut || candidate == null) {
                                     androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
                                         if (candidatesError != null) {
                                             Text(candidatesError ?: "Market candidate unavailable", color = MaterialTheme.colorScheme.error)
@@ -581,6 +583,14 @@ class MainActivity : FragmentActivity() {
                                     }
                                     return@composable
                                 }
+
+                                TechnicalAnalysisObservationEffect(
+                                    isLoggingOut = isLoggingOut,
+                                    candidatePair = candidate.pairName,
+                                    observationKey = technicalAnalysisViewModel,
+                                    onStart = { pair -> technicalAnalysisViewModel.onScreenStarted(pair) },
+                                    onStop = { technicalAnalysisViewModel.onScreenStopped() }
+                                )
 
                                 val initialStrategy = selectedStrategyId ?: tradeSetupConfig?.strategyId ?: "ScalperV2"
 
@@ -1056,6 +1066,23 @@ class MainActivity : FragmentActivity() {
             tradeAlertManager.awaitRestored()
             if (!isActive || isFinishing || isDestroyed) return@launch
             handleIncomingAlertIntent(intent)
+        }
+    }
+}
+
+@Composable
+internal fun TechnicalAnalysisObservationEffect(
+    isLoggingOut: Boolean,
+    candidatePair: String?,
+    observationKey: Any? = Unit,
+    onStart: (String) -> Unit,
+    onStop: () -> Unit
+) {
+    if (isLoggingOut || candidatePair.isNullOrBlank()) return
+    DisposableEffect(observationKey, candidatePair) {
+        onStart(candidatePair)
+        onDispose {
+            onStop()
         }
     }
 }

@@ -42,9 +42,20 @@ const USER_EXCHANGE_ROUTING_CACHE = new LruTtlCache<string, {
   exchange_api_key_encrypted?: string | null;
   exchange_api_key?: string | null;
 }>(5000, 60000);
-const TICKER_CACHE = new LruTtlCache<string, any>(200, 2000); // 2s TTL
-const TICKER_FALLBACK_CACHE = new LruTtlCache<string, any>(200, 60000); // 60s stale fallback TTL
 const KLINES_CACHE = new LruTtlCache<string, any>(200, 15000); // 15s TTL
+
+/** Handles BigNumber, number, and numeric string (across JSON serialization boundaries). */
+function parseNumericField(val: any): { present: boolean; valid: boolean; value: number } {
+  if (val === undefined || val === null || (typeof val === "string" && val.trim() === "")) {
+    return { present: false, valid: true, value: 0 };
+  }
+  if (typeof val?.toNumber === "function") {
+    const n = val.toNumber();
+    return Number.isFinite(n) ? { present: true, valid: true, value: n } : { present: true, valid: false, value: NaN };
+  }
+  const n = Number(val);
+  return Number.isFinite(n) ? { present: true, valid: true, value: n } : { present: true, valid: false, value: NaN };
+}
 
 interface ScopedPublicCandleStoreEntry {
   adapter: any;
@@ -139,8 +150,6 @@ export function __resetPublicOpportunityStateForTests(): void {
   PUBLIC_CANDLE_STORE_REGISTRY.clear();
   DISCOVERY_CACHE.clear();
   USER_EXCHANGE_ROUTING_CACHE.clear();
-  TICKER_CACHE.clear();
-  TICKER_FALLBACK_CACHE.clear();
   KLINES_CACHE.clear();
   PublicMarketDataService.getInstance().clearCaches();
 }
@@ -1453,19 +1462,6 @@ export async function handleGetPersonalizedMarketCandidates(
           continue;
         }
 
-        // parseNumericField: handles BigNumber, number, numeric string (from JSON serialization)
-        const parseNumericField = (val: any): { present: boolean; valid: boolean; value: number } => {
-          if (val === undefined || val === null || (typeof val === 'string' && val.trim() === '')) {
-            return { present: false, valid: true, value: 0 };
-          }
-          if (typeof val?.toNumber === 'function') {
-            const n = val.toNumber();
-            return Number.isFinite(n) ? { present: true, valid: true, value: n } : { present: true, valid: false, value: NaN };
-          }
-          const n = Number(val);
-          return Number.isFinite(n) ? { present: true, valid: true, value: n } : { present: true, valid: false, value: NaN };
-        };
-
         // Last price: check t.last, t.price, t.info?.lastPrice in priority order
         const lastField = parseNumericField(t?.last);
         const priceField = parseNumericField(t?.price ?? t?.info?.lastPrice);
@@ -2118,28 +2114,40 @@ export async function handleGetTicker(
       });
     }
     const normReg = resolveCanonicalRoutingRegion(user.exchange_region);
-    const tickerCacheKey = `${user.exchange_name}:${normEnv}:${normReg}:${symbol}`;
-    const cachedTicker = TICKER_CACHE.get(tickerCacheKey);
-    if (cachedTicker) {
-      return c.json(cachedTicker);
-    }
-
-    const adapter = await ExchangeManager.getProvider(user.exchange_name as ExchangeName, {
-      environment: normEnv,
-      region: normReg,
-    });
-
-    const ticker = await adapter.fetchTicker(symbol);
+    const ticker = await PublicMarketDataService.getInstance().getSingleTicker(
+      c.env,
+      symbol,
+      user.exchange_name as ExchangeName,
+      normEnv,
+      normReg,
+    );
 
     if (!ticker) {
       c.status(404);
       return c.json({ error: `Symbol '${symbol}' is not available on your connected exchange.` });
     }
 
-    const price = ticker.last.toNumber();
-    const rawPct = typeof ticker.percentage === 'number' && Number.isFinite(ticker.percentage) 
-      ? ticker.percentage 
-      : 0;
+    const toFiniteNumber = (val: unknown, fallback = 0): number => {
+      const parsed = parseNumericField(val);
+      return parsed.present && parsed.valid ? parsed.value : fallback;
+    };
+
+    const price = toFiniteNumber(ticker.last ?? ticker.price ?? ticker.info?.lastPrice);
+    if (price <= 0) {
+      c.status(503);
+      return c.json({
+        success: false,
+        code: "EXCHANGE_UNAVAILABLE",
+        error: "Error fetching ticker",
+        message: `Invalid ticker price received for '${symbol}'.`,
+      });
+    }
+
+    const rawPctField = parseNumericField(ticker.percentage);
+    const infoPctField = parseNumericField(ticker.info?.price24hPcnt);
+    const rawPct = rawPctField.present && rawPctField.valid
+      ? rawPctField.value
+      : (infoPctField.present && infoPctField.valid ? infoPctField.value * 100 : 0);
 
     const rawChange = (price * rawPct) / 100;
     const priceChange24h = Number.isFinite(rawChange) ? rawChange : 0;
@@ -2147,13 +2155,13 @@ export async function handleGetTicker(
 
     const result = {
       symbol: ticker.symbol,
-      price: price,
-      volume24h: ticker.volume.toNumber(),
-      quoteVolume24h: ticker.quoteVolume.toNumber(),
-      priceChange24h: priceChange24h,
-      priceChangePercent24h: priceChangePercent24h,
-      highPrice24h: ticker.high.toNumber(),
-      lowPrice24h: ticker.low.toNumber(),
+      price,
+      volume24h: toFiniteNumber(ticker.volume ?? ticker.volume24h ?? ticker.info?.volume24h),
+      quoteVolume24h: toFiniteNumber(ticker.quoteVolume ?? ticker.quoteVolume24h ?? ticker.info?.turnover24h),
+      priceChange24h,
+      priceChangePercent24h,
+      highPrice24h: toFiniteNumber(ticker.high ?? ticker.highPrice24h ?? ticker.info?.highPrice24h, price),
+      lowPrice24h: toFiniteNumber(ticker.low ?? ticker.lowPrice24h ?? ticker.info?.lowPrice24h, price),
       minNotional: null,
       minOrderQty: null,
       maxOrderQty: null,
@@ -2161,28 +2169,17 @@ export async function handleGetTicker(
       lotSize: null,
       timestamp: new Date().toISOString(),
     };
-    TICKER_CACHE.set(tickerCacheKey, result);
-    TICKER_FALLBACK_CACHE.set(tickerCacheKey, result);
 
     return c.json(result);
   } catch (e: unknown) {
     const error = e as Error;
-    const symbolParam = c.req.query("symbol") || "";
-    // Check fallback cache for existing ticker
-    const fallbackTicker = Array.from(TICKER_FALLBACK_CACHE['cache']?.values() || []).find(
-      (v: any) => v?.value?.symbol === symbolParam || String(v?.value?.symbol || '').replace('/', '') === symbolParam.replace('/', '')
-    )?.value;
-
-    if (fallbackTicker) {
-      c.header("X-Cache-Status", "STALE");
-      return c.json({
-        ...fallbackTicker,
-        isStale: true,
-      });
-    }
-
     c.status(503);
-    return c.json({ success: false, code: "EXCHANGE_UNAVAILABLE", error: "Error fetching ticker", message: error.message || "Exchange service temporarily unavailable." });
+    return c.json({
+      success: false,
+      code: "EXCHANGE_UNAVAILABLE",
+      error: "Error fetching ticker",
+      message: error.message || "Exchange service temporarily unavailable.",
+    });
   }
 }
 

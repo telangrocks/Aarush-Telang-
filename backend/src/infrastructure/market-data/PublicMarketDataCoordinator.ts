@@ -11,6 +11,64 @@ import { SingleFlightCoalescer } from '../cache/SingleFlightCoalescer';
 import { LruTtlCache } from '../cache/LruTtlCache';
 import { CandleValidator } from '../exchange/CandleValidator';
 import { StructuredLogger } from '../telemetry/Telemetry';
+import { RetryPolicy } from '../orchestrator/RetryPolicy';
+import { SymbolResolver } from '../../utils/SymbolResolver';
+
+function tryNormalizeTickerCacheKey(symbol: string): string | null {
+  try {
+    const trimmed = symbol.trim();
+    return trimmed ? SymbolResolver.toCacheKey(trimmed) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildTickerLookupMap(tickers: any[]): Map<string, any> {
+  const tickerMap = new Map<string, any>();
+  for (const t of tickers) {
+    if (!t) continue;
+    for (const candidate of [t.symbol, t.id, t.pairName]) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        tickerMap.set(candidate, t);
+        const cacheKey = tryNormalizeTickerCacheKey(candidate);
+        if (cacheKey && !tickerMap.has(cacheKey)) {
+          tickerMap.set(cacheKey, t);
+        }
+      }
+    }
+  }
+  return tickerMap;
+}
+
+export function findTickerBySymbol(
+  tickerMap: Map<string, any> | undefined,
+  tickers: any[] | undefined,
+  symbol: string
+): any | null {
+  if (tickerMap) {
+    const direct = tickerMap.get(symbol);
+    if (direct) return direct;
+    const cacheKey = tryNormalizeTickerCacheKey(symbol);
+    if (cacheKey) {
+      const normalized = tickerMap.get(cacheKey);
+      if (normalized) return normalized;
+    }
+  }
+  if (Array.isArray(tickers)) {
+    const targetKey = tryNormalizeTickerCacheKey(symbol);
+    return (
+      tickers.find((t: any) => {
+        if (!t) return false;
+        if (t.symbol === symbol || t.id === symbol || t.pairName === symbol) return true;
+        if (!targetKey) return false;
+        return [t.symbol, t.id, t.pairName].some(
+          (c) => typeof c === 'string' && tryNormalizeTickerCacheKey(c) === targetKey
+        );
+      }) || null
+    );
+  }
+  return null;
+}
 
 /**
  * PublicMarketDataCoordinator:
@@ -24,6 +82,7 @@ export class PublicMarketDataCoordinator {
   private readonly logger = new StructuredLogger();
   private readonly scheduler = new ExchangeRequestScheduler(new InMemorySchedulerStorage());
   private readonly coalescer = new SingleFlightCoalescer<any>();
+  private readonly retryPolicy = new RetryPolicy();
   private readonly candleStore: MultiTimeframeCandleStore;
 
   private cachedMarkets: { data: any[]; timestamp: number } | null = null;
@@ -188,13 +247,8 @@ export class PublicMarketDataCoordinator {
         return this.cachedTickers.data;
       }
       const adapter = await this.getAdapter();
-      const rawTickers = await adapter.fetchTickers();
-      const tickerMap = new Map<string, any>();
-      for (const t of rawTickers) {
-        if (t.symbol) tickerMap.set(t.symbol, t);
-        if (t.id) tickerMap.set(t.id, t);
-        if (t.pairName) tickerMap.set(t.pairName, t);
-      }
+      const rawTickers = await this.retryPolicy.execute<any[]>(() => adapter.fetchTickers());
+      const tickerMap = buildTickerLookupMap(rawTickers);
       this.cachedTickers = { data: rawTickers, tickerMap, timestamp: Date.now() };
       return rawTickers;
     });
@@ -202,14 +256,11 @@ export class PublicMarketDataCoordinator {
 
   public async getSingleTicker(symbol: string): Promise<any | null> {
     if (this.cachedTickers && Date.now() - this.cachedTickers.timestamp < this.TICKERS_TTL_MS) {
-      const match = this.cachedTickers.tickerMap.get(symbol);
+      const match = findTickerBySymbol(this.cachedTickers.tickerMap, this.cachedTickers.data, symbol);
       if (match) return match;
     }
     const tickers = await this.getTickers();
-    if (this.cachedTickers) {
-      return this.cachedTickers.tickerMap.get(symbol) || null;
-    }
-    return tickers.find((t: any) => t.symbol === symbol || t.pairName === symbol) || null;
+    return findTickerBySymbol(this.cachedTickers?.tickerMap, tickers, symbol);
   }
 
   public async getKlines(symbol: string, timeframe: string, limit: number = 100): Promise<any[]> {

@@ -8,6 +8,8 @@ import { SingleFlightCoalescer } from '../cache/SingleFlightCoalescer';
 import { LruTtlCache } from '../cache/LruTtlCache';
 import { CandleValidator } from '../exchange/CandleValidator';
 import { StructuredLogger } from '../telemetry/Telemetry';
+import { RetryPolicy } from '../orchestrator/RetryPolicy';
+import { buildTickerLookupMap, findTickerBySymbol } from './PublicMarketDataCoordinator';
 
 /**
  * PublicMarketDataService:
@@ -22,6 +24,7 @@ export class PublicMarketDataService {
   private static instance: PublicMarketDataService;
   private readonly logger = new StructuredLogger();
   private readonly coalescer = new SingleFlightCoalescer<any>();
+  private readonly retryPolicy = new RetryPolicy();
 
   // L1 In-Isolate Memory Caches
   private readonly marketsCache = new LruTtlCache<string, any[]>(50, 5 * 60 * 1000); // 5m
@@ -57,6 +60,23 @@ export class PublicMarketDataService {
       this.candleStorePool.set(key, store);
     }
     return store;
+  }
+
+  private buildCoordinatorUrl(
+    path: string,
+    environment: ExchangeEnvironment,
+    region: ExchangeRegion,
+    query?: Record<string, string | number>
+  ): string {
+    const url = new URL(`http://coordinator${path}`);
+    if (query) {
+      for (const [key, value] of Object.entries(query)) {
+        url.searchParams.set(key, String(value));
+      }
+    }
+    url.searchParams.set('environment', environment);
+    url.searchParams.set('region', region);
+    return url.toString();
   }
 
   private getL2CacheKey(resource: string, exchange: string, env: string, region: string, extra?: string): string {
@@ -121,7 +141,7 @@ export class PublicMarketDataService {
         try {
           const doId = env.PUBLIC_MARKET_COORDINATOR.idFromName(`${exchange}:${environment}:${region}`);
           const coordinator = env.PUBLIC_MARKET_COORDINATOR.get(doId);
-          const resp = await coordinator.fetch(new Request('http://coordinator/markets'));
+          const resp = await coordinator.fetch(new Request(this.buildCoordinatorUrl('/markets', environment, region)));
           if (resp.ok) {
             const data = await resp.json() as any[];
             this.marketsCache.set(l1Key, data);
@@ -166,26 +186,42 @@ export class PublicMarketDataService {
         return l2Cached;
       }
 
-      // Tier 3: L3 Coordinator DO (if bound)
-      if (env.PUBLIC_MARKET_COORDINATOR && typeof env.PUBLIC_MARKET_COORDINATOR.idFromName === 'function') {
+      const hasCoordinator =
+        Boolean(env.PUBLIC_MARKET_COORDINATOR) &&
+        typeof env.PUBLIC_MARKET_COORDINATOR?.idFromName === 'function' &&
+        typeof env.PUBLIC_MARKET_COORDINATOR?.get === 'function';
+
+      // Tier 3: L3 Coordinator DO (exclusive upstream-fetch & retry owner when configured)
+      if (hasCoordinator) {
+        const doId = env.PUBLIC_MARKET_COORDINATOR!.idFromName(`${exchange}:${environment}:${region}`);
+        const coordinator = env.PUBLIC_MARKET_COORDINATOR!.get(doId);
+        let resp: Response;
         try {
-          const doId = env.PUBLIC_MARKET_COORDINATOR.idFromName(`${exchange}:${environment}:${region}`);
-          const coordinator = env.PUBLIC_MARKET_COORDINATOR.get(doId);
-          const resp = await coordinator.fetch(new Request('http://coordinator/tickers'));
-          if (resp.ok) {
-            const data = await resp.json() as any[];
-            this.cacheTickersInL1(l1Key, data);
-            await this.writeL2Cache(l2Url, data, 3); // 3s L2 TTL
-            return data;
-          }
+          resp = await coordinator.fetch(new Request(this.buildCoordinatorUrl('/tickers', environment, region)));
         } catch (err: any) {
-          this.logger.warn('[PublicMarketDataService] Coordinator /tickers failed, falling back to direct adapter:', err?.message);
+          this.logger.warn('[PublicMarketDataService] Coordinator /tickers RPC failed', { error: err?.message || String(err) });
+          throw err;
         }
+        if (!resp.ok) {
+          let detail = `Coordinator /tickers failed with HTTP ${resp.status}`;
+          try {
+            const errBody = await resp.json() as { error?: string; message?: string };
+            if (errBody?.error || errBody?.message) {
+              detail = String(errBody.error || errBody.message);
+            }
+          } catch (_) {}
+          this.logger.warn('[PublicMarketDataService] Coordinator /tickers returned non-OK', { status: resp.status, detail });
+          throw new Error(detail);
+        }
+        const data = await resp.json() as any[];
+        this.cacheTickersInL1(l1Key, data);
+        await this.writeL2Cache(l2Url, data, 3); // 3s L2 TTL
+        return data;
       }
 
-      // Fallback: Direct anonymous CCXT adapter
+      // Direct upstream fallback ONLY when PUBLIC_MARKET_COORDINATOR is genuinely unconfigured
       const adapter = await ExchangeManager.getProvider(exchange, { environment, region });
-      const tickers = await adapter.fetchTickers();
+      const tickers = await this.retryPolicy.execute(() => adapter.fetchTickers());
       this.cacheTickersInL1(l1Key, tickers);
       await this.writeL2Cache(l2Url, tickers, 3);
       return tickers;
@@ -194,13 +230,7 @@ export class PublicMarketDataService {
 
   private cacheTickersInL1(l1Key: string, tickers: any[]): void {
     this.tickersCache.set(l1Key, tickers);
-    const map = new Map<string, any>();
-    for (const t of tickers) {
-      if (t.symbol) map.set(t.symbol, t);
-      if (t.id) map.set(t.id, t);
-      if (t.pairName) map.set(t.pairName, t);
-    }
-    this.tickerMapCache.set(l1Key, map);
+    this.tickerMapCache.set(l1Key, buildTickerLookupMap(tickers));
   }
 
   public async getSingleTicker(
@@ -211,21 +241,17 @@ export class PublicMarketDataService {
     region: ExchangeRegion = 'india'
   ): Promise<any | null> {
     const l1Key = `${exchange}:${environment}:${region}:tickers`;
+    const cachedList = this.tickersCache.get(l1Key);
     const map = this.tickerMapCache.get(l1Key);
     if (map) {
-      const match = map.get(symbol);
+      const match = findTickerBySymbol(map, cachedList ?? undefined, symbol);
       if (match) return match;
     }
 
-    // Tier 1 / Tier 2 Ticker Fetch
+    // Tier 1 / Tier 2 / Tier 3 Coalesced Ticker Fetch
     const tickers = await this.getTickers(env, exchange, environment, region);
     const freshMap = this.tickerMapCache.get(l1Key);
-    if (freshMap) {
-      const match = freshMap.get(symbol);
-      if (match) return match;
-    }
-
-    return tickers.find((t: any) => t.symbol === symbol || t.pairName === symbol) || null;
+    return findTickerBySymbol(freshMap ?? undefined, tickers, symbol);
   }
 
   public async getKlines(
@@ -265,7 +291,7 @@ export class PublicMarketDataService {
           const doId = env.PUBLIC_MARKET_COORDINATOR.idFromName(`${exchange}:${environment}:${region}`);
           const coordinator = env.PUBLIC_MARKET_COORDINATOR.get(doId);
           const resp = await coordinator.fetch(
-            new Request(`http://coordinator/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=205`)
+            new Request(this.buildCoordinatorUrl('/klines', environment, region, { symbol, interval, limit: 205 }))
           );
           if (resp.ok) {
             const data = await resp.json() as any[];
@@ -318,7 +344,7 @@ export class PublicMarketDataService {
         try {
           const doId = env.PUBLIC_MARKET_COORDINATOR.idFromName(`${exchange}:${environment}:${region}`);
           const coordinator = env.PUBLIC_MARKET_COORDINATOR.get(doId);
-          const resp = await coordinator.fetch(new Request('http://coordinator/opportunities'));
+          const resp = await coordinator.fetch(new Request(this.buildCoordinatorUrl('/opportunities', environment, region)));
           if (resp.ok) {
             const data = await resp.json() as ScannerScanResult;
             if (data && data.screenedCount > 0) {

@@ -6,11 +6,35 @@ import com.cryptopulse.app.data.local.TokenState
 import com.cryptopulse.app.service.TradeAlertManager
 import com.cryptopulse.app.ui.screens.resolveStartupDestination
 import com.cryptopulse.app.domain.repository.AuthRepository
+import com.cryptopulse.app.domain.repository.StrategyRepository
+import com.cryptopulse.app.domain.repository.TechnicalAnalysisRepository
+import com.cryptopulse.app.domain.repository.TradeSessionRepository
+import com.cryptopulse.app.domain.models.AnalysisSnapshot
+import com.cryptopulse.app.domain.models.Strategy
+import com.cryptopulse.app.domain.models.TechnicalAnalysisResult
+import com.cryptopulse.app.domain.models.TradeSetupConfig
+import com.cryptopulse.app.core.dispatcher.DispatcherProvider
+import com.cryptopulse.app.data.api.dto.bot.request.AcknowledgeAlertRequestDto
+import com.cryptopulse.app.data.api.dto.bot.request.ActivateBotRequestDto
+import com.cryptopulse.app.data.api.dto.bot.request.DismissAlertRequestDto
+import com.cryptopulse.app.data.api.dto.bot.response.AnalysisSnapshotDto
+import com.cryptopulse.app.data.api.dto.bot.response.EngineStatusDto
+import com.cryptopulse.app.data.datasource.remote.bot.BotRemoteDataSource
+import com.cryptopulse.app.data.repository.BotRepositoryImpl
+import com.cryptopulse.app.ui.strategies.TechnicalAnalysisViewModel
 import com.cryptopulse.app.core.network.NetworkResult
 import com.cryptopulse.app.core.error.NetworkError
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -764,5 +788,136 @@ class NavigationLifecycleRegressionTest {
         )
 
         assertEquals("Cold-start with active alert must target trade_alert screen", "trade_alert", destination)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `TechnicalAnalysis observation stops status and preview polling on candidate loss and logout without restarting`() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(testDispatcher)
+        try {
+            var statusPollCount = 0
+            var previewPollCount = 0
+
+            val fakeRemote = object : BotRemoteDataSource {
+                override suspend fun activate(request: ActivateBotRequestDto) = throw NotImplementedError()
+                override suspend fun deactivate() = throw NotImplementedError()
+                override suspend fun getStatus() = throw NotImplementedError()
+                override suspend fun getAnalysisStatus(): NetworkResult<AnalysisSnapshotDto> {
+                    statusPollCount++
+                    return NetworkResult.Success(
+                        AnalysisSnapshotDto(
+                            engineStatus = EngineStatusDto(state = "STOPPED"),
+                            isActive = false
+                        )
+                    )
+                }
+                override suspend fun executeTrade(alertId: String) = throw NotImplementedError()
+                override suspend fun stopTrade() = throw NotImplementedError()
+                override suspend fun getAlerts() = throw NotImplementedError()
+                override suspend fun acknowledgeAlert(request: AcknowledgeAlertRequestDto) = throw NotImplementedError()
+                override suspend fun dismissAlert(request: DismissAlertRequestDto) = throw NotImplementedError()
+                override suspend fun getExecutionStatus(positionId: String) = throw NotImplementedError()
+            }
+
+            val testDispatchers = object : DispatcherProvider {
+                override val main = testDispatcher
+                override val io = testDispatcher
+                override val default = testDispatcher
+                override val unconfined = testDispatcher
+            }
+
+            val realBotRepo = BotRepositoryImpl(fakeRemote, testDispatchers)
+            val sessionRepo = object : TradeSessionRepository {
+                private val _id = MutableStateFlow<String?>("ScalperV2")
+                override val selectedStrategyId: StateFlow<String?> = _id.asStateFlow()
+                private val _cfg = MutableStateFlow<TradeSetupConfig?>(
+                    TradeSetupConfig(strategyId = "ScalperV2", symbol = "ETH/USDT", entryPrice = 3000.0, tradeValueUsdt = 50.0)
+                )
+                override val tradeSetupConfig: StateFlow<TradeSetupConfig?> = _cfg.asStateFlow()
+                override fun setStrategyId(id: String) { _id.value = id }
+                override fun setTradeSetupConfig(config: TradeSetupConfig) { _cfg.value = config }
+                override fun clearSession() { _id.value = null; _cfg.value = null }
+            }
+            val fakeTaRepo = object : TechnicalAnalysisRepository {
+                override suspend fun getAnalysis(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<TechnicalAnalysisResult> =
+                    NetworkResult.Error(NetworkError.HttpError(400, "unused"))
+                override suspend fun getAnalysisSnapshot(symbol: String, strategy: String, config: TradeSetupConfig?): NetworkResult<AnalysisSnapshot> {
+                    previewPollCount++
+                    return NetworkResult.Error(NetworkError.HttpError(400, "unused"))
+                }
+            }
+            val fakeStrategyRepo = object : StrategyRepository {
+                override suspend fun getStrategies() = NetworkResult.Success(emptyList<Strategy>())
+                override suspend fun getStrategyById(id: String) = NetworkResult.Success<Strategy?>(null)
+                override fun clearCache() {}
+            }
+
+            val taViewModel = TechnicalAnalysisViewModel(
+                sessionRepository = sessionRepo,
+                botRepository = realBotRepo,
+                technicalAnalysisRepository = fakeTaRepo,
+                strategyRepository = fakeStrategyRepo,
+                tradeAlertManager = TradeAlertManager()
+            )
+            runCurrent()
+
+            var activeObservedPair: String? = null
+            fun syncObservation(isLoggingOut: Boolean, candidatePair: String?) {
+                val targetPair = if (!isLoggingOut && !candidatePair.isNullOrBlank()) candidatePair else null
+                if (targetPair == activeObservedPair) return
+                if (activeObservedPair != null) {
+                    taViewModel.onScreenStopped()
+                    activeObservedPair = null
+                }
+                if (targetPair != null) {
+                    taViewModel.onScreenStarted(targetPair)
+                    activeObservedPair = targetPair
+                }
+            }
+
+            // 1. Valid candidate active -> starts real BotRepositoryImpl status polling + preview polling
+            syncObservation(isLoggingOut = false, candidatePair = "ETH/USDT")
+            advanceTimeBy(6000L)
+            runCurrent()
+            assertTrue("BotRepository must be connected while observing", realBotRepo.isConnected.value)
+            assertTrue("Status polling must run while observing (actual=$statusPollCount)", statusPollCount >= 2)
+            assertTrue("Preview polling must run while observing (actual=$previewPollCount)", previewPollCount >= 1)
+
+            // 2. Candidate loss -> disposes active observation & stops status/preview polling cleanly
+            syncObservation(isLoggingOut = false, candidatePair = null)
+            runCurrent()
+            val statusAfterCandidateLoss = statusPollCount
+            val previewAfterCandidateLoss = previewPollCount
+            assertFalse("BotRepository must disconnect after candidate loss", realBotRepo.isConnected.value)
+
+            advanceTimeBy(15_000L)
+            runCurrent()
+            assertEquals("Status polling must remain stopped when candidate is null", statusAfterCandidateLoss, statusPollCount)
+            assertEquals("Preview polling must remain stopped when candidate is null", previewAfterCandidateLoss, previewPollCount)
+
+            // 3. Resume on BTC/USDT then run logout transition -> stops polling and never restarts with null
+            syncObservation(isLoggingOut = false, candidatePair = "BTC/USDT")
+            advanceTimeBy(4000L)
+            runCurrent()
+            assertTrue("BotRepository must resume observing for valid candidate", realBotRepo.isConnected.value)
+            assertTrue("Status polling must increment after resume", statusPollCount > statusAfterCandidateLoss)
+
+            syncObservation(isLoggingOut = true, candidatePair = "BTC/USDT")
+            syncObservation(isLoggingOut = true, candidatePair = null)
+            syncObservation(isLoggingOut = false, candidatePair = null)
+            runCurrent()
+
+            val statusAfterLogout = statusPollCount
+            val previewAfterLogout = previewPollCount
+            assertFalse("BotRepository must stop observing during logout", realBotRepo.isConnected.value)
+
+            advanceTimeBy(15_000L)
+            runCurrent()
+            assertEquals("Status polling must remain stopped after logout", statusAfterLogout, statusPollCount)
+            assertEquals("Preview polling must remain stopped after logout", previewAfterLogout, previewPollCount)
+        } finally {
+            Dispatchers.resetMain()
+        }
     }
 }

@@ -4,9 +4,12 @@ import { PublicMarketDataCoordinator } from '../../infrastructure/market-data/Pu
 import { SingleFlightCoalescer } from '../../infrastructure/cache/SingleFlightCoalescer';
 import { LruTtlCache } from '../../infrastructure/cache/LruTtlCache';
 import { getKey, __resetDerivedKeyCacheForTests, __getDerivedKeyCacheStatsForTests, encrypt, decrypt } from '../../crypto';
-import { handleGetPersonalizedMarketCandidates, __resetPublicOpportunityStateForTests } from '../../handlers/exchange';
+import { handleGetPersonalizedMarketCandidates, handleGetTicker, __resetPublicOpportunityStateForTests } from '../../handlers/exchange';
 import { TradingBot } from '../../trading-bot';
 import { StrategyOrchestrator } from '../orchestrator/StrategyOrchestrator';
+import { ExchangeManager } from '../../exchanges';
+import { BybitAdapter } from '../../infrastructure/exchange/adapters/BybitAdapter';
+import BigNumber from 'bignumber.js';
 
 describe('Phase 2 — Unified Public Market Data & Bot Refurbishment', () => {
   beforeEach(() => {
@@ -320,6 +323,343 @@ describe('Phase 2 — Unified Public Market Data & Bot Refurbishment', () => {
       const closePuts = putCalls.filter(k => k.includes('close-456'));
       expect(closePuts.length).toBe(1);
       expect(closePuts[0]).toBe('txn:intent:close:close-456');
+    });
+  });
+
+  describe('6. Live Ticker Single-Owner Retry, DO RPC Safety & Breaker Isolation', () => {
+    const createTickerContext = (env: any, symbol: string) => ({
+      get: vi.fn().mockReturnValue({ sub: 'user-ticker-test' }),
+      req: {
+        query: vi.fn().mockImplementation((k: string) => (k === 'symbol' ? symbol : undefined)),
+      },
+      env,
+      status: vi.fn(),
+      json: vi.fn().mockImplementation((body: any) => body),
+      header: vi.fn(),
+    } as any);
+
+    const createConnectedUserDb = (exchangeEnvironment: 'demo' | 'mainnet' = 'demo') => ({
+      prepare: vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnValue({
+          first: vi.fn().mockResolvedValue({
+            exchange_name: 'bybit',
+            exchange_environment: exchangeEnvironment,
+            exchange_region: 'india',
+            exchange_api_key_encrypted: 'enc-key',
+            exchange_api_secret_encrypted: 'enc-sec',
+          }),
+        }),
+      }),
+    });
+
+    it('recovers cleanly from transient ticker failure on both DO-bound and unbound paths', async () => {
+      const sampleTicker = {
+        symbol: 'ETH/USDT',
+        last: new BigNumber(3500),
+        high: new BigNumber(3600),
+        low: new BigNumber(3400),
+        volume: new BigNumber(12000),
+        quoteVolume: new BigNumber(42000000),
+        percentage: 2.5,
+      };
+
+      // 1) DO-bound transient recovery via PublicMarketDataCoordinator
+      let doAttempts = 0;
+      const doAdapter = {
+        fetchTickers: vi.fn().mockImplementation(async () => {
+          doAttempts++;
+          if (doAttempts === 1) throw new Error('Transient 503 from Bybit');
+          return [sampleTicker];
+        }),
+      };
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(doAdapter as any);
+
+      const coordinator = new PublicMarketDataCoordinator(
+        { storage: { get: vi.fn(), put: vi.fn(), delete: vi.fn(), list: vi.fn() }, blockConcurrencyWhile: (fn: any) => fn() } as any,
+        { ENVIRONMENT: 'production' } as any
+      );
+      const doNamespace = {
+        idFromName: vi.fn((name: string) => ({ toString: () => name })),
+        get: vi.fn(() => ({ fetch: (req: Request) => coordinator.fetch(req) })),
+      };
+
+      const doCtx = createTickerContext({ DB: createConnectedUserDb('demo'), PUBLIC_MARKET_COORDINATOR: doNamespace }, 'ETH/USDT');
+      const doBody = await handleGetTicker(doCtx) as any;
+
+      expect(doCtx.status).not.toHaveBeenCalledWith(503);
+      expect(doBody.symbol).toBe('ETH/USDT');
+      expect(doBody.price).toBe(3500);
+      expect(doBody.volume24h).toBe(12000);
+      expect(doBody.quoteVolume24h).toBe(42000000);
+      expect(doBody.highPrice24h).toBe(3600);
+      expect(doBody.lowPrice24h).toBe(3400);
+      expect(doBody.priceChangePercent24h).toBe(2.5);
+      expect(doAdapter.fetchTickers).toHaveBeenCalledTimes(2);
+
+      // 2) Unbound (no coordinator) transient recovery owned by PublicMarketDataService
+      PublicMarketDataService.getInstance().clearCaches();
+      let unboundAttempts = 0;
+      const unboundAdapter = {
+        fetchTickers: vi.fn().mockImplementation(async () => {
+          unboundAttempts++;
+          if (unboundAttempts === 1) throw new Error('Transient socket reset');
+          return [sampleTicker];
+        }),
+      };
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(unboundAdapter as any);
+
+      const unboundCtx = createTickerContext({ DB: createConnectedUserDb('mainnet') }, 'ETH');
+      const unboundBody = await handleGetTicker(unboundCtx) as any;
+
+      expect(unboundCtx.status).not.toHaveBeenCalledWith(503);
+      expect(unboundBody.symbol).toBe('ETH/USDT');
+      expect(unboundBody.price).toBe(3500);
+      expect(unboundAdapter.fetchTickers).toHaveBeenCalledTimes(2);
+    });
+
+    it('bounds retries strictly to 3 attempts with NO Worker fallback when DO persistently fails (HTTP 500)', async () => {
+      const doAdapter = {
+        fetchTickers: vi.fn().mockRejectedValue(new Error('Persistent Bybit outage')),
+      };
+      const workerAdapter = {
+        fetchTickers: vi.fn().mockResolvedValue([{ symbol: 'BTC/USDT', last: new BigNumber(65000), high: new BigNumber(66000), low: new BigNumber(64000), volume: new BigNumber(1), quoteVolume: new BigNumber(65000) }]),
+      };
+
+      // Only 1 getProvider call should ever occur (inside DO). Any second call would expose Worker fallback.
+      const getProviderSpy = vi.spyOn(ExchangeManager, 'getProvider')
+        .mockResolvedValueOnce(doAdapter as any)
+        .mockResolvedValueOnce(workerAdapter as any);
+
+      const coordinator = new PublicMarketDataCoordinator(
+        { storage: { get: vi.fn(), put: vi.fn(), delete: vi.fn(), list: vi.fn() }, blockConcurrencyWhile: (fn: any) => fn() } as any,
+        { ENVIRONMENT: 'production' } as any
+      );
+      const observedStatuses: number[] = [];
+      const doNamespace = {
+        idFromName: vi.fn((name: string) => ({ toString: () => name })),
+        get: vi.fn(() => ({
+          fetch: async (req: Request) => {
+            const resp = await coordinator.fetch(req);
+            observedStatuses.push(resp.status);
+            return resp;
+          },
+        })),
+      };
+
+      const ctx = createTickerContext({ DB: createConnectedUserDb('demo'), PUBLIC_MARKET_COORDINATOR: doNamespace }, 'BTC/USDT');
+      const res = await handleGetTicker(ctx) as any;
+
+      expect(observedStatuses).toEqual([500]);
+      expect(ctx.status).toHaveBeenCalledWith(503);
+      expect(res.code).toBe('EXCHANGE_UNAVAILABLE');
+      expect(doAdapter.fetchTickers).toHaveBeenCalledTimes(3);
+      expect(workerAdapter.fetchTickers).not.toHaveBeenCalled();
+      expect(getProviderSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('DO RPC exception after DO upstream attempt(s) NEVER initiates direct Worker fallback', async () => {
+      const doAdapter = {
+        fetchTickers: vi.fn().mockResolvedValue([
+          { symbol: 'BTC/USDT', last: new BigNumber(65000), high: new BigNumber(66000), low: new BigNumber(64000), volume: new BigNumber(10), quoteVolume: new BigNumber(650000) },
+        ]),
+      };
+      const workerAdapter = {
+        fetchTickers: vi.fn(),
+      };
+      const getProviderSpy = vi.spyOn(ExchangeManager, 'getProvider')
+        .mockResolvedValueOnce(doAdapter as any)
+        .mockResolvedValueOnce(workerAdapter as any);
+
+      const coordinator = new PublicMarketDataCoordinator(
+        { storage: { get: vi.fn(), put: vi.fn(), delete: vi.fn(), list: vi.fn() }, blockConcurrencyWhile: (fn: any) => fn() } as any,
+        { ENVIRONMENT: 'production' } as any
+      );
+
+      const doNamespace = {
+        idFromName: vi.fn((name: string) => ({ toString: () => name })),
+        get: vi.fn(() => ({
+          fetch: async (req: Request) => {
+            // Execute real coordinator upstream work, then simulate ambiguous RPC failure losing the response
+            await coordinator.fetch(req);
+            throw new Error('Durable Object RPC connection lost');
+          },
+        })),
+      };
+
+      const ctx = createTickerContext({ DB: createConnectedUserDb('demo'), PUBLIC_MARKET_COORDINATOR: doNamespace }, 'BTC/USDT');
+      const res = await handleGetTicker(ctx) as any;
+
+      expect(ctx.status).toHaveBeenCalledWith(503);
+      expect(res.code).toBe('EXCHANGE_UNAVAILABLE');
+      expect(res.message).toContain('Durable Object RPC connection lost');
+      expect(doAdapter.fetchTickers).toHaveBeenCalledTimes(1);
+      expect(workerAdapter.fetchTickers).not.toHaveBeenCalled();
+      expect(getProviderSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('bounds unbound direct fallback retries strictly to 3 attempts when coordinator is unconfigured', async () => {
+      const directAdapter = {
+        fetchTickers: vi.fn().mockRejectedValue(new Error('Bybit network timeout')),
+      };
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(directAdapter as any);
+
+      const ctx = createTickerContext({ DB: createConnectedUserDb('mainnet') }, 'BTC/USDT');
+      const res = await handleGetTicker(ctx) as any;
+
+      expect(ctx.status).toHaveBeenCalledWith(503);
+      expect(res.code).toBe('EXCHANGE_UNAVAILABLE');
+      expect(directAdapter.fetchTickers).toHaveBeenCalledTimes(3);
+    });
+
+    it('never opens or modifies shared ExchangeManager Bybit circuit breaker across repeated public ticker failures', async () => {
+      const publicBybitAdapter = new BybitAdapter();
+      await publicBybitAdapter.connect({ environment: 'demo', region: 'india' });
+      vi.spyOn(publicBybitAdapter, 'fetchTickers').mockRejectedValue(new Error('Upstream public ticker 503'));
+
+      const orderBybitAdapter = new BybitAdapter();
+      await orderBybitAdapter.connect({ environment: 'demo', region: 'india', apiKey: 'k', secret: 's' });
+      vi.spyOn(orderBybitAdapter, 'createOrder').mockResolvedValue({
+        id: 'order-isolation-1',
+        clientOrderId: 'client-isolation-1',
+        symbol: 'BTC/USDT',
+        type: 'market',
+        side: 'buy',
+        price: new BigNumber(65000),
+        amount: new BigNumber(0.01),
+        cost: new BigNumber(650),
+        filled: new BigNumber(0.01),
+        remaining: new BigNumber(0),
+        status: 'closed',
+        timestamp: Date.now(),
+      });
+
+      const orchestrator = (ExchangeManager as any).orchestrator;
+      const breakerBefore = orchestrator.getCircuitBreaker('bybit');
+      breakerBefore.recordSuccess();
+      expect(breakerBefore.getState()).toBe('CLOSED');
+
+      vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(publicBybitAdapter as any);
+      const executeOrchestratedSpy = vi.spyOn(ExchangeManager, 'executeOrchestrated');
+
+      // Run 2 full cycles (2 x 3 = 6 failures, exceeding CircuitBreaker failureThreshold = 5)
+      const ctx1 = createTickerContext({ DB: createConnectedUserDb('demo') }, 'BTC/USDT');
+      const res1 = await handleGetTicker(ctx1) as any;
+      expect(ctx1.status).toHaveBeenCalledWith(503);
+      expect(res1.code).toBe('EXCHANGE_UNAVAILABLE');
+
+      PublicMarketDataService.getInstance().clearCaches();
+      const ctx2 = createTickerContext({ DB: createConnectedUserDb('demo') }, 'ETH/USDT');
+      const res2 = await handleGetTicker(ctx2) as any;
+      expect(ctx2.status).toHaveBeenCalledWith(503);
+      expect(res2.code).toBe('EXCHANGE_UNAVAILABLE');
+
+      expect(publicBybitAdapter.fetchTickers).toHaveBeenCalledTimes(6);
+      expect(executeOrchestratedSpy).not.toHaveBeenCalled();
+      expect(orchestrator.getCircuitBreaker('bybit').getState()).toBe('CLOSED');
+
+      // Shared trading path must remain completely unblocked
+      const placed = await ExchangeManager.executeIdempotentOrder(orderBybitAdapter, {
+        symbol: 'BTC/USDT',
+        type: 'market',
+        side: 'buy',
+        amount: new BigNumber(0.01),
+      });
+      expect(placed.id).toBe('order-isolation-1');
+    });
+
+    it('isolates demo vs mainnet DO/L1/L2 caches, propagates ?environment=&region=, and normalizes symbols and numeric strings', async () => {
+      const seenCoordinatorUrls: string[] = [];
+      const seenAdapterHosts: Array<{ env: string; host: string }> = [];
+
+      const demoAdapter = new BybitAdapter();
+      await demoAdapter.connect({ environment: 'demo', region: 'india' });
+      vi.spyOn(demoAdapter, 'fetchTickers').mockImplementation(async () => {
+        seenAdapterHosts.push({ env: 'demo', host: demoAdapter.getHost() });
+        // Simulate raw strings / BigNumber-free payloads after JSON deserialization + SymbolResolver variants
+        return [
+          {
+            symbol: 'ETH/USDT',
+            last: '3510.50',
+            high: '3550.00',
+            low: '3480.00',
+            volume: '15000',
+            quoteVolume: '52657500',
+            percentage: '1.75',
+          } as any,
+        ];
+      });
+
+      const mainnetAdapter = new BybitAdapter();
+      await mainnetAdapter.connect({ environment: 'mainnet', region: 'india' });
+      vi.spyOn(mainnetAdapter, 'fetchTickers').mockImplementation(async () => {
+        seenAdapterHosts.push({ env: 'mainnet', host: mainnetAdapter.getHost() });
+        return [
+          {
+            symbol: 'ETH/USDT',
+            timestamp: Date.now(),
+            last: new BigNumber(3599.25),
+            bid: new BigNumber(3598),
+            ask: new BigNumber(3600),
+            high: new BigNumber(3650),
+            low: new BigNumber(3520),
+            volume: new BigNumber(90000),
+            quoteVolume: new BigNumber(323932500),
+            percentage: 4.1,
+          },
+        ];
+      });
+
+      vi.spyOn(ExchangeManager, 'getProvider').mockImplementation(async (_exch, cfg) =>
+        (cfg.environment === 'demo' ? demoAdapter : mainnetAdapter) as any
+      );
+
+      const coordinators = new Map<string, PublicMarketDataCoordinator>();
+      const getCoordinator = (key: string) => {
+        let coord = coordinators.get(key);
+        if (!coord) {
+          coord = new PublicMarketDataCoordinator(
+            { storage: { get: vi.fn(), put: vi.fn(), delete: vi.fn(), list: vi.fn() }, blockConcurrencyWhile: (fn: any) => fn() } as any,
+            { ENVIRONMENT: 'production' } as any
+          );
+          coordinators.set(key, coord);
+        }
+        return coord;
+      };
+
+      const doNamespace = {
+        idFromName: vi.fn((name: string) => name),
+        get: vi.fn((id: string) => ({
+          fetch: (req: Request) => {
+            seenCoordinatorUrls.push(req.url);
+            return getCoordinator(id).fetch(req);
+          },
+        })),
+      };
+
+      // Demo user querying with bare base symbol "ETH" and concatenated "ETHUSDT"
+      const demoCtxBase = createTickerContext({ DB: createConnectedUserDb('demo'), PUBLIC_MARKET_COORDINATOR: doNamespace }, 'ETH');
+      const demoBodyBase = await handleGetTicker(demoCtxBase) as any;
+      expect(demoBodyBase.symbol).toBe('ETH/USDT');
+      expect(demoBodyBase.price).toBe(3510.5);
+      expect(demoBodyBase.volume24h).toBe(15000);
+      expect(demoBodyBase.priceChangePercent24h).toBe(1.75);
+
+      const demoCtxRaw = createTickerContext({ DB: createConnectedUserDb('demo'), PUBLIC_MARKET_COORDINATOR: doNamespace }, 'ETHUSDT');
+      const demoBodyRaw = await handleGetTicker(demoCtxRaw) as any;
+      expect(demoBodyRaw.price).toBe(3510.5);
+
+      // Mainnet user must NOT read demo's L1 or DO cache
+      const mainnetCtx = createTickerContext({ DB: createConnectedUserDb('mainnet'), PUBLIC_MARKET_COORDINATOR: doNamespace }, 'ETH/USDT');
+      const mainnetBody = await handleGetTicker(mainnetCtx) as any;
+      expect(mainnetBody.price).toBe(3599.25);
+      expect(mainnetBody.volume24h).toBe(90000);
+
+      expect(seenCoordinatorUrls).toContain('http://coordinator/tickers?environment=demo&region=india');
+      expect(seenCoordinatorUrls).toContain('http://coordinator/tickers?environment=mainnet&region=india');
+      expect(seenAdapterHosts).toEqual([
+        { env: 'demo', host: 'https://api-demo.bybit.com' },
+        { env: 'mainnet', host: 'https://api.bybit.com' },
+      ]);
     });
   });
 });

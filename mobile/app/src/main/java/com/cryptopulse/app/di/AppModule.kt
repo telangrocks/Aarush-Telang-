@@ -142,6 +142,12 @@ object AppModule {
         private val MAX_RETRIES = 2
         private val INITIAL_DELAY_MS = 1000L
 
+        private fun isCanceled(chain: Interceptor.Chain): Boolean = try {
+            chain.call().isCanceled()
+        } catch (_: UnsupportedOperationException) {
+            false
+        }
+
         override fun intercept(chain: Interceptor.Chain): Response {
             val request = chain.request()
             val method = request.method
@@ -151,16 +157,29 @@ object AppModule {
                 return chain.proceed(request)
             }
 
+            if (isCanceled(chain)) {
+                throw IOException("Canceled")
+            }
+
             var retryCount = 0
             var lastException: IOException? = null
 
             while (retryCount <= MAX_RETRIES) {
+                if (isCanceled(chain)) {
+                    throw lastException ?: IOException("Canceled")
+                }
+
                 try {
                     val response = chain.proceed(request)
                     val code = response.code
 
                     // Check for retryable server errors and rate-limiting
                     if ((code == 500 || code == 502 || code == 503 || code == 504 || code == 429) && retryCount < MAX_RETRIES) {
+                        if (isCanceled(chain)) {
+                            response.close()
+                            throw IOException("Canceled")
+                        }
+
                         val retryAfterHeader = response.header("Retry-After")
                         val delayMs = if (code == 429 && retryAfterHeader != null) {
                             (retryAfterHeader.toLongOrNull()?.times(1000L) ?: (INITIAL_DELAY_MS * (1L shl retryCount))).coerceIn(500L, 3000L)
@@ -178,11 +197,18 @@ object AppModule {
                             Thread.currentThread().interrupt()
                             throw IOException("Request interrupted during retry backoff", e)
                         }
+
+                        if (isCanceled(chain)) {
+                            throw IOException("Canceled")
+                        }
                         continue
                     }
 
                     return response
                 } catch (e: IOException) {
+                    if (isCanceled(chain)) {
+                        throw e
+                    }
                     lastException = e
                     if (retryCount < MAX_RETRIES) {
                         retryCount++
@@ -192,6 +218,9 @@ object AppModule {
                         } catch (ie: InterruptedException) {
                             Thread.currentThread().interrupt()
                             throw IOException("Request interrupted during retry backoff", ie)
+                        }
+                        if (isCanceled(chain)) {
+                            throw e
                         }
                     } else {
                         break
