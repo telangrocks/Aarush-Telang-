@@ -16,7 +16,7 @@ vi.mock('../../src/exchanges', async (importOriginal) => {
       getProvider: vi.fn().mockResolvedValue({
         fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', last: 50100 }),
         fetchKlines: vi.fn().mockResolvedValue([]),
-        fetchBalance: vi.fn().mockResolvedValue([]),
+        fetchBalance: vi.fn().mockResolvedValue({ free: { USDT: 10000 }, total: { USDT: 10000 } }),
         fetchMarkets: vi.fn().mockResolvedValue([
           { id: 'BTCUSDT', symbol: 'BTC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
           { id: 'ZECUSDT', symbol: 'ZEC/USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },

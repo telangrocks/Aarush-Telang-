@@ -680,10 +680,18 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
           [t2]: [22, 28]
         }
       });
-      const ctxT1 = createZeroBalanceContext(snapT1); // 0 balance -> transient rejection
-      const resT1 = freshStrategy.evaluate(ctxT1, '5m');
+      vi.spyOn((freshStrategy as any).riskEngine, "evaluate").mockReturnValueOnce({
+        riskClassification: "HIGH", // Transiently disallowed
+        stopLossDistance: 5.0,
+        takeProfitDistance: 10.0,
+        maximumExposure: 0,
+        positionSizeRecommendation: 0,
+        leverageRecommendation: 1,
+        explanation: ["Simulated transient HIGH risk"]
+      } as any);
+      const resT1 = freshStrategy.evaluate(new StrategyContext(snapT1, 10000).freeze(), '5m');
       expect(resT1.hasSignal).toBe(false);
-      expect(resT1.metadata.reasoning.some((r: string) => r.includes("Account balance is zero"))).toBe(true);
+      expect(resT1.metadata.reasoning.some((r: string) => r.includes("Risk classification HIGH is not allowed"))).toBe(true);
 
       // Candle T2: immediately following bar, alignment continues, balance is restored
       const snapT2 = buildMtfSnapshot({
@@ -878,7 +886,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       const t2 = BASE_TIME + tf5mMs;
       const t3 = BASE_TIME + 2 * tf5mMs;
 
-      // Bar T1: rejected due to zero balance
+      // Bar T1: rejected due to transient disallowed HIGH risk classification
       const snapT1 = createDefaultMtfSnapshot(60, t1);
       mockIndicators(freshStrategy, {
         rsiByTimestamp: {
@@ -888,7 +896,16 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
           [t3]: [22, 28]
         }
       });
-      freshStrategy.evaluate(createZeroBalanceContext(snapT1), '5m');
+      vi.spyOn((freshStrategy as any).riskEngine, "evaluate").mockReturnValueOnce({
+        riskClassification: "HIGH",
+        stopLossDistance: 5.0,
+        takeProfitDistance: 10.0,
+        maximumExposure: 0,
+        positionSizeRecommendation: 0,
+        leverageRecommendation: 1,
+        explanation: ["Simulated transient HIGH risk"]
+      } as any);
+      freshStrategy.evaluate(new StrategyContext(snapT1, 10000).freeze(), '5m');
 
       // Bar T2: successfully recovered
       const snapT2 = createDefaultMtfSnapshot(61, t2);
@@ -1238,7 +1255,7 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       const t1 = BASE_TIME;
       const t2 = BASE_TIME + tf5mMs;
 
-      // Bar T1: BUY setup transiently rejected for zero balance -> populates rejectedEdgeEvents
+      // Bar T1: BUY setup transiently rejected for disallowed risk -> populates rejectedEdgeEvents
       const snapT1 = createDefaultMtfSnapshot(60, t1);
       mockIndicators(freshStrategy, {
         rsiByTimestamp: {
@@ -1247,7 +1264,16 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
           [t2]: [22, 28],
         },
       });
-      freshStrategy.evaluate(createZeroBalanceContext(snapT1), "5m");
+      vi.spyOn((freshStrategy as any).riskEngine, "evaluate").mockReturnValueOnce({
+        riskClassification: "HIGH",
+        stopLossDistance: 5.0,
+        takeProfitDistance: 10.0,
+        maximumExposure: 0,
+        positionSizeRecommendation: 0,
+        leverageRecommendation: 1,
+        explanation: ["Simulated transient HIGH risk"]
+      } as any);
+      freshStrategy.evaluate(new StrategyContext(snapT1, 10000).freeze(), "5m");
       expect((freshStrategy as any).rejectedEdgeEvents.size).toBe(1);
 
       const baseCandles = createCandles(61, "5m", t2);
@@ -1340,22 +1366,31 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       expect(resPosInfRsi.metadata.reasoning.some((r: string) => r.includes("RSI contains invalid or non-finite values"))).toBe(true);
     });
 
-    it("33. rejects Infinity/-Infinity/negative accountBalance, Infinity ATR (without polluting recovery), and invalid allowedRiskClassifications", () => {
+    it("33. decouples zero/Infinity/negative/NaN accountBalance from signal qualification, while rejecting Infinity ATR and invalid allowedRiskClassifications", () => {
       const snap = createDefaultMtfSnapshot();
 
-      // Infinity / negative / NaN accountBalance (bypassing StrategyContext default fallback)
-      const balStrategy = new MeanReversionStrategy();
-      mockIndicators(balStrategy, { currentRsi5m: 28, previousRsi5m: 22 });
-      for (const badBal of [Number.POSITIVE_INFINITY, Number.NaN, -500]) {
+      const fundedStrategy = new MeanReversionStrategy();
+      mockIndicators(fundedStrategy, { currentRsi5m: 28, previousRsi5m: 22 });
+      const fundedRes = fundedStrategy.evaluate(new StrategyContext(snap, 10000).freeze(), "5m");
+      expect(fundedRes.hasSignal).toBe(true);
+
+      // Zero / Infinity / negative / NaN accountBalance safely resolve to 0 and still qualify identical signals
+      for (const badBal of [0, Number.POSITIVE_INFINITY, Number.NaN, -500]) {
+        const balStrategy = new MeanReversionStrategy();
+        mockIndicators(balStrategy, { currentRsi5m: 28, previousRsi5m: 22 });
         const badBalCtx = {
           timestamp: snap.timestamp,
           marketSnapshot: snap,
           accountBalance: badBal,
         } as unknown as Readonly<StrategyContext>;
         const res = balStrategy.evaluate(badBalCtx, "5m");
-        expect(res.hasSignal).toBe(false);
-        expect(res.metadata.reasoning[0]).toContain("Account balance is zero or unconfigured");
-        expect((balStrategy as any).rejectedEdgeEvents.size).toBe(0);
+        expect(res.hasSignal).toBe(true);
+        expect(res.confidenceScore).toBe(fundedRes.confidenceScore);
+        expect(res.metadata.signal?.entryPrice).toBe(fundedRes.metadata.signal?.entryPrice);
+        expect(res.metadata.signal?.stopLoss).toBe(fundedRes.metadata.signal?.stopLoss);
+        expect(res.metadata.signal?.takeProfit).toBe(fundedRes.metadata.signal?.takeProfit);
+        expect(res.metadata.signal?.riskAssessment.positionSizeRecommendation).toBe(0);
+        expect(res.metadata.signal?.riskAssessment.maximumExposure).toBe(0);
       }
 
       // Infinity ATR must fail closed BEFORE RiskEngine and clear any prior pending recovery
@@ -1373,7 +1408,16 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         },
         atr5m: 2.0,
       });
-      atrStrategy.evaluate(createZeroBalanceContext(createDefaultMtfSnapshot(60, t1)), "5m");
+      vi.spyOn((atrStrategy as any).riskEngine, "evaluate").mockReturnValueOnce({
+        riskClassification: "HIGH",
+        stopLossDistance: 5.0,
+        takeProfitDistance: 10.0,
+        maximumExposure: 0,
+        positionSizeRecommendation: 0,
+        leverageRecommendation: 1,
+        explanation: ["Simulated transient HIGH risk"]
+      } as any);
+      atrStrategy.evaluate(new StrategyContext(createDefaultMtfSnapshot(60, t1), 10000).freeze(), "5m");
       expect((atrStrategy as any).rejectedEdgeEvents.size).toBe(1);
 
       mockIndicators(atrStrategy, {
@@ -1404,14 +1448,13 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
       expect(resBadCfg.metadata.reasoning.some((r: string) => r.includes("Allowed risk classifications configuration is missing"))).toBe(true);
     });
 
-    it("34. fails closed if RiskEngine outputs non-finite, zero, or non-positive SL/TP/sizing values", () => {
+    it("34. fails closed if RiskEngine outputs non-finite, zero, or inverted SL/TP bounds while allowing zero positionSizeRecommendation/maximumExposure", () => {
       const snap = createDefaultMtfSnapshot();
       const riskMutators = [
         { riskClassification: "LOW", stopLossDistance: 0, takeProfitDistance: 5, maximumExposure: 10, positionSizeRecommendation: 10, explanation: [] },
         { riskClassification: "LOW", stopLossDistance: 150, takeProfitDistance: 5, maximumExposure: 10, positionSizeRecommendation: 10, explanation: [] }, // BUY SL = 100 - 150 <= 0
         { riskClassification: "LOW", stopLossDistance: 2, takeProfitDistance: Number.POSITIVE_INFINITY, maximumExposure: 10, positionSizeRecommendation: 10, explanation: [] },
-        { riskClassification: "LOW", stopLossDistance: 2, takeProfitDistance: 5, maximumExposure: 10, positionSizeRecommendation: 0, explanation: [] },
-        { riskClassification: "LOW", stopLossDistance: 2, takeProfitDistance: 5, maximumExposure: Number.NaN, positionSizeRecommendation: 10, explanation: [] },
+        { riskClassification: "LOW", stopLossDistance: Number.NaN, takeProfitDistance: 5, maximumExposure: 0, positionSizeRecommendation: 0, explanation: [] },
       ];
 
       for (const badRisk of riskMutators) {
@@ -1424,6 +1467,22 @@ describe("MeanReversionStrategy — 4TF MTF Architecture Contract", () => {
         expect(res.metadata.signal).toBeNull();
         expect(res.metadata.reasoning.some((r: string) => r.includes("Invalid risk/SL/TP parameters"))).toBe(true);
       }
+
+      // Zero wallet-derived sizing & exposure MUST NOT suppress signal qualification when SL/TP bounds are valid
+      const zeroSizingStrat = new MeanReversionStrategy();
+      mockIndicators(zeroSizingStrat, { currentRsi5m: 28, previousRsi5m: 22 });
+      vi.spyOn((zeroSizingStrat as any).riskEngine, "evaluate").mockReturnValue({
+        riskClassification: "LOW",
+        stopLossDistance: 2,
+        takeProfitDistance: 5,
+        maximumExposure: 0,
+        positionSizeRecommendation: 0,
+        explanation: [],
+      } as any);
+      const resZeroSizing = zeroSizingStrat.evaluate(new StrategyContext(snap, 0).freeze(), "5m");
+      expect(resZeroSizing.hasSignal).toBe(true);
+      expect(resZeroSizing.metadata.signal?.stopLoss).toBe(98);
+      expect(resZeroSizing.metadata.signal?.takeProfit).toBe(105);
     });
   });
 });

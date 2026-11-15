@@ -991,4 +991,32 @@ describe('ScalperV2Strategy — Multi-Timeframe (5m + 15m + 1h + 4h) Test Suite'
       expect(MarketRegimeEngine.isStrategyAllowed('ScalperV2', regime1h).allowed).toBe(false);
     });
   });
+
+  describe('Wallet Balance Decoupling', () => {
+    it('emits identical BUY signal Entry/SL/TP/confidence with zero or non-finite wallet balance as with funded balance', () => {
+      const snapshot = buildMtfSnapshot({
+        '5m': createBullishCandles(35, 100, '5m'),
+        '15m': createBullishCandles(35, 100, '15m'),
+        '1h': createBullishCandles(35, 100, '1h'),
+        '4h': createBullishCandles(35, 100, '4h'),
+      });
+
+      const fundedStrat = new ScalperV2Strategy();
+      const fundedRes = fundedStrat.evaluate(new StrategyContext(snapshot, 10000).freeze(), '5m');
+      expect(fundedRes.hasSignal).toBe(true);
+
+      for (const bal of [0, undefined, -100, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const s = new ScalperV2Strategy();
+        const res = s.evaluate(new StrategyContext(snapshot, bal).freeze(), '5m');
+        expect(res.hasSignal).toBe(true);
+        expect(res.confidenceScore).toBe(fundedRes.confidenceScore);
+        expect(res.metadata.signal?.type).toBe(SignalType.BUY);
+        expect(res.metadata.signal?.entryPrice).toBe(fundedRes.metadata.signal?.entryPrice);
+        expect(res.metadata.signal?.stopLoss).toBe(fundedRes.metadata.signal?.stopLoss);
+        expect(res.metadata.signal?.takeProfit).toBe(fundedRes.metadata.signal?.takeProfit);
+        expect(res.metadata.signal?.riskAssessment.positionSizeRecommendation).toBe(0);
+        expect(res.metadata.signal?.riskAssessment.maximumExposure).toBe(0);
+      }
+    });
+  });
 });

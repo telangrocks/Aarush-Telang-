@@ -58,6 +58,7 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
           { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
           { id: 'SOLUSDT', symbol: 'SOL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
           { id: 'PASSUSDT', symbol: 'PASS/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+          { id: 'FAILUSDT', symbol: 'FAIL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
           { id: 'REGIMEACCEPTUSDT', symbol: 'REGIME_ACCEPT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
           { id: 'REGIMEREJECTUSDT', symbol: 'REGIME_REJECT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
         ]),
@@ -67,6 +68,7 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
             { id: 'ETHUSDT', symbol: 'ETH/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
             { id: 'SOLUSDT', symbol: 'SOL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
             { id: 'PASSUSDT', symbol: 'PASS/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
+            { id: 'FAILUSDT', symbol: 'FAIL/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
             { id: 'REGIMEACCEPTUSDT', symbol: 'REGIME_ACCEPT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
             { id: 'REGIMEREJECTUSDT', symbol: 'REGIME_REJECT/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.01, price: 0.01 }, limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } } },
           ];

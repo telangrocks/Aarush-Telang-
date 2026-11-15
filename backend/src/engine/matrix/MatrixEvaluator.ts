@@ -220,7 +220,10 @@ export class MatrixEvaluator {
     const scanId = options.scanId || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `scan-${Date.now()}`);
     const timestamp = options.timestamp || Date.now();
     const candleStore = options.candleStore;
-    const accountBalance = options.accountBalance || 1000;
+    const accountBalance =
+      typeof options.accountBalance === 'number' && Number.isFinite(options.accountBalance) && options.accountBalance > 0
+        ? options.accountBalance
+        : 0;
     const strategyConfigs = options.strategyConfigs || {};
     const registry = StrategyRegistry.getInstance();
 

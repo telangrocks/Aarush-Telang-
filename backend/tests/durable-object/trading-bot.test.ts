@@ -40,7 +40,7 @@ vi.mock("../../src/exchanges", async (importOriginal) => {
             })
           );
         }),
-        fetchBalance: vi.fn().mockResolvedValue([]),
+        fetchBalance: vi.fn().mockResolvedValue({ free: { USDT: 10000 }, total: { USDT: 10000 } }),
         fetchMarkets: vi.fn().mockResolvedValue([
           { id: 'BTCUSDT', symbol: 'BTC', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } },
           { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } },
@@ -455,6 +455,8 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     });
 
     const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set('isActive', true);
+    mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('userId', 'user-123');
     mockStorage.set('coinId', 'BTCUSDT');
     mockStorage.set('targetEntryPrice', 50000);
@@ -488,7 +490,9 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
         side: 'BUY',
         timestamp: new Date().toISOString(),
         status: 'pending',
-        source: 'MANUAL'
+        source: 'AUTONOMOUS',
+        generation: 1,
+        approvalGeneration: 1
       }
     ]);
 
@@ -525,8 +529,10 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     });
 
     const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set('isActive', true);
+    mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('userId', 'user-123');
-    mockStorage.set('alerts', [ { id: 'alert-1', symbol: 'BTCUSDT', positionSize: 100, quantity: 0.02, status: 'pending', source: 'MANUAL' } ]);
+    mockStorage.set('alerts', [ { id: 'alert-1', symbol: 'BTCUSDT', positionSize: 100, quantity: 0.02, status: 'pending', source: 'AUTONOMOUS', generation: 1, approvalGeneration: 1 } ]);
 
     const req = new Request('http://bot/execute-trade', {
       method: 'POST',
@@ -572,6 +578,8 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
     });
 
     const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set('isActive', true);
+    mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('userId', 'user-abc');
     mockStorage.set('approvedCandidateRecord', {
       approvalGeneration: 1,
@@ -602,20 +610,25 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
-      status: 'pending'
+      status: 'pending',
+      source: 'AUTONOMOUS',
+      generation: 1,
+      approvalGeneration: 1
     };
 
-    // 1. Register alert
+    // 1. /register-alert is removed and returns 404
     const regReq = new Request('http://bot/register-alert', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ alert: testAlert })
     });
     const regRes = await bot.fetch(regReq);
-    expect(regRes.status).toBe(200);
-    const regData = await regRes.json<any>();
-    expect(regData.success).toBe(true);
-    expect(regData.alertId).toBe('test-uuid-999');
+    expect(regRes.status).toBe(404);
+
+    // Seed autonomous alert directly in DO storage (same persistence boundary used by alarm())
+    mockStorage.set('alerts', [testAlert]);
+    (bot as any).runtimeState.isActive = true;
+    (bot as any).runtimeState.alerts = [testAlert];
 
     // 2. Fetch /alerts to prove presence
     const alertsReq = new Request('http://bot/alerts', { method: 'GET' });
@@ -689,15 +702,17 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       strategy: 'ScalperV2',
       side: 'BUY',
       timestamp: new Date().toISOString(),
-      status: 'pending'
+      status: 'pending',
+      source: 'AUTONOMOUS',
+      generation: 1,
+      approvalGeneration: 1
     };
 
-    const regReq = new Request('http://bot/register-alert', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ alert: invalidAlert })
-    });
-    await bot.fetch(regReq);
+    mockStorage.set('isActive', true);
+    mockStorage.set('lock:alarmGeneration', 1);
+    mockStorage.set('alerts', [invalidAlert]);
+    (bot as any).runtimeState.isActive = true;
+    (bot as any).runtimeState.alerts = [invalidAlert];
 
     const { ExchangeManager } = await import('../../src/exchanges');
     vi.spyOn(ExchangeManager, 'executeIdempotentOrder').mockRejectedValueOnce(
@@ -714,6 +729,110 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
 
     const execData = await execRes.json<any>();
     expect(execData.success).toBe(false);
+  });
+
+  it("fails closed with 409 PORTFOLIO_EXPOSURE_EXCEEDED on /execute-trade when wallet balance is unavailable or zero", async () => {
+    mockDb.prepare = vi.fn().mockImplementation((query: string) => {
+      if (query.includes('PRAGMA table_info')) {
+        return {
+          all: vi.fn().mockResolvedValue({ results: [{ name: 'target_entry_price' }, { name: 'entry_status' }] })
+        };
+      }
+      return {
+        bind: vi.fn().mockReturnValue({
+          run: vi.fn().mockResolvedValue({ success: true }),
+          first: vi.fn().mockResolvedValue({
+            exchange_name: 'bybit',
+            exchange_environment: 'demo',
+            exchange_region: 'global',
+            exchange_api_key: 'key',
+            exchange_api_secret_iv: 'bW9ja19pdk1vY2tJdk1vY2s=',
+            exchange_api_secret_encrypted: 'sec'
+          })
+        })
+      };
+    });
+
+    const bot = new TradingBot(mockState, mockEnv);
+    mockStorage.set('isActive', true);
+    mockStorage.set('lock:alarmGeneration', 1);
+    mockStorage.set('userId', 'user-abc');
+    mockStorage.set('approvedCandidateRecord', {
+      approvalGeneration: 1,
+      userId: 'user-abc',
+      budgetUsdt: 100,
+      approvedSymbols: ['SOL', 'SOLUSDT', 'SOL/USDT'],
+      approvalState: 'FINAL_APPROVED',
+      exchangeName: 'bybit',
+      environment: 'demo',
+      accountFingerprint: 'bybit:demo',
+      orderType: 'ALL',
+      approvedAt: Date.now(),
+      expiresAt: Date.now() + 3600_000,
+      symbolMetadataSnapshot: {}
+    });
+
+    const alert = {
+      id: 'test-zero-balance-exec',
+      symbol: 'SOL/USDT',
+      signalPrice: 135,
+      targetEntryPrice: 135,
+      entryPrice: 135,
+      stopLoss: 130,
+      takeProfit: 145,
+      positionSize: 100,
+      requestedBudget: 100,
+      quantity: 0.74,
+      strategy: 'ScalperV2',
+      side: 'BUY',
+      timestamp: new Date().toISOString(),
+      status: 'pending',
+      source: 'AUTONOMOUS',
+      generation: 1,
+      approvalGeneration: 1
+    };
+
+    mockStorage.set('alerts', [alert]);
+    (bot as any).runtimeState.isActive = true;
+    (bot as any).runtimeState.alerts = [alert];
+
+    const { ExchangeManager } = await import('../../src/exchanges');
+    const providerSpy = vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue({
+      fetchMarkets: vi.fn().mockResolvedValue([
+        {
+          id: 'SOLUSDT',
+          symbol: 'SOL/USDT',
+          quote: 'USDT',
+          active: true,
+          category: 'linear',
+          precision: { amount: 0.01, price: 0.01 },
+          limits: { cost: { min: 5 }, amount: { min: 0.01, max: 1000 } }
+        }
+      ]),
+      fetchTicker: vi.fn().mockResolvedValue({ symbol: 'SOL/USDT', last: 135, bid: 134.9, ask: 135.1 }),
+      fetchBalance: vi.fn().mockResolvedValue([]),
+      fetchPositions: vi.fn().mockResolvedValue([]),
+      supportsOco: vi.fn().mockReturnValue(false),
+    } as any);
+    const execOrderSpy = vi.spyOn(ExchangeManager, 'executeIdempotentOrder');
+
+    try {
+      const execReq = new Request('http://bot/execute-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: 'user-abc', alertId: 'test-zero-balance-exec' })
+      });
+      const execRes = await bot.fetch(execReq);
+      expect(execRes.status).toBe(409);
+
+      const execData = await execRes.json<any>();
+      expect(execData.success).toBe(false);
+      expect(execData.error).toBe('PORTFOLIO_EXPOSURE_EXCEEDED');
+      expect(execOrderSpy).not.toHaveBeenCalled();
+    } finally {
+      providerSpy.mockRestore();
+      execOrderSpy.mockRestore();
+    }
   });
 
   describe("Technical Analysis Strategy Decoupling & Polling Stability", () => {
@@ -971,14 +1090,17 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date().toISOString(),
-        status: 'pending'
+        status: 'pending',
+        source: 'AUTONOMOUS',
+        generation: 1,
+        approvalGeneration: 1
       };
 
-      await bot.fetch(new Request('http://bot/register-alert', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alert: testAlert })
-      }));
+      mockStorage.set('isActive', true);
+      mockStorage.set('lock:alarmGeneration', 1);
+      mockStorage.set('alerts', [testAlert]);
+      (bot as any).runtimeState.isActive = true;
+      (bot as any).runtimeState.alerts = [testAlert];
 
       const gateSpy = vi.spyOn(FinalDispatchSafetyGate, 'validate');
 
@@ -1023,6 +1145,8 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       });
 
       const bot = new TradingBot(mockState, mockEnv);
+      mockStorage.set('isActive', true);
+      mockStorage.set('lock:alarmGeneration', 1);
       mockStorage.set('userId', 'user-lineage-2');
       mockStorage.set('approvedCandidateRecord', {
         approvalGeneration: 1,
@@ -1052,14 +1176,15 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
         strategy: 'ScalperV2',
         side: 'BUY',
         timestamp: new Date().toISOString(),
-        status: 'pending'
+        status: 'pending',
+        source: 'AUTONOMOUS',
+        generation: 1,
+        approvalGeneration: 1
       };
 
-      await bot.fetch(new Request('http://bot/register-alert', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alert: testAlert })
-      }));
+      mockStorage.set('alerts', [testAlert]);
+      (bot as any).runtimeState.isActive = true;
+      (bot as any).runtimeState.alerts = [testAlert];
 
       const gateSpy = vi.spyOn(FinalDispatchSafetyGate, 'validate');
 

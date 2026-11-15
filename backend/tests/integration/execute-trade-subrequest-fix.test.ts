@@ -249,6 +249,8 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
       };
 
       mockStorage.set('userId', 'usr_test');
+      mockStorage.set('isActive', true);
+      mockStorage.set('lock:alarmGeneration', 1);
       mockStorage.set('strategy', 'ScalperV2');
       mockStorage.set('approvedCandidateRecord', {
         approvalGeneration: 1,
@@ -308,7 +310,7 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
     it('proves executeTrade calls fetchMarket exactly once and makes ZERO calls to fetchMarkets', async () => {
       const bot = new TradingBot(mockState, mockEnv);
 
-      // Register valid alert
+      // Seed autonomous alert
       const alertId = '8318ded3-9bf8-4a3f-953e-cb77d84c082f';
       const tradeAlert = {
         id: alertId,
@@ -326,15 +328,13 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
         estimatedPnl: 1.85,
         timestamp: new Date().toISOString(),
         status: 'pending',
+        source: 'AUTONOMOUS' as const,
+        generation: 1,
+        approvalGeneration: 1,
       };
 
-      const regReq = new Request('http://bot/register-alert', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alert: tradeAlert }),
-      });
-      const regRes = await bot.fetch(regReq);
-      expect(regRes.status).toBe(200);
+      mockStorage.set('alerts', [tradeAlert]);
+      (bot as any).runtimeState.alerts = [tradeAlert];
 
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
@@ -380,14 +380,13 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
         estimatedPnl: 1.85,
         timestamp: new Date().toISOString(),
         status: 'pending',
+        source: 'AUTONOMOUS' as const,
+        generation: 1,
+        approvalGeneration: 1,
       };
 
-      const regReq = new Request('http://bot/register-alert', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alert: tradeAlert }),
-      });
-      await bot.fetch(regReq);
+      mockStorage.set('alerts', [tradeAlert]);
+      (bot as any).runtimeState.alerts = [tradeAlert];
 
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',
@@ -437,14 +436,13 @@ describe('Patch 1: Subrequest Fix Verification Tests', () => {
         estimatedPnl: 1.85,
         timestamp: new Date().toISOString(),
         status: 'pending',
+        source: 'AUTONOMOUS' as const,
+        generation: 1,
+        approvalGeneration: 1,
       };
 
-      const regReq = new Request('http://bot/register-alert', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alert: tradeAlert }),
-      });
-      await bot.fetch(regReq);
+      mockStorage.set('alerts', [tradeAlert]);
+      (bot as any).runtimeState.alerts = [tradeAlert];
 
       const req = new Request('http://bot/execute-trade', {
         method: 'POST',

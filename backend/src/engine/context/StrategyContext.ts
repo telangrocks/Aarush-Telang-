@@ -17,12 +17,15 @@ export class StrategyContext {
   public readonly marketSnapshot: Readonly<MarketSnapshot>;
   public readonly accountBalance: number;
 
-  constructor(marketSnapshot: MarketSnapshot, accountBalance: number = 1000) {
+  constructor(marketSnapshot: MarketSnapshot, accountBalance?: number) {
     if (!marketSnapshot || !marketSnapshot.timestamp) {
       throw new Error('MarketSnapshot must have a valid timestamp');
     }
     this.timestamp = marketSnapshot.timestamp;
-    this.accountBalance = accountBalance > 0 ? accountBalance : 1000;
+    this.accountBalance =
+      typeof accountBalance === 'number' && Number.isFinite(accountBalance) && accountBalance > 0
+        ? accountBalance
+        : 0;
     this.marketSnapshot = deepFreeze(marketSnapshot);
   }
 

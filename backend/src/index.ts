@@ -47,7 +47,6 @@ import {
   handleAcknowledgeAlert,
   handleDismissAlert,
   handleGetExecutionStatus,
-  handleTriggerManualTradeAlert,
 } from "./handlers/exchange";
 import { handleRegisterFcmToken } from "./handlers/notifications";
 import {
@@ -440,7 +439,6 @@ api.post("/trading-bot/alerts/acknowledge", handleAcknowledgeAlert);
 api.post("/trading-bot/alerts/:alertId/dismiss", handleDismissAlert);
 api.post("/trading-bot/alerts/dismiss", handleDismissAlert);
 api.get("/trading-bot/execution-status/:positionId", handleGetExecutionStatus);
-api.post("/trading-bot/manual-alert", handleTriggerManualTradeAlert);
 
 // FCM token registration for push notifications
 api.post("/fcm/register", handleRegisterFcmToken);

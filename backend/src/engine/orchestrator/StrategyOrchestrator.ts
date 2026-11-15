@@ -35,7 +35,7 @@ export class StrategyOrchestrator {
     symbol: string,
     strategyId?: string,
     config?: Record<string, any>,
-    accountBalance: number = 1000,
+    accountBalance: number = 0,
     telemetryContext?: {
       userId: string;
       cycleId: string;

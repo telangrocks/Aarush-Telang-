@@ -435,16 +435,20 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       '4h': createBullishCandles(250, '4h', BASE_TIME),
     }, BASE_TIME);
 
-    // 1. Account balance zero fails current risk gate
-    const mockContextZeroBalance = {
-      marketSnapshot: snapshot,
+    // 1. Transient EXTREME risk classification fails current risk gate without corrupting state
+    vi.spyOn((testStrategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
       timestamp: BASE_TIME,
-      accountBalance: 0,
-      freeze: () => mockContextZeroBalance
-    } as any;
-    const resultZeroBalance = testStrategy.evaluate(mockContextZeroBalance, '5m');
-    expect(resultZeroBalance.hasSignal).toBe(false);
-    expect(resultZeroBalance.metadata.reasoning.some((r: string) => r.includes('Account balance not available'))).toBe(true);
+      stopLossDistance: 20,
+      takeProfitDistance: 30,
+      riskRewardRatio: 2.5,
+      positionSizeRecommendation: 0,
+      maximumExposure: 0,
+      riskClassification: 'EXTREME',
+      explanation: ['Simulated transient EXTREME risk'],
+    } as any);
+    const resExtremeRisk = testStrategy.evaluate(new StrategyContext(snapshot, 10000).freeze(), '5m');
+    expect(resExtremeRisk.hasSignal).toBe(false);
+    expect(resExtremeRisk.metadata.reasoning.some((r: string) => r.includes('No qualified signal generated'))).toBe(true);
 
     // 2. Zero ATR fails current risk gate (constant price 100 -> TR = 0 -> ATR = 0)
     const zeroAtr15m: NormalizedCandle[] = createBullishCandles(250, '15m', BASE_TIME).map(c => ({
@@ -495,9 +499,9 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
   });
 
   // --------------------------------------------------------------------------
-  // TEST 13: Transient zero-balance rejection at Bar 1 recovers on Bar 2
+  // TEST 13: Transient EXTREME risk rejection at Bar 1 recovers on Bar 2
   // --------------------------------------------------------------------------
-  it('13. Transient zero-balance rejection at Bar 1 recovers and emits BUY at Bar 2 when balance is restored', () => {
+  it('13. Transient EXTREME risk rejection at Bar 1 recovers and emits BUY at Bar 2 when risk normalizes', () => {
     const strategy = new MomentumStrategy({
       ...DEFAULT_MOMENTUM_CONFIG,
       signalRules: {
@@ -526,16 +530,20 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       '4h': createBullishCandles(250, '4h', BASE_TIME),
     }, BASE_TIME);
 
-    // Evaluate Bar 1 with zero balance -> transient risk rejection
-    const mockContextZeroBal = {
-      marketSnapshot: snapBar1,
+    // Evaluate Bar 1 with transient EXTREME risk -> risk rejection
+    vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
       timestamp: BASE_TIME,
-      accountBalance: 0,
-      freeze: () => mockContextZeroBal
-    } as any;
-    const resBar1 = strategy.evaluate(mockContextZeroBal, '5m');
+      stopLossDistance: 20,
+      takeProfitDistance: 30,
+      riskRewardRatio: 2.5,
+      positionSizeRecommendation: 0,
+      maximumExposure: 0,
+      riskClassification: 'EXTREME',
+      explanation: ['Simulated transient EXTREME risk'],
+    } as any);
+    const resBar1 = strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
     expect(resBar1.hasSignal).toBe(false);
-    expect(resBar1.metadata.reasoning.some((r: string) => r.includes('Account balance not available'))).toBe(true);
+    expect(resBar1.metadata.reasoning.some((r: string) => r.includes('No qualified signal generated'))).toBe(true);
 
     // Bar 2: 5 minutes later, market alignment persists, balance restored to 10000
     const candleBar2: NormalizedCandle = {
@@ -577,7 +585,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       }
     });
 
-    // Bar 1: Rejected due to zero balance
+    // Bar 1: Rejected due to transient EXTREME risk
     const flat5m = createFlatCandles(249, '5m', BASE_TIME - 300000, 100);
     const surgeCandle: NormalizedCandle = {
       openTime: BASE_TIME - 300000,
@@ -596,13 +604,17 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       '4h': createBullishCandles(250, '4h', BASE_TIME),
     }, BASE_TIME);
 
-    const mockContextZeroBal = {
-      marketSnapshot: snapBar1,
+    vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
       timestamp: BASE_TIME,
-      accountBalance: 0,
-      freeze: () => mockContextZeroBal
-    } as any;
-    strategy.evaluate(mockContextZeroBal, '5m');
+      stopLossDistance: 20,
+      takeProfitDistance: 30,
+      riskRewardRatio: 2.5,
+      positionSizeRecommendation: 0,
+      maximumExposure: 0,
+      riskClassification: 'EXTREME',
+      explanation: ['Simulated transient EXTREME risk'],
+    } as any);
+    strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
 
     // Bar 2: Recovery emits BUY
     const candleBar2: NormalizedCandle = {
@@ -734,13 +746,17 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       '4h': createBearishCandles(250, '4h', BASE_TIME),
     }, BASE_TIME);
 
-    const mockContextZeroBal = {
-      marketSnapshot: snapBar1,
+    vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
       timestamp: BASE_TIME,
-      accountBalance: 0,
-      freeze: () => mockContextZeroBal
-    } as any;
-    const resBar1 = strategy.evaluate(mockContextZeroBal, '5m');
+      stopLossDistance: 20,
+      takeProfitDistance: 30,
+      riskRewardRatio: 2.5,
+      positionSizeRecommendation: 0,
+      maximumExposure: 0,
+      riskClassification: 'EXTREME',
+      explanation: ['Simulated transient EXTREME risk'],
+    } as any);
+    const resBar1 = strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
     expect(resBar1.hasSignal).toBe(false);
 
     const dropCandle2: NormalizedCandle = {
@@ -925,7 +941,7 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
   // --------------------------------------------------------------------------
   // TEST 22: Bearish SELL edge transition with EMA(50) < EMA(200) recovers on Bar 2 and suppresses Bar 3
   // --------------------------------------------------------------------------
-  it('22. Bearish SELL edge transition (EMA(50) < EMA(200)) rejected by zero balance at Bar 1 recovers at Bar 2 and suppresses Bar 3', () => {
+  it('22. Bearish SELL edge transition (EMA(50) < EMA(200)) rejected by EXTREME risk at Bar 1 recovers at Bar 2 and suppresses Bar 3', () => {
     const strategy = new MomentumStrategy();
 
     const flat5m = createFlatCandles(249, '5m', BASE_TIME - 300000, 100);
@@ -941,14 +957,18 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     const candlesBar1 = [...flat5m, dropBar1];
     const snapBar1 = buildMtfSnapshot({ '5m': candlesBar1 }, BASE_TIME, 80);
 
-    const zeroBalCtx = {
-      marketSnapshot: snapBar1,
+    vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
       timestamp: BASE_TIME,
-      accountBalance: 0,
-      freeze: () => zeroBalCtx,
-    } as any;
+      stopLossDistance: 20,
+      takeProfitDistance: 30,
+      riskRewardRatio: 2.5,
+      positionSizeRecommendation: 0,
+      maximumExposure: 0,
+      riskClassification: 'EXTREME',
+      explanation: ['Simulated transient EXTREME risk'],
+    } as any);
 
-    const resBar1 = strategy.evaluate(zeroBalCtx, '5m');
+    const resBar1 = strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
     expect(resBar1.hasSignal).toBe(false);
 
     // Bar 2: Bearish trend persists (EMA(50) < EMA(200), price < EMA(50)), balance restored
@@ -1100,6 +1120,50 @@ describe('MomentumStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       } finally {
         spy.mockRestore();
       }
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 26: Zero, negative, or non-finite wallet balance does not block signal qualification
+  // --------------------------------------------------------------------------
+  it('26. Zero, negative, or non-finite wallet balance produces identical BUY and SELL signals as funded balance', () => {
+    const tfMs = CandleValidator.timeframeToMs('5m');
+    const buySnap = buildMtfSnapshot({
+      '5m': [
+        ...createFlatCandles(249, '5m', BASE_TIME - tfMs, 100),
+        { openTime: BASE_TIME - tfMs, timestamp: BASE_TIME - tfMs, open: 100, high: 126, low: 100, close: 125, volume: 50000 },
+      ],
+    }, BASE_TIME, 125);
+    const sellSnap = buildMtfSnapshot({
+      '5m': [
+        ...createFlatCandles(249, '5m', BASE_TIME - tfMs, 100),
+        { openTime: BASE_TIME - tfMs, timestamp: BASE_TIME - tfMs, open: 100, high: 100, low: 79, close: 80, volume: 50000 },
+      ],
+    }, BASE_TIME, 80);
+
+    const fundedBuy = new MomentumStrategy().evaluate(new StrategyContext(buySnap, 10000).freeze(), '5m');
+    const fundedSell = new MomentumStrategy().evaluate(new StrategyContext(sellSnap, 10000).freeze(), '5m');
+    expect(fundedBuy.hasSignal).toBe(true);
+    expect(fundedSell.hasSignal).toBe(true);
+
+    for (const bal of [0, -100, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const zeroBuy = new MomentumStrategy().evaluate({ marketSnapshot: buySnap, timestamp: BASE_TIME, accountBalance: bal } as any, '5m');
+      expect(zeroBuy.hasSignal).toBe(true);
+      expect(zeroBuy.confidenceScore).toBe(fundedBuy.confidenceScore);
+      expect(zeroBuy.metadata.signal?.entryPrice).toBe(fundedBuy.metadata.signal?.entryPrice);
+      expect(zeroBuy.metadata.signal?.stopLoss).toBe(fundedBuy.metadata.signal?.stopLoss);
+      expect(zeroBuy.metadata.signal?.takeProfit).toBe(fundedBuy.metadata.signal?.takeProfit);
+      expect(zeroBuy.metadata.signal?.riskAssessment.positionSizeRecommendation).toBe(0);
+      expect(zeroBuy.metadata.signal?.riskAssessment.maximumExposure).toBe(0);
+
+      const zeroSell = new MomentumStrategy().evaluate({ marketSnapshot: sellSnap, timestamp: BASE_TIME, accountBalance: bal } as any, '5m');
+      expect(zeroSell.hasSignal).toBe(true);
+      expect(zeroSell.confidenceScore).toBe(fundedSell.confidenceScore);
+      expect(zeroSell.metadata.signal?.entryPrice).toBe(fundedSell.metadata.signal?.entryPrice);
+      expect(zeroSell.metadata.signal?.stopLoss).toBe(fundedSell.metadata.signal?.stopLoss);
+      expect(zeroSell.metadata.signal?.takeProfit).toBe(fundedSell.metadata.signal?.takeProfit);
+      expect(zeroSell.metadata.signal?.riskAssessment.positionSizeRecommendation).toBe(0);
+      expect(zeroSell.metadata.signal?.riskAssessment.maximumExposure).toBe(0);
     }
   });
 });

@@ -125,6 +125,7 @@ describe('Strict Budget Gate Integration Tests (Stage 2.10 - 2.11D)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockExecuteCycle.mockReset();
     __resetPublicOpportunityStateForTests();
     mockStorage = new Map();
 
@@ -496,6 +497,220 @@ describe('Strict Budget Gate Integration Tests (Stage 2.10 - 2.11D)', () => {
           expect(call[0]).not.toContain('UNAPPROVED');
         }
       }
+    });
+
+    it('rejects <= 0 or below-minNotional budget BEFORE fetchKlines and StrategyOrchestrator.executeCycle', async () => {
+      mockStorage.set('userId', userId);
+      mockStorage.set('strategy', 'ScalperV2');
+      mockStorage.set('isActive', true);
+      mockStorage.set('coinId', 'BTC/USDT');
+      mockStorage.set('monitoredSymbols', ['BTC/USDT']);
+      mockStorage.set('positionSize', 4); // < $5 minNotional
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId,
+        budgetUsdt: 4,
+        approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'mainnet',
+        accountFingerprint: 'fp-1',
+        orderType: 'MARKET',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 600000,
+        symbolMetadataSnapshot: {}
+      });
+
+      const bot = new TradingBot(mockState, mockEnv);
+      vi.spyOn(bot as any, 'monitorOpenPositions').mockResolvedValue(undefined);
+      await bot.alarm();
+
+      expect(mockAdapter.fetchKlines).not.toHaveBeenCalled();
+      expect(mockExecuteCycle).not.toHaveBeenCalled();
+      expect(mockStorage.get('alerts') || []).toHaveLength(0);
+
+      // Zero budget must likewise be rejected before TA
+      mockStorage.set('positionSize', 0);
+      mockStorage.set('approvedCandidateRecord', {
+        ...mockStorage.get('approvedCandidateRecord'),
+        budgetUsdt: 0,
+      });
+      const botZero = new TradingBot(mockState, mockEnv);
+      vi.spyOn(botZero as any, 'monitorOpenPositions').mockResolvedValue(undefined);
+      await botZero.alarm();
+
+      expect(mockAdapter.fetchKlines).not.toHaveBeenCalled();
+      expect(mockExecuteCycle).not.toHaveBeenCalled();
+    });
+
+    it('allows affordable candidate into TA at pre-TA price then rejects at post-signal recheck on live price spike', async () => {
+      mockStorage.set('userId', userId);
+      mockStorage.set('strategy', 'ScalperV2');
+      mockStorage.set('isActive', true);
+      mockStorage.set('coinId', 'SOL/USDT');
+      mockStorage.set('monitoredSymbols', ['SOL/USDT']);
+      mockStorage.set('positionSize', 15); // Affordable at $150 (0.1 SOL >= minOrderQty 0.1), unaffordable at $200 (0.075 -> 0 < 0.1)
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId,
+        budgetUsdt: 15,
+        approvedSymbols: ['SOL', 'SOLUSDT', 'SOL/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'mainnet',
+        accountFingerprint: 'fp-1',
+        orderType: 'MARKET',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 600000,
+        symbolMetadataSnapshot: {}
+      });
+
+      // 1st call (Pre-TA via AdapterCandleProvider, cached for getSnapshot): $150 -> passes Pre-TA!
+      // 2nd call (Post-signal uncached adapter.fetchTicker): $200 price spike -> fails post-signal recheck!
+      mockAdapter.fetchTicker
+        .mockResolvedValueOnce({ symbol: 'SOL/USDT', last: 150, bid: 149.9, ask: 150.1 })
+        .mockResolvedValue({ symbol: 'SOL/USDT', last: 200, bid: 199.9, ask: 200.1 });
+
+      mockExecuteCycle.mockResolvedValueOnce([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 88,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: { type: 'BUY', signalPrice: 150, stopLoss: 145, takeProfit: 160, timeframe: '5m' }
+          }
+        }
+      ]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      vi.spyOn(bot as any, 'monitorOpenPositions').mockResolvedValue(undefined);
+      await bot.alarm();
+
+      expect(mockAdapter.fetchKlines).toHaveBeenCalled();
+      expect(mockExecuteCycle).toHaveBeenCalledTimes(1);
+      expect(mockStorage.get('alerts') || []).toHaveLength(0);
+      expect(notifications.sendTradeNotification).not.toHaveBeenCalled();
+    });
+
+    it('emits normalized non-crashing signal-only alert when accountBalance is 0 and budget allows TA', async () => {
+      mockStorage.set('userId', userId);
+      mockStorage.set('strategy', 'ScalperV2');
+      mockStorage.set('isActive', true);
+      mockStorage.set('coinId', 'BTC/USDT');
+      mockStorage.set('monitoredSymbols', ['BTC/USDT']);
+      mockStorage.set('positionSize', 100);
+      mockStorage.set('lock:alarmGeneration', 1);
+      mockStorage.set('approvedCandidateRecord', {
+        approvalGeneration: 1,
+        userId,
+        budgetUsdt: 100,
+        approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+        approvalState: 'FINAL_APPROVED',
+        exchangeName: 'bybit',
+        environment: 'mainnet',
+        accountFingerprint: 'fp-1',
+        orderType: 'MARKET',
+        approvedAt: Date.now(),
+        expiresAt: Date.now() + 600000,
+        symbolMetadataSnapshot: {}
+      });
+
+      // Live wallet balance is empty/0 -> must NOT block TA, must mark alert signal-only cleanly
+      mockAdapter.fetchBalance.mockResolvedValue([]);
+      mockAdapter.fetchTicker.mockResolvedValue({ symbol: 'BTC/USDT', last: 50000.1, bid: 50000, ask: 50000.2 });
+
+      mockExecuteCycle.mockResolvedValueOnce([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 90,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: { type: 'BUY', signalPrice: 50000.1, stopLoss: 49500.123, takeProfit: 51000.789, timeframe: '5m' }
+          }
+        }
+      ]);
+
+      const bot = new TradingBot(mockState, mockEnv);
+      vi.spyOn(bot as any, 'monitorOpenPositions').mockResolvedValue(undefined);
+      await bot.alarm();
+
+      expect(mockExecuteCycle).toHaveBeenCalledTimes(1);
+      const alerts = mockStorage.get('alerts') as TradeAlert[];
+      expect(alerts).toHaveLength(1);
+      const alert = alerts[0];
+      expect(alert.isExecutable).toBe(false);
+      expect(alert.ineligibilityReason).toBe('PORTFOLIO_EXPOSURE_EXCEEDED');
+      expect(alert.quantity).toBeUndefined();
+      expect(alert.positionSize).toBeUndefined();
+      expect(alert.requestedBudget).toBe(100);
+      expect(Number.isFinite(alert.entryPrice)).toBe(true);
+      expect(alert.entryPrice).toBe(50000.1);
+      expect(Number.isFinite(alert.stopLoss)).toBe(true);
+      expect(Number.isFinite(alert.takeProfit)).toBe(true);
+      expect(alert.stopLoss).toBeLessThan(alert.entryPrice);
+      expect(alert.entryPrice).toBeLessThan(alert.takeProfit);
+      expect(mockAdapter.createOrder).not.toHaveBeenCalled();
+    });
+
+    it('derives executable alert quantity strictly from configured budget regardless of large wallet balance ($2,000 vs $50,000)', async () => {
+      const runWithBalance = async (balanceUsdt: number) => {
+        mockStorage.clear();
+        mockAdapter.fetchBalance.mockResolvedValue([
+          { currency: 'USDT', free: new BigNumber(balanceUsdt), total: new BigNumber(balanceUsdt) }
+        ]);
+        mockAdapter.fetchTicker.mockResolvedValue({ symbol: 'BTC/USDT', last: 50000, bid: 49990, ask: 50010 });
+        mockStorage.set('userId', userId);
+        mockStorage.set('strategy', 'ScalperV2');
+        mockStorage.set('isActive', true);
+        mockStorage.set('coinId', 'BTC/USDT');
+        mockStorage.set('monitoredSymbols', ['BTC/USDT']);
+        mockStorage.set('positionSize', 100);
+        mockStorage.set('lock:alarmGeneration', 1);
+        mockStorage.set('approvedCandidateRecord', {
+          approvalGeneration: 1,
+          userId,
+          budgetUsdt: 100,
+          approvedSymbols: ['BTC', 'BTCUSDT', 'BTC/USDT'],
+          approvalState: 'FINAL_APPROVED',
+          exchangeName: 'bybit',
+          environment: 'mainnet',
+          accountFingerprint: 'fp-1',
+          orderType: 'MARKET',
+          approvedAt: Date.now(),
+          expiresAt: Date.now() + 600000,
+          symbolMetadataSnapshot: {}
+        });
+
+        mockExecuteCycle.mockResolvedValueOnce([
+          {
+            strategyId: 'ScalperV2',
+            confidenceScore: 90,
+            hasSignal: true,
+            metadata: {
+              targetTimeframe: '5m',
+              signal: { type: 'BUY', signalPrice: 50000, stopLoss: 49500, takeProfit: 51000, timeframe: '5m' }
+            }
+          }
+        ]);
+
+        const bot = new TradingBot(mockState, mockEnv);
+        vi.spyOn(bot as any, 'monitorOpenPositions').mockResolvedValue(undefined);
+        await bot.alarm();
+        return (mockStorage.get('alerts') as TradeAlert[])[0];
+      };
+
+      const alert2k = await runWithBalance(2000);
+      const alert50k = await runWithBalance(50000);
+
+      for (const a of [alert2k, alert50k]) {
+        expect(a.isExecutable).toBe(true);
+        expect(a.quantity).toBe(0.002);
+        expect(a.positionSize).toBe(100);
+        expect(a.requestedBudget).toBe(100);
+      }
+      expect(alert50k.quantity).toBe(alert2k.quantity);
     });
   });
 
@@ -1077,9 +1292,11 @@ describe('Strict Budget Gate Integration Tests (Stage 2.10 - 2.11D)', () => {
       const bot = new TradingBot(mockState, mockEnv);
       await bot.alarm();
 
-      // Verify that NO alert was created in storage
+      // Verify that NO alert was created and Pre-TA skipped TA/executeCycle
       const alerts = mockStorage.get('alerts') || [];
       expect(alerts.length).toBe(0);
+      expect(mockAdapter.fetchKlines).not.toHaveBeenCalled();
+      expect(mockExecuteCycle).not.toHaveBeenCalled();
 
       // Verify that sendTradeNotification was NOT called
       expect(notifications.sendTradeNotification).not.toHaveBeenCalled();
@@ -1130,11 +1347,13 @@ describe('Strict Budget Gate Integration Tests (Stage 2.10 - 2.11D)', () => {
           confidenceScore: 88,
           hasSignal: true,
           metadata: {
+            targetTimeframe: '5m',
             signal: {
               type: 'BUY',
               signalPrice: 50000,
               stopLoss: 49000,
               takeProfit: 52000,
+              timeframe: '5m',
               riskAssessment: {
                 positionSizeRecommendation: 5.0,
               },
@@ -1146,9 +1365,11 @@ describe('Strict Budget Gate Integration Tests (Stage 2.10 - 2.11D)', () => {
       const bot = new TradingBot(mockState, mockEnv);
       await bot.alarm();
 
-      // Verify that NO alert was created in storage
+      // Verify that NO alert was created and Pre-TA skipped TA/executeCycle
       const alerts = mockStorage.get('alerts') || [];
       expect(alerts.length).toBe(0);
+      expect(mockAdapter.fetchKlines).not.toHaveBeenCalled();
+      expect(mockExecuteCycle).not.toHaveBeenCalled();
 
       // Verify that sendTradeNotification was NOT called
       expect(notifications.sendTradeNotification).not.toHaveBeenCalled();
@@ -1191,32 +1412,26 @@ describe('Strict Budget Gate Integration Tests (Stage 2.10 - 2.11D)', () => {
         }
       });
 
-      // 1st candidate (EXPENSIVE/USDT) fails minNotional check
-      // 2nd candidate (BTC/USDT) passes and produces alert
-      mockExecuteCycle
-        .mockResolvedValueOnce([
-          {
-            strategyId: 'ScalperV2',
-            confidenceScore: 85,
-            hasSignal: true,
-            metadata: {
-              signal: { type: 'BUY', signalPrice: 1000, stopLoss: 980, takeProfit: 1040 }
-            }
+      // 1st candidate (EXPENSIVE/USDT) fails Pre-TA Budget Gate BEFORE executeCycle
+      // 2nd candidate (BTC/USDT) passes Pre-TA Budget Gate and produces alert
+      mockExecuteCycle.mockResolvedValueOnce([
+        {
+          strategyId: 'ScalperV2',
+          confidenceScore: 90,
+          hasSignal: true,
+          metadata: {
+            targetTimeframe: '5m',
+            signal: { type: 'BUY', signalPrice: 50000, stopLoss: 49000, takeProfit: 52000, timeframe: '5m' }
           }
-        ])
-        .mockResolvedValueOnce([
-          {
-            strategyId: 'ScalperV2',
-            confidenceScore: 90,
-            hasSignal: true,
-            metadata: {
-              signal: { type: 'BUY', signalPrice: 50000, stopLoss: 49000, takeProfit: 52000 }
-            }
-          }
-        ]);
+        }
+      ]);
 
       const bot = new TradingBot(mockState, mockEnv);
       await bot.alarm();
+
+      // Proves EXPENSIVE/USDT was skipped Pre-TA and only BTC/USDT reached executeCycle
+      expect(mockExecuteCycle).toHaveBeenCalledTimes(1);
+      expect((mockExecuteCycle as any).mock.calls[0][0]).toBe('BTC/USDT');
 
       // Proves: 1 alert created, and it belongs to BTC/USDT (the second eligible symbol)
       const alerts = mockStorage.get('alerts') || [];
@@ -1264,11 +1479,13 @@ describe('Strict Budget Gate Integration Tests (Stage 2.10 - 2.11D)', () => {
           confidenceScore: 88,
           hasSignal: true,
           metadata: {
+            targetTimeframe: '5m',
             signal: {
               type: 'BUY',
               signalPrice: 50000,
               stopLoss: 49000,
               takeProfit: 52000,
+              timeframe: '5m',
               riskAssessment: {
                 positionSizeRecommendation: 5.0,
               },

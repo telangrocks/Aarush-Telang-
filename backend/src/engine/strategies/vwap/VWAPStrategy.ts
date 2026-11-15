@@ -197,29 +197,6 @@ export class VWAPStrategy implements IStrategy {
     // 3. Confidence
     const confidenceScore = this.confidenceEngine.evaluate(conditionResult);
 
-    // Guard B — Account balance validation & transient rejection recording (Defect A)
-    if (typeof context.accountBalance !== 'number' || !Number.isFinite(context.accountBalance) || context.accountBalance <= 0) {
-      if (context.accountBalance === 0) {
-        const vwapVals = VWAPCalculator.calculate(closedCandles);
-        if (vwapVals && vwapVals.length >= 2) {
-          const curV = vwapVals[vwapVals.length - 1];
-          const prevV = vwapVals[vwapVals.length - 2];
-          if (Number.isFinite(curV) && curV > 0 && Number.isFinite(prevV) && prevV > 0) {
-            const crossedAbove = previousPrice <= prevV && currentPrice > curV;
-            const crossedBelow = previousPrice >= prevV && currentPrice < curV;
-            if (crossedAbove) {
-              this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
-            } else if (crossedBelow) {
-              this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
-            }
-          }
-        }
-      } else {
-        this.rejectedEdgeEvents.delete(stateKey);
-      }
-      return this.createNoSignalResult(context, ['Account balance is zero or unconfigured'], targetTimeframe, indicatorSnapshot, conditionResult);
-    }
-
     // Retrieve standard indicators needed for evaluation strictly on targetTimeframe
     const tfIndicators = indicatorSnapshot.timeframes?.[targetTimeframe];
     if (!tfIndicators) {
@@ -392,11 +369,15 @@ export class VWAPStrategy implements IStrategy {
       return this.createNoSignalResult(context, ['ATR is zero or unavailable — cannot calculate risk parameters'], targetTimeframe, indicatorSnapshot, conditionResult, confidenceScore, customIndicators);
     }
 
+    const safeAccountBalance =
+      typeof context.accountBalance === 'number' && Number.isFinite(context.accountBalance) && context.accountBalance > 0
+        ? context.accountBalance
+        : 0;
     const riskContext: RiskContext = {
       timestamp: context.timestamp,
       currentPrice,
       currentAtr,
-      accountBalance: context.accountBalance
+      accountBalance: safeAccountBalance
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 
@@ -447,10 +428,7 @@ export class VWAPStrategy implements IStrategy {
       riskAssessment.stopLossDistance > 0 &&
       typeof riskAssessment.takeProfitDistance === 'number' &&
       Number.isFinite(riskAssessment.takeProfitDistance) &&
-      riskAssessment.takeProfitDistance > 0 &&
-      typeof riskAssessment.positionSizeRecommendation === 'number' &&
-      Number.isFinite(riskAssessment.positionSizeRecommendation) &&
-      riskAssessment.positionSizeRecommendation > 0
+      riskAssessment.takeProfitDistance > 0
     );
 
     if (finalSignalType !== null && !hasValidRiskNumbers) {

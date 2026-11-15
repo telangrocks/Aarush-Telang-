@@ -433,22 +433,6 @@ export class BreakoutStrategy implements IStrategy {
       };
     }
 
-    if (!context.accountBalance || !Number.isFinite(context.accountBalance) || context.accountBalance <= 0) {
-      // Confirmed transient rejection: account balance unavailable/zero
-      if (isEdgeBuy) {
-        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
-      } else if (isEdgeSell) {
-        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
-      }
-      return {
-        strategyId: this.manifest.id,
-        timestamp: context.timestamp,
-        confidenceScore: 0,
-        hasSignal: false,
-        metadata: { reasoning: ["Account balance not available — cannot calculate position size"], targetTimeframe }
-      };
-    }
-
     // ATR risk calculation strictly on targetTimeframe ATR
     const tfIndicators = currentIndicatorSnapshot.timeframes[targetTimeframe];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
@@ -472,11 +456,15 @@ export class BreakoutStrategy implements IStrategy {
       };
     }
 
+    const safeAccountBalance =
+      typeof context.accountBalance === 'number' && Number.isFinite(context.accountBalance) && context.accountBalance > 0
+        ? context.accountBalance
+        : 0;
     const riskContext: RiskContext = {
       timestamp: T,
       currentPrice,
       currentAtr,
-      accountBalance: context.accountBalance
+      accountBalance: safeAccountBalance
     };
     const realRiskAssessment = this.riskEngine.evaluate(riskContext);
 

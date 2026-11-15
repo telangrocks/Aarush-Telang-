@@ -700,16 +700,14 @@ describe('VWAPStrategy', () => {
       expect(resultZeroPrice.confidenceScore).toBe(0);
       expect(resultZeroPrice.metadata.reasoning).toContain('Invalid or missing current price');
 
-      // 5e. Zero account balance
+      // 5e. Zero account balance must not reject on balance grounds
       const baseContext = createTestContext({ '15m': validCandles }, 101);
       const contextZeroBalance = {
         ...baseContext,
         accountBalance: 0
       };
       const resultZeroBalance = strategy.evaluate(contextZeroBalance as any, '15m');
-      expect(resultZeroBalance.hasSignal).toBe(false);
-      expect(resultZeroBalance.confidenceScore).toBe(0);
-      expect(resultZeroBalance.metadata.reasoning).toContain('Account balance is zero or unconfigured');
+      expect(resultZeroBalance.metadata.reasoning).not.toContain('Account balance is zero or unconfigured');
     });
 
     it('6. Actionability safety invariant: non-signal evaluations cannot satisfy actionable signal gate', () => {
@@ -811,7 +809,7 @@ describe('VWAPStrategy', () => {
       });
     };
 
-    it('A1. BUY edge recovers on subsequent candle when transiently rejected by ACCOUNT_BALANCE_UNAVAILABLE', () => {
+    it('A1. BUY edge recovers on subsequent candle when transiently rejected by DISALLOWED_RISK_CLASSIFICATION', () => {
       const strategy = new VWAPStrategy(config);
       // Candle 18 close 99 <= VWAP 100, Candle 19 close 101 > VWAP 100 (Bullish crossover at T_19)
       const candlesBar19 = makeCandles(20, 101, 99);
@@ -826,12 +824,6 @@ describe('VWAPStrategy', () => {
         metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 105, lowPrice24h: 95 },
         candles: { '15m': candlesBar19 } as any
       }, 1000).freeze();
-
-      // Zero account balance
-      const contextBar19ZeroBalance = {
-        ...baseContext19,
-        accountBalance: 0
-      };
 
       vi.spyOn(VWAPCalculator, 'calculate').mockReturnValue(
         Array.from({ length: 20 }).map(() => 100)
@@ -862,10 +854,18 @@ describe('VWAPStrategy', () => {
         }
       } as any);
 
-      // Bar 19: Evaluation rejected due to zero account balance
-      const resultBar19 = strategy.evaluate(contextBar19ZeroBalance as any, '15m');
+      vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
+        riskClassification: 'HIGH',
+        stopLossDistance: 2.0,
+        takeProfitDistance: 4.0,
+        positionSizeRecommendation: 0,
+        leverageRecommendation: 1
+      } as any);
+
+      // Bar 19: Evaluation rejected due to disallowed HIGH risk tier
+      const resultBar19 = strategy.evaluate(baseContext19, '15m');
       expect(resultBar19.hasSignal).toBe(false);
-      expect(resultBar19.metadata.reasoning).toContain('Account balance is zero or unconfigured');
+      expect(resultBar19.metadata.reasoning).toContain('VWAP: Risk classification HIGH is not allowed by signal rules');
 
       // Bar 20: Next closed candle (T20 = T19 + tfMs). Balance is restored!
       const candlesBar20 = [
@@ -1142,8 +1142,6 @@ describe('VWAPStrategy', () => {
         candles: { '15m': candlesBar19 } as any
       }, 1000).freeze();
 
-      const contextBar19 = { ...baseContext19, accountBalance: 0 };
-
       vi.spyOn(VWAPCalculator, 'calculate').mockReturnValue(
         Array.from({ length: 20 }).map(() => 100)
       );
@@ -1163,7 +1161,25 @@ describe('VWAPStrategy', () => {
         }
       } as any);
 
-      strategy.evaluate(contextBar19 as any, '15m');
+      vi.spyOn((strategy as any).confidenceEngine, 'evaluate').mockReturnValueOnce({
+        timestamp: T19,
+        overallScore: 80,
+        overallLongScore: 84,
+        overallShortScore: 15,
+        timeframes: {
+          '15m': { score: 80, longScore: 84, shortScore: 15, level: 'HIGH', factors: {} as any, explanation: [] }
+        }
+      } as any);
+
+      vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
+        riskClassification: 'HIGH',
+        stopLossDistance: 2.0,
+        takeProfitDistance: 4.0,
+        positionSizeRecommendation: 0,
+        leverageRecommendation: 1
+      } as any);
+
+      strategy.evaluate(baseContext19, '15m');
 
       // Bar 20: Confidence score fails (longScore 50 < 70)
       const candlesBar20 = [
@@ -1241,8 +1257,6 @@ describe('VWAPStrategy', () => {
         candles: { '15m': candlesBar19 } as any
       }, 1000).freeze();
 
-      const contextBar19 = { ...baseContext19, accountBalance: 0 };
-
       vi.spyOn(VWAPCalculator, 'calculate').mockReturnValue(
         Array.from({ length: 20 }).map(() => 100)
       );
@@ -1262,7 +1276,25 @@ describe('VWAPStrategy', () => {
         }
       } as any);
 
-      strategy.evaluate(contextBar19 as any, '15m');
+      vi.spyOn((strategy as any).confidenceEngine, 'evaluate').mockReturnValueOnce({
+        timestamp: T19,
+        overallScore: 80,
+        overallLongScore: 84,
+        overallShortScore: 15,
+        timeframes: {
+          '15m': { score: 80, longScore: 84, shortScore: 15, level: 'HIGH', factors: {} as any, explanation: [] }
+        }
+      } as any);
+
+      vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
+        riskClassification: 'HIGH',
+        stopLossDistance: 2.0,
+        takeProfitDistance: 4.0,
+        positionSizeRecommendation: 0,
+        leverageRecommendation: 1
+      } as any);
+
+      strategy.evaluate(baseContext19, '15m');
 
       // Bar 20: Price drops to 98 (< VWAP 100) -> alignment lost!
       const candlesBar20 = [
@@ -2263,7 +2295,7 @@ describe('VWAPStrategy', () => {
       }
     });
 
-    it('rejects corrupted historical OHLCV before IndicatorEngine runs and blocks non-finite/negative accountBalance', () => {
+    it('rejects corrupted historical OHLCV before IndicatorEngine runs and decouples zero/non-finite/negative accountBalance from signal qualification', () => {
       const strategy = new VWAPStrategy(config);
       const indSpy = vi.spyOn((strategy as any).indicatorEngine, 'evaluate');
 
@@ -2285,7 +2317,48 @@ describe('VWAPStrategy', () => {
       expect(indSpy).not.toHaveBeenCalled();
 
       const validCandles = makeBuyCrossoverCandles();
-      for (const badBalance of [Infinity, -50, NaN]) {
+      const fundedStrat = new VWAPStrategy(config);
+      vi.spyOn(VWAPCalculator, 'calculate').mockReturnValue(Array.from({ length: 20 }, () => 100));
+      const indStub = {
+        timestamp: 20 * tfMs,
+        timeframes: {
+          '15m': {
+            close: [99, 101],
+            sma: {},
+            ema: { 20: [102], 50: [98] },
+            rsi: { 14: [55] },
+            macd: { '12,26,9': [] },
+            atr: { 14: [2.0] },
+            volume: [{ averageVolume: 1000, volumeChangePercent: 100 }]
+          }
+        }
+      } as any;
+      const confStub = {
+        timestamp: 20 * tfMs,
+        overallScore: 84,
+        overallLongScore: 84,
+        overallShortScore: 15,
+        timeframes: {
+          '15m': { score: 84, longScore: 84, shortScore: 15, level: 'HIGH', factors: {} as any, explanation: [] }
+        }
+      } as any;
+      vi.spyOn((fundedStrat as any).indicatorEngine, 'evaluate').mockReturnValue(indStub);
+      vi.spyOn((fundedStrat as any).confidenceEngine, 'evaluate').mockReturnValue(confStub);
+      const fundedRes = fundedStrat.evaluate(new StrategyContext({
+        symbol: 'BTC/USDT',
+        timestamp: 20 * tfMs,
+        currentPrice: 101,
+        volume24h: 10000,
+        quoteVolume24h: 1000000,
+        metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 105, lowPrice24h: 95 },
+        candles: { '15m': validCandles } as any
+      }, 10000).freeze(), '15m');
+      expect(fundedRes.hasSignal).toBe(true);
+
+      for (const badBalance of [0, Infinity, -50, NaN]) {
+        const strat = new VWAPStrategy(config);
+        vi.spyOn((strat as any).indicatorEngine, 'evaluate').mockReturnValue(indStub);
+        vi.spyOn((strat as any).confidenceEngine, 'evaluate').mockReturnValue(confStub);
         const ctxBadBal = {
           accountBalance: badBalance,
           timestamp: 20 * tfMs,
@@ -2300,10 +2373,14 @@ describe('VWAPStrategy', () => {
           }
         } as any;
 
-        const resBal = strategy.evaluate(ctxBadBal, '15m');
-        expect(resBal.hasSignal).toBe(false);
-        expect(resBal.confidenceScore).toBe(0);
-        expect(resBal.metadata.reasoning).toContain('Account balance is zero or unconfigured');
+        const resBal = strat.evaluate(ctxBadBal, '15m');
+        expect(resBal.hasSignal).toBe(true);
+        expect(resBal.confidenceScore).toBe(fundedRes.confidenceScore);
+        expect(resBal.metadata.signal?.entryPrice).toBe(fundedRes.metadata.signal?.entryPrice);
+        expect(resBal.metadata.signal?.stopLoss).toBe(fundedRes.metadata.signal?.stopLoss);
+        expect(resBal.metadata.signal?.takeProfit).toBe(fundedRes.metadata.signal?.takeProfit);
+        expect(resBal.metadata.signal?.riskAssessment.positionSizeRecommendation).toBe(0);
+        expect(resBal.metadata.signal?.riskAssessment.maximumExposure).toBe(0);
       }
     });
 
@@ -2407,20 +2484,80 @@ describe('VWAPStrategy', () => {
         riskClassification: 'LOW',
         stopLossDistance: 2.0,
         takeProfitDistance: 4.0,
-        positionSizeRecommendation: 0
+        positionSizeRecommendation: 0,
+        maximumExposure: 0
       } as any);
       const resZeroSize = strategy.evaluate(ctx, '15m');
-      expect(resZeroSize.hasSignal).toBe(false);
-      expect(resZeroSize.metadata.signal).toBeNull();
-      expect(resZeroSize.metadata.reasoning).toContain('VWAP: Invalid or non-finite risk assessment outputs');
+      expect(resZeroSize.hasSignal).toBe(true);
+      expect(resZeroSize.metadata.signal).not.toBeNull();
+      expect(resZeroSize.metadata.signal?.stopLoss).toBe(99);
+      expect(resZeroSize.metadata.signal?.takeProfit).toBe(105);
 
-      vi.spyOn((strategy as any).riskEngine, 'evaluate').mockReturnValueOnce({
+      const stratInvalidSl = new VWAPStrategy(config);
+      vi.spyOn((stratInvalidSl as any).indicatorEngine, 'evaluate').mockReturnValue({
+        timestamp: 20 * tfMs,
+        timeframes: {
+          '15m': {
+            close: [99, 101],
+            sma: {},
+            ema: { 20: [102], 50: [98] },
+            rsi: { 14: [55] },
+            macd: { '12,26,9': [] },
+            atr: { 14: [2.0] },
+            volume: [{ averageVolume: 1000, volumeChangePercent: 100 }]
+          }
+        }
+      } as any);
+      vi.spyOn((stratInvalidSl as any).confidenceEngine, 'evaluate').mockReturnValue({
+        timestamp: 20 * tfMs,
+        overallScore: 84,
+        overallLongScore: 84,
+        overallShortScore: 15,
+        timeframes: {
+          '15m': { score: 84, longScore: 84, shortScore: 15, level: 'HIGH', factors: {} as any, explanation: [] }
+        }
+      } as any);
+      vi.spyOn((stratInvalidSl as any).riskEngine, 'evaluate').mockReturnValueOnce({
+        riskClassification: 'LOW',
+        stopLossDistance: Number.NaN,
+        takeProfitDistance: 4.0,
+        positionSizeRecommendation: 0
+      } as any);
+      const resInvalidSlDist = stratInvalidSl.evaluate(ctx, '15m');
+      expect(resInvalidSlDist.hasSignal).toBe(false);
+      expect(resInvalidSlDist.metadata.signal).toBeNull();
+
+      const stratNegativeSl = new VWAPStrategy(config);
+      vi.spyOn((stratNegativeSl as any).indicatorEngine, 'evaluate').mockReturnValue({
+        timestamp: 20 * tfMs,
+        timeframes: {
+          '15m': {
+            close: [99, 101],
+            sma: {},
+            ema: { 20: [102], 50: [98] },
+            rsi: { 14: [55] },
+            macd: { '12,26,9': [] },
+            atr: { 14: [2.0] },
+            volume: [{ averageVolume: 1000, volumeChangePercent: 100 }]
+          }
+        }
+      } as any);
+      vi.spyOn((stratNegativeSl as any).confidenceEngine, 'evaluate').mockReturnValue({
+        timestamp: 20 * tfMs,
+        overallScore: 84,
+        overallLongScore: 84,
+        overallShortScore: 15,
+        timeframes: {
+          '15m': { score: 84, longScore: 84, shortScore: 15, level: 'HIGH', factors: {} as any, explanation: [] }
+        }
+      } as any);
+      vi.spyOn((stratNegativeSl as any).riskEngine, 'evaluate').mockReturnValueOnce({
         riskClassification: 'LOW',
         stopLossDistance: 105.0, // currentPrice (101) - 105 <= 0 -> invalid BUY stopLoss
         takeProfitDistance: 20.0,
         positionSizeRecommendation: 100
       } as any);
-      const resNegativeSl = strategy.evaluate(ctx, '15m');
+      const resNegativeSl = stratNegativeSl.evaluate(ctx, '15m');
       expect(resNegativeSl.hasSignal).toBe(false);
       expect(resNegativeSl.metadata.signal).toBeNull();
       expect(resNegativeSl.metadata.reasoning).toContain('VWAP: Calculated stopLoss/takeProfit bounds are invalid or non-positive');

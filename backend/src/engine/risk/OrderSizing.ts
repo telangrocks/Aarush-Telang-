@@ -16,8 +16,15 @@ export class OrderSizing {
     currentPrice: number,
     config: RiskParameters
   ): number {
-    if (stopLossDistance <= 0) {
-      return 0; // Invalid stop loss
+    if (
+      !Number.isFinite(accountBalance) ||
+      accountBalance <= 0 ||
+      !Number.isFinite(currentPrice) ||
+      currentPrice <= 0 ||
+      !Number.isFinite(stopLossDistance) ||
+      stopLossDistance <= 0
+    ) {
+      return 0; // Invalid inputs or zero/unavailable account balance
     }
 
     // Amount we are willing to lose on this trade

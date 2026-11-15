@@ -423,20 +423,6 @@ export class MeanReversionStrategy implements IStrategy {
       return this.createNoSignalResult(context, ["Invalid current price (zero or negative)"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
 
-    if (context.accountBalance === undefined || context.accountBalance === null || context.accountBalance === 0) {
-      if (isEdgeBuy) {
-        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.BUY, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
-      } else if (isEdgeSell) {
-        this.rejectedEdgeEvents.set(stateKey, { timestamp: T, direction: SignalType.SELL, reason: 'ACCOUNT_BALANCE_UNAVAILABLE' });
-      }
-      return this.createNoSignalResult(context, ["Account balance is zero or unconfigured"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
-    }
-
-    if (typeof context.accountBalance !== "number" || !Number.isFinite(context.accountBalance) || context.accountBalance < 0) {
-      this.rejectedEdgeEvents.delete(stateKey);
-      return this.createNoSignalResult(context, ["Account balance is zero or unconfigured"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
-    }
-
     // ATR risk calculation strictly on targetTimeframe ATR
     const tfIndicators = currentIndicatorSnapshot?.timeframes?.[targetTimeframe];
     const atrArray = tfIndicators?.atr?.[this.config.conditionConfig.atrPeriod]; // 14
@@ -447,11 +433,15 @@ export class MeanReversionStrategy implements IStrategy {
       return this.createNoSignalResult(context, ["ATR is zero or unavailable — cannot calculate risk parameters"], targetTimeframe, currentIndicatorSnapshot, currentConditionResult, currentConfidenceScore, customIndicators);
     }
 
+    const safeAccountBalance =
+      typeof context.accountBalance === "number" && Number.isFinite(context.accountBalance) && context.accountBalance > 0
+        ? context.accountBalance
+        : 0;
     const riskContext: RiskContext = {
       timestamp: T,
       currentPrice,
       currentAtr,
-      accountBalance: context.accountBalance
+      accountBalance: safeAccountBalance
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 
@@ -508,8 +498,6 @@ export class MeanReversionStrategy implements IStrategy {
     const hasValidRiskOutputs =
       typeof riskAssessment?.stopLossDistance === "number" && Number.isFinite(riskAssessment.stopLossDistance) && riskAssessment.stopLossDistance > 0 &&
       typeof riskAssessment?.takeProfitDistance === "number" && Number.isFinite(riskAssessment.takeProfitDistance) && riskAssessment.takeProfitDistance > 0 &&
-      typeof riskAssessment?.positionSizeRecommendation === "number" && Number.isFinite(riskAssessment.positionSizeRecommendation) && riskAssessment.positionSizeRecommendation > 0 &&
-      typeof riskAssessment?.maximumExposure === "number" && Number.isFinite(riskAssessment.maximumExposure) && riskAssessment.maximumExposure > 0 &&
       Number.isFinite(stopLoss) && stopLoss > 0 &&
       Number.isFinite(takeProfit) && takeProfit > 0;
 

@@ -65,7 +65,8 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
       fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', last: 50000 }),
       fetchKlines: vi.fn().mockImplementation(async () => generateCandles(60, 'UP')),
       fetchBalance: vi.fn().mockResolvedValue({
-        info: { result: { list: [{ coin: [{ coin: 'USDT', equity: '1000', walletBalance: '1000' }] }] } }
+        free: { USDT: 1000 },
+        total: { USDT: 1000 },
       }),
       fetchMarkets: vi.fn().mockResolvedValue([
         { id: 'BTCUSDT', symbol: 'BTC/USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 0.1 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } },
@@ -342,7 +343,9 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
     const alerts = mockStorage.get('alerts') as TradeAlert[];
     expect(alerts).toHaveLength(1);
     expect(alerts[0].id).toBe('existing-alert-1');
-    expect(mockAdapter.fetchMarket).not.toHaveBeenCalled();
+    // Pre-TA Budget Gate resolves market metadata before TA while active alert still blocks new alerts/orders
+    expect(mockAdapter.fetchMarket).toHaveBeenCalledTimes(1);
+    expect(mockAdapter.createOrder).not.toHaveBeenCalled();
   });
 
   // 10. Existing active position blocks all strategies for that ticker
@@ -358,7 +361,9 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
     await bot.alarm();
     const alerts = mockStorage.get('alerts') as TradeAlert[];
     expect(alerts).toHaveLength(0);
-    expect(mockAdapter.fetchMarket).not.toHaveBeenCalled();
+    // Pre-TA Budget Gate resolves market metadata before TA while active position still blocks new alerts/orders
+    expect(mockAdapter.fetchMarket).toHaveBeenCalledTimes(1);
+    expect(mockAdapter.createOrder).not.toHaveBeenCalled();
   });
 
   // 11. Unresolved WAL intent blocks all strategies for that ticker
@@ -857,15 +862,17 @@ describe('Stage 1 Integration Test Suite: Strategy Evaluation & Safe Fallback', 
         },
       ]);
 
-      // Cycle 1: Symbol-wide safety rejection recorded against closed candle
+      // Cycle 1: Pre-TA Budget Gate rejects $2 budget (< $5 minNotional) BEFORE klines/executeCycle
       await bot.alarm();
       expect(mockStorage.get('alerts')).toHaveLength(0);
-      expect(execSpy).toHaveBeenCalledTimes(1);
+      expect(execSpy).not.toHaveBeenCalled();
+      expect(mockAdapter.fetchKlines).not.toHaveBeenCalled();
 
-      // Cycle 2 (same closed candle): Symbol-wide rejection prevents executeCycle and blocks any strategy from bypassing it
+      // Cycle 2 (same closed candle): Still rejected Pre-TA before klines/executeCycle
       await bot.alarm();
       expect(mockStorage.get('alerts')).toHaveLength(0);
-      expect(execSpy).toHaveBeenCalledTimes(1); // Skipped entirely on Cycle 2!
+      expect(execSpy).not.toHaveBeenCalled();
+      expect(mockAdapter.fetchKlines).not.toHaveBeenCalled();
     });
 
     it('30. Dismissed alert -> existing duplicate-suppression protection remains effective for same strategy', async () => {

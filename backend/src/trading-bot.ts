@@ -77,7 +77,7 @@ export interface TradeAlert {
   status: 'pending' | 'acknowledged' | 'submitted' | 'partially_filled' | 'filled' | 'executed' | 'expired' | 'failed' | 'dismissed';
   generation?: number;
   approvalGeneration?: number;
-  source?: 'MANUAL' | 'AUTONOMOUS';
+  source?: 'AUTONOMOUS';
   timeframe?: Timeframe;
   dispatchState?: 'UNSENT' | 'DISPATCHING' | 'SENT' | 'FAILED' | 'AMBIGUOUS' | 'EXPIRED' | 'HISTORICAL_UNTRACKED';
   dispatchAttemptId?: string;
@@ -1556,8 +1556,8 @@ export class TradingBot {
   }
 
   public resolveMaxPortfolioExposure(accountBalance: number, strategyConfig?: Record<string, any>, setupSnapshot?: any): number {
-    // If account balance is unavailable, zero, or non-positive, fail closed immediately
-    if (typeof accountBalance !== 'number' || accountBalance <= 0 || isNaN(accountBalance)) {
+    // If account balance is unavailable, zero, non-finite, or non-positive, fail closed immediately
+    if (typeof accountBalance !== 'number' || !Number.isFinite(accountBalance) || accountBalance <= 0) {
       return 0;
     }
 
@@ -2139,62 +2139,6 @@ export class TradingBot {
         };
         return new Response(JSON.stringify(response), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      case '/register-alert': {
-        const { alert } = await request.json<{ alert: TradeAlert }>();
-        if (!alert || !alert.id) {
-          return new Response(JSON.stringify({ success: false, message: 'Invalid alert payload.' }), { status: 400 });
-        }
-
-        console.log(`[ALERT_REGISTER] id=${alert.id} symbol=${alert.symbol} strategy=${alert.strategy}`);
-        let registeredAlert: TradeAlert;
-        if (alert.source === 'AUTONOMOUS') {
-          const [persistedIsActive, storedGen] = await Promise.all([
-            this.state.storage.get<boolean>('isActive'),
-            this.state.storage.get<number>('lock:alarmGeneration'),
-          ]);
-          const isValidGen = typeof storedGen === 'number' && Number.isInteger(storedGen) && storedGen > 0;
-          if (persistedIsActive !== true || !isValidGen) {
-            return new Response(
-              JSON.stringify({
-                success: false,
-                code: persistedIsActive !== true ? 'BOT_INACTIVE_AUTONOMOUS_REJECTED' : 'STALE_AUTONOMOUS_GENERATION',
-                error: 'Cannot register autonomous alert while bot is inactive or generation is invalid.',
-              }),
-              { status: 409, headers: { 'Content-Type': 'application/json' } }
-            );
-          }
-          registeredAlert = {
-            ...alert,
-            status: 'pending',
-            source: 'AUTONOMOUS',
-            generation: alert.generation ?? storedGen,
-            dispatchState: alert.dispatchState || 'HISTORICAL_UNTRACKED',
-          };
-        } else {
-          registeredAlert = {
-            ...alert,
-            status: 'pending',
-            source: 'MANUAL',
-            generation: undefined,
-            dispatchState: alert.dispatchState || 'HISTORICAL_UNTRACKED',
-          };
-        }
-
-        const alerts = this.runtimeState.alerts as TradeAlert[] || [];
-        const existingIndex = alerts.findIndex((a) => a.id === alert.id);
-        if (existingIndex >= 0) {
-          alerts[existingIndex] = { ...alerts[existingIndex], ...registeredAlert };
-        } else {
-          alerts.push(registeredAlert);
-        }
-        await this.persistState('alerts', this.pruneAlerts(alerts));
-        console.log(`[ALERT_REGISTERED] id=${alert.id} storage=alerts status=pending source=${registeredAlert.source}`);
-
-        return new Response(JSON.stringify({ success: true, alertId: alert.id }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
       case '/alerts': {
         const alerts = this.runtimeState.alerts as TradeAlert[] || [];
         const pending = alerts.filter((a) => a.status === 'pending');
@@ -2769,7 +2713,19 @@ export class TradingBot {
           ]);
 
           const isAutonomousStrategy = typeof target.strategy === 'string' && target.strategy.endsWith('_NEW');
-          if (target.source !== 'MANUAL' && target.source !== 'AUTONOMOUS') {
+          if ((target.source as string | undefined) === 'MANUAL') {
+            console.warn(`[SAFETY GATE] Rejected alert ${target.id}: obsolete manual trade alerts are no longer supported`);
+            return new Response(
+              JSON.stringify({
+                success: false,
+                code: 'INVALID_ALERT_PROVENANCE',
+                error: 'Manual trade alerts are obsolete and no longer supported.',
+              }),
+              { status: 409, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          if (target.source !== 'AUTONOMOUS') {
             const requiresExplicitProvenance =
               target.source !== undefined ||
               target.id === '97f8210e-b1d9-4e36-a45f-34ea8240653e' ||
@@ -2791,10 +2747,9 @@ export class TradingBot {
             }
           }
 
-          const effectiveSource: 'MANUAL' | 'AUTONOMOUS' =
-            target.source === 'AUTONOMOUS' || isAutonomousStrategy ? 'AUTONOMOUS' : 'MANUAL';
+          const isAutonomousAlert = target.source === 'AUTONOMOUS' || isAutonomousStrategy;
 
-          if (effectiveSource === 'AUTONOMOUS') {
+          if (isAutonomousAlert) {
             if (persistedIsActive !== true || this.runtimeState.isActive !== true) {
               console.warn(`[SAFETY GATE] Rejected autonomous alert ${target.id}: bot is inactive (persisted=${persistedIsActive}, runtime=${this.runtimeState.isActive})`);
               return new Response(
@@ -2821,16 +2776,6 @@ export class TradingBot {
                 { status: 409, headers: { 'Content-Type': 'application/json' } }
               );
             }
-          } else if (target.source === 'MANUAL' && target.generation !== undefined) {
-            console.warn(`[SAFETY GATE] Rejected manual alert ${target.id}: manual alert cannot carry autonomous generation (${target.generation})`);
-            return new Response(
-              JSON.stringify({
-                success: false,
-                code: 'INVALID_ALERT_PROVENANCE',
-                error: 'Manual alert cannot carry an autonomous alarm generation.',
-              }),
-              { status: 409, headers: { 'Content-Type': 'application/json' } }
-            );
           }
 
           // [SAFETY GATE: FAIL-CLOSED AUTHORITATIVE BUDGET APPROVAL GATE]
@@ -2920,7 +2865,7 @@ export class TradingBot {
 
           // Authoritative TradeAlert Generation Verification:
           // Autonomous alert MUST have approvalGeneration matching the current active approval generation.
-          if (effectiveSource === 'AUTONOMOUS' || target.approvalGeneration !== undefined) {
+          if (isAutonomousAlert || target.approvalGeneration !== undefined) {
             const effectiveAlertGen = target.approvalGeneration ?? target.generation;
             if (effectiveAlertGen == null || effectiveAlertGen !== approvedRecord.approvalGeneration) {
               console.error(`[SAFETY GATE: FATAL] Rejected trade execution: Alert approval generation (${effectiveAlertGen}) does not match current active approval (${approvedRecord.approvalGeneration}).`);
@@ -3036,8 +2981,6 @@ export class TradingBot {
 
 
           const side: 'BUY' | 'SELL' = target.side || 'BUY';
-          const committedStrategy: string | undefined = this.runtimeState.strategy;
-          const isAutonomousAlert = effectiveSource === 'AUTONOMOUS';
           const alertStrategy = (target.strategy || '').replace(/_NEW$/, '');
           const normalizedStrategyId = StrategyRegistry.getInstance().normalizeStrategyId(alertStrategy);
 
@@ -3048,16 +2991,7 @@ export class TradingBot {
             return new Response(JSON.stringify({ error: `Cannot execute order: Strategy '${normalizedStrategyId}' is not registered.` }), { status: 400 });
           }
 
-          // Safety Gate 2: Manual Strategy-Lock (Preserved strictly for manual alerts)
-          if (!isAutonomousAlert && committedStrategy) {
-            const normalizedCommittedId = StrategyRegistry.getInstance().normalizeStrategyId(committedStrategy);
-            if (normalizedStrategyId.toLowerCase() !== normalizedCommittedId.toLowerCase()) {
-              console.error(`[SAFETY GATE: FATAL] Rejected manual trade execution: Alert strategy '${normalizedStrategyId}' does not match committed bot strategy '${normalizedCommittedId}'. AlertId: ${target.id}`);
-              return new Response(JSON.stringify({ error: `Execution rejected: Trade alert strategy '${normalizedStrategyId}' does not match committed bot strategy '${normalizedCommittedId}'.` }), { status: 409 });
-            }
-          }
-
-          // Safety Gate 3: Directional Short Capability Enforcement
+          // Safety Gate 2: Directional Short Capability Enforcement
           if (side === 'SELL' && alertManifest && !alertManifest.supportsShort) {
             console.error(`[SAFETY GATE: FATAL] Rejected short execution for long-only strategy ${normalizedStrategyId}. AlertId: ${target.id}`);
             return new Response(JSON.stringify({ error: `Cannot execute SELL order: Strategy '${normalizedStrategyId}' does not support short positions.` }), { status: 400 });
@@ -3506,27 +3440,26 @@ export class TradingBot {
             // Phase 1 Safety Gate: Portfolio-Level Aggregate Exposure Protection
             const currentExposure = this.calculateAggregateExposure(allOpenPositions);
 
-            // Refresh live USDT balance for exposure calculation
+            // Refresh live USDT balance for exposure calculation (never fabricate a synthetic balance)
             let authoritativeBal = (await this.state.storage.get('lastAccountBalance')) as number ?? this.runtimeState.lastAccountBalance;
             try {
               if (adapter && typeof (adapter as any).fetchBalance === 'function') {
                 const liveBalanceRes = await (adapter as any).fetchBalance().catch(() => null);
                 if (liveBalanceRes) {
-                  const extracted = extractUsdtBalance(liveBalanceRes);
-                  if (extracted > 0) {
-                    authoritativeBal = extracted;
-                    this.runtimeState.lastAccountBalance = extracted;
-                    await this.state.storage.put('lastAccountBalance', extracted);
-                  }
-                }
-              } else if (adapter && authoritativeBal === undefined) {
-                const fallbackBal = extractUsdtBalance(null);
-                if (fallbackBal > 0) {
-                  authoritativeBal = fallbackBal;
+                  const extracted = extractUsdtBalance(liveBalanceRes, 0);
+                  authoritativeBal = extracted;
+                  this.runtimeState.lastAccountBalance = extracted;
+                  await this.state.storage.put('lastAccountBalance', extracted);
+                } else {
+                  authoritativeBal = 0;
                 }
               }
-            } catch (_) {}
-            const cachedBal = (typeof authoritativeBal === 'number' && authoritativeBal > 0) ? authoritativeBal : 0;
+            } catch (_) {
+              if (adapter && typeof (adapter as any).fetchBalance === 'function') {
+                authoritativeBal = 0;
+              }
+            }
+            const cachedBal = (typeof authoritativeBal === 'number' && Number.isFinite(authoritativeBal) && authoritativeBal > 0) ? authoritativeBal : 0;
             const maxPortfolioExposure = this.resolveMaxPortfolioExposure(cachedBal, this.runtimeState.strategyConfig, this.runtimeState.setupSnapshot);
 
             if (currentExposure + proposedNotional > maxPortfolioExposure) {
@@ -6947,7 +6880,7 @@ export class TradingBot {
               let accountBalance = this.lastAccountBalance;
               if (accountBalance === null || nowBal - this.lastBalanceFetchedAt > 60_000) {
                 const balanceResult = await adapter.fetchBalance().catch(() => null);
-                accountBalance = extractUsdtBalance(balanceResult);
+                accountBalance = extractUsdtBalance(balanceResult, 0);
                 this.lastAccountBalance = accountBalance;
                 this.lastBalanceFetchedAt = nowBal;
                 if (this.runtimeState.lastAccountBalance !== accountBalance) {
@@ -7041,10 +6974,226 @@ export class TradingBot {
                   let legacySignalForCandidate: any = null;
                   let legacySuppressionInfo: { isLegacySuppressedByGate: boolean; suppressionGate: string } | undefined = undefined;
 
-                // Stage 1: Market metadata hoist scope (strictly lifetime-bound to currentSymbol iteration)
-                let hoistedMarket: any = null;
-                let marketFetchAttempted = false;
+                // Stage 1: Pre-TA Live Budget & Instrument Constraint Gate (strictly lifetime-bound to currentSymbol iteration)
                 try {
+                  const setupSnapshot = this.runtimeState.setupSnapshot;
+                  const rawConfiguredBudget =
+                    setupSnapshot?.positionSize !== undefined
+                      ? setupSnapshot.positionSize
+                      : (this.runtimeState.positionSize !== undefined
+                        ? this.runtimeState.positionSize
+                        : approvedCandidateRecord.budgetUsdt);
+                  const configuredTradeBudget =
+                    typeof rawConfiguredBudget === 'number' && Number.isFinite(rawConfiguredBudget) && rawConfiguredBudget > 0
+                      ? rawConfiguredBudget
+                      : 0;
+
+                  if (configuredTradeBudget <= 0) {
+                    legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'INSUFFICIENT_BUDGET' };
+                    console.warn(`[BUDGET GATE: REJECTED] Symbol ${currentSymbol} rejected before TA: configured trade budget ($${configuredTradeBudget}) is non-positive.`);
+                    this.telemetrySink.emit({
+                      userId,
+                      category: 'SAFETY',
+                      component: 'TradingBot',
+                      eventName: 'FINAL_DISPATCH_GATE',
+                      severity: 'WARN',
+                      cycleId,
+                      symbol: currentSymbol,
+                      payload: {
+                        passed: false,
+                        gate: 'INSUFFICIENT_BUDGET',
+                        phase: 'PRE_TA_BUDGET_GATE',
+                        budget: configuredTradeBudget,
+                      }
+                    });
+                    continue;
+                  }
+
+                  const matchedMarket =
+                    typeof (adapter as any).fetchMarket === 'function'
+                      ? await (adapter as any).fetchMarket(currentSymbol).catch(() => null)
+                      : (typeof (adapter as any).fetchMarkets === 'function'
+                          ? (await adapter.fetchMarkets().catch(() => [])).find((m: any) => m.symbol === currentSymbol)
+                          : null);
+
+                  let tickSize: number | undefined;
+                  let minPrice: number | undefined;
+                  let stepSize: number | undefined;
+                  let minOrderQty: number | undefined;
+                  let minNotional: number | undefined;
+                  let maxOrderQty: number | undefined;
+                  let marketMaxQty: number | undefined;
+
+                  if (matchedMarket) {
+                    if (typeof matchedMarket.precision?.price === 'number' && matchedMarket.precision.price > 0) {
+                      tickSize = matchedMarket.precision.price;
+                    } else if (typeof matchedMarket.precision?.price === 'string') {
+                      const parsed = parseFloat(matchedMarket.precision.price);
+                      if (parsed > 0) tickSize = parsed;
+                    }
+
+                    if (matchedMarket.limits?.price?.min) {
+                      const minP = matchedMarket.limits.price.min as any;
+                      minPrice = typeof minP?.toNumber === 'function' ? minP.toNumber() : (typeof minP === 'number' ? minP : 0);
+                    }
+
+                    if (typeof matchedMarket.precision?.amount === 'number' && matchedMarket.precision.amount > 0) {
+                      stepSize = matchedMarket.precision.amount;
+                    } else if (typeof matchedMarket.precision?.amount === 'string') {
+                      const parsed = parseFloat(matchedMarket.precision.amount);
+                      if (parsed > 0) stepSize = parsed;
+                    }
+
+                    if (matchedMarket.limits?.amount?.min !== undefined && matchedMarket.limits?.amount?.min !== null) {
+                      const minA = matchedMarket.limits.amount.min as any;
+                      const val = typeof minA?.toNumber === 'function' ? minA.toNumber() : (typeof minA === 'number' ? minA : parseFloat(String(minA)));
+                      if (Number.isFinite(val) && val >= 0) minOrderQty = val;
+                    }
+
+                    if (matchedMarket.limits?.cost?.min !== undefined && matchedMarket.limits?.cost?.min !== null) {
+                      const minC = matchedMarket.limits.cost.min as any;
+                      const val = typeof minC?.toNumber === 'function' ? minC.toNumber() : (typeof minC === 'number' ? minC : parseFloat(String(minC)));
+                      if (Number.isFinite(val) && val > 0) minNotional = val;
+                    }
+
+                    if (matchedMarket.limits?.amount?.max !== undefined && matchedMarket.limits?.amount?.max !== null) {
+                      const maxA = matchedMarket.limits.amount.max as any;
+                      maxOrderQty = typeof maxA?.toNumber === 'function' ? maxA.toNumber() : Number(maxA);
+                    } else if ((matchedMarket as any).info?.lotSizeFilter?.maxOrderQty !== undefined && (matchedMarket as any).info?.lotSizeFilter?.maxOrderQty !== null && String((matchedMarket as any).info.lotSizeFilter.maxOrderQty).trim() !== '') {
+                      maxOrderQty = Number((matchedMarket as any).info.lotSizeFilter.maxOrderQty);
+                    }
+
+                    if ((matchedMarket.limits as any)?.marketAmount?.max !== undefined && (matchedMarket.limits as any)?.marketAmount?.max !== null) {
+                      const mktMax = (matchedMarket.limits as any).marketAmount.max as any;
+                      marketMaxQty = typeof mktMax?.toNumber === 'function' ? mktMax.toNumber() : Number(mktMax);
+                    } else if ((matchedMarket as any).info?.lotSizeFilter?.maxMktOrderQty !== undefined && (matchedMarket as any).info?.lotSizeFilter?.maxMktOrderQty !== null && String((matchedMarket as any).info.lotSizeFilter.maxMktOrderQty).trim() !== '') {
+                      marketMaxQty = Number((matchedMarket as any).info.lotSizeFilter.maxMktOrderQty);
+                    }
+                  }
+
+                  if (!tickSize || !Number.isFinite(tickSize) || tickSize <= 0) {
+                    legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'TICK_SIZE_UNAVAILABLE' };
+                    console.warn(`[BUDGET GATE: REJECTED] Skipping TA for ${currentSymbol}: Authoritative Bybit tickSize unavailable.`);
+                    this.telemetrySink.emit({
+                      userId,
+                      category: 'SAFETY',
+                      component: 'TradingBot',
+                      eventName: 'FINAL_DISPATCH_GATE',
+                      severity: 'WARN',
+                      cycleId,
+                      symbol: currentSymbol,
+                      payload: {
+                        passed: false,
+                        gate: 'TICK_SIZE_UNAVAILABLE',
+                        phase: 'PRE_TA_BUDGET_GATE',
+                      }
+                    });
+                    continue;
+                  }
+
+                  const minAllowedPrice = (minPrice && Number.isFinite(minPrice) && minPrice > 0) ? minPrice : tickSize;
+
+                  const isLotMetadataValid =
+                    stepSize !== undefined && Number.isFinite(stepSize) && stepSize > 0 &&
+                    minOrderQty !== undefined && minOrderQty !== null && Number.isFinite(minOrderQty) && minOrderQty > 0 &&
+                    (maxOrderQty === undefined || maxOrderQty === null || (Number.isFinite(maxOrderQty) && maxOrderQty > 0)) &&
+                    (marketMaxQty === undefined || marketMaxQty === null || (Number.isFinite(marketMaxQty) && marketMaxQty > 0));
+
+                  if (!isLotMetadataValid) {
+                    legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'LOT_SIZE_METADATA_UNAVAILABLE' };
+                    console.warn(`[BUDGET GATE: REJECTED] Skipping TA for ${currentSymbol}: Invalid or missing lot size metadata.`);
+                    this.telemetrySink.emit({
+                      userId,
+                      category: 'SAFETY',
+                      component: 'TradingBot',
+                      eventName: 'FINAL_DISPATCH_GATE',
+                      severity: 'WARN',
+                      cycleId,
+                      symbol: currentSymbol,
+                      payload: {
+                        passed: false,
+                        gate: 'LOT_SIZE_METADATA_UNAVAILABLE',
+                        phase: 'PRE_TA_BUDGET_GATE',
+                      }
+                    });
+                    continue;
+                  }
+
+                  const validStepSize = stepSize!;
+                  const validMinOrderQty = minOrderQty!;
+                  const resolvedMinNotional = (minNotional !== undefined && minNotional > 0) ? minNotional : 5.0;
+                  const storedTargetEntryPrice = setupSnapshot?.targetEntryPrice ?? ((await this.state.storage.get('targetEntryPrice')) as number | undefined);
+                  const isPreTaLimitSetup = typeof storedTargetEntryPrice === 'number' && Number.isFinite(storedTargetEntryPrice) && storedTargetEntryPrice > 0;
+                  const preTaApplicableMaxOrderQty = isPreTaLimitSetup ? maxOrderQty : marketMaxQty;
+
+                  let preTaPrice: number | null = isPreTaLimitSetup ? storedTargetEntryPrice! : null;
+                  if (preTaPrice === null) {
+                    try {
+                      const preTicker = await provider.fetchTicker(currentSymbol);
+                      const rawPrePrice = (typeof (preTicker as any)?.last?.toNumber === 'function')
+                        ? (preTicker as any).last.toNumber()
+                        : (typeof (preTicker as any)?.last === 'number' ? (preTicker as any).last : Number((preTicker as any)?.last));
+                      if (rawPrePrice !== null && Number.isFinite(rawPrePrice) && rawPrePrice > 0) {
+                        preTaPrice = rawPrePrice;
+                      }
+                    } catch (preTickerErr: any) {
+                      console.warn(`[BUDGET GATE: TICKER_ERROR] Failed to fetch pre-TA live ticker for ${currentSymbol}:`, preTickerErr?.message || preTickerErr);
+                    }
+                  }
+
+                  if (!preTaPrice || !Number.isFinite(preTaPrice) || preTaPrice <= 0) {
+                    legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'TICKER_UNAVAILABLE' };
+                    console.warn(`[BUDGET GATE: REJECTED] Skipping TA for ${currentSymbol}: Live ticker price unavailable.`);
+                    this.telemetrySink.emit({
+                      userId,
+                      category: 'SAFETY',
+                      component: 'TradingBot',
+                      eventName: 'FINAL_DISPATCH_GATE',
+                      severity: 'WARN',
+                      cycleId,
+                      symbol: currentSymbol,
+                      payload: {
+                        passed: false,
+                        gate: 'TICKER_UNAVAILABLE',
+                        phase: 'PRE_TA_BUDGET_GATE',
+                      }
+                    });
+                    continue;
+                  }
+
+                  const preTaEligibility = ExecutionEligibilityGate.evaluate({
+                    tradeAmountUsdt: configuredTradeBudget,
+                    currentPrice: preTaPrice,
+                    qtyStep: validStepSize,
+                    minOrderQty: validMinOrderQty,
+                    minNotional: resolvedMinNotional,
+                    maxOrderQty: preTaApplicableMaxOrderQty,
+                  });
+
+                  if (!preTaEligibility.isExecutable) {
+                    legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE' };
+                    console.warn(`[BUDGET GATE: REJECTED] Skipping TA for ${currentSymbol}: Budget $${configuredTradeBudget} ineligible at price $${preTaPrice} (${preTaEligibility.rejectionReason}).`);
+                    this.telemetrySink.emit({
+                      userId,
+                      category: 'SAFETY',
+                      component: 'TradingBot',
+                      eventName: 'FINAL_DISPATCH_GATE',
+                      severity: 'WARN',
+                      cycleId,
+                      symbol: currentSymbol,
+                      payload: {
+                        passed: false,
+                        gate: 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE',
+                        phase: 'PRE_TA_BUDGET_GATE',
+                        budget: configuredTradeBudget,
+                        currentPrice: preTaPrice,
+                        qtyStep: validStepSize,
+                        rejectionReason: preTaEligibility.rejectionReason,
+                      }
+                    });
+                    continue;
+                  }
+
                   const snapshot = await dataEngine.getSnapshot(currentSymbol, cycleTimeframes, cycleCandleLimit);
                   const currentNormSymbol = this.normalizeSymbol(currentSymbol);
                   await this.cleanupStaleGateRejections(currentNormSymbol, snapshot, Date.now());
@@ -7430,9 +7579,7 @@ export class TradingBot {
                           continue;
                         }
 
-                        const setupSnapshot = this.runtimeState.setupSnapshot;
-                        const storedPositionSize = setupSnapshot?.positionSize ?? (this.runtimeState.positionSize as number | undefined);
-                        const size = (storedPositionSize && storedPositionSize > 0 && Number.isFinite(storedPositionSize)) ? storedPositionSize : 0;
+                        const size = configuredTradeBudget;
 
                         // Stage 2.2 Decoupled Execution Eligibility Tracking
                         let alertIsExecutable = true;
@@ -7522,7 +7669,7 @@ export class TradingBot {
                           continue; // Candidate-specific failure -> falls back to next registered strategy
                         }
 
-                        const targetEntryPrice = setupSnapshot?.targetEntryPrice ?? ((await this.state.storage.get('targetEntryPrice')) as number | undefined);
+                        const targetEntryPrice = storedTargetEntryPrice;
                         const alertSignalPrice = sig.signalPrice || price;
                         const alertTargetPrice = targetEntryPrice ?? sig.targetEntryPrice ?? undefined;
 
@@ -7649,256 +7796,159 @@ export class TradingBot {
                         const effectiveSlDistance = rawSlDist;
                         const effectiveTpDistance = rawTpDist;
 
-                        // --- AUTONOMOUS TICKSIZE AND LOT METADATA RETRIEVAL ---
-                        if (!marketFetchAttempted) {
-                          marketFetchAttempted = true;
-                          hoistedMarket =
-                            typeof (adapter as any).fetchMarket === 'function'
-                              ? await (adapter as any).fetchMarket(currentSymbol).catch(() => null)
-                              : (await adapter.fetchMarkets().catch(() => [])).find((m: any) => m.symbol === currentSymbol);
-                        }
-                        const matchedMarket = hoistedMarket;
-
-                        let tickSize: number | undefined;
-                        let minPrice: number | undefined;
-
-                        if (matchedMarket) {
-                          if (typeof matchedMarket.precision?.price === 'number' && matchedMarket.precision.price > 0) {
-                            tickSize = matchedMarket.precision.price;
-                          } else if (typeof matchedMarket.precision?.price === 'string') {
-                            const parsed = parseFloat(matchedMarket.precision.price);
-                            if (parsed > 0) tickSize = parsed;
-                          }
-
-                          if (matchedMarket.limits?.price?.min) {
-                            const minP = matchedMarket.limits.price.min as any;
-                            minPrice = typeof minP?.toNumber === 'function' ? minP.toNumber() : (typeof minP === 'number' ? minP : 0);
-                          }
-                        }
-
-                        if (!tickSize || tickSize <= 0) {
-                          legacySuppressionInfo = { isLegacySuppressedByGate: true, suppressionGate: 'TICK_SIZE_UNAVAILABLE' };
-                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'TICK_SIZE_UNAVAILABLE');
-                          await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'TICK_SIZE_UNAVAILABLE');
-                          console.warn(`[trading-bot] Skipping TradeAlert generation for ${currentSymbol} (${result.strategyId}): Authoritative Bybit tickSize unavailable.`);
-                          this.telemetrySink.emit({
-                            userId,
-                            category: 'SAFETY',
-                            component: 'TradingBot',
-                            eventName: 'FINAL_DISPATCH_GATE',
-                            severity: 'WARN',
-                            cycleId,
-                            symbol: currentSymbol,
-                            strategyId: result.strategyId,
-                            payload: {
-                              passed: false,
-                              gate: 'TICK_SIZE_UNAVAILABLE'
-                            }
-                          });
-                          break; // Ticker-wide failure -> stop evaluating further strategies for this ticker
-                        }
-
-                        const minAllowedPrice = (minPrice && minPrice > 0) ? minPrice : tickSize;
-
-                        let stepSize: number | undefined;
-                        let minOrderQty: number | undefined;
-                        let minNotional: number | undefined;
-                        let maxOrderQty: number | undefined;
-                        let marketMaxQty: number | undefined;
-
-                        if (matchedMarket) {
-                          if (typeof matchedMarket.precision?.amount === 'number' && matchedMarket.precision.amount > 0) {
-                            stepSize = matchedMarket.precision.amount;
-                          } else if (typeof matchedMarket.precision?.amount === 'string') {
-                            const parsed = parseFloat(matchedMarket.precision.amount);
-                            if (parsed > 0) stepSize = parsed;
-                          }
-
-                          if (matchedMarket.limits?.amount?.min !== undefined && matchedMarket.limits?.amount?.min !== null) {
-                            const minA = matchedMarket.limits.amount.min as any;
-                            const val = typeof minA?.toNumber === 'function' ? minA.toNumber() : (typeof minA === 'number' ? minA : parseFloat(String(minA)));
-                            if (Number.isFinite(val) && val >= 0) minOrderQty = val;
-                          }
-
-                          if (matchedMarket.limits?.cost?.min !== undefined && matchedMarket.limits?.cost?.min !== null) {
-                            const minC = matchedMarket.limits.cost.min as any;
-                            const val = typeof minC?.toNumber === 'function' ? minC.toNumber() : (typeof minC === 'number' ? minC : parseFloat(String(minC)));
-                            if (Number.isFinite(val) && val > 0) minNotional = val;
-                          }
-
-                          if (matchedMarket.limits?.amount?.max !== undefined && matchedMarket.limits?.amount?.max !== null) {
-                            const maxA = matchedMarket.limits.amount.max as any;
-                            maxOrderQty = typeof maxA?.toNumber === 'function' ? maxA.toNumber() : Number(maxA);
-                          } else if ((matchedMarket as any).info?.lotSizeFilter?.maxOrderQty !== undefined && (matchedMarket as any).info?.lotSizeFilter?.maxOrderQty !== null && String((matchedMarket as any).info.lotSizeFilter.maxOrderQty).trim() !== '') {
-                            maxOrderQty = Number((matchedMarket as any).info.lotSizeFilter.maxOrderQty);
-                          }
-
-                          if ((matchedMarket.limits as any)?.marketAmount?.max !== undefined && (matchedMarket.limits as any)?.marketAmount?.max !== null) {
-                            const mktMax = (matchedMarket.limits as any).marketAmount.max as any;
-                            marketMaxQty = typeof mktMax?.toNumber === 'function' ? mktMax.toNumber() : Number(mktMax);
-                          } else if ((matchedMarket as any).info?.lotSizeFilter?.maxMktOrderQty !== undefined && (matchedMarket as any).info?.lotSizeFilter?.maxMktOrderQty !== null && String((matchedMarket as any).info.lotSizeFilter.maxMktOrderQty).trim() !== '') {
-                            marketMaxQty = Number((matchedMarket as any).info.lotSizeFilter.maxMktOrderQty);
-                          }
-                        }
-
-                        // Stage 2.2 Decoupled Lot Size & Order Execution Evaluation
+                        // Stage 2.2 Decoupled Lot Size & Order Execution Evaluation (reuses Pre-TA metadata)
                         const isLimitAlert = alertTargetPrice !== undefined && alertTargetPrice > 0;
                         const applicableAlertMaxOrderQty = isLimitAlert ? maxOrderQty : marketMaxQty;
-                        const resolvedMinNotional = (minNotional !== undefined && minNotional > 0) ? minNotional : 5.0;
 
                         let eligibilityResult: any = null;
                         let freshTickerPrice: number | null = null;
                         let normalized: NormalizedPrices | null = null;
                         let approvedAlertEntryPrice: number | null = null;
 
-                        if (alertIsExecutable) {
-                          const isLotMetadataValid =
-                            stepSize !== undefined && Number.isFinite(stepSize) && stepSize > 0 &&
-                            minOrderQty !== undefined && minOrderQty !== null && Number.isFinite(minOrderQty) && minOrderQty > 0 &&
-                            (maxOrderQty === undefined || maxOrderQty === null || (Number.isFinite(maxOrderQty) && maxOrderQty > 0)) &&
-                            (marketMaxQty === undefined || marketMaxQty === null || (Number.isFinite(marketMaxQty) && marketMaxQty > 0));
+                        // Fetch latest uncached Bybit ticker before Entry/SL/TP anchoring and post-signal recheck
+                        try {
+                          const freshTicker = await adapter.fetchTicker(currentSymbol);
+                          const rawPrice = (typeof (freshTicker as any)?.last?.toNumber === 'function')
+                            ? (freshTicker as any).last.toNumber()
+                            : (typeof (freshTicker as any)?.last === 'number'
+                              ? (freshTicker as any).last
+                              : Number((freshTicker as any)?.last));
+                          if (rawPrice !== null && Number.isFinite(rawPrice) && rawPrice > 0) {
+                            freshTickerPrice = rawPrice;
+                          }
+                        } catch (tickerErr: any) {
+                          console.warn(`[trading-bot] Failed to fetch fresh Bybit ticker for ${currentSymbol}:`, tickerErr?.message || tickerErr);
+                        }
 
-                          if (!isLotMetadataValid) {
-                            alertIsExecutable = false;
-                            alertIneligibilityReason = 'LOT_SIZE_METADATA_UNAVAILABLE';
-                            recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'LOT_SIZE_METADATA_UNAVAILABLE');
-                            await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'LOT_SIZE_METADATA_UNAVAILABLE');
-                            console.warn(`[trading-bot] Trade opportunity detected for ${currentSymbol} (${result.strategyId}) with invalid or missing lot size metadata. Skipping alert creation.`);
-                            break;
+                        if (!freshTickerPrice || freshTickerPrice <= 0) {
+                          if (!alertIsExecutable) {
+                            // Signal-only alert (e.g., PORTFOLIO_EXPOSURE_EXCEEDED) falls back to validated pre-TA ticker
+                            freshTickerPrice = preTaPrice;
                           } else {
-                            const validStepSize = stepSize!;
-                            const validMinOrderQty = minOrderQty!;
-
-                            // Fetch latest Bybit ticker immediately before alert-price anchoring and eligibility evaluation
-                            try {
-                              const freshTicker = await adapter.fetchTicker(currentSymbol);
-                              const rawPrice = (typeof (freshTicker as any)?.last?.toNumber === 'function')
-                                ? (freshTicker as any).last.toNumber()
-                                : (typeof (freshTicker as any)?.last === 'number' ? (freshTicker as any).last : null);
-                              if (rawPrice !== null && Number.isFinite(rawPrice) && rawPrice > 0) {
-                                freshTickerPrice = rawPrice;
+                            alertIsExecutable = false;
+                            alertIneligibilityReason = 'TICKER_UNAVAILABLE';
+                            recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'TICKER_UNAVAILABLE');
+                            await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'TICKER_UNAVAILABLE');
+                            this.telemetrySink.emit({
+                              userId,
+                              category: 'SAFETY',
+                              component: 'TradingBot',
+                              eventName: 'FINAL_DISPATCH_GATE',
+                              severity: 'WARN',
+                              symbol: currentSymbol,
+                              strategyId: alertStrategyKey,
+                              payload: {
+                                passed: false,
+                                gate: 'TICKER_UNAVAILABLE',
+                                symbol: currentSymbol,
+                                rejectionReason: 'Fresh Bybit market ticker unavailable or non-positive'
                               }
-                            } catch (tickerErr: any) {
-                              console.warn(`[trading-bot] Failed to fetch fresh Bybit ticker for ${currentSymbol}:`, tickerErr?.message || tickerErr);
-                            }
-
-                            if (!freshTickerPrice || freshTickerPrice <= 0) {
-                              alertIsExecutable = false;
-                              alertIneligibilityReason = 'TICKER_UNAVAILABLE';
-                              recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'TICKER_UNAVAILABLE');
-                              await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'TICKER_UNAVAILABLE');
-                              this.telemetrySink.emit({
-                                userId,
-                                category: 'SAFETY',
-                                component: 'TradingBot',
-                                eventName: 'FINAL_DISPATCH_GATE',
-                                severity: 'WARN',
-                                symbol: currentSymbol,
-                                strategyId: alertStrategyKey,
-                                payload: {
-                                  passed: false,
-                                  gate: 'TICKER_UNAVAILABLE',
-                                  symbol: currentSymbol,
-                                  rejectionReason: 'Fresh Bybit market ticker unavailable or non-positive'
-                                }
-                              });
-                              console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) rejected: Fresh ticker price unavailable. Skipping alert creation.`);
-                              break;
-                            }
-
-                            // Re-anchor strategy SL and TP distances to the fresh ticker price
-                            const resolvedEntryPrice = (isLimitAlert && alertTargetPrice !== undefined && alertTargetPrice > 0)
-                              ? alertTargetPrice
-                              : freshTickerPrice;
-                            approvedAlertEntryPrice = resolvedEntryPrice;
-                            const theoreticalSL = isBuySignal
-                              ? (resolvedEntryPrice - effectiveSlDistance)
-                              : (resolvedEntryPrice + effectiveSlDistance);
-                            const theoreticalTP = isBuySignal
-                              ? (resolvedEntryPrice + effectiveTpDistance)
-                              : (resolvedEntryPrice - effectiveTpDistance);
-
-                            // Normalize Entry, SL and TP using the instrument's actual Bybit tick size
-                            normalized = PriceNormalizer.normalizeTradePrices({
-                              entryPrice: resolvedEntryPrice,
-                              theoreticalSL,
-                              theoreticalTP,
-                              tickSize,
-                              minAllowedPrice,
-                              side: sig.type as 'BUY' | 'SELL'
                             });
+                            console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) rejected: Fresh ticker price unavailable. Skipping alert creation.`);
+                            break;
+                          }
+                        }
 
-                            // Validate that Entry, SL and TP are valid and strictly on the correct sides of Entry
-                            const isValidRiskBoundaries = isBuySignal
-                              ? (normalized.stopLoss < resolvedEntryPrice && resolvedEntryPrice < normalized.takeProfit && normalized.stopLoss >= minAllowedPrice)
-                              : (normalized.takeProfit < resolvedEntryPrice && resolvedEntryPrice < normalized.stopLoss && normalized.takeProfit >= minAllowedPrice);
+                        // Re-anchor strategy SL and TP distances to the resolved entry price
+                        const resolvedEntryPrice = (isLimitAlert && alertTargetPrice !== undefined && alertTargetPrice > 0)
+                          ? alertTargetPrice
+                          : freshTickerPrice;
+                        approvedAlertEntryPrice = resolvedEntryPrice;
+                        const theoreticalSL = isBuySignal
+                          ? (resolvedEntryPrice - effectiveSlDistance)
+                          : (resolvedEntryPrice + effectiveSlDistance);
+                        const theoreticalTP = isBuySignal
+                          ? (resolvedEntryPrice + effectiveTpDistance)
+                          : (resolvedEntryPrice - effectiveTpDistance);
 
-                            if (!isValidRiskBoundaries) {
-                              alertIsExecutable = false;
-                              alertIneligibilityReason = 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE';
-                              recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE');
-                              await this.recordStrategyGateRejection(
-                                currentNorm,
-                                result.strategyId,
-                                targetTimeframe,
-                                candidateCandleTs,
-                                'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE'
-                              );
-                              this.telemetrySink.emit({
-                                userId,
-                                category: 'SAFETY',
-                                component: 'TradingBot',
-                                eventName: 'FINAL_DISPATCH_GATE',
-                                severity: 'WARN',
-                                symbol: currentSymbol,
-                                strategyId: alertStrategyKey,
-                                payload: {
-                                  passed: false,
-                                  gate: 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE',
-                                  currentPrice: resolvedEntryPrice,
-                                  stopLoss: normalized.stopLoss,
-                                  takeProfit: normalized.takeProfit,
-                                  rejectionReason: 'Fresh price invalidates intended risk boundaries (SL or TP crossed entry)'
-                                }
-                              });
-                              console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) rejected: Fresh price ($${resolvedEntryPrice}) invalidates risk boundaries (SL=$${normalized.stopLoss}, TP=$${normalized.takeProfit}). Skipping alert creation.`);
-                              break;
-                            }
+                        // Normalize Entry, SL and TP for both executable and signal-only alerts
+                        normalized = PriceNormalizer.normalizeTradePrices({
+                          entryPrice: resolvedEntryPrice,
+                          theoreticalSL,
+                          theoreticalTP,
+                          tickSize,
+                          minAllowedPrice,
+                          side: sig.type as 'BUY' | 'SELL'
+                        });
 
-                            eligibilityResult = ExecutionEligibilityGate.evaluate({
-                              tradeAmountUsdt: size,
+                        // Validate that Entry, SL and TP are finite, valid, and strictly on the correct sides of Entry
+                        const isValidRiskBoundaries = Boolean(
+                          normalized &&
+                          Number.isFinite(normalized.stopLoss) &&
+                          Number.isFinite(normalized.takeProfit) &&
+                          normalized.stopLoss > 0 &&
+                          normalized.takeProfit > 0 &&
+                          (isBuySignal
+                            ? (normalized.stopLoss < resolvedEntryPrice && resolvedEntryPrice < normalized.takeProfit && normalized.stopLoss >= minAllowedPrice)
+                            : (normalized.takeProfit < resolvedEntryPrice && resolvedEntryPrice < normalized.stopLoss && normalized.takeProfit >= minAllowedPrice))
+                        );
+
+                        if (!isValidRiskBoundaries || !normalized) {
+                          alertIsExecutable = false;
+                          alertIneligibilityReason = 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE';
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE');
+                          await this.recordStrategyGateRejection(
+                            currentNorm,
+                            result.strategyId,
+                            targetTimeframe,
+                            candidateCandleTs,
+                            'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE'
+                          );
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            symbol: currentSymbol,
+                            strategyId: alertStrategyKey,
+                            payload: {
+                              passed: false,
+                              gate: 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE',
                               currentPrice: resolvedEntryPrice,
-                              qtyStep: validStepSize,
-                              minOrderQty: validMinOrderQty,
-                              minNotional: resolvedMinNotional,
-                              maxOrderQty: applicableAlertMaxOrderQty,
-                            });
-
-                            if (!eligibilityResult.isExecutable) {
-                              alertIsExecutable = false;
-                              alertIneligibilityReason = 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE';
-                              this.telemetrySink.emit({
-                                userId,
-                                category: 'SAFETY',
-                                component: 'TradingBot',
-                                eventName: 'FINAL_DISPATCH_GATE',
-                                severity: 'WARN',
-                                symbol: currentSymbol,
-                                strategyId: alertStrategyKey,
-                                payload: {
-                                  passed: false,
-                                  gate: 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE',
-                                  budget: size,
-                                  currentPrice: approvedAlertEntryPrice,
-                                  qtyStep: validStepSize,
-                                  rejectionReason: eligibilityResult.rejectionReason,
-                                }
-                              });
-                              console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) is execution-ineligible (BUDGET_INSUFFICIENT_AT_CURRENT_PRICE: ${eligibilityResult.rejectionReason}). Skipping alert creation.`);
-                              recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE');
-                              await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE');
-                              break;
+                              stopLoss: normalized?.stopLoss,
+                              takeProfit: normalized?.takeProfit,
+                              rejectionReason: 'Fresh price invalidates intended risk boundaries (SL or TP crossed entry)'
                             }
+                          });
+                          console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) rejected: Fresh price ($${resolvedEntryPrice}) invalidates risk boundaries (SL=$${normalized?.stopLoss}, TP=$${normalized?.takeProfit}). Skipping alert creation.`);
+                          break;
+                        }
+
+                        if (alertIsExecutable) {
+                          eligibilityResult = ExecutionEligibilityGate.evaluate({
+                            tradeAmountUsdt: size,
+                            currentPrice: resolvedEntryPrice,
+                            qtyStep: validStepSize,
+                            minOrderQty: validMinOrderQty,
+                            minNotional: resolvedMinNotional,
+                            maxOrderQty: applicableAlertMaxOrderQty,
+                          });
+
+                          if (!eligibilityResult.isExecutable) {
+                            alertIsExecutable = false;
+                            alertIneligibilityReason = 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE';
+                            this.telemetrySink.emit({
+                              userId,
+                              category: 'SAFETY',
+                              component: 'TradingBot',
+                              eventName: 'FINAL_DISPATCH_GATE',
+                              severity: 'WARN',
+                              symbol: currentSymbol,
+                              strategyId: alertStrategyKey,
+                              payload: {
+                                passed: false,
+                                gate: 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE',
+                                budget: size,
+                                currentPrice: approvedAlertEntryPrice,
+                                qtyStep: validStepSize,
+                                rejectionReason: eligibilityResult.rejectionReason,
+                              }
+                            });
+                            console.warn(`[SAFETY_GATE: LEVEL_1] Trade opportunity for ${currentSymbol} (${result.strategyId}) is execution-ineligible (BUDGET_INSUFFICIENT_AT_CURRENT_PRICE: ${eligibilityResult.rejectionReason}). Skipping alert creation.`);
+                            recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE');
+                            await this.recordSymbolGateRejection(currentNorm, effectiveSymbolCandleTs, 'BUDGET_INSUFFICIENT_AT_CURRENT_PRICE');
+                            break;
                           }
                         }
 
@@ -7989,15 +8039,30 @@ export class TradingBot {
                           ? Math.abs(normalized.takeProfit - approvedAlertEntryPrice) * (eligibilityResult?.quantizedQty ?? (approvedAlertEntryPrice > 0 ? size / approvedAlertEntryPrice : 0))
                           : undefined;
 
+                        if (
+                          !normalized ||
+                          !Number.isFinite(normalized.stopLoss) ||
+                          !Number.isFinite(normalized.takeProfit) ||
+                          normalized.stopLoss <= 0 ||
+                          normalized.takeProfit <= 0 ||
+                          !approvedAlertEntryPrice ||
+                          !Number.isFinite(approvedAlertEntryPrice) ||
+                          approvedAlertEntryPrice <= 0
+                        ) {
+                          console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: missing or invalid normalized Entry/SL/TP.`);
+                          recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE');
+                          break;
+                        }
+
                         recordStrategyStatus(result.strategyId, 'TRADE_QUALIFIED');
                         const alert: TradeAlert = {
                           id: crypto.randomUUID(),
                           symbol: currentSymbol,
                           signalPrice: alertSignalPrice,
                           targetEntryPrice: alertTargetPrice,
-                          entryPrice: approvedAlertEntryPrice || alertSignalPrice,
-                          stopLoss: normalized!.stopLoss,
-                          takeProfit: normalized!.takeProfit,
+                          entryPrice: approvedAlertEntryPrice,
+                          stopLoss: normalized.stopLoss,
+                          takeProfit: normalized.takeProfit,
                           estimatedPnl: effectiveAlertEstimatedPnl,
                           positionSize: effectiveAlertPositionSize,
                           quantity: alertIsExecutable ? eligibilityResult?.quantizedQty : undefined,

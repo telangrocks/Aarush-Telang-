@@ -16,7 +16,7 @@ vi.mock("../../exchanges", async (importOriginal) => {
       getProvider: vi.fn().mockResolvedValue({
         fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTCUSDT', last: 50100, bid: 50090, ask: 50110, high: 51000, low: 49000, volume: 100, quoteVolume: 5010000 }),
         fetchKlines: vi.fn().mockResolvedValue([]),
-        fetchBalance: vi.fn().mockResolvedValue([]),
+        fetchBalance: vi.fn().mockResolvedValue({ free: { USDT: 10000 }, total: { USDT: 10000 } }),
         fetchMarkets: vi.fn().mockResolvedValue([
           { id: 'BTCUSDT', symbol: 'BTC/USDT', quote: 'USDT', active: true, category: 'linear', precision: { amount: 0.001, price: 1.0 }, limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } } }
         ]),
@@ -127,6 +127,8 @@ describe("Phase 1 Execution Quantity Safety Invariant Regression Suite", () => {
     executeOrderSpy = vi.spyOn(exch.ExchangeManager, "executeIdempotentOrder");
     executeOrderSpy.mockClear();
 
+    mockStorage.set('isActive', true);
+    mockStorage.set('lock:alarmGeneration', 1);
     mockStorage.set('approvedCandidateRecord', {
       approvalGeneration: 1,
       budgetUsdt: 1000,
@@ -160,7 +162,9 @@ describe("Phase 1 Execution Quantity Safety Invariant Regression Suite", () => {
       side: 'BUY',
       timestamp: new Date().toISOString(),
       status: 'pending',
-      source: 'MANUAL'
+      source: 'AUTONOMOUS',
+      generation: 1,
+      approvalGeneration: 1
     }]);
 
     const req = new Request('http://bot/execute-trade', {
@@ -194,7 +198,9 @@ describe("Phase 1 Execution Quantity Safety Invariant Regression Suite", () => {
       side: 'BUY',
       timestamp: new Date().toISOString(),
       status: 'pending',
-      source: 'MANUAL'
+      source: 'AUTONOMOUS',
+      generation: 1,
+      approvalGeneration: 1
     }]);
 
     const req = new Request('http://bot/execute-trade', {
@@ -233,7 +239,9 @@ describe("Phase 1 Execution Quantity Safety Invariant Regression Suite", () => {
         side: 'BUY',
         timestamp: new Date().toISOString(),
         status: 'pending',
-        source: 'MANUAL'
+        source: 'AUTONOMOUS',
+        generation: 1,
+        approvalGeneration: 1
       }]);
 
       const req = new Request('http://bot/execute-trade', {
@@ -268,7 +276,9 @@ describe("Phase 1 Execution Quantity Safety Invariant Regression Suite", () => {
       side: 'BUY',
       timestamp: new Date().toISOString(),
       status: 'pending',
-      source: 'MANUAL'
+      source: 'AUTONOMOUS',
+      generation: 1,
+      approvalGeneration: 1
     }]);
 
     const req = new Request('http://bot/execute-trade', {
@@ -303,7 +313,9 @@ describe("Phase 1 Execution Quantity Safety Invariant Regression Suite", () => {
       side: 'BUY',
       timestamp: new Date().toISOString(),
       status: 'pending',
-      source: 'MANUAL'
+      source: 'AUTONOMOUS',
+      generation: 1,
+      approvalGeneration: 1
     }]);
 
     mockStorage.set('approvedCandidateRecord', {
@@ -342,7 +354,9 @@ describe("Phase 1 Execution Quantity Safety Invariant Regression Suite", () => {
       side: 'BUY',
       timestamp: new Date().toISOString(),
       status: 'pending',
-      source: 'MANUAL'
+      source: 'AUTONOMOUS',
+      generation: 1,
+      approvalGeneration: 1
     }]);
 
     const req = new Request('http://bot/execute-trade', {

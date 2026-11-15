@@ -185,17 +185,6 @@ export class ScalperV2Strategy implements IStrategy {
       };
     }
 
-    // Guard against accountBalance <= 0
-    if (!context.accountBalance || context.accountBalance <= 0) {
-      return {
-        strategyId: this.manifest.id,
-        timestamp: context.timestamp,
-        confidenceScore: 0,
-        hasSignal: false,
-        metadata: { reasoning: ['Account balance not available — cannot calculate position size'], targetTimeframe }
-      };
-    }
-    
     // Risk calculations strictly preserved on targetTimeframe ATR
     const tfIndicators = indicatorSnapshot.timeframes[targetTimeframe];
     const atrArray = tfIndicators?.atr[this.config.conditionConfig.atrPeriod];
@@ -218,11 +207,15 @@ export class ScalperV2Strategy implements IStrategy {
     }
 
     // 4. Risk (strictly targetTimeframe ATR)
+    const safeAccountBalance =
+      typeof context.accountBalance === 'number' && Number.isFinite(context.accountBalance) && context.accountBalance > 0
+        ? context.accountBalance
+        : 0;
     const riskContext: RiskContext = {
       timestamp: T,
       currentPrice,
       currentAtr,
-      accountBalance: context.accountBalance
+      accountBalance: safeAccountBalance
     };
     const riskAssessment = this.riskEngine.evaluate(riskContext);
 

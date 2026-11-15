@@ -3,7 +3,7 @@ import BigNumber from 'bignumber.js';
 import { TradingBot, TradeAlert } from '../../src/trading-bot';
 import { BybitAdapter } from '../../src/infrastructure/exchange/adapters/BybitAdapter';
 import { ExchangeOrchestrator } from '../../src/infrastructure/orchestrator/ExchangeOrchestrator';
-import { handleExecuteTrade, handleTriggerManualTradeAlert, handleGetPersonalizedMarketCandidates, invalidateExchangeConnection, __resetPublicOpportunityStateForTests } from '../../src/handlers/exchange';
+import { handleExecuteTrade, handleGetPersonalizedMarketCandidates, invalidateExchangeConnection, __resetPublicOpportunityStateForTests } from '../../src/handlers/exchange';
 
 vi.mock('../../src/crypto', () => ({
   decrypt: vi.fn().mockResolvedValue('mocked_secret_key')
@@ -296,58 +296,24 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
     expect(body.error).toContain('obsolete or invalid alarm generation');
   });
 
-  it('Manual alert: executes successfully when registered via /register-alert with no generation', async () => {
+  it('Manual alert endpoints removed: /register-alert returns 404 and legacy MANUAL alerts are rejected with 409 INVALID_ALERT_PROVENANCE', async () => {
     const bot = new TradingBot(mockState, mockEnv);
     mockStorage.set('userId', 'user-test-1');
-    mockStorage.set('lock:alarmGeneration', 10); // Generation counter is at 10
+    mockStorage.set('isActive', true);
+    mockStorage.set('strategy', 'ScalperV2');
+    mockStorage.set('lock:alarmGeneration', 10);
 
-    const manualAlert = {
-      id: 'manual-alert-ta-screen',
-      symbol: 'BTC/USDT',
-      signalPrice: 50000,
-      targetEntryPrice: 50000,
-      entryPrice: 50000,
-      stopLoss: 49000,
-      takeProfit: 52000,
-      estimatedPnl: 20,
-      positionSize: 100,
-      quantity: 0.002,
-      strategy: 'ScalperV2',
-      side: 'BUY',
-      timestamp: new Date().toISOString(),
-      status: 'pending',
-      // NO generation!
-    };
-
-    // 1. Register alert via /register-alert (as exchange.ts does)
+    // 1. Removed DO endpoint /register-alert fails closed with 404
     const regRes = await bot.fetch(
       new Request('http://bot/register-alert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alert: manualAlert }),
+        body: JSON.stringify({ alert: { id: 'manual-alert-ta-screen' } }),
       })
     );
-    expect(regRes.status).toBe(200);
+    expect(regRes.status).toBe(404);
 
-    // 2. User confirms and presses EXECUTE TRADE -> /execute-trade
-    const execRes = await bot.fetch(
-      new Request('http://bot/execute-trade', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId: 'manual-alert-ta-screen' }),
-      })
-    );
-
-    expect(execRes.status).toBe(200);
-    const execBody = await execRes.json<any>();
-    expect(execBody.success).toBe(true);
-  });
-
-  it('Manual alert: does NOT fail even if autonomous alarmGeneration rolls over', async () => {
-    const bot = new TradingBot(mockState, mockEnv);
-    mockStorage.set('userId', 'user-test-1');
-    mockStorage.set('lock:alarmGeneration', 1);
-
+    // 2. Even if an obsolete MANUAL alert exists in storage, /execute-trade rejects it fail-closed
     const manualAlert = {
       id: 'manual-alert-independent',
       symbol: 'BTC/USDT',
@@ -365,14 +331,8 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       status: 'pending',
       source: 'MANUAL',
     };
-
-    // Alert registered at generation 1
     mockStorage.set('alerts', [manualAlert]);
 
-    // Background autonomous alarm activates / deactivates / switches strategy, advancing generation to 4
-    mockStorage.set('lock:alarmGeneration', 4);
-
-    // Manual trade executed now
     const execRes = await bot.fetch(
       new Request('http://bot/execute-trade', {
         method: 'POST',
@@ -381,16 +341,20 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       })
     );
 
-    // Must NOT fail with "Alert belongs to an obsolete or invalid alarm generation"
-    expect(execRes.status).toBe(200);
+    expect(execRes.status).toBe(409);
+    const body = await execRes.json<any>();
+    expect(body.code).toBe('INVALID_ALERT_PROVENANCE');
   });
 
-  it('Manual alert: expired signals (>5 min) are still safely rejected with 400', async () => {
+  it('Autonomous alert: expired signals (>5 min) are safely rejected with 400', async () => {
     const bot = new TradingBot(mockState, mockEnv);
     mockStorage.set('userId', 'user-test-1');
+    mockStorage.set('isActive', true);
+    mockStorage.set('strategy', 'ScalperV2');
+    mockStorage.set('lock:alarmGeneration', 1);
 
-    const expiredManualAlert = {
-      id: 'manual-expired',
+    const expiredAutoAlert = {
+      id: 'auto-expired',
       symbol: 'BTC/USDT',
       signalPrice: 50000,
       targetEntryPrice: 50000,
@@ -404,15 +368,17 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       side: 'BUY',
       timestamp: new Date(Date.now() - 360000).toISOString(), // 6 minutes ago (>5 min TTL)
       status: 'pending',
-      source: 'MANUAL',
+      generation: 1,
+      approvalGeneration: 1,
+      source: 'AUTONOMOUS',
     };
-    mockStorage.set('alerts', [expiredManualAlert]);
+    mockStorage.set('alerts', [expiredAutoAlert]);
 
     const execRes = await bot.fetch(
       new Request('http://bot/execute-trade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertId: 'manual-expired' }),
+        body: JSON.stringify({ alertId: 'auto-expired' }),
       })
     );
 
@@ -663,13 +629,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
       source: 'AUTONOMOUS',
       generation: 10,
     };
-    const manualPending: TradeAlert = {
-      ...autoPending,
-      id: 'man-pend-t1',
-      source: 'MANUAL',
-      generation: undefined,
-    };
-    mockStorage.set('alerts', [autoPending, manualPending]);
+    mockStorage.set('alerts', [autoPending]);
 
     const actPromise = bot.fetch(
       new Request('http://bot/activate', {
@@ -679,7 +639,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
           userId: 'user-test-1',
           strategy: 'ScalperV2',
           positionSize: 100,
-      quantity: 0.002,
+          quantity: 0.002,
           coinId: 'BTC/USDT',
           monitoredSymbols: ['BTC/USDT'],
         }),
@@ -700,12 +660,10 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
     expect(mockStorage.get('lock:alarmGeneration')).toBe(12);
     expect(mockStorage.get('isActive')).toBe(false);
 
-    // Autonomous pending alert was expired, while manual pending alert was preserved
+    // Autonomous pending alert was expired
     const storedAlerts = mockStorage.get('alerts') as TradeAlert[];
     const autoAfter = storedAlerts.find((a) => a.id === 'auto-pend-t1');
-    const manAfter = storedAlerts.find((a) => a.id === 'man-pend-t1');
     expect(autoAfter?.status).toBe('expired');
-    expect(manAfter?.status).toBe('pending');
   });
 
   it('T2 & T3: Autonomous alert succeeds when active+matching generation, and fails with 409 when bot is inactive', async () => {
@@ -747,7 +705,7 @@ describe('Manual vs Autonomous Alert Generation Lineage', () => {
     expect(body.code).toBe('BOT_INACTIVE_AUTONOMOUS_REJECTED');
   });
 
-  it('T4 & T5: Alert with invalid provenance or manual alert carrying generation is rejected with 409; handler stamps MANUAL provenance', async () => {
+  it('T4 & T5: Alert with invalid or obsolete MANUAL provenance is rejected with 409 INVALID_ALERT_PROVENANCE', async () => {
     const bot = new TradingBot(mockState, mockEnv);
     mockStorage.set('userId', 'user-test-1');
     mockStorage.set('isActive', true);

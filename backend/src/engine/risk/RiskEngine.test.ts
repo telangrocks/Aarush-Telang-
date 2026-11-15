@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { RiskEngine, RiskContext } from './RiskEngine';
 import { RiskParameters } from './RiskParameters';
+import { OrderSizing } from './OrderSizing';
 
 describe('RiskEngine', () => {
   it('should calculate SL and TP correctly for standard risk parameters under Model A', () => {
@@ -405,6 +406,51 @@ describe('RiskEngine', () => {
       expect(res.maximumExposure).toBe(2000);
       expect(res.riskClassification).toBe('LOW'); // NOT EXTREME!
       expect(res.explanation.some(e => e.includes('Risk classification is LOW'))).toBe(true);
+    });
+  });
+
+  describe('Zero and Non-Finite Wallet Balance Safety', () => {
+    const config: RiskParameters = {
+      maxExposureLimit: 20.0,
+      atrStopLossMultiplier: 1.5,
+      atrTakeProfitMultiplier: 2.0,
+      accountRiskPercent: 1.0
+    };
+    const engine = new RiskEngine(config);
+
+    it('OrderSizing.calculateSize returns 0 for zero, negative, or non-finite balance/price/stopDistance', () => {
+      expect(OrderSizing.calculateSize(0, 2, 100, config)).toBe(0);
+      expect(OrderSizing.calculateSize(-500, 2, 100, config)).toBe(0);
+      expect(OrderSizing.calculateSize(Number.NaN, 2, 100, config)).toBe(0);
+      expect(OrderSizing.calculateSize(Number.POSITIVE_INFINITY, 2, 100, config)).toBe(0);
+      expect(OrderSizing.calculateSize(10000, 2, 0, config)).toBe(0);
+      expect(OrderSizing.calculateSize(10000, 2, Number.NaN, config)).toBe(0);
+      expect(OrderSizing.calculateSize(10000, 0, 100, config)).toBe(0);
+      expect(OrderSizing.calculateSize(10000, Number.POSITIVE_INFINITY, 100, config)).toBe(0);
+      expect(OrderSizing.calculateSize(10000, 2, 100, config)).toBeGreaterThan(0);
+    });
+
+    it('RiskEngine computes identical SL/TP distances and riskClassification when accountBalance is 0 or non-finite', () => {
+      const funded = engine.evaluate({
+        timestamp: Date.now(),
+        currentPrice: 100,
+        currentAtr: 2.0,
+        accountBalance: 10000
+      });
+
+      for (const badBal of [0, -100, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const res = engine.evaluate({
+          timestamp: Date.now(),
+          currentPrice: 100,
+          currentAtr: 2.0,
+          accountBalance: badBal
+        });
+        expect(res.stopLossDistance).toBe(funded.stopLossDistance);
+        expect(res.takeProfitDistance).toBe(funded.takeProfitDistance);
+        expect(res.riskClassification).toBe(funded.riskClassification);
+        expect(res.positionSizeRecommendation).toBe(0);
+        expect(res.maximumExposure).toBe(0);
+      }
     });
   });
 });

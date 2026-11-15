@@ -750,6 +750,8 @@ describe('Logic 1 — Bybit Connection Four-Finding Final Repair Suite', () => {
         // Path 5, 6, 7, 8: DO Bot Activation, Trade Execution, Background Credential Retrieval, and DO Candidate Approval
         const { state } = createMockDurableObjectState({
           userId: TEST_USER_ID,
+          isActive: true,
+          'lock:alarmGeneration': 1,
           candidateApprovalGeneration: 1,
           approvedCandidateRecord: {
             approvalState: 'FINAL_APPROVED',
@@ -773,7 +775,9 @@ describe('Logic 1 — Bybit Connection Four-Finding Final Repair Suite', () => {
               positionSize: 10,
               quantity: 0.001,
               status: 'pending',
-              source: 'MANUAL',
+              source: 'AUTONOMOUS',
+              generation: 1,
+              approvalGeneration: 1,
               timestamp: new Date().toISOString(),
             },
           ],

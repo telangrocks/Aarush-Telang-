@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { BreakoutStrategy } from "./BreakoutStrategy";
 import { DEFAULT_BREAKOUT_CONFIG } from "./BreakoutConfig";
 import { StrategyContext } from "../../context/StrategyContext";
@@ -519,21 +519,24 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     expect(res35_all.isValid).toBe(true);
   });
 
-  // Helper: Construct context that explicitly carries zero balance (bypassing StrategyContext constructor fallback)
-  function createZeroBalanceContext(snapshot: MarketSnapshot): Readonly<StrategyContext> {
-    const ctx = {
-      timestamp: snapshot.timestamp,
-      marketSnapshot: snapshot,
-      accountBalance: 0,
-      freeze: () => ctx
-    };
-    return ctx as any;
+  // Helper: Inject a single transient EXTREME risk rejection on the next riskEngine.evaluate call
+  function rejectNextRiskEvaluationOnce(strategy: BreakoutStrategy, timestamp = BASE_TIME): void {
+    vi.spyOn((strategy as any).riskEngine, "evaluate").mockReturnValueOnce({
+      timestamp,
+      stopLossDistance: 20,
+      takeProfitDistance: 30,
+      riskRewardRatio: 3.0,
+      positionSizeRecommendation: 0,
+      maximumExposure: 0,
+      riskClassification: "EXTREME",
+      explanation: ["Simulated transient EXTREME risk rejection"],
+    } as any);
   }
 
   // --------------------------------------------------------------------------
-  // TEST 14: BUY recovery after confirmed transient zero-balance rejection
+  // TEST 14: BUY recovery after confirmed transient EXTREME risk rejection
   // --------------------------------------------------------------------------
-  it("14. BUY recovery after confirmed transient zero-balance rejection", () => {
+  it("14. BUY recovery after confirmed transient EXTREME risk rejection", () => {
     const strategy = new BreakoutStrategy({
       ...DEFAULT_BREAKOUT_CONFIG,
       signalRules: {
@@ -563,11 +566,11 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
 
-    // Bar 1 evaluated with zero balance -> transient risk rejection
-    const ctxZeroBal = createZeroBalanceContext(snapBar1);
-    const resBar1 = strategy.evaluate(ctxZeroBal, '5m');
+    // Bar 1 evaluated with transient EXTREME risk -> transient risk rejection
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    const resBar1 = strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
     expect(resBar1.hasSignal).toBe(false);
-    expect(resBar1.metadata.reasoning.some((r: string) => r.includes("Account balance not available"))).toBe(true);
+    expect(resBar1.metadata.reasoning.some((r: string) => r.includes("No qualified signal generated"))).toBe(true);
 
     // Bar 2: 5 minutes later, breakout alignment continues, balance restored to 10000
     const candleBar2: NormalizedCandle = {
@@ -597,9 +600,9 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
   });
 
   // --------------------------------------------------------------------------
-  // TEST 15: SELL recovery after confirmed transient zero-balance rejection
+  // TEST 15: SELL recovery after confirmed transient EXTREME risk rejection
   // --------------------------------------------------------------------------
-  it("15. SELL recovery after confirmed transient zero-balance rejection", () => {
+  it("15. SELL recovery after confirmed transient EXTREME risk rejection", () => {
     const strategy = new BreakoutStrategy({
       ...DEFAULT_BREAKOUT_CONFIG,
       signalRules: {
@@ -629,8 +632,8 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "4h": createBearishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
 
-    const ctxZeroBal = createZeroBalanceContext(snapBar1);
-    const resBar1 = strategy.evaluate(ctxZeroBal, '5m');
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    const resBar1 = strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
     expect(resBar1.hasSignal).toBe(false);
 
     // Bar 2: Breakdown alignment continues, balance restored
@@ -687,10 +690,11 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "1h": createBullishCandles(50, "1h", BASE_TIME),
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
-    const resBar1 = strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    const resBar1 = strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
     expect(resBar1.hasSignal).toBe(false);
 
-    // Bar 2: Breakout continues at T_2, but balance is STILL 0 -> rejected again
+    // Bar 2: Breakout continues at T_2, but risk is STILL EXTREME -> rejected again
     const candleBar2: NormalizedCandle = {
       openTime: BASE_TIME,
       timestamp: BASE_TIME,
@@ -703,7 +707,8 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "1h": createBullishCandles(50, "1h", BASE_TIME + fiveMinMs),
       "4h": createBullishCandles(50, "4h", BASE_TIME + fiveMinMs),
     }, BASE_TIME + fiveMinMs);
-    const resBar2 = strategy.evaluate(createZeroBalanceContext(snapBar2), '5m');
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME + fiveMinMs);
+    const resBar2 = strategy.evaluate(new StrategyContext(snapBar2, 10000).freeze(), '5m');
     expect(resBar2.hasSignal).toBe(false);
 
     // Bar 3: Breakout continues at T_3, balance restored -> recovers on Bar 3!
@@ -767,10 +772,12 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
 
-    // Initial evaluation with zero balance
-    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
-    // Immediate repeat evaluation on the same candle with zero balance
-    const resBar1Repeat = strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+    // Initial evaluation with transient EXTREME risk
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
+    // Immediate repeat evaluation on the same candle with transient EXTREME risk
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    const resBar1Repeat = strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
     expect(resBar1Repeat.hasSignal).toBe(false);
 
     // Bar 2: Recovers
@@ -824,7 +831,8 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
     snapBtc1.symbol = "BTC/USDT";
-    const resBtc1 = strategy.evaluate(createZeroBalanceContext(snapBtc1), '5m');
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    const resBtc1 = strategy.evaluate(new StrategyContext(snapBtc1, 10000).freeze(), '5m');
     expect(resBtc1.hasSignal).toBe(false);
 
     // ETH is completely flat at T_1 with balance 10000
@@ -899,8 +907,9 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
 
-    // 5m rejected by zero balance
-    const res5m = strategy.evaluate(createZeroBalanceContext(snap), '5m');
+    // 5m rejected by transient EXTREME risk
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    const res5m = strategy.evaluate(new StrategyContext(snap, 10000).freeze(), '5m');
     expect(res5m.hasSignal).toBe(false);
 
     // 15m evaluated with positive balance -> 15m must NOT recover 5m's state
@@ -921,7 +930,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     });
 
     const fiveMinMs = 5 * 60 * 1000;
-    // Bar 1: Breakout at T_1 with zero balance
+    // Bar 1: Breakout at T_1 with transient EXTREME risk
     const candlesBar1 = createBullishCandles(50, "5m", BASE_TIME - fiveMinMs);
     candlesBar1.push({
       openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs,
@@ -933,7 +942,8 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "1h": createBullishCandles(50, "1h", BASE_TIME),
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
-    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
 
     // Bar 2: Market breaks alignment (flat/bearish drop)
     const candlesBar2 = [...candlesBar1, {
@@ -966,7 +976,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     });
 
     const fiveMinMs = 5 * 60 * 1000;
-    // Bar 1: Bullish breakout with zero balance -> pending BUY rejection
+    // Bar 1: Bullish breakout with transient EXTREME risk -> pending BUY rejection
     const candlesBar1 = createBullishCandles(50, "5m", BASE_TIME - fiveMinMs);
     candlesBar1.push({
       openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs,
@@ -978,7 +988,8 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "1h": createBullishCandles(50, "1h", BASE_TIME),
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
-    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
 
     // Bar 2: Flash crash breakdown candle
     const candlesBar2 = [...candlesBar1, {
@@ -1010,7 +1021,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     });
 
     const fiveMinMs = 5 * 60 * 1000;
-    // Bar 1: Rejected
+    // Bar 1: Rejected by transient EXTREME risk
     const candlesBar1 = createBullishCandles(50, "5m", BASE_TIME - fiveMinMs);
     candlesBar1.push({
       openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs,
@@ -1022,7 +1033,8 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "1h": createBullishCandles(50, "1h", BASE_TIME),
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
-    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
 
     // Bar 2: Recovers
     const candlesBar2 = [...candlesBar1, {
@@ -1140,7 +1152,7 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     });
 
     const fiveMinMs = 5 * 60 * 1000;
-    // Bar 1: Entry price 130, rejected by balance = 0
+    // Bar 1: Entry price 130, rejected by transient EXTREME risk
     const flat5m = createFlatCandles(49, "5m", BASE_TIME - fiveMinMs, 100);
     const surgeCandle: NormalizedCandle = {
       openTime: BASE_TIME - fiveMinMs,
@@ -1158,7 +1170,8 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
       "1h": createBullishCandles(50, "1h", BASE_TIME),
       "4h": createBullishCandles(50, "4h", BASE_TIME),
     }, BASE_TIME);
-    strategy.evaluate(createZeroBalanceContext(snapBar1), '5m');
+    rejectNextRiskEvaluationOnce(strategy, BASE_TIME);
+    strategy.evaluate(new StrategyContext(snapBar1, 10000).freeze(), '5m');
 
     // Bar 2: Entry price moves up to 140 with different ATR
     const candleBar2: NormalizedCandle = {
@@ -1341,5 +1354,62 @@ describe("BreakoutStrategy — 4TF Edge-Transition Confluence & Closed-Candle Se
     const resLatest = defaultStrategy.evaluate(new StrategyContext(latestSnap, 10000).freeze(), "5m");
     expect(resLatest.hasSignal).toBe(false);
     expect(resLatest.metadata.reasoning.some((r: string) => r.includes("Invalid current price"))).toBe(true);
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 29: Zero, negative, or non-finite wallet balance does not suppress BUY or SELL signals
+  // --------------------------------------------------------------------------
+  it("29. Zero, negative, or non-finite wallet balance produces identical BUY and SELL signals as funded balance", () => {
+    const strategy = new BreakoutStrategy({
+      ...DEFAULT_BREAKOUT_CONFIG,
+      signalRules: {
+        minConfidenceScore: 50,
+        allowedRiskClassifications: ["LOW", "MEDIUM", "HIGH"]
+      }
+    });
+    const fiveMinMs = 5 * 60 * 1000;
+    const buySnap = buildMtfSnapshot({
+      "5m": [
+        ...createFlatCandles(49, "5m", BASE_TIME - fiveMinMs, 100),
+        { openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs, open: 100, high: 135, low: 100, close: 130, volume: 50000 },
+      ],
+      "15m": createBullishCandles(50, "15m", BASE_TIME),
+      "1h": createBullishCandles(50, "1h", BASE_TIME),
+      "4h": createBullishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME, 130);
+    const sellSnap = buildMtfSnapshot({
+      "5m": [
+        ...createFlatCandles(49, "5m", BASE_TIME - fiveMinMs, 500),
+        { openTime: BASE_TIME - fiveMinMs, timestamp: BASE_TIME - fiveMinMs, open: 500, high: 505, low: 390, close: 400, volume: 50000 },
+      ],
+      "15m": createBearishCandles(50, "15m", BASE_TIME),
+      "1h": createBearishCandles(50, "1h", BASE_TIME),
+      "4h": createBearishCandles(50, "4h", BASE_TIME),
+    }, BASE_TIME, 400);
+
+    const fundedBuy = new BreakoutStrategy((strategy as any).config).evaluate(new StrategyContext(buySnap, 10000).freeze(), "5m");
+    const fundedSell = new BreakoutStrategy((strategy as any).config).evaluate(new StrategyContext(sellSnap, 10000).freeze(), "5m");
+    expect(fundedBuy.hasSignal).toBe(true);
+    expect(fundedSell.hasSignal).toBe(true);
+
+    for (const bal of [0, -100, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const zeroBuy = new BreakoutStrategy((strategy as any).config).evaluate({ marketSnapshot: buySnap, timestamp: BASE_TIME, accountBalance: bal } as any, "5m");
+      expect(zeroBuy.hasSignal).toBe(true);
+      expect(zeroBuy.confidenceScore).toBe(fundedBuy.confidenceScore);
+      expect(zeroBuy.metadata.signal?.entryPrice).toBe(fundedBuy.metadata.signal?.entryPrice);
+      expect(zeroBuy.metadata.signal?.stopLoss).toBe(fundedBuy.metadata.signal?.stopLoss);
+      expect(zeroBuy.metadata.signal?.takeProfit).toBe(fundedBuy.metadata.signal?.takeProfit);
+      expect(zeroBuy.metadata.signal?.riskAssessment.positionSizeRecommendation).toBe(0);
+      expect(zeroBuy.metadata.signal?.riskAssessment.maximumExposure).toBe(0);
+
+      const zeroSell = new BreakoutStrategy((strategy as any).config).evaluate({ marketSnapshot: sellSnap, timestamp: BASE_TIME, accountBalance: bal } as any, "5m");
+      expect(zeroSell.hasSignal).toBe(true);
+      expect(zeroSell.confidenceScore).toBe(fundedSell.confidenceScore);
+      expect(zeroSell.metadata.signal?.entryPrice).toBe(fundedSell.metadata.signal?.entryPrice);
+      expect(zeroSell.metadata.signal?.stopLoss).toBe(fundedSell.metadata.signal?.stopLoss);
+      expect(zeroSell.metadata.signal?.takeProfit).toBe(fundedSell.metadata.signal?.takeProfit);
+      expect(zeroSell.metadata.signal?.riskAssessment.positionSizeRecommendation).toBe(0);
+      expect(zeroSell.metadata.signal?.riskAssessment.maximumExposure).toBe(0);
+    }
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { sign } from 'hono/jwt';
 import app from '../../index';
-import { handleGetMarketOpportunities, handleGetPersonalizedMarketCandidates, handleTriggerManualTradeAlert, mapScanResultToCandidates, selectBoundedDiscoveryMarkets, __resetPublicOpportunityStateForTests } from '../../handlers/exchange';
+import { handleGetMarketOpportunities, handleGetPersonalizedMarketCandidates, mapScanResultToCandidates, selectBoundedDiscoveryMarkets, __resetPublicOpportunityStateForTests } from '../../handlers/exchange';
 import { PublicMarketDataCoordinator } from '../../infrastructure/market-data/PublicMarketDataCoordinator';
 import { BybitAdapter } from '../../infrastructure/exchange/adapters/BybitAdapter';
 import { TradeValidator } from '../../validation/TradeValidator';
@@ -1247,82 +1247,28 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       expect(ctxAfterSpike.header).toHaveBeenCalledWith('X-Eligible-Market-Count', '0');
     });
 
-    it('proves ineligible markets and invalid metadata cannot reach alert notifications (handleTriggerManualTradeAlert) or final dispatch (TradingBot.executeOpportunity), and changed rules/prices trigger revalidation rejection', async () => {
-      const botFetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }));
-      const mockDb = {
-        prepare: vi.fn().mockReturnValue({
-          bind: vi.fn().mockReturnValue({
-            first: vi.fn().mockResolvedValue({
-              exchange_name: 'bybit',
-              exchange_environment: 'demo',
-              exchange_api_key: 'plain-key',
-            }),
-          }),
-        }),
-      };
-
+    it('proves final dispatch revalidation in TradingBot.executeOpportunity rejects changed rules/prices before order dispatch', async () => {
       let currentMarketRule: any = {
-        id: 'BTCUSDT',
-        symbol: 'BTC/USDT',
-        base: 'BTC',
+        id: 'DOGEUSDT',
+        symbol: 'DOGE/USDT',
+        base: 'DOGE',
         quote: 'USDT',
         active: true,
         category: 'linear',
-        precision: { price: 0.1, amount: 0.001 },
-        limits: { amount: { min: 0.001, max: 100 }, marketAmount: { max: 50 }, cost: { min: 5 } },
+        precision: { price: 0.01, amount: 1 },
+        limits: { amount: { min: 1, max: 1000 }, marketAmount: { max: 80 }, cost: { min: 5 } },
       };
 
       const mockAdapter = {
         fetchMarket: vi.fn().mockImplementation(async () => currentMarketRule),
         fetchMarkets: vi.fn().mockImplementation(async () => [currentMarketRule]),
-        fetchTicker: vi.fn().mockResolvedValue({ symbol: 'BTC/USDT', last: new BigNumber(76870) }),
+        fetchTicker: vi.fn().mockResolvedValue({ symbol: 'DOGE/USDT', last: new BigNumber(1.0) }),
         createOrder: vi.fn(),
         fetchPositions: vi.fn().mockImplementation(async (cat, sym, zero) => (sym && zero ? [{ symbol: sym, positionIdx: 0, size: new BigNumber(0) }] : [])),
       };
       vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
 
-      const makeAlertCtx = (body: any) => ({
-        get: vi.fn().mockReturnValue({ sub: 'user-alert-boundary' }),
-        env: {
-          DB: mockDb,
-          ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          TRADING_BOTS: {
-            idFromName: vi.fn().mockReturnValue('bot-id'),
-            get: vi.fn().mockReturnValue({ fetch: botFetchSpy }),
-          },
-        },
-        status: vi.fn(),
-        json: vi.fn().mockImplementation((d) => d),
-        req: { json: vi.fn().mockResolvedValue(body) },
-      } as any);
-
-      // 1. Ineligible market ($10 budget for BTC at $76,870) is blocked BEFORE registering alert or sending notification
-      const ineligibleRes = await handleTriggerManualTradeAlert(
-        makeAlertCtx({
-          symbol: 'BTC/USDT',
-          strategy: 'ScalperV2',
-          config: { positionSize: 10, entryPrice: 76870, stopLoss: 100, takeProfit: 200, side: 'BUY', entryIntent: 'IMMEDIATE' },
-        })
-      ) as any;
-      expect(ineligibleRes.code).toBe('EXECUTION_INELIGIBLE');
-      expect(botFetchSpy).not.toHaveBeenCalled();
-
-      // 2. Explicit invalid marketMaxQty (0) is blocked with INVALID_EXCHANGE_RULES BEFORE registering alert
-      currentMarketRule = {
-        ...currentMarketRule,
-        limits: { amount: { min: 0.001, max: 100 }, marketAmount: { max: 0 }, cost: { min: 5 } },
-      };
-      const invalidMaxRes = await handleTriggerManualTradeAlert(
-        makeAlertCtx({
-          symbol: 'BTC/USDT',
-          strategy: 'ScalperV2',
-          config: { positionSize: 500, entryPrice: 76870, stopLoss: 100, takeProfit: 200, side: 'BUY', entryIntent: 'IMMEDIATE' },
-        })
-      ) as any;
-      expect(invalidMaxRes.code).toBe('INVALID_EXCHANGE_RULES');
-      expect(botFetchSpy).not.toHaveBeenCalled();
-
-      // 3. Final dispatch revalidation in TradingBot.executeOpportunity rejects if exchange rules or prices change approvedQuantity or violate marketMaxQty
+      // Final dispatch revalidation in TradingBot.executeOpportunity rejects if exchange rules or prices change approvedQuantity or violate marketMaxQty
       const encKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
       const encApi = await encrypt('test-api-key', encKey);
       const encSec = await encrypt('test-api-secret', encKey);
@@ -1330,6 +1276,7 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       const storageMap = new Map<string, any>();
       storageMap.set('userId', 'user-exec-boundary');
       storageMap.set('isActive', true);
+      storageMap.set('lock:alarmGeneration', 1);
       storageMap.set('lastAccountBalance', 10000);
       const alertObj = {
         id: 'alert-revalidate-1',
@@ -1345,9 +1292,10 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
         positionSize: 50,
         requestedBudget: 50,
         quantity: 50, // Approved when stepSize was 1 and marketMaxQty was 100
+        generation: 1,
         approvalGeneration: 1,
         status: 'pending',
-        source: 'MANUAL',
+        source: 'AUTONOMOUS',
         timestamp: new Date().toISOString(),
         timeframe: '5m',
       };

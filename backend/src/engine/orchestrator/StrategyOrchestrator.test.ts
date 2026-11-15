@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { StrategyOrchestrator } from './StrategyOrchestrator';
+import { StrategyContext } from '../context/StrategyContext';
 import { MarketDataEngine } from '../market-data/MarketDataEngine';
 import { StrategyRegistry } from '../strategies/StrategyRegistry';
 import { ICandleProvider } from '../../infrastructure/exchange/types';
@@ -241,5 +242,35 @@ describe('StrategyOrchestrator — Multi-Strategy Autonomous Risk Configuration 
     const defaultMeanReversion = registry.getStrategy('MeanReversion');
     expect((defaultMeanReversion as any).config.riskParameters.atrTakeProfitMultiplier).toBe(2.5);
     expect((defaultMeanReversion as any).config.riskParameters.atrStopLossMultiplier).toBe(1.2);
+  });
+
+  it('7. StrategyContext and StrategyOrchestrator default missing, zero, negative, or non-finite wallet balance to 0 instead of 1000', async () => {
+    const mockSnapshot = {
+      symbol: 'BTCUSDT',
+      timestamp: Date.now(),
+      currentPrice: 50000,
+      volume24h: 1000,
+      quoteVolume24h: 50000000,
+      metadata: { priceChange24h: 0, priceChangePercent24h: 0, highPrice24h: 51000, lowPrice24h: 49000 },
+      candles: { '5m': [], '15m': [], '1h': [], '4h': [] }
+    } as any;
+
+    expect(new StrategyContext(mockSnapshot).accountBalance).toBe(0);
+    expect(new StrategyContext(mockSnapshot, undefined).accountBalance).toBe(0);
+    expect(new StrategyContext(mockSnapshot, 0).accountBalance).toBe(0);
+    expect(new StrategyContext(mockSnapshot, -250).accountBalance).toBe(0);
+    expect(new StrategyContext(mockSnapshot, Number.NaN).accountBalance).toBe(0);
+    expect(new StrategyContext(mockSnapshot, Number.POSITIVE_INFINITY).accountBalance).toBe(0);
+    expect(new StrategyContext(mockSnapshot, 2500).accountBalance).toBe(2500);
+
+    const omittedBalResults = await orchestrator.executeCycle('BTCUSDT', undefined, undefined);
+    expect(omittedBalResults.length).toBeGreaterThan(0);
+    expect(new Set(omittedBalResults.map(r => r.strategyId)).size).toBe(5);
+    for (const r of omittedBalResults) {
+      if (r.metadata.signal) {
+        expect(r.metadata.signal.riskAssessment.positionSizeRecommendation).toBe(0);
+        expect(r.metadata.signal.riskAssessment.maximumExposure).toBe(0);
+      }
+    }
   });
 });

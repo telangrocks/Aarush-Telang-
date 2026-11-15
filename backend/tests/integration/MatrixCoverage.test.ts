@@ -487,4 +487,63 @@ describe('CryptoPulse — Phase 1 Matrix Coverage Forensic Audit Suite', () => {
       expect(run1.cells[i].symbol).toBe(run2.cells[i].symbol);
     }
   });
+
+  // --------------------------------------------------------------------------
+  // TEST 11: Zero / Non-Finite Wallet Balance Decoupling
+  // --------------------------------------------------------------------------
+  it('Test 11 [Zero-Balance Decoupling]: evaluates all 125 cells cleanly and identically across 0, undefined, NaN, and $10,000 balances', async () => {
+    const storeZero = createMockCandleStore();
+    const candidatesZero = create25Candidates(storeZero);
+
+    const storeFunded = createMockCandleStore();
+    const candidatesFunded = create25Candidates(storeFunded);
+
+    const frozenTs = 1_700_000_000_000;
+    const reportZero = await evaluator.evaluate({
+      candidates: candidatesZero,
+      candleStore: storeZero,
+      accountBalance: 0,
+      timestamp: frozenTs,
+      scanId: 'ZERO_BALANCE_RUN',
+    });
+
+    const reportOmitted = await evaluator.evaluate({
+      candidates: candidatesZero,
+      candleStore: storeZero,
+      timestamp: frozenTs,
+      scanId: 'OMITTED_BALANCE_RUN',
+    });
+
+    const reportNaN = await evaluator.evaluate({
+      candidates: candidatesZero,
+      candleStore: storeZero,
+      accountBalance: Number.NaN,
+      timestamp: frozenTs,
+      scanId: 'NAN_BALANCE_RUN',
+    });
+
+    const reportFunded = await evaluator.evaluate({
+      candidates: candidatesFunded,
+      candleStore: storeFunded,
+      accountBalance: 10_000,
+      timestamp: frozenTs,
+      scanId: 'FUNDED_BALANCE_RUN',
+    });
+
+    for (const report of [reportZero, reportOmitted, reportNaN, reportFunded]) {
+      expect(report.isComplete).toBe(true);
+      expect(report.terminalCells).toBe(125);
+      expect(report.countsByStatus.STRATEGY_ERROR).toBe(0);
+      expect(report.countsByStatus.INGESTION_ERROR).toBe(0);
+    }
+
+    expect(reportZero.countsByStatus).toEqual(reportOmitted.countsByStatus);
+    expect(reportZero.countsByStatus).toEqual(reportNaN.countsByStatus);
+    expect(reportZero.countsByStatus).toEqual(reportFunded.countsByStatus);
+
+    for (let i = 0; i < 125; i++) {
+      expect(reportZero.cells[i].status).toBe(reportFunded.cells[i].status);
+      expect(reportZero.cells[i].hasSignal).toBe(reportFunded.cells[i].hasSignal);
+    }
+  });
 });

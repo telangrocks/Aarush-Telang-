@@ -142,6 +142,15 @@ describe('Subrequest Optimization: Kline Candle Cache Alignment', () => {
         klineCallCount++;
         return Promise.resolve(createSyntheticCandles(limit));
       }),
+      fetchMarket: vi.fn().mockResolvedValue({
+        id: 'BTCUSDT',
+        symbol: 'BTC/USDT',
+        quote: 'USDT',
+        active: true,
+        category: 'linear',
+        precision: { amount: 0.001, price: 0.1 },
+        limits: { cost: { min: 5 }, amount: { min: 0.001, max: 1000 } },
+      }),
       fetchBalance: vi.fn().mockResolvedValue({
         free: { USDT: 5000 },
         total: { USDT: 5000 },

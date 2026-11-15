@@ -47,9 +47,10 @@ describe('extractUsdtBalance - Semantic Contract', () => {
       }
     ];
 
-    // Must return safe default fallback (1000), NEVER free balance
+    // Must return explicit fallback (1000), NEVER free balance
     const result = extractUsdtBalance(balances, 1000, 'total');
     expect(result).toBe(1000);
+    expect(extractUsdtBalance(balances, undefined, 'total')).toBe(0);
   });
 
   it('does NOT silently reinterpret total as free when free is missing or zero under preference free', () => {
@@ -62,9 +63,10 @@ describe('extractUsdtBalance - Semantic Contract', () => {
       }
     ];
 
-    // Must return safe default fallback (1000), NEVER total balance
+    // Must return explicit fallback (1000), NEVER total balance
     const result = extractUsdtBalance(balances, 1000, 'free');
     expect(result).toBe(1000);
+    expect(extractUsdtBalance(balances, undefined, 'free')).toBe(0);
   });
 
   it('correctly extracts balance from raw number representations in Balance[] array', () => {
@@ -91,7 +93,7 @@ describe('extractUsdtBalance - Semantic Contract', () => {
     expect(extractUsdtBalance(legacyBalance, 1000, 'free')).toBe(75000);
   });
 
-  it('falls back to default minimum (1000) when array has no USDT', () => {
+  it('falls back to 0 by default when array has no USDT', () => {
     const balances = [
       {
         currency: 'ETH',
@@ -102,12 +104,24 @@ describe('extractUsdtBalance - Semantic Contract', () => {
     ];
 
     const result = extractUsdtBalance(balances);
-    expect(result).toBe(1000);
+    expect(result).toBe(0);
   });
 
-  it('falls back to default minimum when null or undefined', () => {
-    expect(extractUsdtBalance(null)).toBe(1000);
-    expect(extractUsdtBalance(undefined)).toBe(1000);
-    expect(extractUsdtBalance([])).toBe(1000);
+  it('falls back to 0 by default when null, undefined, or empty', () => {
+    expect(extractUsdtBalance(null)).toBe(0);
+    expect(extractUsdtBalance(undefined)).toBe(0);
+    expect(extractUsdtBalance([])).toBe(0);
+    expect(extractUsdtBalance([], 250)).toBe(250);
+  });
+
+  it('resolves non-finite, negative, or invalid balances and invalid fallback inputs to 0', () => {
+    expect(extractUsdtBalance([{ currency: 'USDT', free: Infinity, used: 0, total: Infinity }])).toBe(0);
+    expect(extractUsdtBalance([{ currency: 'USDT', free: -100, used: 0, total: -50 }])).toBe(0);
+    expect(extractUsdtBalance([{ currency: 'USDT', free: new BigNumber(NaN), used: new BigNumber(0), total: new BigNumber(NaN) }])).toBe(0);
+    expect(extractUsdtBalance({ free: { USDT: Infinity }, total: { USDT: NaN } })).toBe(0);
+    expect(extractUsdtBalance({ free: { USDT: -1 }, total: { USDT: 0 } })).toBe(0);
+    expect(extractUsdtBalance(null, NaN)).toBe(0);
+    expect(extractUsdtBalance(null, -100)).toBe(0);
+    expect(extractUsdtBalance(null, Infinity)).toBe(0);
   });
 });

@@ -280,6 +280,10 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       };
 
       vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue({
+        fetchBalance: vi.fn().mockResolvedValue({
+          free: { USDT: 1000 },
+          total: { USDT: 1000 },
+        }),
         fetchTicker: vi.fn().mockResolvedValue({
           last: new BigNumber(62.14),
           symbol: 'ZEC/USDT',
@@ -950,6 +954,10 @@ describe('CryptoPulse Refurbishment F-08 through F-14 Verification', () => {
       fetchPositionsMock = vi.fn();
 
       vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue({
+        fetchBalance: vi.fn().mockResolvedValue({
+          free: { USDT: 1000 },
+          total: { USDT: 1000 },
+        }),
         fetchTicker: vi.fn().mockResolvedValue({
           last: 62.14,
           bid: 62.13,
