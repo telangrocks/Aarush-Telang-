@@ -12,6 +12,7 @@ import { StructuredLogger } from '../../infrastructure/telemetry/Telemetry';
 import { OrchestratorCycleEvent, StrategyExecutionEvent, StrategyErrorEvent } from '../../telemetry/TelemetryEvents';
 import { UnifiedError } from '../../exchanges/models/UnifiedError';
 import { BackendDiagnosticSink } from '../../telemetry/BackendDiagnosticSink';
+import { emitStageSpan } from '../../infrastructure/monitoring/PipelineTelemetry';
 
 export class StrategyOrchestrator {
   private stateMachine: EngineStateMachine;
@@ -276,6 +277,98 @@ export class StrategyOrchestrator {
           }
         });
       }
+
+      const md = result.metadata as Record<string, any> | undefined;
+      const snap = frozenContext.marketSnapshot;
+      const tfCandles = snap?.candles?.[targetTimeframe] || [];
+      const minRequiredBars = strategy.manifest?.minimumCandles ?? 35;
+      const insufficientBars = tfCandles.length < minRequiredBars;
+      const ind = (md?.indicators ?? md?.evaluationMetrics ?? md) as Record<string, any> | undefined;
+      const numOrUndef = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+
+      if (insufficientBars) {
+        emitStageSpan({
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          cycleId: telemetryContext?.cycleId,
+          userId: telemetryContext?.userId,
+          stage: 4,
+          tier: 'TIER_2',
+          eventType: 'TA_COMPUTED',
+          status: 'SKIPPED',
+          severity: 'WARNING',
+          symbol,
+          timeframe: targetTimeframe,
+          strategyId: id,
+          component: 'IndicatorEngine',
+          sourceFile: 'backend/src/engine/orchestrator/StrategyOrchestrator.ts',
+          errorCode: 'INSUFFICIENT_BARS',
+          message: `Skipped ${id} (${symbol} ${targetTimeframe}): ${tfCandles.length}/${minRequiredBars} bars`,
+          inputSummary: { candlesCount: tfCandles.length, minRequiredBars, indicatorEngine: 'CANONICAL' },
+          outputSummary: { timeframe: targetTimeframe, indicatorEngine: 'CANONICAL', skipReason: 'INSUFFICIENT_BARS' },
+        });
+      } else {
+        emitStageSpan({
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          cycleId: telemetryContext?.cycleId,
+          userId: telemetryContext?.userId,
+          stage: 4,
+          tier: 'TIER_2',
+          eventType: 'TA_COMPUTED',
+          status: 'PASS',
+          severity: 'INFO',
+          symbol,
+          timeframe: targetTimeframe,
+          strategyId: id,
+          component: 'IndicatorEngine',
+          sourceFile: 'backend/src/engine/orchestrator/StrategyOrchestrator.ts',
+          durationMs,
+          message: `Computed canonical TA for ${symbol} ${targetTimeframe} (${tfCandles.length} bars)`,
+          inputSummary: { candlesCount: tfCandles.length, minRequiredBars, indicatorEngine: 'CANONICAL' },
+          outputSummary: {
+            timeframe: targetTimeframe,
+            indicatorEngine: 'CANONICAL',
+            rsi: numOrUndef(ind?.rsi) ?? numOrUndef(ind?.rsi14) ?? numOrUndef(ind?.currentRsi),
+            ema9: numOrUndef(ind?.ema9),
+            ema21: numOrUndef(ind?.ema21) ?? numOrUndef(ind?.ema20),
+            ema50: numOrUndef(ind?.ema50),
+            ema200: numOrUndef(ind?.ema200),
+            adx: numOrUndef(ind?.adx),
+            atr: numOrUndef(ind?.atr),
+            vwap: numOrUndef(ind?.vwap),
+            regime: typeof md?.regime === 'string' ? md.regime : md?.regime?.regime,
+            confidenceScore: result.confidenceScore,
+          },
+        });
+      }
+
+      emitStageSpan({
+        journey: 'JOURNEY_B_AUTONOMOUS',
+        cycleId: telemetryContext?.cycleId,
+        userId: telemetryContext?.userId,
+        stage: 5,
+        tier: result.hasSignal ? 'TIER_1' : 'TIER_3',
+        eventType: result.hasSignal ? 'SIGNAL_DETECTED' : 'STRATEGY_EVALUATED',
+        status: 'PASS',
+        severity: 'INFO',
+        symbol,
+        timeframe: targetTimeframe,
+        strategyId: id,
+        component: 'StrategyOrchestrator',
+        sourceFile: 'backend/src/engine/orchestrator/StrategyOrchestrator.ts',
+        durationMs,
+        message: result.hasSignal
+          ? `Strategy ${id} generated ${sigType} signal on ${symbol} ${targetTimeframe} (score=${Math.round(result.confidenceScore || 0)})`
+          : `Evaluated ${id} on ${symbol} ${targetTimeframe}: no signal`,
+        outputSummary: {
+          hasSignal: result.hasSignal,
+          signalGenerated: result.hasSignal,
+          side: sigType,
+          confidenceScore: result.confidenceScore,
+          gateCategory: 'STRATEGY',
+          decision: result.hasSignal ? 'ALLOW' : 'SKIPPED',
+          reason: result.hasSignal ? `Signal ${sigType}` : 'NO_SIGNAL_CRITERIA_MET',
+        },
+      });
 
       return { result, success: true };
     } catch (e: any) {

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { jwt } from "hono/jwt";
+import { jwt, sign as signJwt } from "hono/jwt";
 import { secureHeaders } from "hono/secure-headers";
 import { HTTPException } from "hono/http-exception";
 import {
@@ -73,6 +73,12 @@ import {
 import { isTokenRevoked } from "./handlers/auth";
 import { chatWithKimiK3 } from "./services/kimi";
 import { LruTtlCache } from "./infrastructure/cache/LruTtlCache";
+import {
+  bindTelemetryEnv,
+  createScopedTelemetryEmitter,
+  flushTelemetry,
+  runWithTelemetryContext,
+} from "./infrastructure/monitoring/PipelineTelemetry";
 
 export interface Env {
   DB: D1Database;
@@ -95,6 +101,11 @@ export interface Env {
   ADMIN_API_KEY?: string;
   ADMIN_EMAILS?: string;
   ADMIN_PASSWORD_HASH?: string;
+  TELEMETRY_QUEUE?: Queue<any>;
+  MONITOR_INGEST_SERVICE?: Fetcher;
+  MONITORING_SERVICE?: Fetcher;
+  /** Shared secret for queue-free service-binding telemetry ingest (staging/monitoring only). */
+  INTERNAL_INGEST_SECRET?: string;
 }
 
 function validateEnv(env: Env): void {
@@ -208,7 +219,22 @@ app.use("*", async (c, next) => {
       });
     }
   }
-  await next();
+  bindTelemetryEnv(c.env, "crypto-pulse-backend");
+  const reqEmitter = createScopedTelemetryEmitter("crypto-pulse-backend", c.env);
+  return runWithTelemetryContext(
+    { environment: c.env?.ENVIRONMENT, emitter: reqEmitter },
+    async () => {
+      try {
+        await next();
+      } finally {
+        flushTelemetry((p) => {
+          try {
+            c.executionCtx.waitUntil(p);
+          } catch {}
+        }, reqEmitter);
+      }
+    }
+  );
 });
 
 const DB_STATUS_CACHE = new LruTtlCache<string, { status: string; message: string; tablesChecked: string[] }>(5, 60_000);
@@ -500,6 +526,58 @@ adminApi.get("/monitoring/timeline", handleGetBotTimeline);
 adminApi.get("/monitoring/health", handleGetComponentHealth);
 adminApi.get("/monitoring/quotas", handleGetQuotaStatus);
 adminApi.post("/monitoring/report-incident", handleReportClientIncident);
+
+// Strictly read-only proxy to isolated monitoring-worker v2 query API
+adminApi.use("/monitor/v2/*", async (c, next) => {
+  if (c.req.method !== "GET" && c.req.method !== "OPTIONS") {
+    c.status(405);
+    return c.json({ error: "Method Not Allowed: monitoring API is strictly read-only", readOnly: true });
+  }
+  return await next();
+});
+adminApi.use("/monitor/v2/*", adminAuthMiddleware);
+adminApi.get("/monitor/v2/*", async (c) => {
+  if (!c.env.MONITORING_SERVICE) {
+    c.status(503);
+    return c.json({ error: "Monitoring service binding not configured" });
+  }
+  const url = new URL(c.req.url);
+  const rewrittenPath = url.pathname.replace(/^\/api\/admin\/monitor\/v2/, "/api/monitor/v2");
+  const targetUrl = `https://monitoring-worker${rewrittenPath}${url.search}`;
+  const fwdHeaders = new Headers();
+  const authHeader = c.req.header("Authorization");
+  const adminKey = c.req.header("X-Admin-Key");
+  if (authHeader) fwdHeaders.set("Authorization", authHeader);
+  if (adminKey) fwdHeaders.set("X-Admin-Key", adminKey);
+  if (!authHeader && !adminKey && c.env.JWT_SECRET) {
+    const adminSession = (c.get as any)("adminSession");
+    if (adminSession?.authMethod === "DEVICE_SESSION") {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const delegated = await signJwt(
+        {
+          sub: "admin_device_owner",
+          email: adminSession.email || "device@cryptopulse.internal",
+          role: "ADMIN",
+          monitoringScope: "OPERATOR",
+          sessionId: adminSession.sessionId,
+          iat: nowSec,
+          exp: nowSec + 60,
+        },
+        c.env.JWT_SECRET,
+        "HS256"
+      );
+      fwdHeaders.set("Authorization", `Bearer ${delegated}`);
+    }
+  }
+  return c.env.MONITORING_SERVICE.fetch(targetUrl, {
+    method: "GET",
+    headers: fwdHeaders,
+  });
+});
+adminApi.all("/monitor/v2/*", (c) => {
+  c.status(405);
+  return c.json({ error: "Method Not Allowed: monitoring API is strictly read-only", readOnly: true });
+});
 
 app.route("/api/admin", adminApi);
 

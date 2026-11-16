@@ -9,8 +9,19 @@
 (function () {
   'use strict';
 
+  // Staging Pages branch alias (staging.<project>.pages.dev) talks only to the isolated staging backend gateway.
+  function defaultGatewayForHost() {
+    try {
+      const host = String(window.location.hostname || '');
+      if (host.startsWith('staging.') || host.includes('-staging')) {
+        return 'https://crypto-pulse-backend-staging.telangrocks.workers.dev';
+      }
+    } catch (_) {}
+    return 'https://crypto-pulse-backend.telangrocks.workers.dev';
+  }
+
   const state = {
-    apiUrl: sessionStorage.getItem('cp_monitoring_api_url') || 'https://crypto-pulse-backend.telangrocks.workers.dev',
+    apiUrl: sessionStorage.getItem('cp_monitoring_api_url') || defaultGatewayForHost(),
     jwtToken: sessionStorage.getItem('cp_monitoring_jwt') || '',
     pollTimer: null,
     isPolling: false,
@@ -49,6 +60,7 @@
     shCounts: document.getElementById('sh-counts'),
     shLag: document.getElementById('sh-lag'),
     shErrors: document.getElementById('sh-errors'),
+    shDelivery: document.getElementById('sh-delivery'),
     shLastPolled: document.getElementById('sh-last-polled'),
 
     globalFilterForm: document.getElementById('global-filter-form'),
@@ -313,7 +325,16 @@
     el.shConsumerState.textContent = sh.honestState || 'NO_DATA';
     el.shCounts.textContent = `${Number(sh.eventsReceived || 0)} / ${Number(sh.eventsInserted || 0)} / ${Number(sh.eventsDeduped || 0)}`;
     el.shLag.textContent = `${sh.avgIngestLagMs != null ? Number(sh.avgIngestLagMs).toFixed(1) : '—'} / ${sh.maxIngestLagMs != null ? Number(sh.maxIngestLagMs).toFixed(1) : '—'} ms`;
-    el.shErrors.textContent = `${Number(sh.dlqCount || 0)} / ${Number(sh.d1WriteErrors || 0)}`;
+    const loss = sh.producerReportedLoss || null;
+    const failedEvents = loss ? Number(loss.httpIngestFailedEvents || 0) : null;
+    const droppedEvents = loss ? Number(loss.overflowDroppedEvents || 0) + Number(loss.tier3ShedEvents || 0) : null;
+    el.shErrors.textContent = `${failedEvents == null ? '—' : failedEvents} / ${droppedEvents == null ? '—' : droppedEvents} / ${Number(sh.d1WriteErrors || 0)}`;
+    if (el.shDelivery) {
+      const durable = sh.durableDelivery === true ? 'DURABLE' : 'BEST-EFFORT (NOT DURABLE)';
+      const queue = sh.queueStatus === 'NOT_APPLICABLE' || !sh.queueStatus ? 'QUEUE: N/A' : `QUEUE: ${escapeHtml(sh.queueStatus)}`;
+      el.shDelivery.textContent = `${durable} / ${queue}`;
+      if (loss && loss.unobservableLossNote) el.shDelivery.title = String(loss.unobservableLossNote);
+    }
     el.shLastPolled.textContent = formatTs(Date.now());
 
     const stages = Array.isArray(data.stages) ? data.stages : [];

@@ -16,6 +16,8 @@
  *    Priority 1 (orders) and Priority 2 (reconciliation) can consume down to 0 tokens without pacing delays.
  */
 
+import { emitStageSpan } from '../../monitoring/PipelineTelemetry';
+
 export enum RequestPriority {
   P1_ORDER = 1,
   P2_RECONCILIATION = 2,
@@ -152,6 +154,17 @@ export class ExchangeRequestScheduler {
           const needed = this.config.p3FloorTokens + 1 - this.tokens;
           const refillRate = this.config.refillRatePerSecond > 0 ? this.config.refillRatePerSecond : 1.75;
           const calculatedWait = Math.ceil((needed / refillRate) * 1000);
+          emitStageSpan({
+            stage: 1,
+            tier: 'TIER_3',
+            eventType: 'RATE_LIMITER_YIELD',
+            status: 'WARN',
+            severity: 'WARNING',
+            component: 'ExchangeRequestScheduler',
+            sourceFile: 'backend/src/infrastructure/exchange/pacing/ExchangeRequestScheduler.ts',
+            message: `P3 market-data yielded at floor (${this.tokens}/${this.config.tokenCapacity} tokens)`,
+            outputSummary: { channel: 'RATE_LIMITER', tokensRemaining: this.tokens, floorTokens: this.config.p3FloorTokens, calculatedWaitMs: calculatedWait },
+          });
           return Math.min(Math.max(10, Number.isFinite(calculatedWait) ? calculatedWait : 50), 100);
         }
 

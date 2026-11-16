@@ -179,7 +179,8 @@ export async function adminAuthMiddleware(c: Context<{ Bindings: Env }>, next: N
         userId: 'admin_key_operator',
         email: 'operator@cryptopulse.internal',
         role: 'ADMIN',
-        authMethod: 'API_KEY'
+        authMethod: 'API_KEY',
+        monitoringScope: 'OPERATOR'
       });
       return await next();
     }
@@ -199,11 +200,22 @@ export async function adminAuthMiddleware(c: Context<{ Bindings: Env }>, next: N
 
       // Explicit role claim in token
       if (payload.role === 'ADMIN') {
+        const sub = payload.sub ? String(payload.sub) : '';
+        const isOperator =
+          payload.monitoringScope === 'OPERATOR' &&
+          (sub === 'admin_operator' || sub === 'admin_device_owner' || !sub);
         c.set('adminSession' as any, {
-          userId: String(payload.sub),
+          userId: sub,
           email: String(payload.email || 'admin@cryptopulse.app'),
           role: 'ADMIN',
-          authMethod: 'JWT'
+          authMethod: 'JWT',
+          monitoringScope: isOperator ? 'OPERATOR' : 'USER_SCOPED',
+          deviceSessionHash:
+            typeof payload.androidDeviceSessionHash === 'string'
+              ? payload.androidDeviceSessionHash
+              : typeof payload.deviceSessionHash === 'string'
+                ? payload.deviceSessionHash
+                : undefined
         });
         return await next();
       }
@@ -217,7 +229,8 @@ export async function adminAuthMiddleware(c: Context<{ Bindings: Env }>, next: N
             userId: String(payload.sub),
             email: String(payload.email),
             role: 'ADMIN',
-            authMethod: 'JWT'
+            authMethod: 'JWT',
+            monitoringScope: 'USER_SCOPED'
           });
           return await next();
         }
@@ -235,7 +248,8 @@ export async function adminAuthMiddleware(c: Context<{ Bindings: Env }>, next: N
               userId: String(payload.sub),
               email: String(userRow.email || payload.email),
               role: 'ADMIN',
-              authMethod: 'JWT'
+              authMethod: 'JWT',
+              monitoringScope: 'USER_SCOPED'
             });
             return await next();
           }
@@ -283,7 +297,9 @@ export async function adminAuthMiddleware(c: Context<{ Bindings: Env }>, next: N
           userId: `device_${row.session_id.slice(0, 8)}`,
           email: 'device@cryptopulse.internal',
           role: 'ADMIN',
-          authMethod: 'DEVICE_SESSION'
+          authMethod: 'DEVICE_SESSION',
+          monitoringScope: 'OPERATOR',
+          sessionId: row.session_id
         });
         return await next();
       }
@@ -391,6 +407,7 @@ export async function handleAdminLogin(c: Context<{ Bindings: Env }>) {
             sub: 'admin_operator',
             email: 'operator@cryptopulse.internal',
             role: 'ADMIN',
+            monitoringScope: 'OPERATOR',
             sessionId,
             jti: crypto.randomUUID(),
             iat: nowSec,
@@ -428,6 +445,7 @@ export async function handleAdminLogin(c: Context<{ Bindings: Env }>) {
             sub: 'admin_operator',
             email: 'operator@cryptopulse.internal',
             role: 'ADMIN',
+            monitoringScope: 'OPERATOR',
             jti: crypto.randomUUID(),
             iat: nowSec,
             exp: nowSec + 8 * 3600 // 8 hours
@@ -630,6 +648,7 @@ export async function handleActivateDevice(c: Context<{ Bindings: Env }>) {
         sub: 'admin_device_owner',
         email: 'operator@cryptopulse.internal',
         role: 'ADMIN',
+        monitoringScope: 'OPERATOR',
         sessionId,
         iss: 'cryptopulse-monitoring',
         iat: nowSec,
@@ -746,6 +765,7 @@ export async function handleRefreshDeviceSession(c: Context<{ Bindings: Env }>) 
         sub: 'admin_device_owner',
         email: 'operator@cryptopulse.internal',
         role: 'ADMIN',
+        monitoringScope: 'OPERATOR',
         sessionId: row.session_id,
         iss: 'cryptopulse-monitoring',
         iat: nowSec,

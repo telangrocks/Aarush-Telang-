@@ -12,10 +12,17 @@ export interface TelemetryEmitterOptions {
   queue?: TelemetryIngestBinding | null;
   httpFallback?: HttpIngestServiceBinding | null;
   httpFallbackUrl?: string;
+  /** Shared secret sent as X-Internal-Ingest-Secret on queue-free service-binding ingest. */
+  httpIngestSecret?: string | null;
+  /** Hard upper bound for a single best-effort ingest call (never blocks trading; runs inside waitUntil). */
+  httpTimeoutMs?: number;
   maxBufferSize?: number;
   maxBatchSize?: number;
   disabled?: boolean;
 }
+
+/** Queue-free Free-plan delivery mode: best-effort, bounded, NOT durable. */
+export const TELEMETRY_DELIVERY_MODE = 'BEST_EFFORT_SERVICE_BINDING_WAITUNTIL' as const;
 
 /**
  * Bounded, strictly fail-open telemetry emitter for Workers and Durable Objects.
@@ -30,6 +37,8 @@ export class TelemetryEmitter {
   private queue: TelemetryIngestBinding | null;
   private httpFallback: HttpIngestServiceBinding | null;
   private readonly httpFallbackUrl: string;
+  private httpIngestSecret: string | null;
+  private readonly httpTimeoutMs: number;
   private readonly maxBufferSize: number;
   private readonly maxBatchSize: number;
   private readonly disabled: boolean;
@@ -57,6 +66,8 @@ export class TelemetryEmitter {
     this.queue = options.queue ?? null;
     this.httpFallback = options.httpFallback ?? null;
     this.httpFallbackUrl = options.httpFallbackUrl ?? 'http://monitoring-worker/internal/ingest';
+    this.httpIngestSecret = options.httpIngestSecret ?? null;
+    this.httpTimeoutMs = Math.max(250, Math.min(options.httpTimeoutMs ?? 3000, 10_000));
     this.maxBufferSize = options.maxBufferSize ?? 100;
     this.maxBatchSize = options.maxBatchSize ?? 25;
     this.disabled = options.disabled === true;
@@ -66,9 +77,14 @@ export class TelemetryEmitter {
     return this.disabled;
   }
 
-  public updateBindings(queue?: TelemetryIngestBinding | null, httpFallback?: HttpIngestServiceBinding | null): void {
+  public updateBindings(
+    queue?: TelemetryIngestBinding | null,
+    httpFallback?: HttpIngestServiceBinding | null,
+    httpIngestSecret?: string | null
+  ): void {
     if (queue !== undefined) this.queue = queue;
     if (httpFallback !== undefined) this.httpFallback = httpFallback;
+    if (httpIngestSecret !== undefined) this.httpIngestSecret = httpIngestSecret;
   }
 
   public nextSeq(): number {
@@ -232,12 +248,28 @@ export class TelemetryEmitter {
 
   private async trySendHttpFallback(envelope: TelemetryQueueEnvelope): Promise<boolean> {
     if (!this.httpFallback) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const res = await this.httpFallback.fetch(this.httpFallbackUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(envelope),
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (this.httpIngestSecret) headers['X-Internal-Ingest-Secret'] = this.httpIngestSecret;
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          try {
+            controller?.abort();
+          } catch {}
+          reject(new Error('http_ingest_timeout'));
+        }, this.httpTimeoutMs);
       });
+      const res = await Promise.race([
+        this.httpFallback.fetch(this.httpFallbackUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(envelope),
+          ...(controller ? { signal: controller.signal } : {}),
+        } as RequestInit),
+        timeout,
+      ]);
       if (!res.ok) {
         this.stats.lastError = `http_fallback_status_${res.status}`;
         return false;
@@ -246,6 +278,8 @@ export class TelemetryEmitter {
     } catch (err: any) {
       this.stats.lastError = err?.message || 'http_fallback_error';
       return false;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 }

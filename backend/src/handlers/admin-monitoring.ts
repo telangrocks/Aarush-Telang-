@@ -18,6 +18,8 @@ import {
   IncidentStatus,
   validateMonitoringEvent
 } from '../infrastructure/monitoring/MonitoringEvent';
+import { createScopedTelemetryEmitter } from '../infrastructure/monitoring/PipelineTelemetry';
+import { PipelineTelemetryEvent, normalizeEnvironmentMode } from '../../../shared/monitoring';
 
 /**
  * GET /api/admin/monitoring/overview
@@ -406,6 +408,26 @@ export async function handleGetComponentHealth(c: Context<{ Bindings: Env }>) {
       } catch (_) {}
     }
 
+    const adminSession = (c.get as any)?.('adminSession');
+    const isOperator = !adminSession || adminSession.monitoringScope === 'OPERATOR';
+    const requestedProbeUserId = c.req.query('userId')?.trim();
+    if (!isOperator && requestedProbeUserId && adminSession.userId && requestedProbeUserId !== adminSession.userId) {
+      return c.json({ error: 'Forbidden', message: 'Cross-user health probe denied' }, 403);
+    }
+    const probeUserId = isOperator ? requestedProbeUserId : adminSession.userId;
+
+    let tradingBotState: any = null;
+    if (probeUserId && c.env.TRADING_BOTS) {
+      try {
+        const botId = c.env.TRADING_BOTS.idFromName(probeUserId);
+        const botStub = c.env.TRADING_BOTS.get(botId);
+        const res = await botStub.fetch('http://do/internal/monitor-state', { method: 'GET' });
+        if (res.ok) {
+          tradingBotState = await res.json();
+        }
+      } catch (_) {}
+    }
+
     return c.json({
       timestamp: Date.now(),
       worker: {
@@ -416,7 +438,8 @@ export async function handleGetComponentHealth(c: Context<{ Bindings: Env }>) {
         status: d1Status,
         latencyMs: d1LatencyMs
       },
-      publicMarketCoordinator: coordinatorStats || { status: 'STANDBY' }
+      publicMarketCoordinator: isOperator ? (coordinatorStats || { status: 'STANDBY' }) : null,
+      tradingBotState
     });
   } catch (err: any) {
     console.error('[AdminMonitoring] handleGetComponentHealth error:', err);
@@ -449,6 +472,28 @@ export function resetClientTelemetryLimiterForTesting(): void {
   clientTelemetryRateLimit.clear();
 }
 
+const STAGE9_MAX_BODY_BYTES = 32768;
+const STAGE9_MAX_EVENTS_PER_BATCH = 25;
+
+function isStage9TelemetryPayload(body: unknown): boolean {
+  if (Array.isArray(body)) return true;
+  if (!body || typeof body !== 'object') return false;
+  const obj = body as Record<string, unknown>;
+  return Array.isArray(obj.events) || obj.schemaVersion === 2 || obj.stage === 9;
+}
+
+function getSafeWaitUntil(c: Context<{ Bindings: Env }>): ((p: Promise<unknown>) => void) | undefined {
+  try {
+    const ctx = c.executionCtx;
+    if (ctx && typeof ctx.waitUntil === 'function') {
+      return (p: Promise<unknown>) => ctx.waitUntil(p);
+    }
+  } catch {
+    // executionCtx throws in Hono when running outside Workers runtime / unit tests
+  }
+  return undefined;
+}
+
 /**
  * Diagnostic ingestion endpoint for Android clients and internal services.
  * - For mobile clients: Authenticated via standard User JWT (/api/client/telemetry).
@@ -457,11 +502,19 @@ export function resetClientTelemetryLimiterForTesting(): void {
 export async function handleReportClientIncident(c: Context<{ Bindings: Env }>) {
   try {
     const rawBody = await c.req.json();
+    const isStage9Batch = isStage9TelemetryPayload(rawBody);
 
-    // 1. Strict payload size limit (max 4KB)
+    // 1. Strict payload size limit (max 4KB legacy incident, 32KB bounded Stage 9 batch)
     const rawString = JSON.stringify(rawBody);
-    if (rawString.length > 4096) {
-      return c.json({ error: 'Payload Too Large', message: 'Diagnostic payload exceeds 4KB limit.' }, 413);
+    const maxBytes = isStage9Batch ? STAGE9_MAX_BODY_BYTES : 4096;
+    if (rawString.length > maxBytes) {
+      return c.json(
+        {
+          error: 'Payload Too Large',
+          message: `Diagnostic payload exceeds ${isStage9Batch ? '32KB' : '4KB'} limit.`
+        },
+        413
+      );
     }
 
     // 2. Identity Verification: Derive user ID from verified JWT session
@@ -469,15 +522,31 @@ export async function handleReportClientIncident(c: Context<{ Bindings: Env }>) 
     const adminSession = (c.get as any)('adminSession');
 
     let verifiedUserId: string | undefined = undefined;
+    let verifiedDeviceSessionHash: string | undefined = undefined;
     let isClientReport = false;
 
     if (jwtPayload?.sub) {
       // Authenticated regular user (e.g. Android app)
       verifiedUserId = String(jwtPayload.sub);
+      if (typeof jwtPayload.androidDeviceSessionHash === 'string' && jwtPayload.androidDeviceSessionHash.trim()) {
+        verifiedDeviceSessionHash = jwtPayload.androidDeviceSessionHash.trim().slice(0, 64);
+      } else if (typeof jwtPayload.deviceSessionHash === 'string' && jwtPayload.deviceSessionHash.trim()) {
+        verifiedDeviceSessionHash = jwtPayload.deviceSessionHash.trim().slice(0, 64);
+      }
       isClientReport = true;
     } else if (adminSession?.role === 'ADMIN') {
       // Administrative or internal report
-      verifiedUserId = rawBody.userId ? String(rawBody.userId) : adminSession.userId;
+      const rawUserId =
+        rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)
+          ? (rawBody as Record<string, unknown>).userId
+          : undefined;
+      verifiedUserId =
+        adminSession.monitoringScope === 'OPERATOR' && rawUserId
+          ? String(rawUserId)
+          : adminSession.userId;
+      if (typeof adminSession.deviceSessionHash === 'string' && adminSession.deviceSessionHash.trim()) {
+        verifiedDeviceSessionHash = adminSession.deviceSessionHash.trim().slice(0, 64);
+      }
     } else {
       return c.json({ error: 'Unauthorized', message: 'Authenticated user or administrative session required.' }, 401);
     }
@@ -505,12 +574,175 @@ export async function handleReportClientIncident(c: Context<{ Bindings: Env }>) 
       }
     }
 
+    const derivedBotId = verifiedUserId ? `bot_${verifiedUserId.slice(0, 8)}` : undefined;
+
+    if (isStage9Batch) {
+      const items: unknown[] = Array.isArray(rawBody)
+        ? rawBody
+        : Array.isArray((rawBody as Record<string, unknown>).events)
+          ? ((rawBody as Record<string, unknown>).events as unknown[])
+          : [rawBody];
+
+      if (items.length === 0 || items.length > STAGE9_MAX_EVENTS_PER_BATCH) {
+        return c.json(
+          {
+            error: 'Bad Request',
+            message: `Stage 9 telemetry batch must contain between 1 and ${STAGE9_MAX_EVENTS_PER_BATCH} events.`
+          },
+          400
+        );
+      }
+
+      const emitter = createScopedTelemetryEmitter(
+        isClientReport ? 'android-app' : 'crypto-pulse-backend',
+        c.env
+      );
+      const acceptedIds: string[] = [];
+
+      for (const rawItem of items) {
+        if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
+          return c.json({ error: 'Bad Request', message: 'Each telemetry item must be an object.' }, 400);
+        }
+        const item = rawItem as Record<string, unknown>;
+        const eventType =
+          typeof item.eventType === 'string' && item.eventType.trim().length > 0
+            ? item.eventType.trim().slice(0, 80)
+            : 'ANDROID_STAGE9_EVENT';
+        const component =
+          typeof item.component === 'string' && item.component.trim().length > 0
+            ? item.component.trim().slice(0, 80)
+            : 'android-client';
+        const message =
+          typeof item.message === 'string' && item.message.trim().length > 0
+            ? item.message.trim().slice(0, 500)
+            : `Android Stage 9 ${eventType}`;
+        const status =
+          item.status === 'PASS' || item.status === 'WARN' || item.status === 'FAIL' || item.status === 'SKIPPED'
+            ? item.status
+            : 'PASS';
+        const journey =
+          item.journey === 'JOURNEY_A_DISCOVERY' ||
+          item.journey === 'JOURNEY_B_AUTONOMOUS' ||
+          item.journey === 'SYSTEM'
+            ? item.journey
+            : 'JOURNEY_B_AUTONOMOUS';
+        const stage =
+          typeof item.stage === 'number' && Number.isInteger(item.stage) && item.stage >= 1 && item.stage <= 9
+            ? (item.stage as PipelineTelemetryEvent['stage'])
+            : 9;
+
+        const normalizedSeverity =
+          item.severity === 'INFO' ||
+          item.severity === 'WARNING' ||
+          item.severity === 'ERROR' ||
+          item.severity === 'CRITICAL'
+            ? item.severity
+            : item.severity === 'WARN'
+              ? 'WARNING'
+              : status === 'FAIL'
+                ? 'ERROR'
+                : status === 'WARN'
+                  ? 'WARNING'
+                  : 'INFO';
+        const outputSummaryObj: Record<string, unknown> | undefined =
+          item.outputSummary && typeof item.outputSummary === 'object' && !Array.isArray(item.outputSummary)
+            ? { ...(item.outputSummary as Record<string, unknown>) }
+            : typeof item.errorMessage === 'string'
+              ? {}
+              : undefined;
+        if (outputSummaryObj && typeof item.errorMessage === 'string') {
+          outputSummaryObj.errorMessage = item.errorMessage.slice(0, 300);
+        }
+
+        const emitted = emitter.emit({
+          spanId: typeof item.spanId === 'string' && item.spanId.trim() ? item.spanId.trim().slice(0, 80) : undefined,
+          contractVersion:
+            typeof item.contractVersion === 'number' && Number.isFinite(item.contractVersion)
+              ? Math.trunc(item.contractVersion)
+              : undefined,
+          journey,
+          stage,
+          tier: stage === 7 || stage >= 8 ? 'TIER_1' : 'TIER_2',
+          environment: normalizeEnvironmentMode(
+            (typeof item.environment === 'string' ? item.environment : undefined) ?? c.env.ENVIRONMENT
+          ),
+          userId: verifiedUserId,
+          botId: derivedBotId,
+          traceId: typeof item.traceId === 'string' ? item.traceId.slice(0, 80) : undefined,
+          cycleId: typeof item.cycleId === 'string' ? item.cycleId.slice(0, 80) : undefined,
+          alertId: typeof item.alertId === 'string' ? item.alertId.slice(0, 100) : undefined,
+          orderId: typeof item.orderId === 'string' ? item.orderId.slice(0, 100) : undefined,
+          fcmMessageId: typeof item.fcmMessageId === 'string' ? item.fcmMessageId.slice(0, 160) : undefined,
+          androidDeviceSessionHash:
+            verifiedDeviceSessionHash ??
+            (typeof item.androidDeviceSessionHash === 'string'
+              ? item.androidDeviceSessionHash.slice(0, 64)
+              : undefined),
+          symbol: typeof item.symbol === 'string' ? item.symbol.slice(0, 32) : undefined,
+          strategyId: typeof item.strategyId === 'string' ? item.strategyId.slice(0, 64) : undefined,
+          timeframe: typeof item.timeframe === 'string' ? item.timeframe.slice(0, 16) : undefined,
+          component,
+          sourceFile: typeof item.sourceFile === 'string' ? item.sourceFile.slice(0, 120) : undefined,
+          eventType,
+          status,
+          severity: normalizedSeverity,
+          emittedAtMs:
+            typeof item.emittedAtMs === 'number' && Number.isFinite(item.emittedAtMs)
+              ? Math.trunc(item.emittedAtMs)
+              : Date.now(),
+          durationMs:
+            typeof item.durationMs === 'number' && Number.isFinite(item.durationMs)
+              ? Math.max(0, Math.round(item.durationMs))
+              : undefined,
+          errorCode: typeof item.errorCode === 'string' ? item.errorCode.slice(0, 80) : undefined,
+          message,
+          inputSummary:
+            item.inputSummary && typeof item.inputSummary === 'object' && !Array.isArray(item.inputSummary)
+              ? (item.inputSummary as Record<string, unknown>)
+              : undefined,
+          outputSummary: outputSummaryObj,
+          metadata:
+            item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+              ? (item.metadata as Record<string, unknown>)
+              : undefined
+        });
+        if (emitted) {
+          acceptedIds.push(emitted.spanId);
+        }
+      }
+
+      let deliveryMilestone: string = 'EVENT_CREATED';
+      const safeWaitUntil = getSafeWaitUntil(c);
+      try {
+        const flushRes = await emitter.flush();
+        const stats = emitter.getHealthStats();
+        deliveryMilestone =
+          stats.queueAccepted > 0 || stats.httpFallbackSucceeded > 0 || flushRes.sentEvents > 0
+            ? 'QUEUE_ACCEPTED'
+            : stats.queueSendAttempted > 0
+              ? 'QUEUE_SEND_ATTEMPTED'
+              : 'EVENT_CREATED';
+      } catch {
+        emitter.scheduleFlush(safeWaitUntil);
+      }
+
+      return c.json(
+        {
+          success: true,
+          accepted: acceptedIds.length,
+          ids: acceptedIds,
+          deliveryMilestone
+        },
+        202
+      );
+    }
+
     // 4. Force verified identity and bot ownership (never trust caller-supplied userId)
     const sanitizedBody = {
       ...rawBody,
       source: isClientReport ? 'ANDROID' : (rawBody.source || 'BACKEND'),
       userId: verifiedUserId,
-      botId: verifiedUserId ? `bot_${verifiedUserId.slice(0, 8)}` : undefined
+      botId: derivedBotId
     };
 
     const validation = validateMonitoringEvent(sanitizedBody);
@@ -521,7 +753,7 @@ export async function handleReportClientIncident(c: Context<{ Bindings: Env }>) 
     const monitoring = MonitoringService.getInstance();
     await monitoring.recordEvent(validation.event, {
       db: c.env.DB,
-      waitUntil: c.executionCtx ? (p) => c.executionCtx.waitUntil(p) : undefined
+      waitUntil: getSafeWaitUntil(c)
     });
 
     return c.json({ success: true, id: validation.event.id, fingerprint: validation.event.fingerprint }, 202);

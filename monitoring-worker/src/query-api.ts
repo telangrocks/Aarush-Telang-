@@ -424,6 +424,46 @@ function mapStage2Row(r: any): Record<string, unknown> {
   };
 }
 
+/**
+ * Aggregates producer-reported delivery loss counters (shipped inside each delivered envelope).
+ * NOTE: loss from batches that never reached the monitor is, by definition, not observable here.
+ */
+function summarizeProducerLoss(rows: any[]): {
+  producers: number;
+  httpIngestFailedEvents: number;
+  overflowDroppedEvents: number;
+  tier3ShedEvents: number;
+  lastProducerError: string | null;
+  unobservableLossNote: string;
+} {
+  let producers = 0;
+  let httpIngestFailedEvents = 0;
+  let overflowDroppedEvents = 0;
+  let tier3ShedEvents = 0;
+  let lastProducerError: string | null = null;
+  for (const r of rows) {
+    if (typeof r?.metric_key !== 'string' || !r.metric_key.startsWith('producer:')) continue;
+    producers += 1;
+    const ps = safeJsonParse(r.producer_stats_json) as any;
+    if (!ps || typeof ps !== 'object') continue;
+    httpIngestFailedEvents += Number(ps.httpFallbackFailed || 0) + Number(ps.queueSendFailed || 0);
+    overflowDroppedEvents += Number(ps.overflowDropCount || 0);
+    tier3ShedEvents += Number(ps.tier3ShedCount || 0);
+    if (!lastProducerError && typeof ps.lastError === 'string' && ps.lastError) {
+      lastProducerError = String(ps.lastError).slice(0, 160);
+    }
+  }
+  return {
+    producers,
+    httpIngestFailedEvents,
+    overflowDroppedEvents,
+    tier3ShedEvents,
+    lastProducerError,
+    unobservableLossNote:
+      'Best-effort delivery: batches lost to isolate eviction, waitUntil expiry or monitor downtime cannot be counted here.',
+  };
+}
+
 async function handleOverview(url: URL, env: MonitoringEnv, scope: TenantScope): Promise<QueryResult> {
   const db = env.MONITORING_DB;
   const nowMs = Date.now();
@@ -767,6 +807,12 @@ async function handleOverview(url: URL, env: MonitoringEnv, scope: TenantScope):
         avgIngestLagMs: asNullableNumber(consumerGlobal?.avg_ingest_lag_ms),
         maxIngestLagMs: asNullableNumber(consumerGlobal?.max_ingest_lag_ms),
         lastD1CommittedAtMs: consumerGlobal?.last_d1_committed_at_ms ?? null,
+        // Queue-free Cloudflare Free-plan architecture: best-effort delivery, never durable.
+        deliveryMode: 'BEST_EFFORT_SERVICE_BINDING_WAITUNTIL',
+        queueStatus: 'NOT_APPLICABLE',
+        durableDelivery: false,
+        producerReportedLoss:
+          scope.isOperator && !scope.userId ? summarizeProducerLoss(selfHealthRes.results || []) : null,
       },
       recentIncidentsCount: Number(incCountRes?.count ?? 0),
     },

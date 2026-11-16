@@ -3,6 +3,7 @@ import { MarketSnapshot } from './MarketSnapshot';
 import { Timeframe } from './Timeframe';
 import { CandleValidator } from '../../infrastructure/exchange/CandleValidator';
 import { StructuredLogger } from '../../infrastructure/telemetry/Telemetry';
+import { emitStageSpan } from '../../infrastructure/monitoring/PipelineTelemetry';
 
 export interface MarketDataEngineOptions {
   minCandlesRequired?: number;
@@ -52,6 +53,21 @@ export class MarketDataEngine {
             missingIntervalsCount: gaps.missingIntervalsCount,
             gapStarts: gaps.gapStartTimes,
           });
+          emitStageSpan({
+            journey: 'JOURNEY_B_AUTONOMOUS',
+            stage: 3,
+            tier: 'TIER_2',
+            eventType: 'CANDLE_GAPS_DETECTED',
+            status: 'WARN',
+            severity: 'WARNING',
+            symbol,
+            timeframe: tf,
+            component: 'CandleValidator',
+            sourceFile: 'backend/src/engine/market-data/MarketDataEngine.ts',
+            errorCode: 'CANDLE_TIMESTAMP_GAP',
+            message: `Detected ${gaps.missingIntervalsCount} candle timestamp gap(s) for ${symbol} ${tf}`,
+            outputSummary: { candlesCount: cleanCandles.length, gapCount: gaps.missingIntervalsCount },
+          });
         }
 
         const freshness = CandleValidator.validateCandleFreshness(cleanCandles, tf);
@@ -61,6 +77,21 @@ export class MarketDataEngine {
             timeframe: tf,
             ageMs: freshness.ageMs,
             lastCandleTime: freshness.lastCandleTime,
+          });
+          emitStageSpan({
+            journey: 'JOURNEY_B_AUTONOMOUS',
+            stage: 3,
+            tier: 'TIER_2',
+            eventType: 'CANDLE_STALE_DETECTED',
+            status: 'WARN',
+            severity: 'WARNING',
+            symbol,
+            timeframe: tf,
+            component: 'CandleValidator',
+            sourceFile: 'backend/src/engine/market-data/MarketDataEngine.ts',
+            errorCode: 'STALE_CANDLES',
+            message: `Stale ${tf} candles for ${symbol} (ageMs=${freshness.ageMs})`,
+            outputSummary: { candlesCount: cleanCandles.length, ageMs: freshness.ageMs, isFresh: false },
           });
         }
 
@@ -136,6 +167,32 @@ export class MarketDataEngine {
         succeeded: successCount,
       });
     }
+
+    const countsByTf: Record<string, number> = {};
+    for (const tf of timeframes) {
+      countsByTf[tf] = snapshot.candles[tf]?.length ?? 0;
+    }
+    const datasetId = `ds:${symbol}:${timeframes.map((tf) => `${tf}=${countsByTf[tf]}`).join(',')}:${snapshot.timestamp}`;
+    emitStageSpan({
+      journey: 'JOURNEY_B_AUTONOMOUS',
+      stage: 3,
+      tier: 'TIER_2',
+      eventType: 'CANDLE_DATASET_READY',
+      status: successCount < timeframes.length ? 'WARN' : 'PASS',
+      severity: successCount < timeframes.length ? 'WARNING' : 'INFO',
+      candleDatasetId: datasetId,
+      symbol,
+      component: 'MarketDataEngine',
+      sourceFile: 'backend/src/engine/market-data/MarketDataEngine.ts',
+      message: `Prepared MTF snapshot for ${symbol} (${successCount}/${timeframes.length} TFs, price=${snapshot.currentPrice})`,
+      outputSummary: {
+        candleDatasetId: datasetId,
+        currentPrice: snapshot.currentPrice,
+        timeframesSucceeded: successCount,
+        timeframesRequested: timeframes.length,
+        countsByTimeframe: countsByTf,
+      },
+    });
 
     this.cache.set(cacheKey, { snapshot, expiresAt: Date.now() + 5000 });
     return snapshot;

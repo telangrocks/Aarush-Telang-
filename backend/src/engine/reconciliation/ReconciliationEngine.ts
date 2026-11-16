@@ -2,6 +2,7 @@ import { IExchangeProvider } from '../../exchanges/IExchangeProvider';
 import { EconomicIntent } from '../wal/WalTypes';
 import { UnifiedError } from '../../exchanges/models/UnifiedError';
 import { BackendDiagnosticSink } from '../../telemetry/BackendDiagnosticSink';
+import { emitStageSpan } from '../../infrastructure/monitoring/PipelineTelemetry';
 
 export class ReconciliationEngine {
   private static readonly RECON_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
@@ -58,6 +59,24 @@ export class ReconciliationEngine {
     intent.status = 'RECONCILIATION_PENDING';
     intent.reconciliationAttemptCount += 1;
     intent.lastReconciliationAttempt = currentTimeMs;
+
+    emitStageSpan({
+      journey: 'JOURNEY_B_AUTONOMOUS',
+      stage: 7,
+      tier: 'TIER_1',
+      eventType: 'RECONCILIATION_ATTEMPT',
+      status: 'PASS',
+      severity: 'INFO',
+      userId: telemetryContext?.userId,
+      intentId: intent.intentId,
+      clientOrderId: intent.intentId,
+      orderId: intent.actualOrderId,
+      symbol: intent.symbol,
+      attemptNumber: intent.reconciliationAttemptCount,
+      component: 'ReconciliationEngine',
+      sourceFile: 'backend/src/engine/reconciliation/ReconciliationEngine.ts',
+      message: `Reconciling intent ${intent.intentId} (attempt #${intent.reconciliationAttemptCount})`,
+    });
 
     try {
       // 1. Query Realtime using strictly Client Identity
@@ -160,6 +179,52 @@ export class ReconciliationEngine {
         }
         if (confirmedTP && confirmedTP > 0) {
           intent.exchangeConfirmedTakeProfit = confirmedTP.toString();
+        }
+
+        if ((intent.status === 'FILLED' || intent.status === 'PARTIALLY_FILLED') && Number(intent.actualExecutedQuantity || 0) > 0) {
+          emitStageSpan({
+            journey: 'JOURNEY_B_AUTONOMOUS',
+            stage: 7,
+            tier: 'TIER_1',
+            eventType: 'EXCHANGE_FILL_CONFIRMED',
+            status: 'PASS',
+            severity: 'INFO',
+            userId: telemetryContext?.userId,
+            intentId: intent.intentId,
+            clientOrderId: intent.intentId,
+            orderId: intent.actualOrderId,
+            symbol: intent.symbol,
+            component: 'ReconciliationEngine',
+            sourceFile: 'backend/src/engine/reconciliation/ReconciliationEngine.ts',
+            message: `Reconciliation confirmed ${intent.status} qty=${intent.actualExecutedQuantity} avg=${intent.actualFillPrice || 'N/A'}`,
+            outputSummary: {
+              orderId: intent.actualOrderId,
+              filledQty: Number(intent.actualExecutedQuantity),
+              avgFillPrice: intent.actualFillPrice ? Number(intent.actualFillPrice) : undefined,
+              slPrice: confirmedSL ?? undefined,
+              tpPrice: confirmedTP ?? undefined,
+            },
+          });
+        }
+
+        if (confirmedSL && confirmedSL > 0 && confirmedTP && confirmedTP > 0) {
+          emitStageSpan({
+            journey: 'JOURNEY_B_AUTONOMOUS',
+            stage: 7,
+            tier: 'TIER_1',
+            eventType: 'EXCHANGE_SL_TP_CONFIRMED',
+            status: 'PASS',
+            severity: 'INFO',
+            userId: telemetryContext?.userId,
+            intentId: intent.intentId,
+            clientOrderId: intent.intentId,
+            orderId: intent.actualOrderId,
+            symbol: intent.symbol,
+            component: 'ReconciliationEngine',
+            sourceFile: 'backend/src/engine/reconciliation/ReconciliationEngine.ts',
+            message: `Exchange SL/TP readback verified: SL=${confirmedSL}, TP=${confirmedTP}`,
+            outputSummary: { slPrice: confirmedSL, tpPrice: confirmedTP },
+          });
         }
 
         return intent;

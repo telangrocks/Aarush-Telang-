@@ -32,6 +32,14 @@ import {
   ShadowComparisonEngine,
 } from './engine/signal-lifecycle';
 import { normalizeEnvironment as normalizeCanonicalEnvironment } from './utils/environment';
+import {
+  createScopedTelemetryEmitter,
+  emitStageSpan,
+  flushTelemetry,
+  getTelemetryContext,
+  runWithTelemetryContext,
+} from './infrastructure/monitoring/PipelineTelemetry';
+import type { TelemetryEmitter } from '../../shared/monitoring';
 
 /**
  * Normalize an untrusted environment value into a valid ExchangeEnvironment,
@@ -1580,13 +1588,121 @@ export class TradingBot {
     return accountBalance;
   }
 
+  private pipelineEmitter: TelemetryEmitter;
+
+  private getSafeDoWaitUntil(): ((p: Promise<unknown>) => void) | undefined {
+    try {
+      if (this.state && typeof this.state.waitUntil === 'function') {
+        return (p: Promise<unknown>) => this.state.waitUntil(p);
+      }
+    } catch (_) {}
+    return undefined;
+  }
+
+  private bridgeDiagnosticSinkToPipelineTelemetry(event: any): void {
+    try {
+      if (!event || typeof event !== 'object') return;
+      const category = String(event.category || '');
+      const eventName = String(event.eventName || '');
+      const payload = (event.payload && typeof event.payload === 'object') ? event.payload : {};
+
+      if (category === 'ALERT' && eventName === 'ALERT_CREATED') {
+        const alertId = typeof payload.alertId === 'string' ? payload.alertId : event.correlationId;
+        emitStageSpan(
+          {
+            stage: 7,
+            tier: 'TIER_1',
+            eventType: 'TRADE_ALERT_CREATED',
+            status: 'PASS',
+            severity: 'INFO',
+            component: String(event.component || 'TradingBot'),
+            sourceFile: 'backend/src/trading-bot.ts',
+            userId: event.userId,
+            cycleId: event.cycleId,
+            symbol: event.symbol,
+            strategyId: event.strategyId,
+            timeframe: typeof payload.timeframe === 'string' ? payload.timeframe : undefined,
+            alertId,
+            message: `Autonomous TradeAlert ${alertId || ''} created for ${event.symbol} (${event.strategyId || 'unknown'})`,
+            inputSummary: {
+              confidenceScore: payload.confidenceScore ?? null,
+              isExecutable: payload.isExecutable ?? null,
+              ineligibilityReason: payload.ineligibilityReason ?? null,
+              wasClampedToMax: payload.wasClampedToMax ?? false,
+            },
+            outputSummary: {
+              alertId: alertId ?? null,
+              side: payload.side ?? null,
+              requestedPrice: payload.signalPrice ?? null,
+              slPrice: payload.stopLoss ?? null,
+              tpPrice: payload.takeProfit ?? null,
+              requestedQty: payload.quantity ?? null,
+              positionSize: payload.positionSize ?? null,
+              isExecutable: payload.isExecutable ?? null,
+            },
+          },
+          this.env
+        );
+      } else if (category === 'SAFETY') {
+        const gateName = String(payload.gate || eventName || 'SAFETY_GATE');
+        const passed = payload.passed === true;
+        const gateCategory =
+          eventName.includes('PROTECTION') || eventName.includes('EXPOSURE')
+            ? 'PROTECTION'
+            : gateName.includes('BUDGET') || gateName.includes('ELIGIB')
+              ? 'ELIGIBILITY_GATE'
+              : 'INLINE_ALARM_GATE';
+
+        emitStageSpan(
+          {
+            stage: 6,
+            tier: 'TIER_2',
+            eventType: eventName || 'GATE_EVALUATION',
+            status: passed ? 'PASS' : 'FAIL',
+            severity: passed ? 'INFO' : (event.severity === 'CRITICAL' ? 'CRITICAL' : 'WARNING'),
+            component: String(event.component || 'TradingBot'),
+            sourceFile: 'backend/src/trading-bot.ts',
+            userId: event.userId,
+            cycleId: event.cycleId,
+            symbol: event.symbol,
+            strategyId: event.strategyId,
+            timeframe: typeof payload.timeframe === 'string' ? payload.timeframe : undefined,
+            alertId: typeof payload.alertId === 'string' ? payload.alertId : undefined,
+            errorCode: passed ? undefined : gateName,
+            message: passed
+              ? `Safety gate ${gateName} passed for ${event.symbol || 'cycle'}`
+              : `Safety gate ${gateName} blocked ${event.symbol || 'cycle'}${payload.phase ? ` (${payload.phase})` : ''}`,
+            inputSummary: {
+              phase: payload.phase ?? null,
+              gateName,
+              budget: payload.budget ?? null,
+              existingPositionId: payload.existingPositionId ?? null,
+              existingAlertId: payload.existingAlertId ?? null,
+            },
+            outputSummary: {
+              gateName,
+              gateCategory,
+              decision: passed ? 'ALLOW' : 'BLOCK',
+              reason: typeof payload.message === 'string' ? payload.message : gateName,
+              ...payload,
+            },
+          },
+          this.env
+        );
+      }
+    } catch {
+      // Strictly fail-open
+    }
+  }
+
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
     this.orchestrator = new StrategyOrchestrator();
     this.engineApi = new EngineAPIService();
+    this.pipelineEmitter = createScopedTelemetryEmitter('trading-bot-do', env);
 
-    this.telemetrySink = new BackendDiagnosticSink({
+    const rawSink = new BackendDiagnosticSink({
       db: env.DB,
       waitUntil: (p) => {
         try {
@@ -1596,6 +1712,18 @@ export class TradingBot {
         } catch (_) {}
       },
       disableTelemetry: (env as any)?.DISABLE_BACKEND_TELEMETRY === 'true'
+    });
+    this.telemetrySink = new Proxy(rawSink, {
+      get: (target, prop, receiver) => {
+        if (prop === 'emit') {
+          return (event: any) => {
+            const res = target.emit(event);
+            this.bridgeDiagnosticSinkToPipelineTelemetry(event);
+            return res;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      }
     });
     
     // Feature 5: DO Recovery
@@ -2484,6 +2612,17 @@ export class TradingBot {
         }
       }
       case '/execute-trade': {
+        return await runWithTelemetryContext(
+          {
+            journey: 'JOURNEY_B_AUTONOMOUS',
+            environment: this.env.ENVIRONMENT,
+            userId: this.runtimeState.userId,
+            botId: this.state?.id?.toString?.(),
+            cycleId: `exec_${Date.now()}`,
+            traceId: `trc_${crypto.randomUUID()}`,
+            emitter: this.pipelineEmitter,
+          },
+          async () => {
         console.log(`[DIAGNOSTIC] [STAGE: EXECUTE_TRADE_REQUEST_RECEIVED] timestamp=${new Date().toISOString()}`);
 
         if (this.env.GLOBAL_TRADING_HALT === 'true') {
@@ -3676,6 +3815,34 @@ export class TradingBot {
               });
 
               if (!rulesRes.isValid) {
+                emitStageSpan(
+                  {
+                    stage: 6,
+                    tier: 'TIER_1',
+                    eventType: 'TRADE_VALIDATOR_CHECK',
+                    status: 'FAIL',
+                    severity: 'WARNING',
+                    component: 'TradeValidator',
+                    sourceFile: 'backend/src/trading-bot.ts',
+                    userId,
+                    symbol: orderSymbol,
+                    strategyId: target.strategy,
+                    timeframe: target.timeframe,
+                    alertId: target.id,
+                    errorCode: String(rulesRes.errorCode || 'VALIDATION_FAILED'),
+                    message: `TradeValidator rejected ${orderSymbol}: ${rulesRes.errorCode}`,
+                    inputSummary: { gateName: 'TradeValidator', currentPrice, approvedQuantity },
+                    outputSummary: {
+                      gateName: 'TradeValidator',
+                      gateCategory: 'VALIDATOR',
+                      decision: 'BLOCK',
+                      errorCode: rulesRes.errorCode,
+                      errorMessage: rulesRes.errorMessage,
+                      reason: rulesRes.errorMessage,
+                    },
+                  },
+                  this.env
+                );
                 console.error(`[DIAGNOSTIC] [STAGE: TRADE_VALIDATION_FAILED] errorCode=${rulesRes.errorCode} errorMessage=${rulesRes.errorMessage}`);
                 if (rulesRes.errorCode === ValidationErrorReason.BUDGET_EXCEEDED) {
                   await releasePreReservation('BUDGET_EXCEEDED_AT_EXECUTION');
@@ -3688,6 +3855,33 @@ export class TradingBot {
                 }
                 throw new Error(rulesRes.errorMessage || `Order validation failed: ${rulesRes.errorCode}`);
               }
+
+              emitStageSpan(
+                {
+                  stage: 6,
+                  tier: 'TIER_1',
+                  eventType: 'TRADE_VALIDATOR_CHECK',
+                  status: 'PASS',
+                  severity: 'INFO',
+                  component: 'TradeValidator',
+                  sourceFile: 'backend/src/trading-bot.ts',
+                  userId,
+                  symbol: orderSymbol,
+                  strategyId: target.strategy,
+                  timeframe: target.timeframe,
+                  alertId: target.id,
+                  message: `TradeValidator approved ${orderSymbol} qty=${rulesRes.quantizedQuantity}`,
+                  inputSummary: { gateName: 'TradeValidator', currentPrice },
+                  outputSummary: {
+                    gateName: 'TradeValidator',
+                    gateCategory: 'VALIDATOR',
+                    decision: 'ALLOW',
+                    quantizedQuantity: rulesRes.quantizedQuantity,
+                    postRoundingNotional: rulesRes.postRoundingNotional,
+                  },
+                },
+                this.env
+              );
 
               if (approvedQuantity !== undefined && rulesRes.quantizedQuantity !== approvedQuantity) {
                 throw new Error(`Order validation changed the approved quantity from ${approvedQuantity} to ${rulesRes.quantizedQuantity}. Fresh user confirmation is required.`);
@@ -3869,7 +4063,63 @@ export class TradingBot {
                   referencePrice: dispatchReferencePrice,
                   estimatedNotional: proposedNotional,
                 });
+                emitStageSpan(
+                  {
+                    stage: 6,
+                    tier: 'TIER_1',
+                    eventType: 'FINAL_DISPATCH_SAFETY_GATE',
+                    status: 'PASS',
+                    severity: 'INFO',
+                    component: 'FinalDispatchSafetyGate',
+                    sourceFile: 'backend/src/trading-bot.ts',
+                    userId,
+                    symbol: orderSymbol,
+                    strategyId: target.strategy,
+                    timeframe: target.timeframe,
+                    alertId: target.id,
+                    message: `FinalDispatchSafetyGate passed for ${orderSymbol} (notional $${proposedNotional?.toFixed?.(2) ?? proposedNotional})`,
+                    inputSummary: {
+                      gateName: 'FinalDispatchSafetyGate',
+                      currentExposure,
+                      maxPortfolioExposure,
+                      proposedNotional,
+                    },
+                    outputSummary: {
+                      gateName: 'FinalDispatchSafetyGate',
+                      gateCategory: 'DISPATCH_GATE',
+                      decision: 'ALLOW',
+                    },
+                  },
+                  this.env
+                );
               } catch (gateErr: any) {
+                emitStageSpan(
+                  {
+                    stage: 6,
+                    tier: 'TIER_1',
+                    eventType: 'FINAL_DISPATCH_SAFETY_GATE',
+                    status: 'FAIL',
+                    severity: 'WARNING',
+                    component: 'FinalDispatchSafetyGate',
+                    sourceFile: 'backend/src/trading-bot.ts',
+                    userId,
+                    symbol: orderSymbol,
+                    strategyId: target.strategy,
+                    timeframe: target.timeframe,
+                    alertId: target.id,
+                    errorCode: 'RISK_GATE_REJECTED',
+                    message: `FinalDispatchSafetyGate blocked ${orderSymbol}: ${gateErr?.message}`,
+                    inputSummary: { gateName: 'FinalDispatchSafetyGate', proposedNotional },
+                    outputSummary: {
+                      gateName: 'FinalDispatchSafetyGate',
+                      gateCategory: 'DISPATCH_GATE',
+                      decision: 'BLOCK',
+                      errorMessage: gateErr?.message,
+                      reason: gateErr?.message,
+                    },
+                  },
+                  this.env
+                );
                 throw new Error(`RISK_GATE_REJECTED: ${gateErr.message}`);
               }
 
@@ -3911,6 +4161,39 @@ export class TradingBot {
                 await this.persistIntentSnapshot(target.id, intentObj);
               }
               reservationIntent = intentObj;
+
+              emitStageSpan(
+                {
+                  stage: 7,
+                  tier: 'TIER_1',
+                  eventType: 'ORDER_INTENT_RESERVED',
+                  status: 'PASS',
+                  severity: 'INFO',
+                  component: 'TradingBot',
+                  sourceFile: 'backend/src/trading-bot.ts',
+                  userId,
+                  symbol: orderSymbol,
+                  strategyId: target.strategy,
+                  timeframe: target.timeframe,
+                  alertId: target.id,
+                  intentId: intentObj.intentId,
+                  clientOrderId,
+                  message: `WAL intent ${intentObj.intentId} persisted prior to dispatch`,
+                  inputSummary: {
+                    side,
+                    orderType,
+                    requestedQty: executionSnapshot.quantizedQuantity,
+                    requestedPrice: executionSnapshot.limitPrice ?? executionSnapshot.signalPrice,
+                    slPrice: req.stopLoss,
+                    tpPrice: req.takeProfit,
+                  },
+                  outputSummary: {
+                    intentId: intentObj.intentId,
+                    walStatus: intentObj.status,
+                  },
+                },
+                this.env
+              );
 
               const safeEntryIntent: 'WAIT_FOR_PRICE' | 'IMMEDIATE' | 'TRIGGER' | 'UNKNOWN' =
                 entryIntent === 'WAIT_FOR_PRICE' || entryIntent === 'IMMEDIATE' || entryIntent === 'TRIGGER'
@@ -3954,6 +4237,60 @@ export class TradingBot {
                   reservationIntent.dispatchedAt = intentObj.dispatchedAt;
                   reservationIntent.status = intentObj.status;
                 }
+                emitStageSpan(
+                  {
+                    stage: 6,
+                    tier: 'TIER_1',
+                    eventType: 'FENCE_B_DISPATCH_LEASE',
+                    status: 'PASS',
+                    severity: 'INFO',
+                    component: 'TradingBot',
+                    sourceFile: 'backend/src/trading-bot.ts',
+                    userId,
+                    symbol: orderSymbol,
+                    strategyId: target.strategy,
+                    timeframe: target.timeframe,
+                    alertId: target.id,
+                    intentId: intentObj.intentId,
+                    clientOrderId,
+                    message: `Fence B dispatch lease acquired for ${orderSymbol}`,
+                    outputSummary: {
+                      gateName: 'FenceB_DispatchLease',
+                      gateCategory: 'FENCE',
+                      decision: 'ALLOW',
+                    },
+                  },
+                  this.env
+                );
+                emitStageSpan(
+                  {
+                    stage: 7,
+                    tier: 'TIER_1',
+                    eventType: 'ORDER_SUBMIT_DISPATCHED',
+                    status: 'PASS',
+                    severity: 'INFO',
+                    component: 'TradingBot',
+                    sourceFile: 'backend/src/trading-bot.ts',
+                    userId,
+                    symbol: orderSymbol,
+                    strategyId: target.strategy,
+                    timeframe: target.timeframe,
+                    alertId: target.id,
+                    intentId: intentObj.intentId,
+                    clientOrderId,
+                    message: `Order submit dispatched to Bybit adapter for ${orderSymbol} (${side})`,
+                    inputSummary: {
+                      side,
+                      requestedQty: executionSnapshot?.quantizedQuantity,
+                      requestedPrice: executionSnapshot?.limitPrice ?? executionSnapshot?.signalPrice,
+                    },
+                    outputSummary: {
+                      dispatchedAt: intentObj.dispatchedAt,
+                      walStatus: intentObj.status,
+                    },
+                  },
+                  this.env
+                );
                 return releaseLease;
               };
 
@@ -4074,12 +4411,95 @@ export class TradingBot {
                     intentObj.status = 'FAILED';
                     intentObj.terminalReason = `ORDER_${String(rawOrder.status).toUpperCase()}`;
                     await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                    emitStageSpan(
+                      {
+                        stage: 7,
+                        tier: 'TIER_1',
+                        eventType: 'ORDER_SUBMIT_FAILED',
+                        status: 'FAIL',
+                        severity: 'ERROR',
+                        component: 'TradingBot',
+                        sourceFile: 'backend/src/trading-bot.ts',
+                        userId,
+                        symbol: orderSymbol,
+                        strategyId: target.strategy,
+                        timeframe: target.timeframe,
+                        alertId: target.id,
+                        intentId: intentObj.intentId,
+                        clientOrderId,
+                        orderId: rawOrder?.id ? String(rawOrder.id) : undefined,
+                        errorCode: intentObj.terminalReason,
+                        message: `Bybit order ${rawOrder?.id || intentObj.intentId} was ${rawOrder.status}`,
+                        outputSummary: {
+                          orderId: rawOrder?.id ?? null,
+                          rawOrderStatus: rawOrder?.status ?? null,
+                        },
+                      },
+                      this.env
+                    );
                     throw new Error(`Order ${intentObj.intentId} was ${rawOrder.status} on exchange.`);
                   } else {
                     intentObj.status = 'DISPATCHED';
                   }
 
                   await this.persistIntentSnapshot(intentObj.intentId, intentObj);
+                  emitStageSpan(
+                    {
+                      stage: 7,
+                      tier: 'TIER_1',
+                      eventType: 'BYBIT_HTTP_ACK',
+                      status: 'PASS',
+                      severity: 'INFO',
+                      component: 'TradingBot',
+                      sourceFile: 'backend/src/trading-bot.ts',
+                      userId,
+                      symbol: orderSymbol,
+                      strategyId: target.strategy,
+                      timeframe: target.timeframe,
+                      alertId: target.id,
+                      intentId: intentObj.intentId,
+                      clientOrderId,
+                      orderId: rawOrder?.id ? String(rawOrder.id) : undefined,
+                      message: `Bybit HTTP ACK received for ${orderSymbol} (orderId=${rawOrder?.id ?? 'unknown'}, status=${intentObj.status})`,
+                      outputSummary: {
+                        orderId: rawOrder?.id ?? null,
+                        walStatus: intentObj.status,
+                        rawOrderStatus: rawOrder?.status ?? null,
+                        filledQty: rawFilledNum,
+                        reqQty: reqQtyNum,
+                        isAckOnly: rawFilledNum <= 0,
+                      },
+                    },
+                    this.env
+                  );
+                  if (intentObj.status === 'FILLED' && rawFilledNum > 0) {
+                    emitStageSpan(
+                      {
+                        stage: 7,
+                        tier: 'TIER_1',
+                        eventType: 'EXCHANGE_FILL_CONFIRMED',
+                        status: 'PASS',
+                        severity: 'INFO',
+                        component: 'TradingBot',
+                        sourceFile: 'backend/src/trading-bot.ts',
+                        userId,
+                        symbol: orderSymbol,
+                        strategyId: target.strategy,
+                        timeframe: target.timeframe,
+                        alertId: target.id,
+                        intentId: intentObj.intentId,
+                        clientOrderId,
+                        orderId: rawOrder?.id ? String(rawOrder.id) : undefined,
+                        message: `Exchange fill confirmed for ${orderSymbol}: ${rawFilledNum}/${reqQtyNum} @ ${rawAvgPrice ?? 'market'}`,
+                        outputSummary: {
+                          orderId: rawOrder?.id ?? null,
+                          filledQty: rawFilledNum,
+                          avgFillPrice: rawAvgPrice ?? executionSnapshot.signalPrice,
+                        },
+                      },
+                      this.env
+                    );
+                  }
                   console.log(`[DIAGNOSTIC] [STAGE: ORDER_SUCCESS] orderId=${rawOrder?.id} status=${intentObj.status} filled=${rawFilledNum}/${reqQtyNum}`);
                 }
               } catch (e: any) {
@@ -4540,6 +4960,33 @@ export class TradingBot {
               });
               await this.persistState('activePositions', updatedActivePositions);
 
+              emitStageSpan(
+                {
+                  stage: 7,
+                  tier: 'TIER_1',
+                  eventType: 'POSITION_D1_SYNCED',
+                  status: 'PASS',
+                  severity: 'INFO',
+                  component: 'TradingBot',
+                  sourceFile: 'backend/src/trading-bot.ts',
+                  userId: snapshot.userId,
+                  symbol: snapshot.symbol,
+                  strategyId: snapshot.strategy,
+                  timeframe: target.timeframe,
+                  alertId: target.id,
+                  orderId: positionData.orderId || undefined,
+                  message: `Position ${positionData.id} synced to D1 (${initialPositionStatus})`,
+                  outputSummary: {
+                    positionId: positionData.id,
+                    positionStatus: initialPositionStatus,
+                    entryStatus: initialEntryStatus,
+                    filledQty: positionData.filledQuantity,
+                    avgFillPrice: positionData.averageFillPrice,
+                  },
+                },
+                this.env
+              );
+
               // If DB write succeeds, remove pendingPositionSync (WAL intent is retained permanently for idempotency)
               await this.state.storage.delete('pendingPositionSync');
               this.runtimeState.pendingPositionSync = null;
@@ -4619,6 +5066,34 @@ export class TradingBot {
               }
             }
           } else {
+            emitStageSpan(
+              {
+                stage: 7,
+                tier: 'TIER_1',
+                eventType: 'ORDER_SUBMIT_FAILED',
+                status: 'FAIL',
+                severity: 'ERROR',
+                component: 'TradingBot',
+                sourceFile: 'backend/src/trading-bot.ts',
+                userId,
+                symbol: orderSymbol,
+                strategyId: target.strategy,
+                timeframe: target.timeframe,
+                alertId: target.id,
+                intentId: reservationIntent?.intentId,
+                clientOrderId,
+                orderId: orderResult.orderId ? String(orderResult.orderId) : undefined,
+                errorCode: safeResultCode,
+                message: `Order execution failed for ${orderSymbol}: ${orderResult.message || safeResultCode}`,
+                outputSummary: {
+                  orderId: orderResult.orderId ?? null,
+                  orderStatus: safeOrderStatus,
+                  resultCode: safeResultCode,
+                  errorMessage: orderResult.message ?? null,
+                },
+              },
+              this.env
+            );
             await this.logAuditEvent(userId, 'TRADE_FAILED', { symbol: orderSymbol, side, message: orderResult.message, clientOrderId });
           }
 
@@ -4652,7 +5127,10 @@ export class TradingBot {
           this.isExecutingTrade = false;
           this.isExecutingTradeAt = 0;
           await this.state.storage.put('isExecutingTrade', false);
+          flushTelemetry(this.getSafeDoWaitUntil(), this.pipelineEmitter);
         }
+          }
+        );
       }
       case '/mock-trade': {
         const body = await request.json<any>().catch(() => ({}));
@@ -5200,6 +5678,56 @@ export class TradingBot {
           approvedSymbols: record.approvedSymbols,
           expiresAt: record.expiresAt,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      case '/internal/monitor-state': {
+        if (request.method !== 'GET') {
+          return new Response(JSON.stringify({ error: 'Method Not Allowed' }), {
+            status: 405,
+            headers: { 'Content-Type': 'application/json', Allow: 'GET' },
+          });
+        }
+        const rawAlarmGen = await this.state.storage.get<number>('lock:alarmGeneration').catch(() => undefined);
+        const rawApprovalGen =
+          (await this.state.storage.get<number>('candidateApprovalGeneration').catch(() => undefined)) ??
+          this.runtimeState.candidateApprovalGeneration;
+        const lockObj =
+          (await this.state.storage.get<UnprotectedExposureLock>('lock:unprotectedExposure').catch(() => undefined)) ??
+          this.unprotectedExposureLock;
+        const alertsList = ((await this.state.storage.get<TradeAlert[]>('alerts').catch(() => null)) ||
+          this.runtimeState.alerts ||
+          []) as TradeAlert[];
+        const activePosList = (this.runtimeState.activePositions || []).filter(
+          (p: any) => p.status !== 'CLOSED' && p.status !== 'CANCELLED'
+        );
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            readOnly: true,
+            isActive: Boolean(this.runtimeState.isActive),
+            environment: this.env.ENVIRONMENT || 'unknown',
+            monitoredSymbolsCount: Array.isArray(this.runtimeState.monitoredSymbols)
+              ? this.runtimeState.monitoredSymbols.length
+              : 0,
+            monitoredSymbols: Array.isArray(this.runtimeState.monitoredSymbols)
+              ? this.runtimeState.monitoredSymbols.slice(0, 50)
+              : [],
+            alertsCount: alertsList.length,
+            activePositionsCount: activePosList.length,
+            alarmGeneration: typeof rawAlarmGen === 'number' ? rawAlarmGen : 0,
+            candidateApprovalGeneration: typeof rawApprovalGen === 'number' ? rawApprovalGen : 0,
+            unprotectedExposureLock: lockObj
+              ? {
+                  symbol: lockObj.symbol,
+                  side: lockObj.side,
+                  lockedAt: lockObj.lockedAt,
+                  reason: lockObj.reason,
+                }
+              : null,
+            pipelineEmitterStats: this.pipelineEmitter.getHealthStats(),
+            checkedAtMs: Date.now(),
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
       }
       default:
         return new Response('Not found', { status: 404 });
@@ -6832,12 +7360,56 @@ export class TradingBot {
             : (this.runtimeState.coinId ? [this.runtimeState.coinId] : []);
 
           const cycleId = `CYC-${Date.now()}`;
+          const traceId = `trc_${crypto.randomUUID()}`;
+          const storedApproval =
+            this.runtimeState.approvedCandidateRecord ||
+            (await this.state.storage.get<ApprovedCandidateRecord>('approvedCandidateRecord').catch(() => null)) ||
+            null;
+
+          await runWithTelemetryContext(
+            {
+              journey: 'JOURNEY_B_AUTONOMOUS',
+              environment: this.env.ENVIRONMENT,
+              userId,
+              botId: this.state?.id?.toString?.(),
+              cycleId,
+              traceId,
+              parentApprovalGeneration: storedApproval?.approvalGeneration,
+              emitter: this.pipelineEmitter,
+            },
+            async () => {
 
           // Authoritative alarm generation captured once at cycle start
           const rawCycleGen = await this.state.storage.get('lock:alarmGeneration');
           const cycleGeneration = (typeof rawCycleGen === 'number' && Number.isInteger(rawCycleGen) && rawCycleGen > 0)
             ? rawCycleGen
             : undefined;
+
+          emitStageSpan(
+            {
+              stage: 1,
+              tier: 'TIER_2',
+              eventType: 'AUTONOMOUS_CYCLE_START',
+              status: 'PASS',
+              severity: 'INFO',
+              component: 'TradingBot',
+              sourceFile: 'backend/src/trading-bot.ts',
+              userId,
+              cycleId,
+              traceId,
+              parentApprovalGeneration: storedApproval?.approvalGeneration,
+              message: `Autonomous cycle ${cycleId} started for ${symbolsToMonitor.length} symbols (gen=${cycleGeneration ?? 'none'})`,
+              outputSummary: {
+                channel: 'ALARM_CYCLE',
+                symbolsCount: symbolsToMonitor.length,
+                monitoredSymbols: symbolsToMonitor.slice(0, 25),
+                alarmGeneration: cycleGeneration ?? null,
+                parentApprovalGeneration: storedApproval?.approvalGeneration ?? null,
+                strategy: strategy || null,
+              },
+            },
+            this.env
+          );
 
           // Periodic 5-minute cycle heartbeat telemetry (low-volume monitoring)
           const now = Date.now();
@@ -6961,6 +7533,40 @@ export class TradingBot {
                 } catch (_) {}
               }
 
+              emitStageSpan(
+                {
+                  stage: 2,
+                  tier: 'TIER_2',
+                  eventType: 'DISCOVERY_HANDOFF_CONSUMED',
+                  status: isApprovalValid && isFingerprintValid ? 'PASS' : 'FAIL',
+                  severity: isApprovalValid && isFingerprintValid ? 'INFO' : 'WARNING',
+                  component: 'TradingBot',
+                  sourceFile: 'backend/src/trading-bot.ts',
+                  userId,
+                  cycleId,
+                  parentApprovalGeneration: approvedCandidateRecord?.approvalGeneration,
+                  errorCode: !approvedCandidateRecord
+                    ? 'NO_APPROVAL_RECORD'
+                    : !isApprovalValid
+                      ? 'APPROVAL_EXPIRED_OR_INVALID'
+                      : !isFingerprintValid
+                        ? 'ACCOUNT_FINGERPRINT_MISMATCH'
+                        : undefined,
+                  message:
+                    isApprovalValid && isFingerprintValid
+                      ? `Autonomous cycle ${cycleId} bound to Journey A approvalGeneration=${approvedCandidateRecord?.approvalGeneration} (${approvedCandidateRecord?.approvedSymbols.length ?? 0} symbols)`
+                      : `Autonomous cycle ${cycleId} halted by invalid/expired/mismatched Journey A approval record`,
+                  outputSummary: {
+                    isApprovalValid: Boolean(isApprovalValid),
+                    isFingerprintValid,
+                    parentApprovalGeneration: approvedCandidateRecord?.approvalGeneration ?? null,
+                    approvedSymbols: approvedCandidateRecord?.approvedSymbols ?? [],
+                    budgetUsdt: approvedCandidateRecord?.budgetUsdt ?? null,
+                  },
+                },
+                this.env
+              );
+
               if (!isApprovalValid || !isFingerprintValid) {
                 console.warn(`[BUDGET GATE: EXPIRED / MISSING] Approval record is expired, missing, or mismatched. Halting strategy evaluation. Open positions monitoring remains active.`);
               } else {
@@ -6968,6 +7574,30 @@ export class TradingBot {
                   const normCurrent = normalizeCanonicalSymbol(currentSymbol);
                   const isSymbolApproved = approvedCandidateRecord.approvedSymbols.some(s => normalizeCanonicalSymbol(s) === normCurrent);
                   if (!isSymbolApproved) {
+                    emitStageSpan(
+                      {
+                        stage: 6,
+                        tier: 'TIER_2',
+                        eventType: 'INLINE_SAFETY_GATE',
+                        status: 'FAIL',
+                        severity: 'WARNING',
+                        component: 'TradingBot',
+                        sourceFile: 'backend/src/trading-bot.ts',
+                        userId,
+                        cycleId,
+                        symbol: currentSymbol,
+                        parentApprovalGeneration: approvedCandidateRecord.approvalGeneration,
+                        errorCode: 'SYMBOL_NOT_APPROVED_IN_GENERATION',
+                        message: `Symbol ${currentSymbol} rejected: not in approvedCandidateRecord gen=${approvedCandidateRecord.approvalGeneration}`,
+                        outputSummary: {
+                          gateName: 'ApprovedCandidateSymbolCheck',
+                          gateCategory: 'FENCE',
+                          decision: 'BLOCK',
+                          reason: 'SYMBOL_NOT_APPROVED_IN_GENERATION',
+                        },
+                      },
+                      this.env
+                    );
                     console.warn(`[BUDGET GATE: REJECTED] Symbol ${currentSymbol} is not in approvedCandidateRecord (${approvedCandidateRecord.approvalGeneration}). Skipping TA.`);
                     continue;
                   }
@@ -7193,6 +7823,39 @@ export class TradingBot {
                     });
                     continue;
                   }
+
+                  emitStageSpan(
+                    {
+                      stage: 6,
+                      tier: 'TIER_2',
+                      eventType: 'PRE_TA_ELIGIBILITY_GATE',
+                      status: 'PASS',
+                      severity: 'INFO',
+                      component: 'ExecutionEligibilityGate',
+                      sourceFile: 'backend/src/trading-bot.ts',
+                      userId,
+                      cycleId,
+                      symbol: currentSymbol,
+                      message: `Pre-TA ExecutionEligibilityGate passed for ${currentSymbol}: qty=${preTaEligibility.quantizedQty}, notional=$${preTaEligibility.postRoundingNotional}`,
+                      inputSummary: {
+                        gateName: 'ExecutionEligibilityGate_PreTA',
+                        budgetUsdt: configuredTradeBudget,
+                        currentPrice: preTaPrice,
+                        qtyStep: validStepSize,
+                        minOrderQty: validMinOrderQty,
+                        minNotional: resolvedMinNotional,
+                      },
+                      outputSummary: {
+                        gateName: 'ExecutionEligibilityGate_PreTA',
+                        gateCategory: 'ELIGIBILITY_GATE',
+                        decision: 'ALLOW',
+                        quantizedQty: preTaEligibility.quantizedQty,
+                        postRoundingNotional: preTaEligibility.postRoundingNotional,
+                        wasClampedToMax: preTaEligibility.wasClampedToMax,
+                      },
+                    },
+                    this.env
+                  );
 
                   const snapshot = await dataEngine.getSnapshot(currentSymbol, cycleTimeframes, cycleCandleLimit);
                   const currentNormSymbol = this.normalizeSymbol(currentSymbol);
@@ -8009,6 +8672,17 @@ export class TradingBot {
                         if (this.unprotectedExposureLock) {
                           console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: active unprotected exposure lock on ${this.unprotectedExposureLock.symbol}.`);
                           recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'ACTIVE_EXPOSURE_LOCK');
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: { passed: false, gate: 'ACTIVE_EXPOSURE_LOCK', lockSymbol: this.unprotectedExposureLock.symbol }
+                          });
                           break;
                         }
 
@@ -8028,6 +8702,23 @@ export class TradingBot {
                         if (prePersistActivePosition || prePersistActiveIntent || prePersistActiveAlert) {
                           console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: conflicting position, in-flight intent, or active alert detected immediately prior to persistence.`);
                           recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'CONFLICTING_ACTIVE_ENTITY');
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: {
+                              passed: false,
+                              gate: 'CONFLICTING_ACTIVE_ENTITY',
+                              prePersistActivePosition,
+                              prePersistActiveIntent,
+                              prePersistActiveAlert
+                            }
+                          });
                           break;
                         }
 
@@ -8051,10 +8742,47 @@ export class TradingBot {
                         ) {
                           console.warn(`[SAFETY GATE] Discarding alert for ${currentSymbol}: missing or invalid normalized Entry/SL/TP.`);
                           recordStrategyStatus(result.strategyId, 'BLOCKED_BY_EXISTING_GATE', 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE');
+                          this.telemetrySink.emit({
+                            userId,
+                            category: 'SAFETY',
+                            component: 'TradingBot',
+                            eventName: 'FINAL_DISPATCH_GATE',
+                            severity: 'WARN',
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            payload: { passed: false, gate: 'INVALID_RISK_BOUNDARIES_AT_CURRENT_PRICE' }
+                          });
                           break;
                         }
 
                         recordStrategyStatus(result.strategyId, 'TRADE_QUALIFIED');
+                        emitStageSpan(
+                          {
+                            stage: 6,
+                            tier: 'TIER_2',
+                            eventType: 'POST_SIGNAL_GATES_PASSED',
+                            status: 'PASS',
+                            severity: 'INFO',
+                            component: 'ExecutionEligibilityGate',
+                            sourceFile: 'backend/src/trading-bot.ts',
+                            userId,
+                            cycleId,
+                            symbol: currentSymbol,
+                            strategyId: result.strategyId,
+                            timeframe: targetTimeframe,
+                            message: `All alarm inline gates & eligibility passed for ${currentSymbol} (${result.strategyId})`,
+                            outputSummary: {
+                              gateName: 'AlarmPipelineSafetyGates',
+                              gateCategory: 'ELIGIBILITY_GATE',
+                              decision: 'ALLOW',
+                              isExecutable: alertIsExecutable,
+                              quantizedQty: eligibilityResult?.quantizedQty ?? null,
+                              postRoundingNotional: eligibilityResult?.postRoundingNotional ?? null,
+                            },
+                          },
+                          this.env
+                        );
                         const alert: TradeAlert = {
                           id: crypto.randomUUID(),
                           symbol: currentSymbol,
@@ -8149,6 +8877,30 @@ export class TradingBot {
                         results,
                         committedStrat
                       );
+                      emitStageSpan(
+                        {
+                          stage: 6,
+                          tier: 'TIER_2',
+                          eventType: 'SIGNAL_LIFECYCLE_EVAL',
+                          status: 'PASS',
+                          severity: 'INFO',
+                          component: 'SignalLifecycleManager',
+                          sourceFile: 'backend/src/trading-bot.ts',
+                          userId,
+                          cycleId,
+                          symbol: currentSymbol,
+                          message: `SignalLifecycleManager evaluated ${results.length} strategy results -> ${shadowSignals.length} shadow signals (mode=${signalManagerMode})`,
+                          outputSummary: {
+                            gateName: 'SignalLifecycleManager',
+                            gateCategory: 'SIGNAL_LIFECYCLE',
+                            decision: shadowSignals.length > 0 ? 'ALLOW' : 'SKIPPED',
+                            mode: signalManagerMode,
+                            resultsCount: results.length,
+                            shadowSignalsCount: shadowSignals.length,
+                          },
+                        },
+                        this.env
+                      );
                       for (const shadowSig of shadowSignals) {
                         const comparison = ShadowComparisonEngine.compare(
                           shadowSig.symbol,
@@ -8156,6 +8908,29 @@ export class TradingBot {
                           shadowSig,
                           this.signalLifecycleManager.getOpportunity(shadowSig.oppId),
                           legacySuppressionInfo
+                        );
+                        emitStageSpan(
+                          {
+                            stage: 6,
+                            tier: 'TIER_2',
+                            eventType: 'SIGNAL_SHADOW_DIFF',
+                            status: (comparison as any)?.hasParityGap ? 'WARN' : 'PASS',
+                            severity: (comparison as any)?.hasParityGap ? 'WARNING' : 'INFO',
+                            component: 'ShadowComparisonEngine',
+                            sourceFile: 'backend/src/trading-bot.ts',
+                            userId,
+                            cycleId,
+                            symbol: shadowSig.symbol,
+                            strategyId: shadowSig.strategy,
+                            message: `Shadow comparison for ${shadowSig.symbol}: parity=${!(comparison as any)?.hasParityGap}`,
+                            outputSummary: {
+                              gateName: 'ShadowComparisonEngine',
+                              gateCategory: 'SHADOW_DIFF',
+                              decision: (comparison as any)?.hasParityGap ? 'WARN' : 'ALLOW',
+                              comparison,
+                            },
+                          },
+                          this.env
                         );
                         console.log(`[SIGNAL_LIFECYCLE_SHADOW] ${JSON.stringify(comparison)}`);
                       }
@@ -8167,8 +8942,53 @@ export class TradingBot {
                           null,
                           legacySuppressionInfo
                         );
+                        emitStageSpan(
+                          {
+                            stage: 6,
+                            tier: 'TIER_2',
+                            eventType: 'SIGNAL_SHADOW_DIFF',
+                            status: 'WARN',
+                            severity: 'WARNING',
+                            component: 'ShadowComparisonEngine',
+                            sourceFile: 'backend/src/trading-bot.ts',
+                            userId,
+                            cycleId,
+                            symbol: currentSymbol,
+                            message: `Shadow diverged from legacy alert for ${currentSymbol}: legacy generated alert while shadow produced 0`,
+                            outputSummary: {
+                              gateName: 'ShadowComparisonEngine',
+                              gateCategory: 'SHADOW_DIFF',
+                              decision: 'WARN',
+                              comparison,
+                            },
+                          },
+                          this.env
+                        );
                         console.log(`[SIGNAL_LIFECYCLE_SHADOW] ${JSON.stringify(comparison)}`);
                       }
+                    } else if (results.length > 0) {
+                      emitStageSpan(
+                        {
+                          stage: 6,
+                          tier: 'TIER_2',
+                          eventType: 'SIGNAL_SHADOW_DIFF',
+                          status: 'SKIPPED',
+                          severity: 'INFO',
+                          component: 'SignalLifecycleManager',
+                          sourceFile: 'backend/src/trading-bot.ts',
+                          userId,
+                          cycleId,
+                          symbol: currentSymbol,
+                          message: `SignalLifecycleManager comparison skipped (SIGNAL_MANAGER_MODE=${signalManagerMode ?? 'unset'})`,
+                          outputSummary: {
+                            gateName: 'SignalLifecycleManager',
+                            gateCategory: 'SHADOW_DIFF',
+                            decision: 'SKIPPED',
+                            reason: `SIGNAL_MANAGER_MODE=${signalManagerMode ?? 'unset'}`,
+                          },
+                        },
+                        this.env
+                      );
                     }
                   } catch (shadowErr) {
                     console.error('[SIGNAL_LIFECYCLE_SHADOW_ERROR] Non-blocking shadow error:', shadowErr);
@@ -8189,6 +9009,8 @@ export class TradingBot {
               }
             }
           }
+            }
+          );
         } catch (err: any) {
           console.error('Orchestrator cycle failed:', err?.message || err, err?.stack);
         }
@@ -8212,6 +9034,7 @@ export class TradingBot {
       } else if (await this.hasActiveExposure()) {
         await this.state.storage.setAlarm(Date.now() + 60000);
       }
+      flushTelemetry(this.getSafeDoWaitUntil(), this.pipelineEmitter);
     }
   }
 

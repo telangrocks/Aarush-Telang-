@@ -57,3 +57,63 @@ crons = []
 [vars]
 ENVIRONMENT = "production"
 SIGNAL_MANAGER_MODE = "SHADOW"
+
+# Monitoring integration (Cloudflare Free plan, QUEUE-FREE):
+# telemetry is delivered best-effort via the MONITOR_INGEST_SERVICE service binding inside
+# ctx.waitUntil(); no Cloudflare Queues are used. Bindings below are fail-open (trading never
+# depends on them). Production monitoring bindings stay disabled until a production monitoring
+# worker is deliberately provisioned; only [env.staging] is wired today.
+# [[services]]
+# binding = "MONITOR_INGEST_SERVICE"
+# service = "cryptopulse-monitoring-worker"
+#
+# [[services]]
+# binding = "MONITORING_SERVICE"
+# service = "cryptopulse-monitoring-worker"
+
+# ---------------------------------------------------------------------------
+# ISOLATED STAGING (Cloudflare Free plan only). Never shares production D1, DO state or secrets.
+# Secrets (wrangler secret put --env staging): JWT_SECRET, ENCRYPTION_KEY, RESEND_API_KEY,
+# ALLOWED_ORIGINS, ADMIN_API_KEY, INTERNAL_INGEST_SECRET. No exchange credentials are configured.
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "crypto-pulse-backend-staging"
+workers_dev = true
+
+[env.staging.ai]
+binding = "AI"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "crypto_pulse_db_staging"
+database_id = "7c7de835-0df9-4eb5-96be-761573281196"
+migrations_dir = "migrations"
+
+[env.staging.durable_objects]
+bindings = [
+  { name = "TRADING_BOTS", class_name = "TradingBot" },
+  { name = "PUBLIC_MARKET_COORDINATOR", class_name = "PublicMarketDataCoordinator" }
+]
+
+[[env.staging.migrations]]
+tag = "v1"
+new_sqlite_classes = ["TradingBot"]
+
+[[env.staging.migrations]]
+tag = "v2"
+new_sqlite_classes = ["PublicMarketDataCoordinator"]
+
+[env.staging.triggers]
+crons = []
+
+[env.staging.vars]
+ENVIRONMENT = "testnet"
+SIGNAL_MANAGER_MODE = "SHADOW"
+
+[[env.staging.services]]
+binding = "MONITOR_INGEST_SERVICE"
+service = "cryptopulse-monitoring-worker-staging"
+
+[[env.staging.services]]
+binding = "MONITORING_SERVICE"
+service = "cryptopulse-monitoring-worker-staging"

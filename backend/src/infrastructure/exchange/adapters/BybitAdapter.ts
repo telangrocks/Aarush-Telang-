@@ -9,6 +9,7 @@ import { CandleValidator } from '../CandleValidator';
 import { PermissionValidator, WithdrawalVerificationStatus } from '../../security/PermissionValidator';
 import { FRIENDLY_MESSAGES } from '../../../exchanges/errors';
 import BigNumber from 'bignumber.js';
+import { emitStageSpan } from '../../monitoring/PipelineTelemetry';
 
 export class BybitAdapter extends BaseExchangeAdapter {
   readonly exchangeId = 'bybit';
@@ -258,13 +259,29 @@ export class BybitAdapter extends BaseExchangeAdapter {
 
       const safeLogUrl = `${host}${path}${queryString ? '?params=[REDACTED]' : ''}`;
 
+      const latencyMs = Date.now() - startTime;
+      const parseHeaderInt = (name: string): number | undefined => {
+        try {
+          const val = res.headers?.get?.(name);
+          if (!val) return undefined;
+          const n = Number(val);
+          return Number.isFinite(n) ? n : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      const rlRemaining = parseHeaderInt('x-bapi-limit-status');
+      const rlLimit = parseHeaderInt('x-bapi-limit');
+      const rlResetMs = parseHeaderInt('x-bapi-limit-reset-timestamp');
+      const healthChannel = isPrivate ? 'AUTHENTICATED_ACCOUNT' : 'PUBLIC_MARKET_DATA';
+
       this.logger.logExchangeRequest({
         exchange: this.exchangeId,
         endpoint: path,
         requestUrl: safeLogUrl,
         symbol: params.symbol,
         timeframe: params.interval,
-        latencyMs: Date.now() - startTime,
+        latencyMs,
         status: status,
       });
 
@@ -284,11 +301,45 @@ export class BybitAdapter extends BaseExchangeAdapter {
           ));
 
         if (isPrivate && !isRetry && !isOrderMutation && isTimestampDrift) {
+          emitStageSpan({
+            stage: 1,
+            tier: 'TIER_2',
+            eventType: 'BYBIT_TIMESTAMP_RETRY',
+            status: 'WARN',
+            severity: 'WARNING',
+            component: 'BybitAdapter',
+            sourceFile: 'backend/src/infrastructure/exchange/adapters/BybitAdapter.ts',
+            durationMs: latencyMs,
+            symbol: params.symbol,
+            timeframe: params.interval,
+            errorCode: `BYBIT_${retCode}`,
+            attemptNumber: 1,
+            message: `Retrying ${path} after Bybit timestamp drift (retCode=${retCode})`,
+            inputSummary: { endpoint: path, channel: healthChannel },
+            outputSummary: { httpStatus: status, retCode, retryCount: 1, rateLimitRemaining: rlRemaining, rateLimitLimit: rlLimit, rateLimitResetMs: rlResetMs },
+          });
           await this.fetchServerTimeOffset(true);
           return this.makeRequest(method, path, params, isPrivate, true);
         }
 
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
+        emitStageSpan({
+          stage: 1,
+          tier: 'TIER_1',
+          eventType: 'BYBIT_HTTP_ERROR',
+          status: 'FAIL',
+          severity: status === 429 ? 'CRITICAL' : 'ERROR',
+          component: 'BybitAdapter',
+          sourceFile: 'backend/src/infrastructure/exchange/adapters/BybitAdapter.ts',
+          durationMs: latencyMs,
+          symbol: params.symbol,
+          timeframe: params.interval,
+          errorCode: classified.code || `HTTP_${status}`,
+          attemptNumber: isRetry ? 2 : 1,
+          message: parsed.retMsg ? `Bybit [${retCode}]: ${parsed.retMsg}` : `Bybit HTTP ${status} on ${path}`,
+          inputSummary: { endpoint: path, channel: healthChannel },
+          outputSummary: { httpStatus: status, retCode, latencyMs, retryCount: isRetry ? 1 : 0, rateLimitRemaining: rlRemaining, rateLimitLimit: rlLimit, rateLimitResetMs: rlResetMs },
+        });
         const headerObj: Record<string, string> = {};
         if (res.headers && typeof (res.headers as any).forEach === 'function') {
           (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
@@ -346,11 +397,45 @@ export class BybitAdapter extends BaseExchangeAdapter {
           ));
 
         if (isPrivate && !isRetry && !isOrderMutation && isTimestampDrift) {
+          emitStageSpan({
+            stage: 1,
+            tier: 'TIER_2',
+            eventType: 'BYBIT_TIMESTAMP_RETRY',
+            status: 'WARN',
+            severity: 'WARNING',
+            component: 'BybitAdapter',
+            sourceFile: 'backend/src/infrastructure/exchange/adapters/BybitAdapter.ts',
+            durationMs: latencyMs,
+            symbol: params.symbol,
+            timeframe: params.interval,
+            errorCode: `BYBIT_${codeVal}`,
+            attemptNumber: 1,
+            message: `Retrying ${path} after Bybit API code ${codeVal}`,
+            inputSummary: { endpoint: path, channel: healthChannel },
+            outputSummary: { httpStatus: status, retCode: codeVal, retryCount: 1, rateLimitRemaining: rlRemaining, rateLimitLimit: rlLimit, rateLimitResetMs: rlResetMs },
+          });
           await this.fetchServerTimeOffset(true);
           return this.makeRequest(method, path, params, isPrivate, true);
         }
 
         const classified = ExchangeErrorClassifier.getInstance().classifyResponse('bybit', status, res.headers, errText);
+        emitStageSpan({
+          stage: 1,
+          tier: 'TIER_1',
+          eventType: 'BYBIT_API_ERROR',
+          status: 'FAIL',
+          severity: 'ERROR',
+          component: 'BybitAdapter',
+          sourceFile: 'backend/src/infrastructure/exchange/adapters/BybitAdapter.ts',
+          durationMs: latencyMs,
+          symbol: params.symbol,
+          timeframe: params.interval,
+          errorCode: String(codeVal ?? classified.code),
+          attemptNumber: isRetry ? 2 : 1,
+          message: msgVal ? `Bybit [${codeVal}]: ${msgVal}` : `Bybit error on ${path}`,
+          inputSummary: { endpoint: path, channel: healthChannel },
+          outputSummary: { httpStatus: status, retCode: codeVal, latencyMs, retryCount: isRetry ? 1 : 0, rateLimitRemaining: rlRemaining, rateLimitLimit: rlLimit, rateLimitResetMs: rlResetMs },
+        });
         const headerObj: Record<string, string> = {};
         if (res.headers && typeof (res.headers as any).forEach === 'function') {
           (res.headers as any).forEach((v: string, k: string) => { headerObj[k] = v; });
@@ -369,6 +454,33 @@ export class BybitAdapter extends BaseExchangeAdapter {
         (err as any).actualEndpoint = path;
         throw err;
       }
+
+      emitStageSpan({
+        stage: 1,
+        tier: 'TIER_2',
+        eventType: 'BYBIT_HTTP_OK',
+        status: 'PASS',
+        severity: 'INFO',
+        component: 'BybitAdapter',
+        sourceFile: 'backend/src/infrastructure/exchange/adapters/BybitAdapter.ts',
+        durationMs: latencyMs,
+        symbol: params.symbol,
+        timeframe: params.interval,
+        attemptNumber: isRetry ? 2 : 1,
+        message: `${method} ${path} OK (${latencyMs}ms)`,
+        inputSummary: { endpoint: path, channel: healthChannel },
+        outputSummary: {
+          channel: healthChannel,
+          endpoint: path,
+          httpStatus: status,
+          retCode: 0,
+          latencyMs,
+          retryCount: isRetry ? 1 : 0,
+          rateLimitRemaining: rlRemaining,
+          rateLimitLimit: rlLimit,
+          rateLimitResetMs: rlResetMs,
+        },
+      });
 
       return json.result;
     } catch (err: any) {
@@ -634,7 +746,34 @@ export class BybitAdapter extends BaseExchangeAdapter {
       });
     }
 
-    this.logger.info('[BybitAdapter] fetchTickers success', { fetchedCount: tickers.length, latencyMs: Date.now() - startTime });
+    const invalidTickerCount = tickers.filter(
+      (t) =>
+        !t.last ||
+        t.last.lte(0) ||
+        (t.bid && t.ask && t.ask.gt(0) && t.bid.gt(t.ask))
+    ).length;
+    const tickerLatencyMs = Date.now() - startTime;
+    emitStageSpan({
+      stage: 1,
+      tier: 'TIER_2',
+      eventType: 'BYBIT_RAW_TICKERS_VALIDATED',
+      status: tickers.length === 0 || invalidTickerCount === tickers.length ? 'WARN' : invalidTickerCount > 0 ? 'WARN' : 'PASS',
+      severity: tickers.length === 0 ? 'WARNING' : 'INFO',
+      component: 'BybitAdapter',
+      sourceFile: 'backend/src/infrastructure/exchange/adapters/BybitAdapter.ts',
+      durationMs: tickerLatencyMs,
+      message: `Validated ${tickers.length} raw Bybit tickers (${invalidTickerCount} invalid)`,
+      inputSummary: { endpoint: '/v5/market/tickers', channel: 'PUBLIC_MARKET_DATA', instrumentsRequested: symbols?.length || 0 },
+      outputSummary: {
+        channel: 'PUBLIC_MARKET_DATA',
+        instrumentsRequested: symbols?.length || 0,
+        instrumentsReceived: tickers.length,
+        invalidCount: invalidTickerCount,
+        latencyMs: tickerLatencyMs,
+      },
+    });
+
+    this.logger.info('[BybitAdapter] fetchTickers success', { fetchedCount: tickers.length, latencyMs: tickerLatencyMs });
     return tickers;
   }
 

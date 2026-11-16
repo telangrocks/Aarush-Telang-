@@ -21,6 +21,7 @@ import { ExecutionEligibilityGate } from './ExecutionEligibilityGate';
 import { MetricsEngine } from '../../telemetry/MetricsEngine';
 import { StructuredLogger } from '../../infrastructure/telemetry/Telemetry';
 import { isExcludedAsset } from '../../domain/trading/AssetClassification';
+import { emitStageSpan, getTelemetryContext, runWithTelemetryContext } from '../../infrastructure/monitoring/PipelineTelemetry';
 
 export interface ScannerScanResult {
   readonly timestamp: number;
@@ -80,6 +81,25 @@ export class MarketOpportunityScanner {
     const startTime = performance.now();
     const cycleTimestamp = Date.now();
     const cycleId = crypto.randomUUID();
+    const existingCtx = getTelemetryContext();
+    const discoveryCycleId = existingCtx?.discoveryCycleId || `DSC-${cycleTimestamp}-${cycleId.slice(0, 8)}`;
+
+    return runWithTelemetryContext(
+      {
+        journey: existingCtx?.journey || 'JOURNEY_A_DISCOVERY',
+        discoveryCycleId,
+      },
+      async () => this.performScanInternal(startTime, cycleTimestamp, cycleId, discoveryCycleId, options)
+    );
+  }
+
+  private async performScanInternal(
+    startTime: number,
+    cycleTimestamp: number,
+    cycleId: string,
+    discoveryCycleId: string,
+    options?: { markets?: any[]; tickers?: any[]; tradeAmountUsdt?: number; orderType?: string }
+  ): Promise<ScannerScanResult> {
 
     // ─────────────────────────────────────────────────────────────────────────
     // STAGE 0: Universe Ingestion (Complete Bybit Linear Universe)
@@ -303,6 +323,8 @@ export class MarketOpportunityScanner {
     // Reduce quality candidates down to affordable candidates FIRST
     // ─────────────────────────────────────────────────────────────────────────
     let affordableCandidates: typeof qualityCandidates = [];
+    let s2EmittedCount = 0;
+    let s2RejectedCount = 0;
     if (options?.tradeAmountUsdt !== undefined) {
       if (typeof options.tradeAmountUsdt !== 'number' || !Number.isFinite(options.tradeAmountUsdt) || options.tradeAmountUsdt <= 0) {
         affordableCandidates = [];
@@ -317,12 +339,66 @@ export class MarketOpportunityScanner {
             minNotional: quality.minNotionalUsdt,
             maxOrderQty: quality.maxOrderQty,
           });
+          if (!eligibility.isExecutable) s2RejectedCount += 1;
+          if (s2EmittedCount < 25) {
+            s2EmittedCount += 1;
+            emitStageSpan({
+              journey: 'JOURNEY_A_DISCOVERY',
+              discoveryCycleId,
+              stage: 2,
+              tier: 'TIER_2',
+              eventType: eligibility.isExecutable ? 'TICKER_ELIGIBLE' : 'TICKER_REJECTED',
+              status: 'PASS',
+              severity: 'INFO',
+              symbol: market.symbol,
+              component: 'ExecutionEligibilityGate',
+              sourceFile: 'backend/src/engine/scanner/MarketOpportunityScanner.ts',
+              message: eligibility.isExecutable
+                ? `${market.symbol} eligible at budget $${options.tradeAmountUsdt}`
+                : `${market.symbol} rejected: ${eligibility.rejectionReason || 'INELIGIBLE'}`,
+              inputSummary: {
+                allocatedBudgetUsdt: options.tradeAmountUsdt,
+                lastPrice: px,
+                minOrderQty: quality.minOrderQty,
+                minNotionalValue: quality.minNotionalUsdt,
+                qtyStep: quality.qtyStep,
+                volume24h: quality.turnover24hUsdt,
+                spreadPct: quality.bidAskSpreadPercent,
+              },
+              outputSummary: {
+                eligible: eligibility.isExecutable,
+                computedQty: eligibility.quantizedQty,
+                computedNotional: eligibility.postRoundingNotional,
+                rejectionReason: eligibility.rejectionReason,
+              },
+            });
+          }
           return eligibility.isExecutable;
         });
       }
     } else {
       affordableCandidates = qualityCandidates;
     }
+
+    emitStageSpan({
+      journey: 'JOURNEY_A_DISCOVERY',
+      discoveryCycleId,
+      stage: 2,
+      tier: 'TIER_2',
+      eventType: 'STAGE2_FILTER_SUMMARY',
+      status: affordableCandidates.length === 0 ? 'WARN' : 'PASS',
+      severity: affordableCandidates.length === 0 ? 'WARNING' : 'INFO',
+      component: 'MarketOpportunityScanner',
+      sourceFile: 'backend/src/engine/scanner/MarketOpportunityScanner.ts',
+      message: `Universe=${universeSize}, Eligible=${eligibleCount}, Quality=${qualityCount}, Affordable=${affordableCandidates.length}`,
+      outputSummary: {
+        instrumentsReceived: universeSize,
+        eligibleCount,
+        qualityCount,
+        acceptedCount: affordableCandidates.length,
+        rejectedCount: s2RejectedCount,
+      },
+    });
 
     // ─────────────────────────────────────────────────────────────────────────
     // STAGE 3 & 4: Staged Multi-Timeframe Retrieval & Technical Analysis
@@ -353,6 +429,23 @@ export class MarketOpportunityScanner {
             const candles4h = mtfSnapshot.timeframes['4h']?.candles || [];
 
             if (candles1h.length < 20 || candles15m.length < 20 || candles5m.length < 20) {
+              emitStageSpan({
+                journey: 'JOURNEY_A_DISCOVERY',
+                discoveryCycleId,
+                stage: 4,
+                tier: 'TIER_2',
+                eventType: 'TA_COMPUTED',
+                status: 'SKIPPED',
+                severity: 'WARNING',
+                symbol,
+                timeframe: '1h',
+                component: 'MarketOpportunityScanner',
+                sourceFile: 'backend/src/engine/scanner/MarketOpportunityScanner.ts',
+                errorCode: 'INSUFFICIENT_BARS',
+                message: `Skipped scanner TA for ${symbol}: insufficient candle bars (1h=${candles1h.length}, 15m=${candles15m.length}, 5m=${candles5m.length})`,
+                inputSummary: { candlesCount: Math.min(candles1h.length, candles15m.length, candles5m.length), minRequiredBars: 20, indicatorEngine: 'SCANNER_SIMPLE' },
+                outputSummary: { timeframe: '1h', indicatorEngine: 'SCANNER_SIMPLE', skipReason: 'INSUFFICIENT_BARS' },
+              });
               return null;
             }
 
@@ -441,6 +534,34 @@ export class MarketOpportunityScanner {
               atr1m: atr14_5m / 2.2, // estimated 1m ATR from 5m ATR
               expectedTargetPercent,
               turnover1mUsdt: quality.turnover24hUsdt / 1440,
+            });
+
+            emitStageSpan({
+              journey: 'JOURNEY_A_DISCOVERY',
+              discoveryCycleId,
+              stage: 4,
+              tier: 'TIER_2',
+              eventType: 'TA_COMPUTED',
+              status: 'PASS',
+              severity: 'INFO',
+              symbol,
+              timeframe: '1h',
+              candleDatasetId: `scan:${symbol}:1h:${candles1h.length}`,
+              component: 'MarketOpportunityScanner',
+              sourceFile: 'backend/src/engine/scanner/MarketOpportunityScanner.ts',
+              message: `Scanner TA (${symbol} 1h): RSI=${rsi14_1h.toFixed(1)}, ADX=${adx14.toFixed(1)}, Regime=${regimeBase.regime}`,
+              inputSummary: { candlesCount: candles1h.length, minRequiredBars: 20, indicatorEngine: 'SCANNER_SIMPLE' },
+              outputSummary: {
+                timeframe: '1h',
+                indicatorEngine: 'SCANNER_SIMPLE',
+                rsi: rsi14_1h,
+                ema21: ema20_1h,
+                ema50: ema50_1h,
+                adx: adx14,
+                atr: atr14_1h,
+                volumeRatio: volumeRatio5m,
+                regime: regimeBase.regime,
+              },
             });
 
             // ─────────────────────────────────────────────────────────────────

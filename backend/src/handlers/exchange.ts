@@ -26,6 +26,7 @@ import { PublicMarketDataService } from "../infrastructure/market-data/PublicMar
 import { isExcludedAsset } from "../domain/trading/AssetClassification";
 import { extractUsdtBalance } from "../utils/balance";
 import { ApprovedCandidateRecord, normalizeCanonicalSymbol } from "../trading-bot";
+import { emitStageSpan, runWithTelemetryContext } from "../infrastructure/monitoring/PipelineTelemetry";
 
 const DISCOVERY_CACHE = new LruTtlCache<string, any[]>(500, 30000);
 const CACHE_TTL_MS = 30000;
@@ -1401,6 +1402,17 @@ export async function handleGetPersonalizedMarketCandidates(
       }
     }
 
+    const discoveryCycleId = `DSC-${Date.now()}-${correlationId.slice(0, 8)}`;
+    return await runWithTelemetryContext(
+      {
+        journey: "JOURNEY_A_DISCOVERY",
+        discoveryCycleId,
+        approvalGeneration,
+        userId,
+        environment: canonicalEnv,
+      },
+      async () => {
+
     // Stage 4: Secret omitted/not configured (Public Market Discovery requires 0 credential decryption)
     currentStage = "4. Secret decrypted";
     console.log("[DIAGNOSTIC] Stage 4: Secret omitted/not configured");
@@ -1832,6 +1844,26 @@ export async function handleGetPersonalizedMarketCandidates(
             c.status(500);
             return c.json({ success: false, error: "Failed to persist final candidate approval to trading session." });
           }
+          emitStageSpan({
+            journey: "JOURNEY_A_DISCOVERY",
+            discoveryCycleId,
+            approvalGeneration,
+            stage: 2,
+            tier: "TIER_1",
+            eventType: "DISCOVERY_APPROVED_HANDOFF",
+            status: "PASS",
+            severity: "INFO",
+            userId,
+            component: "handleGetPersonalizedMarketCandidates",
+            sourceFile: "backend/src/handlers/exchange.ts",
+            message: `Committed FINAL_APPROVED generation=${approvalGeneration} (${finalSymbols.length} symbol keys)`,
+            outputSummary: {
+              approvalGeneration,
+              approvedCount: finalSymbols.length,
+              acceptedCount: candidates.length,
+              allocatedBudgetUsdt: userAllocation,
+            },
+          });
         } catch (finalErr) {
           c.status(500);
           return c.json({ success: false, error: "Failed to commit final candidate approval." });
@@ -1851,6 +1883,8 @@ export async function handleGetPersonalizedMarketCandidates(
       DISCOVERY_CACHE.set(cacheKey, candidates);
     }
     return c.json(candidates);
+      }
+    );
 
   } catch (fatalErr: any) {
     console.error(`[DIAGNOSTIC] Stage '${currentStage}' FATAL UNCAUGHT EXCEPTION:`, fatalErr?.message, fatalErr?.stack);
@@ -1964,7 +1998,11 @@ export async function handleGetMarketOpportunities(
       return formatOpportunitiesResponse(c, structuredClone(cached.data));
     }
 
-    const scanResult = await OPPORTUNITY_SINGLE_FLIGHT.do(publicCacheKey, async () => {
+    const discoveryCycleId = `OPP-${Date.now()}-${correlationId.slice(0, 8)}`;
+    const scanResult = await runWithTelemetryContext(
+      { journey: "JOURNEY_A_DISCOVERY", discoveryCycleId, userId, environment },
+      () =>
+        OPPORTUNITY_SINGLE_FLIGHT.do(publicCacheKey, async () => {
       const freshCached = SHARED_OPPORTUNITY_CACHE.get(publicCacheKey);
       if (freshCached && Date.now() - freshCached.timestamp < OPPORTUNITY_CACHE_TTL_MS) {
         return freshCached.data;
@@ -2029,7 +2067,8 @@ export async function handleGetMarketOpportunities(
       const immutableResult = deepFreezeObject(structuredClone(result));
       SHARED_OPPORTUNITY_CACHE.set(publicCacheKey, { timestamp: Date.now(), data: immutableResult });
       return immutableResult;
-    });
+        })
+    );
 
     return formatOpportunitiesResponse(c, structuredClone(scanResult));
   } catch (fatalErr: any) {

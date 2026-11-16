@@ -10,6 +10,11 @@ import { handleDlqBatch, handleQueueBatch, ingestEnvelope, pruneExpiredTelemetry
 import { handleMonitorQueryV2 } from './query-api';
 import { MonitoringEnv, TelemetryQueueBatch } from './types';
 
+/** Queue-free Free-plan delivery mode (best-effort, bounded, not durable). */
+export const TELEMETRY_DELIVERY_MODE = 'BEST_EFFORT_SERVICE_BINDING_WAITUNTIL';
+const MAX_INGEST_BODY_BYTES = 256 * 1024;
+const MAX_INGEST_EVENTS_PER_BATCH = 100;
+
 function jsonResponse(
   data: unknown,
   status: number,
@@ -78,33 +83,58 @@ export async function handleMonitorFetch(request: Request, env: MonitoringEnv): 
 
   if (url.pathname === '/health') {
     return jsonResponse(
-      { ok: true, service: 'cryptopulse-monitoring-worker', readOnly: true, timestampMs: Date.now() },
+      {
+        ok: true,
+        service: 'cryptopulse-monitoring-worker',
+        readOnly: true,
+        environment: env.ENVIRONMENT || null,
+        deliveryMode: TELEMETRY_DELIVERY_MODE,
+        queueStatus: 'NOT_APPLICABLE',
+        durableDelivery: false,
+        timestampMs: Date.now(),
+      },
       200,
       corsHeaders
     );
   }
 
-  // Worker-to-Worker Service Binding HTTP fallback ingest
+  // Queue-free (Cloudflare Free plan) best-effort ingest via Worker-to-Worker Service Binding
   if (url.pathname === '/internal/ingest' && request.method === 'POST') {
     if (request.headers.get('Origin')) {
       return jsonResponse({ error: 'Forbidden' }, 403, corsHeaders);
     }
-    if (env.REQUIRE_INTERNAL_SECRET === 'true' && env.INTERNAL_INGEST_SECRET) {
+    if (env.REQUIRE_INTERNAL_SECRET === 'true') {
+      // Fail closed: when the secret is required but not configured, reject rather than accept anonymous writes.
+      if (!env.INTERNAL_INGEST_SECRET) {
+        return jsonResponse({ error: 'Ingest secret not configured' }, 503, corsHeaders);
+      }
       const provided = request.headers.get('X-Internal-Ingest-Secret') || '';
       if (!timingSafeEqualAscii(provided, env.INTERNAL_INGEST_SECRET)) {
         return jsonResponse({ error: 'Unauthorized' }, 401, corsHeaders);
       }
     }
 
+    const declaredLength = Number(request.headers.get('Content-Length') || '0');
+    if (declaredLength > MAX_INGEST_BODY_BYTES) {
+      return jsonResponse({ error: 'Payload Too Large' }, 413, corsHeaders);
+    }
+
     try {
-      const envelope = (await request.json()) as TelemetryQueueEnvelope;
+      const raw = await request.text();
+      if (raw.length > MAX_INGEST_BODY_BYTES) {
+        return jsonResponse({ error: 'Payload Too Large' }, 413, corsHeaders);
+      }
+      const envelope = JSON.parse(raw) as TelemetryQueueEnvelope;
       if (!envelope || !Array.isArray(envelope.events)) {
         return jsonResponse({ error: 'Invalid telemetry envelope' }, 400, corsHeaders);
       }
+      if (envelope.events.length > MAX_INGEST_EVENTS_PER_BATCH) {
+        return jsonResponse({ error: 'Too many events in batch' }, 413, corsHeaders);
+      }
       const outcome = await ingestEnvelope(env.MONITORING_DB, envelope);
-      return jsonResponse({ ok: true, outcome }, 200, corsHeaders);
+      return jsonResponse({ ok: true, deliveryMode: TELEMETRY_DELIVERY_MODE, outcome }, 200, corsHeaders);
     } catch (err: any) {
-      return jsonResponse({ ok: false, error: err?.message || 'ingest_error' }, 500, corsHeaders);
+      return jsonResponse({ ok: false, error: scrubSensitiveString(err?.message || 'ingest_error').slice(0, 200) }, 500, corsHeaders);
     }
   }
 

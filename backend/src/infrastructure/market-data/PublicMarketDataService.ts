@@ -10,6 +10,7 @@ import { CandleValidator } from '../exchange/CandleValidator';
 import { StructuredLogger } from '../telemetry/Telemetry';
 import { RetryPolicy } from '../orchestrator/RetryPolicy';
 import { buildTickerLookupMap, findTickerBySymbol } from './PublicMarketDataCoordinator';
+import { emitStageSpan } from '../monitoring/PipelineTelemetry';
 
 /**
  * PublicMarketDataService:
@@ -168,11 +169,25 @@ export class PublicMarketDataService {
     environment: ExchangeEnvironment = 'mainnet',
     region: ExchangeRegion = 'india'
   ): Promise<any[]> {
+    const t0 = Date.now();
     const l1Key = `${exchange}:${environment}:${region}:tickers`;
 
     // Tier 1: L1 Memory
     const l1Cached = this.tickersCache.get(l1Key);
-    if (l1Cached) return l1Cached;
+    if (l1Cached) {
+      emitStageSpan({
+        stage: 1,
+        tier: 'TIER_3',
+        eventType: 'PUBLIC_MARKET_DATA_CACHE',
+        status: 'PASS',
+        component: 'PublicMarketDataService',
+        sourceFile: 'backend/src/infrastructure/market-data/PublicMarketDataService.ts',
+        durationMs: Date.now() - t0,
+        message: `Tickers L1 cache hit (${l1Cached.length})`,
+        outputSummary: { channel: 'PUBLIC_MARKET_DATA', cacheTier: 'L1_MEMORY', instrumentsReceived: l1Cached.length },
+      }, env);
+      return l1Cached;
+    }
 
     return this.coalescer.do(l1Key, async () => {
       const freshL1 = this.tickersCache.get(l1Key);
@@ -183,6 +198,17 @@ export class PublicMarketDataService {
       const l2Cached = await this.readL2Cache<any[]>(l2Url);
       if (l2Cached && Array.isArray(l2Cached) && l2Cached.length > 0) {
         this.cacheTickersInL1(l1Key, l2Cached);
+        emitStageSpan({
+          stage: 1,
+          tier: 'TIER_3',
+          eventType: 'PUBLIC_MARKET_DATA_CACHE',
+          status: 'PASS',
+          component: 'PublicMarketDataService',
+          sourceFile: 'backend/src/infrastructure/market-data/PublicMarketDataService.ts',
+          durationMs: Date.now() - t0,
+          message: `Tickers L2 cache hit (${l2Cached.length})`,
+          outputSummary: { channel: 'PUBLIC_MARKET_DATA', cacheTier: 'L2_EDGE', instrumentsReceived: l2Cached.length },
+        }, env);
         return l2Cached;
       }
 
@@ -216,6 +242,17 @@ export class PublicMarketDataService {
         const data = await resp.json() as any[];
         this.cacheTickersInL1(l1Key, data);
         await this.writeL2Cache(l2Url, data, 3); // 3s L2 TTL
+        emitStageSpan({
+          stage: 1,
+          tier: 'TIER_2',
+          eventType: 'PUBLIC_MARKET_DATA_CACHE',
+          status: 'PASS',
+          component: 'PublicMarketDataService',
+          sourceFile: 'backend/src/infrastructure/market-data/PublicMarketDataService.ts',
+          durationMs: Date.now() - t0,
+          message: `Tickers fetched via Coordinator L3 (${data.length})`,
+          outputSummary: { channel: 'COORDINATOR_STATS', cacheTier: 'L3_COORDINATOR', instrumentsReceived: data.length },
+        }, env);
         return data;
       }
 
@@ -224,6 +261,17 @@ export class PublicMarketDataService {
       const tickers = await this.retryPolicy.execute(() => adapter.fetchTickers());
       this.cacheTickersInL1(l1Key, tickers);
       await this.writeL2Cache(l2Url, tickers, 3);
+      emitStageSpan({
+        stage: 1,
+        tier: 'TIER_2',
+        eventType: 'PUBLIC_MARKET_DATA_CACHE',
+        status: 'PASS',
+        component: 'PublicMarketDataService',
+        sourceFile: 'backend/src/infrastructure/market-data/PublicMarketDataService.ts',
+        durationMs: Date.now() - t0,
+        message: `Tickers fetched via direct adapter fallback (${tickers.length})`,
+        outputSummary: { channel: 'PUBLIC_MARKET_DATA', cacheTier: 'DIRECT_FALLBACK', instrumentsReceived: tickers.length },
+      }, env);
       return tickers;
     });
   }

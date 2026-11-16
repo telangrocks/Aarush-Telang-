@@ -199,6 +199,7 @@ export class PublicMarketDataCoordinator {
         }
 
         case '/stats': {
+          const nowMs = Date.now();
           return Response.json({
             exchangeName: this.exchangeName,
             environment: this.environment,
@@ -209,6 +210,14 @@ export class PublicMarketDataCoordinator {
             candleStoreSize: this.candleStore.size(),
             opportunitiesCached: this.cachedOpportunities !== null,
             coalescerStats: this.coalescer.getStats(),
+            monitoringMetrics: {
+              lastMarketsFetchedAtMs: this.cachedMarkets?.timestamp ?? null,
+              lastTickersFetchedAtMs: this.cachedTickers?.timestamp ?? null,
+              marketsAgeMs: this.cachedMarkets ? nowMs - this.cachedMarkets.timestamp : null,
+              tickersAgeMs: this.cachedTickers ? nowMs - this.cachedTickers.timestamp : null,
+              marketsCount: this.cachedMarkets?.data?.length ?? 0,
+              tickersCount: this.cachedTickers?.data?.length ?? 0,
+            },
           });
         }
 

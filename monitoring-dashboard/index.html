@@ -95,8 +95,12 @@
         <strong id="sh-lag" class="mono">— / — ms</strong>
       </div>
       <div class="sh-item">
-        <span class="sh-label">DLQ / D1 Errors</span>
-        <strong id="sh-errors" class="mono">0 / 0</strong>
+        <span class="sh-label">Ingest Failed / Dropped (producer-reported) / D1 Errors</span>
+        <strong id="sh-errors" class="mono">0 / 0 / 0</strong>
+      </div>
+      <div class="sh-item">
+        <span class="sh-label">Delivery Mode / Queue</span>
+        <strong id="sh-delivery" class="mono" title="Cloudflare Free plan: queue-free best-effort delivery via service binding + waitUntil. Not durable; lost batches cannot always be counted.">BEST-EFFORT (NOT DURABLE) / QUEUE: N/A</strong>
       </div>
       <div class="sh-item">
         <span class="sh-label">Last Polled</span>
@@ -371,7 +375,7 @@
             <h3>Section G — Stage 8/9 Backend FCM vs Android Parity &amp; Read-Only Incidents</h3>
             <p class="panel-desc">Compares dispatched FCM payload against Android receipt, dedup, OS pre/post check (honest ELIGIBLE_OS_UNPROVABLE), and popup render fields.</p>
           </div>
-          <span id="android-validation-badge" class="badge badge-warn">ANDROID BUILD/UNIT TESTS: UNVERIFIED (JDK 21 REQUIRED)</span>
+          <span id="android-validation-badge" class="badge badge-warn" title="Debug APK build and JVM unit tests pass locally (243 tests). Some unit test batches and real-device FCM delivery/heads-up/popup rendering are not verified.">ANDROID APK BUILD &amp; 243 UNIT TESTS PASS; PHYSICAL-DEVICE DELIVERY UNVERIFIED</span>
         </div>
 
         <div id="parity-summary-strip" class="summary-chips"></div>

@@ -1,6 +1,7 @@
 import { Context } from "hono";
 import { Env } from "../index";
 import { BackendDiagnosticSink } from "../telemetry/BackendDiagnosticSink";
+import { emitStageSpan } from "../infrastructure/monitoring/PipelineTelemetry";
 
 export type DispatchOutcome = 'SUCCESS' | 'PRE_DISPATCH_FAILURE' | 'EXPLICIT_REJECTION' | 'AMBIGUOUS';
 
@@ -10,6 +11,112 @@ export interface FcmDispatchResult {
   httpStatus: number;
   errorCode?: string | null;
   error?: string;
+  messageId?: string | null;
+}
+
+async function extractFcmMessageId(response: Response): Promise<string | undefined> {
+  try {
+    const cloned = typeof response.clone === 'function' ? response.clone() : response;
+    if (typeof (cloned as any).json === 'function') {
+      const json = await (cloned as any).json() as { name?: unknown };
+      if (json && typeof json.name === 'string' && json.name.length > 0) {
+        return json.name;
+      }
+    }
+  } catch {
+    // Non-JSON or mocked response without .json()
+  }
+  return undefined;
+}
+
+function emitStage8NotificationSpan(params: {
+  env: Env;
+  userId: string;
+  alertId: string;
+  orderId?: string;
+  notificationType: 'TRADE_ALERT' | 'TRADE_SUBMITTED' | 'TRADE_FILLED';
+  symbol: string;
+  side: string;
+  strategy: string;
+  timeframe?: string;
+  price: number;
+  stopLoss?: number;
+  takeProfit?: number;
+  estimatedPnl?: number | null;
+  requestedTtlSec?: number;
+  isExecutable?: boolean;
+  transport: 'fcm_v1' | 'fcm_legacy' | 'none';
+  httpStatus: number;
+  success: boolean;
+  fcmMessageId?: string;
+  errorCode?: string | null;
+  errorMessage?: string;
+  durationMs: number;
+}): void {
+  const eventType = params.success
+    ? params.notificationType === 'TRADE_ALERT'
+      ? 'FCM_ALERT_DISPATCHED'
+      : params.notificationType === 'TRADE_SUBMITTED'
+        ? 'FCM_SUBMITTED_DISPATCHED'
+        : 'FCM_FILL_DISPATCHED'
+    : 'FCM_DISPATCH_FAILED';
+  const hasTimeframe = Boolean(params.timeframe && params.timeframe.trim().length > 0);
+  const hasPlaceholderPnl3 =
+    params.notificationType === 'TRADE_ALERT'
+      ? params.estimatedPnl === 3
+      : params.estimatedPnl == null || params.estimatedPnl === 0 || params.estimatedPnl === 3;
+
+  emitStageSpan(
+    {
+      stage: 8,
+      tier: 'TIER_1',
+      eventType,
+      status: params.success ? 'PASS' : 'FAIL',
+      severity: params.success ? 'INFO' : 'ERROR',
+      component: 'notifications',
+      sourceFile: 'backend/src/handlers/notifications.ts',
+      userId: params.userId,
+      symbol: params.symbol,
+      strategyId: params.strategy || undefined,
+      timeframe: params.timeframe || undefined,
+      alertId: params.alertId,
+      orderId: params.orderId || undefined,
+      fcmMessageId: params.fcmMessageId,
+      durationMs: params.durationMs,
+      errorCode: params.errorCode ?? undefined,
+      message: params.success
+        ? `${params.notificationType} dispatched via ${params.transport} for ${params.symbol}`
+        : `${params.notificationType} dispatch failed (${params.errorCode || `HTTP_${params.httpStatus}`}) for ${params.symbol}`,
+      inputSummary: {
+        notificationType: params.notificationType,
+        symbol: params.symbol,
+        side: params.side,
+        strategy: params.strategy,
+        timeframe: params.timeframe ?? null,
+        requestedTtlSec: params.requestedTtlSec ?? null,
+        transport: params.transport,
+      },
+      outputSummary: {
+        notificationType: params.notificationType,
+        fcmMessageId: params.fcmMessageId ?? null,
+        fcmHttpStatus: params.httpStatus,
+        fcmDispatchStatus: params.success ? 'SENT' : 'FAILED',
+        transport: params.transport,
+        symbol: params.symbol,
+        strategyId: params.strategy || null,
+        timeframe: params.timeframe ?? null,
+        price: params.price,
+        stopLoss: params.stopLoss ?? null,
+        takeProfit: params.takeProfit ?? null,
+        ttlSeconds: params.requestedTtlSec ?? null,
+        isExecutable: params.isExecutable ?? null,
+        hasTimeframe,
+        hasPlaceholderPnl3,
+        errorMessage: params.errorMessage ?? null,
+      },
+    },
+    params.env
+  );
 }
 
 export interface FcmTokenPayload {
@@ -189,6 +296,35 @@ export async function sendTradeFillNotification(
   const fcmToken = user?.fcm_token;
   const alertId = fillDetails.alertId;
   const orderId = fillDetails.orderId || "";
+  const isSubmitted = fillDetails.actionType === "TRADE_SUBMITTED";
+  const eventType: "TRADE_SUBMITTED" | "TRADE_FILLED" = isSubmitted ? "TRADE_SUBMITTED" : "TRADE_FILLED";
+
+  const emitFillStage8 = (params: {
+    transport: 'fcm_v1' | 'fcm_legacy' | 'none';
+    httpStatus: number;
+    success: boolean;
+    fcmMessageId?: string;
+    errorCode?: string | null;
+    errorMessage?: string;
+    durationMs: number;
+  }) => {
+    emitStage8NotificationSpan({
+      env,
+      userId,
+      alertId,
+      orderId,
+      notificationType: eventType,
+      symbol: fillDetails.symbol,
+      side: fillDetails.side,
+      strategy: fillDetails.strategy || '',
+      timeframe: (fillDetails as { timeframe?: string }).timeframe,
+      price: fillDetails.entryPrice,
+      stopLoss: fillDetails.stopLoss,
+      takeProfit: fillDetails.takeProfit,
+      estimatedPnl: fillDetails.estimatedPnl ?? null,
+      ...params,
+    });
+  };
 
   if (!fcmToken) {
     sink?.emit({
@@ -210,18 +346,23 @@ export async function sendTradeFillNotification(
         errorCode: "MISSING_FCM_TOKEN",
       }
     });
+    emitFillStage8({
+      transport: 'none',
+      httpStatus: 0,
+      success: false,
+      errorCode: 'MISSING_FCM_TOKEN',
+      errorMessage: 'User has no registered FCM token',
+      durationMs: 0,
+    });
     return;
   }
 
-  const isSubmitted = fillDetails.actionType === "TRADE_SUBMITTED";
   const title = isSubmitted
     ? `Order Submitted: ${fillDetails.side} ${fillDetails.symbol}`
     : `Order Filled: ${fillDetails.side} ${fillDetails.symbol}`;
   const body = isSubmitted
     ? `${fillDetails.side} ${fillDetails.symbol} order submitted at $${fillDetails.entryPrice.toFixed(4)}`
     : `${fillDetails.side} ${fillDetails.symbol} filled at $${fillDetails.entryPrice.toFixed(4)} | Strategy: ${fillDetails.strategy || 'Autonomous'}`;
-
-  const eventType = isSubmitted ? "TRADE_SUBMITTED" : "TRADE_FILLED";
 
   const dataPayload: Record<string, string> = {
     type: eventType,
@@ -309,7 +450,16 @@ export async function sendTradeFillNotification(
             errorCode: "HTTP_ERROR"
           }
         });
+        emitFillStage8({
+          transport: 'fcm_v1',
+          httpStatus: response.status,
+          success: false,
+          errorCode: `HTTP_${response.status}`,
+          errorMessage: errorText,
+          durationMs,
+        });
       } else {
+        const fcmMessageId = await extractFcmMessageId(response);
         console.log(`FCM v1 fill notification sent successfully to user ${userId}`);
         sink?.emit({
           userId,
@@ -330,8 +480,17 @@ export async function sendTradeFillNotification(
             errorCode: null
           }
         });
+        emitFillStage8({
+          transport: 'fcm_v1',
+          httpStatus: response.status,
+          success: true,
+          fcmMessageId,
+          errorCode: null,
+          durationMs,
+        });
       }
     } catch (err) {
+      const durationMs = Date.now() - startMs;
       console.error("FCM v1 fill notification failed:", err);
       sink?.emit({
         userId,
@@ -342,7 +501,7 @@ export async function sendTradeFillNotification(
         correlationId: alertId,
         symbol: fillDetails.symbol,
         strategyId: fillDetails.strategy,
-        durationMs: Date.now() - startMs,
+        durationMs,
         payload: {
           alertId,
           orderId,
@@ -351,6 +510,14 @@ export async function sendTradeFillNotification(
           httpStatus: 0,
           errorCode: "NETWORK_ERROR"
         }
+      });
+      emitFillStage8({
+        transport: 'fcm_v1',
+        httpStatus: 0,
+        success: false,
+        errorCode: 'NETWORK_ERROR',
+        errorMessage: err instanceof Error ? err.message : String(err),
+        durationMs,
       });
     }
     return;
@@ -400,6 +567,14 @@ export async function sendTradeFillNotification(
             errorCode: "HTTP_ERROR"
           }
         });
+        emitFillStage8({
+          transport: 'fcm_legacy',
+          httpStatus: response.status,
+          success: false,
+          errorCode: `HTTP_${response.status}`,
+          errorMessage: errorText,
+          durationMs,
+        });
       } else {
         sink?.emit({
           userId,
@@ -420,8 +595,16 @@ export async function sendTradeFillNotification(
             errorCode: null
           }
         });
+        emitFillStage8({
+          transport: 'fcm_legacy',
+          httpStatus: response.status,
+          success: true,
+          errorCode: null,
+          durationMs,
+        });
       }
     } catch (error) {
+      const durationMs = Date.now() - startMs;
       console.error("FCM Legacy fill notification failed:", error);
       sink?.emit({
         userId,
@@ -432,7 +615,7 @@ export async function sendTradeFillNotification(
         correlationId: alertId,
         symbol: fillDetails.symbol,
         strategyId: fillDetails.strategy,
-        durationMs: Date.now() - startMs,
+        durationMs,
         payload: {
           alertId,
           orderId,
@@ -441,6 +624,14 @@ export async function sendTradeFillNotification(
           httpStatus: 0,
           errorCode: "NETWORK_ERROR"
         }
+      });
+      emitFillStage8({
+        transport: 'fcm_legacy',
+        httpStatus: 0,
+        success: false,
+        errorCode: 'NETWORK_ERROR',
+        errorMessage: error instanceof Error ? error.message : String(error),
+        durationMs,
       });
     }
     return;
@@ -465,6 +656,14 @@ export async function sendTradeFillNotification(
       httpStatus: 0,
       errorCode: "NO_FCM_CREDENTIALS"
     }
+  });
+  emitFillStage8({
+    transport: 'none',
+    httpStatus: 0,
+    success: false,
+    errorCode: 'NO_FCM_CREDENTIALS',
+    errorMessage: 'Neither FCM v1 nor FCM Legacy credentials configured',
+    durationMs: Date.now() - startMs,
   });
 }
 
@@ -535,6 +734,35 @@ export async function sendTradeNotification(
       };
     }
 
+    let fcmIsExecutable = Boolean(opportunity.isExecutable);
+    const emitAlertStage8 = (params: {
+      transport: 'fcm_v1' | 'fcm_legacy' | 'none';
+      httpStatus: number;
+      success: boolean;
+      fcmMessageId?: string;
+      errorCode?: string | null;
+      errorMessage?: string;
+      durationMs: number;
+    }) => {
+      emitStage8NotificationSpan({
+        env,
+        userId,
+        alertId,
+        notificationType: 'TRADE_ALERT',
+        symbol: opportunity.symbol,
+        side: opportunity.side,
+        strategy: opportunity.strategy,
+        timeframe: opportunity.timeframe,
+        price: opportunity.entryPrice,
+        stopLoss: opportunity.stopLoss,
+        takeProfit: opportunity.takeProfit,
+        estimatedPnl: opportunity.estimatedPnl ?? null,
+        requestedTtlSec: remainingTtlSec,
+        isExecutable: fcmIsExecutable,
+        ...params,
+      });
+    };
+
     if (!fcmToken) {
       clearTimeout(timeoutHandle);
       sink?.emit({
@@ -554,6 +782,14 @@ export async function sendTradeNotification(
           httpStatus: 0,
           errorCode: "MISSING_FCM_TOKEN",
         }
+      });
+      emitAlertStage8({
+        transport: 'none',
+        httpStatus: 0,
+        success: false,
+        errorCode: 'MISSING_FCM_TOKEN',
+        errorMessage: 'User has no registered FCM token',
+        durationMs: Date.now() - startMs,
       });
       return {
         success: false,
@@ -597,7 +833,7 @@ export async function sendTradeNotification(
       dataPayload.positionSize = opportunity.positionSize.toString();
     }
     // Authoritative Executability & Quantity Serialization:
-    let fcmIsExecutable = false;
+    fcmIsExecutable = false;
     let fcmQuantity: string | undefined = undefined;
 
     if (opportunity.isExecutable === false) {
@@ -656,6 +892,7 @@ export async function sendTradeNotification(
         accessToken = await generateGoogleAccessToken(env.FCM_CLIENT_EMAIL, env.FCM_PRIVATE_KEY, dispatchController.signal);
       } catch (tokenErr: any) {
         clearTimeout(timeoutHandle);
+        const durationMs = Date.now() - startMs;
         console.error("FCM v1 OAuth token generation failed:", tokenErr);
         sink?.emit({
           userId,
@@ -666,7 +903,7 @@ export async function sendTradeNotification(
           correlationId: alertId,
           symbol: opportunity.symbol,
           strategyId: opportunity.strategy,
-          durationMs: Date.now() - startMs,
+          durationMs,
           payload: {
             alertId,
             success: false,
@@ -674,6 +911,14 @@ export async function sendTradeNotification(
             httpStatus: 0,
             errorCode: "OAUTH_TOKEN_ERROR",
           }
+        });
+        emitAlertStage8({
+          transport: 'fcm_v1',
+          httpStatus: 0,
+          success: false,
+          errorCode: 'OAUTH_TOKEN_ERROR',
+          errorMessage: tokenErr?.message || 'OAuth token exchange failed',
+          durationMs,
         });
         return {
           success: false,
@@ -737,6 +982,14 @@ export async function sendTradeNotification(
               errorCode: "HTTP_ERROR",
             }
           });
+          emitAlertStage8({
+            transport: 'fcm_v1',
+            httpStatus: response.status,
+            success: false,
+            errorCode: `HTTP_${response.status}`,
+            errorMessage: errorText,
+            durationMs,
+          });
 
           if (response.status >= 400 && response.status < 500) {
             return {
@@ -756,6 +1009,7 @@ export async function sendTradeNotification(
             };
           }
         } else {
+          const fcmMessageId = await extractFcmMessageId(response);
           console.log(`FCM v1 trade notification sent successfully to user ${userId}`);
           sink?.emit({
             userId,
@@ -775,11 +1029,20 @@ export async function sendTradeNotification(
               errorCode: null,
             }
           });
+          emitAlertStage8({
+            transport: 'fcm_v1',
+            httpStatus: response.status,
+            success: true,
+            fcmMessageId,
+            errorCode: null,
+            durationMs,
+          });
           return {
             success: true,
             outcome: 'SUCCESS',
             httpStatus: response.status,
             errorCode: null,
+            ...(fcmMessageId ? { messageId: fcmMessageId } : {}),
           };
         }
       } catch (fetchErr: any) {
@@ -802,6 +1065,14 @@ export async function sendTradeNotification(
             httpStatus: 0,
             errorCode: "NETWORK_ERROR",
           }
+        });
+        emitAlertStage8({
+          transport: 'fcm_v1',
+          httpStatus: 0,
+          success: false,
+          errorCode: 'NETWORK_TIMEOUT_OR_RESET',
+          errorMessage: fetchErr?.message || 'Network error during FCM fetch',
+          durationMs,
         });
         return {
           success: false,
@@ -860,6 +1131,14 @@ export async function sendTradeNotification(
               errorCode: "HTTP_ERROR",
             }
           });
+          emitAlertStage8({
+            transport: 'fcm_legacy',
+            httpStatus: response.status,
+            success: false,
+            errorCode: `HTTP_${response.status}`,
+            errorMessage: errorText,
+            durationMs,
+          });
 
           if (response.status >= 400 && response.status < 500) {
             return {
@@ -897,6 +1176,13 @@ export async function sendTradeNotification(
               errorCode: null,
             }
           });
+          emitAlertStage8({
+            transport: 'fcm_legacy',
+            httpStatus: response.status,
+            success: true,
+            errorCode: null,
+            durationMs,
+          });
           return {
             success: true,
             outcome: 'SUCCESS',
@@ -905,6 +1191,7 @@ export async function sendTradeNotification(
           };
         }
       } catch (error: any) {
+        const durationMs = Date.now() - startMs;
         console.error("FCM Legacy notification failed in flight:", error);
         sink?.emit({
           userId,
@@ -915,7 +1202,7 @@ export async function sendTradeNotification(
           correlationId: alertId,
           symbol: opportunity.symbol,
           strategyId: opportunity.strategy,
-          durationMs: Date.now() - startMs,
+          durationMs,
           payload: {
             alertId,
             success: false,
@@ -923,6 +1210,14 @@ export async function sendTradeNotification(
             httpStatus: 0,
             errorCode: "NETWORK_ERROR",
           }
+        });
+        emitAlertStage8({
+          transport: 'fcm_legacy',
+          httpStatus: 0,
+          success: false,
+          errorCode: 'NETWORK_TIMEOUT_OR_RESET',
+          errorMessage: error?.message || 'Network error during legacy FCM fetch',
+          durationMs,
         });
         return {
           success: false,
@@ -934,6 +1229,7 @@ export async function sendTradeNotification(
       }
     }
 
+    const noCredDurationMs = Date.now() - startMs;
     console.warn("FCM notification skipped: neither FCM v1 nor FCM Legacy credentials configured.");
     sink?.emit({
       userId,
@@ -944,7 +1240,7 @@ export async function sendTradeNotification(
       correlationId: alertId,
       symbol: opportunity.symbol,
       strategyId: opportunity.strategy,
-      durationMs: Date.now() - startMs,
+      durationMs: noCredDurationMs,
       payload: {
         alertId,
         success: false,
@@ -952,6 +1248,14 @@ export async function sendTradeNotification(
         httpStatus: 0,
         errorCode: "NO_FCM_CREDENTIALS",
       }
+    });
+    emitAlertStage8({
+      transport: 'none',
+      httpStatus: 0,
+      success: false,
+      errorCode: 'NO_FCM_CREDENTIALS',
+      errorMessage: 'Neither FCM v1 nor FCM Legacy credentials configured',
+      durationMs: noCredDurationMs,
     });
     return {
       success: false,
