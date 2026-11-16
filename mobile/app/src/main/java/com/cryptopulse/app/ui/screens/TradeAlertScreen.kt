@@ -255,6 +255,7 @@ fun TradeAlertScreen(
     isExecutable: Boolean? = null,
     ineligibilityReason: String? = null,
     viewModel: ExchangeViewModel,
+    alertId: String? = null,
 ) {
     val bgGradient = Brush.verticalGradient(listOf(NavyDeep, NavyDark, Color(0xFF071020)))
     val scope = rememberCoroutineScope()
@@ -266,6 +267,22 @@ fun TradeAlertScreen(
     val isExecuting = executionState is ExecutionUiState.Submitting || executionState is ExecutionUiState.AwaitingFill
     val isExecutionSuccess = executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed
     var hasNavigated by remember { mutableStateOf(false) }
+
+    LaunchedEffect(alertId, candidate.pairName, strategy, timeframe, entryPrice, stopLossPrice, takeProfitPrice, isExecutable) {
+        com.cryptopulse.app.telemetry.AndroidStage9Observer.recordPopupRendered(
+            alertId = alertId,
+            symbol = candidate.pairName,
+            strategyId = strategy,
+            timeframe = timeframe,
+            entryPrice = entryPrice,
+            stopLossPrice = stopLossPrice,
+            takeProfitPrice = takeProfitPrice,
+            isExecutable = isExecutable,
+            quantity = quantity,
+            requestedBudget = requestedBudget ?: if (tradeAmountUsdt > 0.0) tradeAmountUsdt else null,
+            effectiveNotional = effectiveNotional
+        )
+    }
 
     LaunchedEffect(candidate.pairName) {
         viewModel.startLiveTicker(candidate.pairName)

@@ -54,10 +54,22 @@ class FcmService : FirebaseMessagingService() {
         
         Log.d("FcmService", "Message received from: ${message.from}")
 
+        val fcmMessageId = message.messageId ?: message.data["fcmMessageId"]
+
         // Handle data payload
         if (message.data.isNotEmpty()) {
             Log.d("FcmService", "Message data payload: ${message.data}")
-            handleDataPayload(message.data)
+            handleDataPayload(message.data, fcmMessageId)
+        } else {
+            com.cryptopulse.app.telemetry.AndroidStage9Observer.recordFcmReceived(
+                fcmMessageId = fcmMessageId,
+                alertId = null,
+                symbol = null,
+                strategyId = null,
+                timeframe = null,
+                alertType = "NOTIFICATION_ONLY",
+                hasDataPayload = false
+            )
         }
 
         // Handle notification payload
@@ -67,8 +79,18 @@ class FcmService : FirebaseMessagingService() {
         }
     }
 
-    private fun handleDataPayload(data: Map<String, String>) {
+    private fun handleDataPayload(data: Map<String, String>, fcmMessageId: String? = null) {
         val alertType = data["type"] ?: data["alertType"]
+        val telemetryAlertId = data["id"] ?: data["alertId"] ?: data["opportunityId"]
+        com.cryptopulse.app.telemetry.AndroidStage9Observer.recordFcmReceived(
+            fcmMessageId = fcmMessageId ?: data["fcmMessageId"],
+            alertId = telemetryAlertId,
+            symbol = data["symbol"],
+            strategyId = data["strategy"] ?: data["strategyId"],
+            timeframe = data["timeframe"],
+            alertType = alertType,
+            hasDataPayload = data.isNotEmpty()
+        )
         if (alertType.equals("TRADE_FILLED", ignoreCase = true) || data["status"] == "filled") {
             handleTradeExecutionPayload(data, isSubmitted = false)
         } else if (alertType.equals("TRADE_SUBMITTED", ignoreCase = true) || data["status"] == "submitted") {

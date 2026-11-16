@@ -731,6 +731,7 @@ class MainActivity : FragmentActivity() {
                                     else -> null
                                 }
                                 val ineligibilityReason = alert?.get("ineligibilityReason") as? String
+                                val renderedAlertId = (alert?.get("id") as? String) ?: (alert?.get("alertId") as? String)
                                 TradeAlertScreen(
                                     onBack = { navController.popBackStack() },
                                     onTradeExecuted = {
@@ -756,7 +757,8 @@ class MainActivity : FragmentActivity() {
                                     timeframe = timeframe,
                                     isExecutable = isExecutable,
                                     ineligibilityReason = ineligibilityReason,
-                                    viewModel = viewModel
+                                    viewModel = viewModel,
+                                    alertId = renderedAlertId
                                 )
                             }
                         }
@@ -858,21 +860,53 @@ class MainActivity : FragmentActivity() {
                 takeProfit == null || takeProfit <= 0.0
             ) {
                 android.util.Log.w("MainActivity", "[SAFETY_GATE] Trade alert rejected: missing or invalid mandatory fields (alertId=$alertId, symbol=$symbol, side=$side, strategy=$strategy, entry=$entryPrice, SL=$stopLoss, TP=$takeProfit)")
+                com.cryptopulse.app.telemetry.AndroidStage9Observer.recordAlertValidated(
+                    alertId = alertId,
+                    symbol = symbol,
+                    strategyId = strategy,
+                    timeframe = timeframe,
+                    passed = false,
+                    reason = "MISSING_MANDATORY_FIELDS"
+                )
                 return null
             }
 
             // Stale alert validation (5-minute freshness window)
             if (timestamp != null && timestamp > 0L && (System.currentTimeMillis() - timestamp) > ALERT_TTL_MS) {
                 android.util.Log.w("MainActivity", "[STALE_ALERT] Alert $alertId is stale (${(System.currentTimeMillis() - timestamp) / 1000}s old). Rejecting.")
+                com.cryptopulse.app.telemetry.AndroidStage9Observer.recordAlertValidated(
+                    alertId = alertId,
+                    symbol = symbol,
+                    strategyId = strategy,
+                    timeframe = timeframe,
+                    passed = false,
+                    reason = "STALE_ALERT_EXPIRED"
+                )
                 return null
             }
 
             // Check if alert was already handled/resolved
             if (tradeAlertManager != null && tradeAlertManager.isAlertResolved(alertId)) {
                 android.util.Log.w("MainActivity", "[DUPLICATE_ALERT] Alert $alertId is already resolved. Rejecting.")
+                com.cryptopulse.app.telemetry.AndroidStage9Observer.recordAlertValidated(
+                    alertId = alertId,
+                    symbol = symbol,
+                    strategyId = strategy,
+                    timeframe = timeframe,
+                    passed = false,
+                    reason = "DUPLICATE_RESOLVED"
+                )
                 return null
             }
 
+            com.cryptopulse.app.telemetry.AndroidStage9Observer.recordAlertValidated(
+                alertId = alertId,
+                symbol = symbol,
+                strategyId = strategy,
+                timeframe = timeframe,
+                passed = true,
+                reason = "PASSED"
+            )
             return ValidatedAlertData(
                 alertId = alertId,
                 symbol = symbol,

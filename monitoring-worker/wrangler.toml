@@ -1,0 +1,38 @@
+name = "cryptopulse-monitoring-worker"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+account_id = "0ea8292ec77cc8fabb1bdc1b73127a19"
+send_metrics = false
+
+# Strictly isolated monitoring D1 database (provision separately; never bind crypto_pulse_db)
+[[d1_databases]]
+binding = "MONITORING_DB"
+database_name = "crypto_pulse_monitoring_db"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# Dedicated telemetry ingest & dead-letter queues
+[[queues.consumers]]
+queue = "monitoring-telemetry-ingest"
+max_batch_size = 50
+max_batch_timeout = 2
+max_retries = 3
+dead_letter_queue = "monitoring-telemetry-dlq"
+
+[[queues.consumers]]
+queue = "monitoring-telemetry-dlq"
+max_batch_size = 25
+max_batch_timeout = 5
+
+# Optional read-only service binding to query DO /internal/monitor-state & coordinator /stats
+# [[services]]
+# binding = "BACKEND_SERVICE"
+# service = "crypto-pulse-backend"
+
+[triggers]
+crons = ["0 */6 * * *"]
+
+[vars]
+ENVIRONMENT = "production"
+ALLOWED_ORIGINS = "https://cryptopulse-monitoring.pages.dev,http://localhost:3000,http://localhost:8788,http://127.0.0.1:8788"

@@ -1,0 +1,10 @@
+{
+  "name": "cryptopulse-monitoring-worker",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "type-check": "node ../backend/node_modules/typescript/bin/tsc --noEmit",
+    "test": "node ../backend/node_modules/vitest/vitest.mjs run"
+  }
+}

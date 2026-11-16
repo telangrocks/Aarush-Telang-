@@ -134,6 +134,9 @@ open class TradeAlertManager @Inject constructor(
     @Synchronized
     open fun onNewAlertReceived(alertData: Map<String, Any>) {
         val alertId = (alertData["id"] as? String) ?: (alertData["alertId"] as? String) ?: return
+        val telemetrySymbol = alertData["symbol"] as? String
+        val telemetryStrategy = (alertData["strategy"] as? String) ?: (alertData["strategyId"] as? String)
+        val telemetryTimeframe = alertData["timeframe"] as? String
         var existingHardwareState = handledAlertsCache[alertId]
         if (existingHardwareState == null) {
             val persistedRecord = try {
@@ -147,6 +150,15 @@ open class TradeAlertManager @Inject constructor(
         }
 
         if (existingHardwareState == "RESOLVED") {
+            com.cryptopulse.app.telemetry.AndroidStage9Observer.recordDedupDecision(
+                alertId = alertId,
+                symbol = telemetrySymbol,
+                strategyId = telemetryStrategy,
+                timeframe = telemetryTimeframe,
+                accepted = false,
+                reason = "RESOLVED_ALERT_SUPPRESSED",
+                hardwareState = existingHardwareState
+            )
             TradeAlertLogger.log(
                 "RESOLVED_ALERT_SUPPRESSED",
                 "Alert $alertId is already resolved; ignoring duplicate presentation."
@@ -156,6 +168,15 @@ open class TradeAlertManager @Inject constructor(
 
         val status = alertData["status"] as? String
         if (status == "expired" || status == "executed" || status == "filled" || status == "submitted") {
+            com.cryptopulse.app.telemetry.AndroidStage9Observer.recordDedupDecision(
+                alertId = alertId,
+                symbol = telemetrySymbol,
+                strategyId = telemetryStrategy,
+                timeframe = telemetryTimeframe,
+                accepted = false,
+                reason = "TERMINAL_ALERT_SUPPRESSED:$status",
+                hardwareState = existingHardwareState
+            )
             TradeAlertLogger.log(
                 "TERMINAL_ALERT_SUPPRESSED",
                 "Alert $alertId is in terminal or submitted status $status; ignoring."
@@ -165,6 +186,15 @@ open class TradeAlertManager @Inject constructor(
 
         val type = (alertData["type"] as? String) ?: (alertData["alertType"] as? String)
         if (type.equals("TRADE_FILLED", ignoreCase = true) || type.equals("TRADE_SUBMITTED", ignoreCase = true)) {
+            com.cryptopulse.app.telemetry.AndroidStage9Observer.recordDedupDecision(
+                alertId = alertId,
+                symbol = telemetrySymbol,
+                strategyId = telemetryStrategy,
+                timeframe = telemetryTimeframe,
+                accepted = false,
+                reason = "FILL_EVENT_SUPPRESSED:$type",
+                hardwareState = existingHardwareState
+            )
             TradeAlertLogger.log(
                 "FILL_EVENT_SUPPRESSED_FROM_TRADE_ALERT",
                 "Alert $alertId has event type $type; suppressing actionable alert presentation."
@@ -173,6 +203,15 @@ open class TradeAlertManager @Inject constructor(
         }
 
         if (existingHardwareState != null) {
+            com.cryptopulse.app.telemetry.AndroidStage9Observer.recordDedupDecision(
+                alertId = alertId,
+                symbol = telemetrySymbol,
+                strategyId = telemetryStrategy,
+                timeframe = telemetryTimeframe,
+                accepted = false,
+                reason = "DUPLICATE_ALERT_HARDWARE_SUPPRESSED",
+                hardwareState = existingHardwareState
+            )
             TradeAlertLogger.log(
                 "DUPLICATE_ALERT_HARDWARE_SUPPRESSED",
                 "Alert $alertId is already in state $existingHardwareState; suppressing duplicate hardware trigger."
@@ -191,6 +230,20 @@ open class TradeAlertManager @Inject constructor(
         val takeProfit = (alertData["takeProfit"] as? Double) ?: (alertData["take_profit"] as? Double)
         val strategyId = (alertData["strategy"] as? String) ?: (alertData["strategyId"] as? String)
         val signalType = (alertData["signalType"] as? String) ?: (alertData["direction"] as? String) ?: (alertData["type"] as? String)
+
+        com.cryptopulse.app.telemetry.AndroidStage9Observer.recordDedupDecision(
+            alertId = alertId,
+            symbol = symbol,
+            strategyId = strategyId,
+            timeframe = telemetryTimeframe,
+            accepted = true,
+            reason = if (_currentState.value == TradeAlertState.VOICE_PLAYING && activeAlertData != null) {
+                "ACCEPTED_SEAMLESS_REPLACE"
+            } else {
+                "ACCEPTED_FRESH_TRIGGER"
+            },
+            hardwareState = "HARDWARE_ACTIVE"
+        )
 
         TradeAlertLogger.log("ALERT_RECEIVED", "Symbol: $symbol, Entry: $entryPrice, AlertId: $alertId")
 
@@ -686,7 +739,55 @@ open class TradeAlertManager @Inject constructor(
                 .build()
 
             val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            val notificationsEnabled = try {
+                manager?.areNotificationsEnabled() ?: false
+            } catch (_: Throwable) {
+                false
+            }
+            val channel = try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    manager?.getNotificationChannel(CHANNEL_ID)
+                } else {
+                    null
+                }
+            } catch (_: Throwable) {
+                null
+            }
+            val channelImportance = try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    channel?.importance ?: NotificationManager.IMPORTANCE_HIGH
+                } else {
+                    4
+                }
+            } catch (_: Throwable) {
+                4
+            }
+            val channelEnabled = channelImportance != 0
+            com.cryptopulse.app.telemetry.AndroidStage9Observer.recordNotificationPrecheck(
+                alertId = alertId.ifBlank { null },
+                symbol = symbol,
+                strategyId = strategy,
+                timeframe = timeframe,
+                notificationsEnabled = notificationsEnabled,
+                channelEnabled = channelEnabled,
+                channelImportance = channelImportance
+            )
             manager?.notify(ALERT_NOTIFICATION_ID, notification)
+            val activeNotificationFound = try {
+                manager?.activeNotifications?.any { it.id == ALERT_NOTIFICATION_ID } == true
+            } catch (_: Throwable) {
+                false
+            }
+            com.cryptopulse.app.telemetry.AndroidStage9Observer.recordNotificationPostCheck(
+                alertId = alertId.ifBlank { null },
+                symbol = symbol,
+                strategyId = strategy,
+                timeframe = timeframe,
+                notificationsEnabled = notificationsEnabled,
+                channelImportance = channelImportance,
+                notifySucceeded = manager != null,
+                activeNotificationFound = activeNotificationFound
+            )
         } catch (e: Exception) {
             TradeAlertLogger.error("NOTIFICATION_NOTIFY_ERROR", e)
         }

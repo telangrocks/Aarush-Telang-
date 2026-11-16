@@ -3,377 +3,432 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="referrer" content="no-referrer">
-  <title>CryptoPulse — Centralized Production Monitoring</title>
+  <title>CryptoPulse — 9-Stage Data Flow Monitoring Center</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- AUTH / LOGIN OVERLAY -->
+  <!-- ADMIN LOGIN & DEVICE ENROLLMENT MODAL (READ-ONLY OBSERVER SESSION) -->
   <div id="login-modal" class="modal-overlay">
     <div class="login-card">
       <div class="login-header">
-        <div class="logo-badge">CP</div>
-        <h2>CryptoPulse Monitoring</h2>
-        <p>Private Administrative Access Only</p>
+        <div class="brand-row">
+          <span class="brand-mark">CP</span>
+          <div>
+            <h1>CryptoPulse Diagnostic Center</h1>
+            <p class="muted">Screen 2 • 9-Stage Read-Only Pipeline Observer</p>
+          </div>
+        </div>
       </div>
+
       <form id="login-form">
         <div class="form-group">
-          <label for="admin-password-input">Dashboard Password</label>
-          <input type="password" id="admin-password-input" placeholder="Enter password..." required autocomplete="current-password">
+          <label for="api-url-input">Backend Monitoring Gateway URL</label>
+          <input
+            type="url"
+            id="api-url-input"
+            value="https://crypto-pulse-backend.telangrocks.workers.dev"
+            placeholder="https://crypto-pulse-backend.telangrocks.workers.dev"
+            required
+          >
         </div>
-        <div class="form-group hidden" id="api-url-group">
-          <label for="api-url-input">Backend API Origin</label>
-          <input type="text" id="api-url-input" value="https://crypto-pulse-backend.telangrocks.workers.dev">
+
+        <div class="form-group">
+          <label for="admin-key-input">Admin Dashboard Password or Signed Admin Bearer JWT</label>
+          <input
+            type="password"
+            id="admin-key-input"
+            placeholder="Enter password or eyJ... JWT"
+            autocomplete="current-password"
+            required
+          >
         </div>
+
         <div id="login-error" class="error-banner hidden"></div>
-        <button type="submit" class="btn btn-primary btn-block">Login</button>
+        <button type="submit" class="btn btn-primary btn-block">Authenticate Read-Only Session</button>
       </form>
+      <p class="login-footnote">Strictly read-only telemetry observer. Never controls bots, strategies, balances, or exchange orders.</p>
     </div>
   </div>
 
-  <!-- MAIN APP CONTAINER -->
-  <div id="app" class="app-layout hidden">
-    <!-- SIDEBAR NAVIGATION -->
-    <aside class="sidebar">
-      <div class="sidebar-brand">
-        <div class="logo-badge sm">CP</div>
-        <div class="brand-text">
-          <span class="brand-name">CryptoPulse</span>
-          <span class="brand-tag">Ops Console</span>
+  <!-- MAIN 9-STAGE DIAGNOSTIC CONSOLE -->
+  <div id="app" class="app-shell hidden">
+    <header class="top-bar">
+      <div class="top-bar-left">
+        <span class="brand-mark sm">CP</span>
+        <div>
+          <div class="top-title-row">
+            <h2>CryptoPulse 9-Stage Pipeline Monitor</h2>
+            <span class="badge badge-readonly">READ-ONLY OBSERVER</span>
+            <span id="overall-verdict-badge" class="badge badge-disconnected">NO_TELEMETRY</span>
+          </div>
+          <p class="subline" id="session-identity-label">Authenticated Read-Only Session</p>
         </div>
       </div>
 
-      <nav class="nav-menu">
-        <button class="nav-item active" data-tab="overview">
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 3h7v9H3zM14 3h7v4h-7zM14 11h7v10h-7zM3 16h7v5H3z"/></svg>
-          <span>Fleet Overview</span>
-        </button>
-        <button class="nav-item" data-tab="bots">
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          <span>Users & Bots</span>
-        </button>
-        <button class="nav-item" data-tab="incidents">
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          <span>Incidents</span>
-          <span id="badge-incident-count" class="counter-pill">0</span>
-        </button>
-        <button class="nav-item" data-tab="health">
-          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-          <span>Quotas & Edge Health</span>
-        </button>
-      </nav>
-
-      <div class="sidebar-footer">
-        <div class="session-info">
-          <span class="user-label">Admin Role</span>
-          <span id="session-user-id" class="user-id">operator</span>
-        </div>
-        <button id="logout-btn" class="btn-logout" title="Sign Out">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-        </button>
+      <div class="top-bar-actions">
+        <label class="toggle-chip" title="Pause automatic 5s polling">
+          <input type="checkbox" id="auto-poll-toggle" checked>
+          <span>Auto-Poll (5s)</span>
+        </label>
+        <button id="refresh-now-btn" class="btn btn-secondary" type="button">Refresh Now</button>
+        <button id="live-probe-btn" class="btn btn-secondary" type="button">Live Probe (No Bybit Call)</button>
+        <button id="logout-btn" class="btn btn-danger-outline" type="button">Sign Out</button>
       </div>
-    </aside>
+    </header>
 
-    <!-- MAIN VIEW AREA -->
-    <main class="content-area">
-      <!-- TOP CONTROL BAR -->
-      <header class="topbar">
-        <div class="topbar-left">
-          <h1 id="page-title">Fleet Overview</h1>
-          <div class="status-indicator">
-            <span id="health-dot" class="dot dot-green"></span>
-            <span id="health-text">All Systems Operational</span>
+    <!-- SELF-HEALTH & DELIVERY ASSURANCE BANNER -->
+    <section id="self-health-banner" class="self-health-bar">
+      <div class="sh-item">
+        <span class="sh-label">Pipeline Verdict</span>
+        <strong id="sh-verdict" class="mono">NO_TELEMETRY</strong>
+      </div>
+      <div class="sh-item">
+        <span class="sh-label">Monitoring Consumer</span>
+        <strong id="sh-consumer-state" class="mono">NO_DATA</strong>
+      </div>
+      <div class="sh-item">
+        <span class="sh-label">Events (In / Ins / Dedup)</span>
+        <strong id="sh-counts" class="mono">0 / 0 / 0</strong>
+      </div>
+      <div class="sh-item">
+        <span class="sh-label">Ingest Lag (Avg / Max)</span>
+        <strong id="sh-lag" class="mono">— / — ms</strong>
+      </div>
+      <div class="sh-item">
+        <span class="sh-label">DLQ / D1 Errors</span>
+        <strong id="sh-errors" class="mono">0 / 0</strong>
+      </div>
+      <div class="sh-item">
+        <span class="sh-label">Last Polled</span>
+        <strong id="sh-last-polled" class="mono">—</strong>
+      </div>
+    </section>
+
+    <!-- GLOBAL JUMP BAR & CORRELATION FILTERS -->
+    <nav class="jump-filter-bar" aria-label="Pipeline navigation and correlation filters">
+      <div class="section-jumps">
+        <a href="#section-a" class="jump-pill">A. Overview &amp; Connectivity</a>
+        <a href="#section-b" class="jump-pill">B. Handoff &amp; Stage 2 Leak</a>
+        <a href="#section-c" class="jump-pill">C. Traces &amp; Spans</a>
+        <a href="#section-d" class="jump-pill">D. Stage 3/4 TA</a>
+        <a href="#section-e" class="jump-pill">E. Stage 5/6 Gates</a>
+        <a href="#section-f" class="jump-pill">F. Stage 7 Orders</a>
+        <a href="#section-g" class="jump-pill">G. Stage 8/9 Parity &amp; Incidents</a>
+      </div>
+
+      <form id="global-filter-form" class="filter-controls">
+        <input type="text" id="filter-trace-id" placeholder="Trace ID (trc_...)" aria-label="Filter by Trace ID">
+        <input type="text" id="filter-cycle-id" placeholder="Cycle ID (CYC-...)" aria-label="Filter by Cycle ID">
+        <input type="text" id="filter-discovery-id" placeholder="Discovery ID" aria-label="Filter by Discovery Cycle ID">
+        <input type="text" id="filter-symbol" placeholder="Symbol (BTC/USDT)" aria-label="Filter by Symbol">
+        <select id="filter-journey" aria-label="Filter by Journey">
+          <option value="">All Journeys</option>
+          <option value="JOURNEY_A_DISCOVERY">Journey A (Discovery)</option>
+          <option value="JOURNEY_B_AUTONOMOUS">Journey B (Autonomous)</option>
+        </select>
+        <select id="filter-env" aria-label="Filter by Environment">
+          <option value="">All Envs</option>
+          <option value="production">production</option>
+          <option value="mainnet">mainnet</option>
+          <option value="testnet">testnet</option>
+          <option value="demo">demo</option>
+        </select>
+        <select id="filter-window" aria-label="Time window">
+          <option value="15">Last 15m</option>
+          <option value="60" selected>Last 60m</option>
+          <option value="240">Last 4h</option>
+          <option value="1440">Last 24h</option>
+        </select>
+        <button type="submit" class="btn btn-primary btn-sm">Apply</button>
+        <button type="button" id="reset-filters-btn" class="btn btn-secondary btn-sm">Reset</button>
+      </form>
+    </nav>
+
+    <div id="global-error-banner" class="error-banner hidden"></div>
+
+    <main class="console-main">
+      <!-- SECTION A: 9-STAGE STRIP + EXCHANGE HEALTH + LIVE PROBE -->
+      <section id="section-a" class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Section A — End-to-End 9-Stage Status &amp; Exchange Channels</h3>
+            <p class="panel-desc">Honest stage states (DISCONNECTED when empty, STALE when overdue). Public market data separated from private account channel.</p>
+          </div>
+          <span class="mono muted" id="overview-window-label">Window: 60m</span>
+        </div>
+
+        <div id="stages-strip" class="stages-grid"></div>
+
+        <div class="two-col-grid top-gap">
+          <div class="subcard">
+            <div class="subcard-header">
+              <h4>Stage 1A — Public Market Data Channel</h4>
+              <span id="pub-exch-badge" class="badge badge-disconnected">DISCONNECTED</span>
+            </div>
+            <div id="pub-exch-body" class="kv-grid"></div>
+          </div>
+
+          <div class="subcard">
+            <div class="subcard-header">
+              <h4>Stage 1B — Private Account &amp; Order Channel</h4>
+              <span id="priv-exch-badge" class="badge badge-disconnected">DISCONNECTED</span>
+            </div>
+            <div id="priv-exch-body" class="kv-grid"></div>
           </div>
         </div>
 
-        <div class="topbar-right">
-          <div class="refresh-controls">
-            <span id="last-sync-time" class="text-muted">Updated: Just now</span>
-            <select id="auto-refresh-select" class="select-sm">
-              <option value="0">Auto-refresh: Off</option>
-              <option value="30">Auto-refresh: 30s</option>
-              <option value="60" selected>Auto-refresh: 60s</option>
-              <option value="120">Auto-refresh: 2m</option>
+        <div class="subcard top-gap">
+          <div class="subcard-header">
+            <h4>Read-Only Live State Probe (Coordinator /stats + TradingBot /internal/monitor-state)</h4>
+            <span id="probe-status-badge" class="badge badge-info">NOT_PROBED</span>
+          </div>
+          <div id="live-probe-body" class="mono muted small-text">Click "Live Probe (No Bybit Call)" or wait for auto-refresh to inspect cached coordinator &amp; DO runtime state without hitting Bybit.</div>
+        </div>
+      </section>
+
+      <!-- SECTION B: JOURNEY A -> JOURNEY B HANDOFF & STAGE 2 LEAK CHECK -->
+      <section id="section-b" class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Section B — Journey A &rarr; Journey B Handoff &amp; Stage 2 Budget Eligibility Audit</h3>
+            <p class="panel-desc">Proves causal lineage via approvalGeneration &rarr; parentApprovalGeneration and verifies zero rejected symbols leak downstream.</p>
+          </div>
+          <span id="stage2-leak-badge" class="badge badge-disconnected">NO DATA</span>
+        </div>
+
+        <div id="handoff-summary-grid" class="handoff-grid"></div>
+
+        <div class="table-wrap top-gap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Outcome</th>
+                <th>Rejection Reason</th>
+                <th>Budget / Price</th>
+                <th>MinQty / MinNotional / Step</th>
+                <th>Computed Qty / Notional</th>
+                <th>Gen / Cycle</th>
+                <th>Downstream Leak</th>
+              </tr>
+            </thead>
+            <tbody id="stage2-decisions-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- SECTION C: ORDERED TRACES & STAGE SPAN INSPECTOR -->
+      <section id="section-c" class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Section C — Ordered Pipeline Traces &amp; Stage Span Inspector</h3>
+            <p class="panel-desc">Select any Discovery or Autonomous cycle to inspect every span input/output summary and delivery milestone in execution order.</p>
+          </div>
+          <span id="traces-count-label" class="mono muted">0 traces</span>
+        </div>
+
+        <div class="split-explorer">
+          <div class="table-wrap">
+            <table class="data-table interactive-table">
+              <thead>
+                <tr>
+                  <th>Journey</th>
+                  <th>Cycle / Trace ID</th>
+                  <th>Gen</th>
+                  <th>Status</th>
+                  <th>Furthest Stage</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="traces-tbody"></tbody>
+            </table>
+          </div>
+
+          <div class="inspector-pane" id="trace-inspector-pane">
+            <div class="inspector-empty muted">Select a trace row on the left to inspect all ordered stage spans, handoff links, and JSON payloads.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECTION D: STAGE 3/4 CANDLES & ANTI-FABRICATION TA -->
+      <section id="section-d" class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Section D — Stage 3/4 Candle Completeness &amp; Anti-Fabrication TA Viewer</h3>
+            <p class="panel-desc">Distinguishes SCANNER_SIMPLE vs CANONICAL engines. SKIPPED bars show explicit NULL scalars (never fabricated 0s).</p>
+          </div>
+          <div class="inline-filters">
+            <select id="ta-status-filter" aria-label="Filter TA by status">
+              <option value="">All TA Statuses</option>
+              <option value="PASS">PASS</option>
+              <option value="SKIPPED">SKIPPED</option>
+              <option value="FAIL">FAIL</option>
             </select>
-            <button id="manual-refresh-btn" class="btn btn-secondary btn-sm" title="Refresh Now">
-              <svg class="refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <!-- TAB 1: FLEET OVERVIEW -->
-      <section id="tab-overview" class="tab-pane active">
-        <div class="kpi-grid">
-          <div class="kpi-card">
-            <div class="kpi-header">
-              <span class="kpi-title">Registered Users</span>
-              <span class="kpi-icon users">👥</span>
-            </div>
-            <div id="kpi-total-users" class="kpi-value">—</div>
-            <div class="kpi-subtext"><span id="kpi-active-users">0</span> active in last 24h</div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-header">
-              <span class="kpi-title">Active Bot Fleet</span>
-              <span class="kpi-icon bots">🤖</span>
-            </div>
-            <div id="kpi-active-bots" class="kpi-value">—</div>
-            <div class="kpi-subtext"><span id="kpi-healthy-bots" class="text-success">0</span> reporting healthy</div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-header">
-              <span class="kpi-title">24h Incidents</span>
-              <span class="kpi-icon alert">⚠️</span>
-            </div>
-            <div id="kpi-incidents-24h" class="kpi-value">—</div>
-            <div class="kpi-subtext"><span id="kpi-critical-incidents" class="text-danger">0</span> critical tripwires</div>
-          </div>
-
-          <div class="kpi-card">
-            <div class="kpi-header">
-              <span class="kpi-title">Monitoring Health</span>
-              <span class="kpi-icon db">⚡</span>
-            </div>
-            <div id="kpi-storage-health" class="kpi-value text-success">HEALTHY</div>
-            <div class="kpi-subtext"><span id="kpi-dedup-ratio">100%</span> dedup efficiency</div>
+            <select id="ta-engine-filter" aria-label="Filter TA by engine">
+              <option value="">All Engines</option>
+              <option value="SCANNER_SIMPLE">SCANNER_SIMPLE</option>
+              <option value="CANONICAL">CANONICAL</option>
+            </select>
           </div>
         </div>
 
-        <!-- RECENT CRITICAL INCIDENTS PREVIEW -->
-        <div class="card mt-6">
-          <div class="card-header">
-            <h3>Recent Active Incidents</h3>
-            <button class="btn btn-sm btn-link" data-switch-tab="incidents">View All →</button>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Symbol / TF</th>
+                <th>Engine</th>
+                <th>Status / Skip Reason</th>
+                <th>Bars (Have / Min)</th>
+                <th>RSI</th>
+                <th>EMA21</th>
+                <th>ADX</th>
+                <th>VWAP</th>
+                <th>Regime</th>
+                <th>Integrity</th>
+              </tr>
+            </thead>
+            <tbody id="ta-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- SECTION E: STAGE 5/6 STRATEGIES, SAFETY GATES, SHADOW & DEAD CODE DISCLOSURE -->
+      <section id="section-e" class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Section E — Stage 5/6 Strategies, Live Safety Gates, SHADOW Mode &amp; Unwired Code Disclosure</h3>
+            <p class="panel-desc">Real live gate decisions alongside explicit [NOT_IN_LIVE_PATH] markers for unwired modules and SignalLifecycleManager SHADOW diffs.</p>
           </div>
-          <div class="table-container">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Severity</th>
-                  <th>Component</th>
-                  <th>Event Type</th>
-                  <th>Summary</th>
-                  <th>Occurrences</th>
-                  <th>Last Seen</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody id="overview-incidents-tbody">
-                <tr><td colspan="7" class="text-center text-muted py-6">No active incidents reported.</td></tr>
-              </tbody>
-            </table>
+        </div>
+
+        <div id="dead-code-disclosure" class="disclosure-grid"></div>
+
+        <div class="two-col-grid top-gap">
+          <div class="subcard">
+            <div class="subcard-header">
+              <h4>Live Gate Evaluations (Stage 5 &amp; 6)</h4>
+              <span id="gates-count-label" class="mono muted">0</span>
+            </div>
+            <div class="table-wrap compact-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Gate</th>
+                    <th>Decision</th>
+                    <th>Symbol / Strategy</th>
+                    <th>Reason / Source</th>
+                    <th>Time</th>
+                  </tr>
+                </thead>
+                <tbody id="gates-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="subcard">
+            <div class="subcard-header">
+              <h4>SignalLifecycleManager SHADOW Comparison Feed</h4>
+              <span id="shadow-count-label" class="mono muted">0</span>
+            </div>
+            <div id="shadow-feed-list" class="stack-list"></div>
           </div>
         </div>
       </section>
 
-      <!-- TAB 2: USERS & BOTS INVENTORY -->
-      <section id="tab-bots" class="tab-pane">
-        <div class="card">
-          <div class="card-header">
-            <h3>Trading Bot Fleet Inventory</h3>
-            <div class="filter-bar">
-              <select id="bot-status-filter" class="select-sm">
-                <option value="">All States</option>
-                <option value="HEALTHY">🟢 Healthy Only</option>
-                <option value="STALE">🟡 Stale / Missing</option>
-                <option value="ERROR">🔴 Error / Failed</option>
-                <option value="INACTIVE">⚪ Inactive</option>
-              </select>
-            </div>
+      <!-- SECTION F: STAGE 7 ORDER EXECUTION SPLIT MILESTONES -->
+      <section id="section-f" class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Section F — Stage 7 Order Lifecycle Milestones (HTTP ACK &ne; Exchange Fill)</h3>
+            <p class="panel-desc">Tracks Signal &rarr; Alert &rarr; WAL Intent &rarr; Dispatch &rarr; Bybit HTTP ACK &rarr; Reconciliation &rarr; Fill Confirmed &rarr; SL/TP Protected &rarr; D1 Synced.</p>
           </div>
-          <div class="table-container">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Bot / User ID</th>
-                  <th>Exchange</th>
-                  <th>Environment</th>
-                  <th>Status</th>
-                  <th>Active Position</th>
-                  <th>Last Observed</th>
-                </tr>
-              </thead>
-              <tbody id="bots-tbody">
-                <tr><td colspan="6" class="text-center text-muted py-6">Loading bot fleet...</td></tr>
-              </tbody>
-            </table>
-          </div>
+          <span id="trades-count-label" class="mono muted">0 orders</span>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table interactive-table">
+            <thead>
+              <tr>
+                <th>Symbol / Side</th>
+                <th>IDs (Alert / Order)</th>
+                <th>Current Milestone</th>
+                <th>Ack vs Fill Truthfulness</th>
+                <th>Qty (Req / Fill) &amp; Price</th>
+                <th>SL / TP</th>
+                <th>Milestone Pipeline</th>
+              </tr>
+            </thead>
+            <tbody id="trades-tbody"></tbody>
+          </table>
         </div>
       </section>
 
-      <!-- TAB 3: INCIDENTS LOG -->
-      <section id="tab-incidents" class="tab-pane">
-        <div class="card">
-          <div class="card-header flex-wrap">
-            <div class="header-filters">
-              <select id="incident-severity-filter" class="select-sm">
-                <option value="">All Severities</option>
-                <option value="CRITICAL">🔴 CRITICAL</option>
-                <option value="ERROR">🟠 ERROR</option>
-                <option value="WARNING">🟡 WARNING</option>
-                <option value="INFO">🔵 INFO</option>
-              </select>
-              <select id="incident-status-filter" class="select-sm">
-                <option value="">All Statuses</option>
-                <option value="UNRESOLVED" selected>Unresolved Only</option>
-                <option value="INVESTIGATING">Investigating</option>
-                <option value="RESOLVED">Resolved</option>
-              </select>
-              <input type="text" id="incident-search-input" class="input-sm" placeholder="Search message or symbol...">
-            </div>
-            <div class="header-actions">
-              <span id="incident-pagination-info" class="text-muted text-sm mr-2">Showing 0 of 0</span>
-            </div>
+      <!-- SECTION G: STAGE 8/9 NOTIFICATION PARITY & READ-ONLY INCIDENTS -->
+      <section id="section-g" class="panel">
+        <div class="panel-header">
+          <div>
+            <h3>Section G — Stage 8/9 Backend FCM vs Android Parity &amp; Read-Only Incidents</h3>
+            <p class="panel-desc">Compares dispatched FCM payload against Android receipt, dedup, OS pre/post check (honest ELIGIBLE_OS_UNPROVABLE), and popup render fields.</p>
           </div>
+          <span id="android-validation-badge" class="badge badge-warn">ANDROID BUILD/UNIT TESTS: UNVERIFIED (JDK 21 REQUIRED)</span>
+        </div>
 
-          <div class="table-container">
-            <table class="data-table">
+        <div id="parity-summary-strip" class="summary-chips"></div>
+
+        <div class="table-wrap top-gap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Alert / FCM Message ID</th>
+                <th>Symbol / Strategy / TF</th>
+                <th>Backend Dispatch</th>
+                <th>Android Source &amp; Dedup</th>
+                <th>OS Heads-Up Honesty</th>
+                <th>Parity Status &amp; Mismatches</th>
+              </tr>
+            </thead>
+            <tbody id="notifications-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="subcard top-gap">
+          <div class="subcard-header">
+            <h4>Read-Only Data Quality &amp; Exception Incidents (Click row for raw occurrences; zero mutation controls)</h4>
+            <span id="incidents-count-label" class="mono muted">0 incidents</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table interactive-table">
               <thead>
                 <tr>
                   <th>Severity</th>
-                  <th>Time (UTC)</th>
-                  <th>Component</th>
                   <th>Stage</th>
-                  <th>Message</th>
-                  <th>Occurrences</th>
-                  <th>Status</th>
-                  <th>Details</th>
+                  <th>Component / Event</th>
+                  <th>Symbol / Error</th>
+                  <th>Count</th>
+                  <th>Latest Message</th>
+                  <th>Last Seen</th>
                 </tr>
               </thead>
-              <tbody id="incidents-tbody">
-                <tr><td colspan="8" class="text-center text-muted py-6">Loading incident history...</td></tr>
-              </tbody>
+              <tbody id="incidents-tbody"></tbody>
             </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB 4: QUOTAS & EDGE HEALTH -->
-      <section id="tab-health" class="tab-pane">
-        <div class="health-grid">
-          <div class="card">
-            <div class="card-header">
-              <h3>Cloudflare Free-Tier Ingestion & Storage</h3>
-            </div>
-            <div class="metrics-list">
-              <div class="metric-row">
-                <span class="metric-label">Total Events Processed:</span>
-                <span id="quota-total-events" class="metric-value font-mono">0</span>
-              </div>
-              <div class="metric-row">
-                <span class="metric-label">D1 Incidents Persisted:</span>
-                <span id="quota-persisted" class="metric-value font-mono">0</span>
-              </div>
-              <div class="metric-row">
-                <span class="metric-label">Deduplicated (D1 Writes Saved):</span>
-                <span id="quota-deduplicated" class="metric-value font-mono text-success">0</span>
-              </div>
-              <div class="metric-row">
-                <span class="metric-label">Dropped (Invalid / Oversized):</span>
-                <span id="quota-dropped" class="metric-value font-mono">0</span>
-              </div>
-              <div class="metric-row">
-                <span class="metric-label">D1 Write Failures (Graceful):</span>
-                <span id="quota-write-failures" class="metric-value font-mono">0</span>
-              </div>
-              <div class="metric-row">
-                <span class="metric-label">In-Memory Ring Buffer:</span>
-                <span id="quota-ring-buffer" class="metric-value font-mono">0 / 150 items</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-header">
-              <h3>Edge Components & D1 Status</h3>
-            </div>
-            <div class="metrics-list">
-              <div class="metric-row">
-                <span class="metric-label">Database Status:</span>
-                <span id="edge-db-status" class="badge badge-success">CONNECTED</span>
-              </div>
-              <div class="metric-row">
-                <span class="metric-label">D1 Query Roundtrip:</span>
-                <span id="edge-db-latency" class="metric-value font-mono">— ms</span>
-              </div>
-              <div class="metric-row">
-                <span class="metric-label">Edge Placement:</span>
-                <span class="badge badge-info">aws:eu-central-1 (Frankfurt)</span>
-              </div>
-              <div class="metric-row">
-                <span class="metric-label">Single-Flight Market Coordinator:</span>
-                <span id="edge-coordinator-status" class="badge badge-success">ACTIVE</span>
-              </div>
-              <div class="metric-row">
-                <span class="metric-label">Trading Signal Mode:</span>
-                <span id="edge-signal-mode" class="badge badge-warning">SHADOW</span>
-              </div>
-            </div>
           </div>
         </div>
       </section>
     </main>
   </div>
 
-  <!-- INCIDENT DETAIL MODAL & ANTIGRAVITY PROMPT VIEWER -->
-  <div id="incident-modal" class="modal-overlay hidden">
-    <div class="modal-card">
-      <div class="modal-header">
+  <!-- READ-ONLY FORENSIC DETAIL DRAWER / MODAL -->
+  <div id="detail-modal" class="modal-overlay hidden">
+    <div class="detail-card">
+      <div class="detail-header">
         <div>
-          <h2 id="modal-incident-title">Incident Analysis</h2>
-          <span id="modal-incident-id" class="text-muted font-mono text-xs">evt_12345</span>
+          <h3 id="detail-modal-title">Forensic Record Detail (Read-Only)</h3>
+          <p id="detail-modal-subtitle" class="muted mono"></p>
         </div>
-        <button id="modal-close-btn" class="modal-close">&times;</button>
+        <button id="detail-modal-close" class="btn btn-secondary btn-sm" type="button">Close</button>
       </div>
-
-      <div class="modal-body">
-        <!-- ROOT CAUSE CARD -->
-        <div class="diagnosis-card">
-          <div class="diagnosis-header">
-            <span class="diagnosis-label">DETERMINISTIC ROOT CAUSE DIAGNOSIS</span>
-            <span id="modal-confidence-badge" class="badge badge-warning">CONFIDENCE: HIGH</span>
-          </div>
-          <div id="modal-root-cause" class="diagnosis-text">Analyzing evidence...</div>
-          <div class="diagnosis-meta">
-            <div><strong>Candidate Files:</strong> <span id="modal-files" class="font-mono text-xs">—</span></div>
-            <div><strong>Recommended Actions:</strong> <span id="modal-actions">—</span></div>
-          </div>
-        </div>
-
-        <!-- ANTIGRAVITY PROMPT GENERATOR -->
-        <div class="prompt-box">
-          <div class="prompt-header">
-            <span>Google Antigravity Investigation Prompt</span>
-            <button id="copy-prompt-btn" class="btn btn-secondary btn-xs">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              <span>Copy Prompt</span>
-            </button>
-          </div>
-          <pre id="modal-prompt-content" class="prompt-content"></pre>
-        </div>
-
-        <!-- SANITIZED EVIDENCE VIEWER -->
-        <div class="evidence-box">
-          <h4>Sanitized Event Evidence</h4>
-          <pre id="modal-evidence-json" class="json-viewer"></pre>
-        </div>
-      </div>
-
-      <div class="modal-footer">
-        <div class="status-actions">
-          <label>Update Status:</label>
-          <select id="modal-status-select" class="select-sm">
-            <option value="UNRESOLVED">Unresolved</option>
-            <option value="INVESTIGATING">Investigating</option>
-            <option value="RESOLVED">Resolved</option>
-            <option value="IGNORED">Ignored</option>
-          </select>
-          <button id="modal-save-status-btn" class="btn btn-primary btn-sm">Save</button>
-        </div>
-      </div>
+      <div id="detail-modal-body" class="detail-body"></div>
     </div>
   </div>
 

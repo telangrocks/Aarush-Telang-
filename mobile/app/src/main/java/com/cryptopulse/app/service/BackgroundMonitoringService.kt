@@ -179,6 +179,12 @@ class BackgroundMonitoringService : Service() {
     }
 
     internal fun showTradeAlert(alert: com.cryptopulse.app.domain.models.BotAlert) {
+        com.cryptopulse.app.telemetry.AndroidStage9Observer.recordPollReceived(
+            alertId = alert.id,
+            symbol = alert.symbol,
+            strategyId = alert.strategy,
+            timeframe = alert.timeframe
+        )
         tradeAlertManager.onNewAlertReceived(alert.toMap())
     }
 }
