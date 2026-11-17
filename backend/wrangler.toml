@@ -107,8 +107,9 @@ new_sqlite_classes = ["PublicMarketDataCoordinator"]
 crons = []
 
 [env.staging.vars]
-ENVIRONMENT = "testnet"
+ENVIRONMENT = "demo"
 SIGNAL_MANAGER_MODE = "SHADOW"
+STAGING_ISOLATION_MODE = "demo"
 
 [[env.staging.services]]
 binding = "MONITOR_INGEST_SERVICE"

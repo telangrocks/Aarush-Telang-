@@ -1017,4 +1017,440 @@ describe('Phase 7: Defect Remediation Verification (Priorities 1-4)', () => {
       }
     });
   });
+
+  describe('Nov 16 Staging Audit Repairs (Priorities 1-7)', () => {
+    it('Priority 1 & 7: Stage 8 FCM failure never overwrites a confirmed Stage 7 fill, keeps notification status separate, and reports close telemetry limitation without inventing PnL', async () => {
+      const db = new SqliteD1Database();
+      const env = createEnv(db);
+      const t0 = Date.now() - 10_000;
+
+      await emitAndIngest(db, 'trading-bot-do', (emitter) => {
+        const ctx = {
+          userId: 'user-audit',
+          botId: 'bot-audit',
+          journey: 'JOURNEY_B_AUTONOMOUS' as const,
+          cycleId: 'cyc-sol-1',
+          traceId: 'tr-sol-1',
+          environment: 'demo' as const,
+          symbol: 'SOL/USDT',
+          strategyId: 'VWAP_NEW',
+          timeframe: '15m',
+          alertId: 'alt-sol-1',
+          intentId: 'int-sol-1',
+          clientOrderId: 'cli-sol-1',
+          orderId: 'ord-sol-1',
+        };
+        emitter.emit({
+          ...ctx,
+          stage: 7,
+          eventType: 'EXCHANGE_FILL_CONFIRMED',
+          status: 'PASS',
+          severity: 'INFO',
+          emittedAtMs: t0 + 100,
+          component: 'TradingBot',
+          message: 'Filled on Bybit Demo',
+          outputSummary: { side: 'BUY', filledQty: 0.6, avgFillPrice: 72.22, slPrice: 71.48, tpPrice: 73.41 },
+        });
+        emitter.emit({
+          ...ctx,
+          stage: 7,
+          eventType: 'POSITION_D1_SYNCED',
+          status: 'PASS',
+          severity: 'INFO',
+          emittedAtMs: t0 + 200,
+          component: 'TradingBot',
+          message: 'Position synced OPEN to D1',
+          outputSummary: { d1SyncStatus: 'OPEN', filledQty: 0.6, avgFillPrice: 72.22 },
+        });
+      });
+
+      // Stage 8 FCM failure carrying the same alertId + orderId
+      await emitAndIngest(db, 'crypto-pulse-backend', (emitter) => {
+        emitter.emit({
+          userId: 'user-audit',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          cycleId: 'cyc-sol-1',
+          traceId: 'tr-sol-1',
+          environment: 'demo',
+          stage: 8,
+          eventType: 'FCM_DISPATCH_FAILED',
+          status: 'FAIL',
+          severity: 'ERROR',
+          errorCode: 'NO_FCM_CREDENTIALS',
+          symbol: 'SOL/USDT',
+          strategyId: 'VWAP_NEW',
+          timeframe: '15m',
+          alertId: 'alt-sol-1',
+          orderId: 'ord-sol-1',
+          emittedAtMs: t0 + 300,
+          component: 'notifications.ts',
+          message: 'Neither FCM v1 nor FCM Legacy credentials configured',
+          outputSummary: {
+            notificationType: 'TRADE_FILLED',
+            fcmDispatchStatus: 'FAILED',
+            price: 72.22,
+            hasPlaceholderPnl3: true,
+            hasTimeframe: false,
+          },
+        });
+      });
+
+      const jwt = await signJwt(env.JWT_SECRET!, { sub: 'user-audit', role: 'ADMIN' });
+      const tradesRes = await apiReq(env, '/api/monitor/v2/trades', { jwt });
+      expect(tradesRes.status).toBe(200);
+      expect(tradesRes.body.items).toHaveLength(1);
+      const trade = tradesRes.body.items[0];
+      expect(trade.hasFillConfirmation).toBe(true);
+      expect(trade.executionStatus).toBe('PROTECTED');
+      expect(trade.currentMilestone).toBe('POSITION_D1_SYNCED');
+      expect(trade.notificationStatus).toBe('FCM_FAILED');
+      expect(trade.notificationErrorCode).toBe('NO_FCM_CREDENTIALS');
+      expect(trade.errorCode).toBeNull();
+      expect(trade.milestones.terminalFailedAtMs).toBeNull();
+      expect(trade.closeTelemetry).toMatchObject({
+        closeRecorded: false,
+        status: 'CLOSE_TELEMETRY_NOT_EMITTED_BY_PRODUCER',
+        closedAtMs: null,
+        exitPrice: null,
+        realizedPnl: null,
+      });
+    });
+
+    it('Priority 2 & Section 3: separates TRADE_ALERT and TRADE_FILLED parity records, prevents fill price from overwriting signal entryPrice, ignores null-alertId secondary popup renders, and shows polling fallback delivery separately from FCM failure', async () => {
+      const db = new SqliteD1Database();
+      const env = createEnv(db);
+      const t0 = Date.now() - 10_000;
+
+      // 1. TRADE_ALERT Stage 8 (FCM fails with NO_FCM_CREDENTIALS, signal entryPrice = 72.31)
+      await emitAndIngest(db, 'crypto-pulse-backend', (emitter) => {
+        emitter.emit({
+          userId: 'user-p2',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 8,
+          eventType: 'FCM_DISPATCH_FAILED',
+          status: 'FAIL',
+          severity: 'ERROR',
+          errorCode: 'NO_FCM_CREDENTIALS',
+          alertId: 'alt-sol-parity',
+          symbol: 'SOL/USDT',
+          strategyId: 'VWAP_NEW',
+          timeframe: '15m',
+          emittedAtMs: t0,
+          component: 'notifications.ts',
+          message: 'No FCM credentials',
+          outputSummary: {
+            notificationType: 'TRADE_ALERT',
+            fcmDispatchStatus: 'FAILED',
+            price: 72.31,
+            stopLoss: 71.48,
+            takeProfit: 73.41,
+            isExecutable: true,
+          },
+        });
+      });
+
+      // 2. Stage 9 Android receipt via POLL_FALLBACK + postcheck + popup render (entryPrice = 72.31) + secondary null-alertId popup render
+      await emitAndIngest(db, 'android-app', (emitter) => {
+        emitter.emit({
+          contractVersion: STAGE9_CONTRACT_VERSION,
+          userId: 'user-p2',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 9,
+          eventType: STAGE9_EVENT_TYPES.POLL_RECEIVED,
+          status: 'PASS',
+          severity: 'INFO',
+          alertId: 'alt-sol-parity',
+          symbol: 'SOL/USDT',
+          strategyId: 'VWAP_NEW',
+          timeframe: '15m',
+          emittedAtMs: t0 + 100,
+          component: 'BackgroundMonitoringService',
+          message: 'Poll received',
+        });
+        emitter.emit({
+          contractVersion: STAGE9_CONTRACT_VERSION,
+          userId: 'user-p2',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 9,
+          eventType: STAGE9_EVENT_TYPES.NOTIFICATION_POST_CHECK,
+          status: 'PASS',
+          severity: 'INFO',
+          alertId: 'alt-sol-parity',
+          symbol: 'SOL/USDT',
+          strategyId: 'VWAP_NEW',
+          timeframe: '15m',
+          emittedAtMs: t0 + 150,
+          component: 'TradeAlertManager',
+          message: 'Post-check ok',
+          outputSummary: {
+            postNotifyVerified: true,
+            androidOsHeadsUpState: ANDROID_HEADSUP_STATES.ELIGIBLE_OS_UNPROVABLE,
+          },
+        });
+        emitter.emit({
+          contractVersion: STAGE9_CONTRACT_VERSION,
+          userId: 'user-p2',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 9,
+          eventType: STAGE9_EVENT_TYPES.POPUP_RENDERED,
+          status: 'PASS',
+          severity: 'INFO',
+          alertId: 'alt-sol-parity',
+          symbol: 'SOL/USDT',
+          strategyId: 'VWAP_NEW',
+          timeframe: '15m',
+          emittedAtMs: t0 + 200,
+          component: 'TradeAlertScreen',
+          message: 'Popup rendered',
+          outputSummary: {
+            rendered: true,
+            renderedFields: {
+              symbol: 'SOL/USDT',
+              strategyId: 'VWAP_NEW',
+              timeframe: '15m',
+              entryPrice: 72.31,
+              stopLossPrice: 71.48,
+              takeProfitPrice: 73.41,
+              isExecutable: true,
+            },
+          },
+        });
+        // Secondary orphan popup render with null alertId (must NOT create PENDING_BACKEND row)
+        emitter.emit({
+          contractVersion: STAGE9_CONTRACT_VERSION,
+          userId: 'user-p2',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 9,
+          eventType: STAGE9_EVENT_TYPES.POPUP_RENDERED,
+          status: 'PASS',
+          severity: 'INFO',
+          symbol: 'SOL/USDT',
+          emittedAtMs: t0 + 500,
+          component: 'TradeAlertScreen',
+          message: 'Secondary post-fill render without alertId',
+          outputSummary: {
+            rendered: true,
+            renderedFields: { symbol: 'SOL/USDT', entryPrice: 72.31, stopLossPrice: 0, takeProfitPrice: 0 },
+          },
+        });
+      });
+
+      // 3. TRADE_FILLED Stage 8 arrives with fill price 72.22 (must NOT overwrite TRADE_ALERT entryPrice 72.31)
+      await emitAndIngest(db, 'crypto-pulse-backend', (emitter) => {
+        emitter.emit({
+          userId: 'user-p2',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 8,
+          eventType: 'FCM_DISPATCH_FAILED',
+          status: 'FAIL',
+          severity: 'ERROR',
+          errorCode: 'NO_FCM_CREDENTIALS',
+          alertId: 'alt-sol-parity',
+          orderId: 'ord-sol-parity',
+          symbol: 'SOL/USDT',
+          strategyId: 'VWAP_NEW',
+          emittedAtMs: t0 + 400,
+          component: 'notifications.ts',
+          message: 'No FCM credentials on fill push',
+          outputSummary: {
+            notificationType: 'TRADE_FILLED',
+            fcmDispatchStatus: 'FAILED',
+            price: 72.22,
+            hasPlaceholderPnl3: true,
+            hasTimeframe: false,
+          },
+        });
+      });
+
+      const jwt = await signJwt(env.JWT_SECRET!, { sub: 'user-p2', role: 'ADMIN' });
+      const res = await apiReq(env, '/api/monitor/v2/notifications', { jwt });
+      expect(res.status).toBe(200);
+      expect(res.body.summary.pendingBackendCount).toBe(0);
+      expect(res.body.summary.parityOkCount).toBe(1);
+      expect(res.body.summary.pollFallbackDeliveredCount).toBe(1);
+      expect(res.body.summary.fcmDispatchFailedCount).toBe(2);
+      expect(res.body.items).toHaveLength(2);
+
+      const alertRow = res.body.items.find((i: any) => i.notificationCategory === 'TRADE_ALERT');
+      const fillRow = res.body.items.find((i: any) => i.notificationCategory === 'TRADE_FILLED');
+      expect(alertRow).toBeDefined();
+      expect(alertRow.parityStatus).toBe(PARITY_STATUSES.PARITY_OK);
+      expect(alertRow.parityMismatches).toEqual([]);
+      expect(alertRow.fcmDeliveryStatus).toBe('FCM_FAILED');
+      expect(alertRow.androidDeliveryStatus).toBe('DELIVERED_VIA_POLL_FALLBACK');
+      expect(alertRow.backendPayload.price).toBe(72.31);
+
+      expect(fillRow).toBeDefined();
+      expect(fillRow.correlationKey).toContain(':TRADE_FILLED');
+      expect(fillRow.fcmDeliveryStatus).toBe('FCM_FAILED');
+      expect(fillRow.backendPayload.fillPrice).toBe(72.22);
+    });
+
+    it('Priority 3, 4, 5 & 6: recognises AUTHENTICATED_ACCOUNT & partitioned PUBLIC_MARKET_DATA, distinguishes unavailable TA fields from actual NULLs, and classifies APPROVAL_EXPIRED_OR_INVALID & expected Stage 6 blocks without marking pipeline FAIL', async () => {
+      const db = new SqliteD1Database();
+      const env = createEnv(db);
+      const nowMs = Date.now();
+
+      await emitAndIngest(db, 'trading-bot-do', (emitter) => {
+        // Stage 1: Public market data followed by 55 ALARM_CYCLE windows + AUTHENTICATED_ACCOUNT window
+        emitter.emit({
+          userId: 'user-p3456',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 1,
+          eventType: 'BYBIT_HTTP_OK',
+          status: 'PASS',
+          severity: 'INFO',
+          emittedAtMs: nowMs - 20_000,
+          component: 'BybitAdapter',
+          message: 'Fetched kline',
+          outputSummary: { channel: 'PUBLIC_MARKET_DATA', endpoint: '/v5/market/kline', httpStatus: 200, retCode: 0, latencyMs: 110 },
+        });
+        for (let i = 0; i < 55; i++) {
+          emitter.emit({
+            userId: 'user-p3456',
+            journey: 'JOURNEY_B_AUTONOMOUS',
+            stage: 1,
+            eventType: 'AUTONOMOUS_CYCLE_START',
+            status: 'PASS',
+            severity: 'INFO',
+            emittedAtMs: nowMs - 19_000 + i * 100,
+            component: 'TradingBot',
+            message: `Alarm tick ${i}`,
+            outputSummary: { channel: 'ALARM_CYCLE' },
+          });
+        }
+        emitter.emit({
+          userId: 'user-p3456',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 1,
+          eventType: 'BYBIT_HTTP_OK',
+          status: 'PASS',
+          severity: 'INFO',
+          emittedAtMs: nowMs - 2_000,
+          component: 'BybitAdapter',
+          message: 'Wallet balance OK',
+          outputSummary: { channel: 'AUTHENTICATED_ACCOUNT', endpoint: '/v5/account/wallet-balance', httpStatus: 200, retCode: 0, latencyMs: 185 },
+        });
+
+        // Stage 2: Expired approval handoff
+        emitter.emit({
+          userId: 'user-p3456',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 2,
+          eventType: 'DISCOVERY_HANDOFF_CONSUMED',
+          status: 'FAIL',
+          severity: 'WARNING',
+          errorCode: 'APPROVAL_EXPIRED_OR_INVALID',
+          emittedAtMs: nowMs - 1_500,
+          component: 'TradingBot',
+          message: 'Autonomous cycle blocked: Stage 2 discovery approval expired (APPROVAL_EXPIRED_OR_INVALID)',
+          outputSummary: { valid: false, reasonCode: 'APPROVAL_EXPIRED_OR_INVALID' },
+        });
+
+        // Stage 4: Summary-only TA_COMPUTED (unavailable indicator fields) vs SKIPPED (actual NULLs)
+        emitter.emit({
+          userId: 'user-p3456',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 4,
+          eventType: 'TA_COMPUTED',
+          status: 'PASS',
+          severity: 'INFO',
+          symbol: 'SOL/USDT',
+          timeframe: '15m',
+          emittedAtMs: nowMs - 5_000,
+          component: 'StrategyOrchestrator',
+          message: 'Canonical TA computed',
+          inputSummary: { candlesCount: 203, minRequiredBars: 200 },
+          outputSummary: { timeframe: '15m', indicatorEngine: 'CANONICAL', confidenceScore: 80 },
+        });
+        emitter.emit({
+          userId: 'user-p3456',
+          journey: 'JOURNEY_A_DISCOVERY',
+          stage: 4,
+          eventType: 'TA_COMPUTED',
+          status: 'SKIPPED',
+          severity: 'WARNING',
+          symbol: 'NEW/USDT',
+          timeframe: '15m',
+          emittedAtMs: nowMs - 4_000,
+          component: 'MarketOpportunityScanner',
+          message: 'Insufficient bars',
+          outputSummary: { skipReason: 'INSUFFICIENT_BARS', candlesCount: 5, minRequiredBars: 20, rsi: null },
+        });
+
+        // Stage 6: Expected safety gate block (REGIME_PROHIBITED & HTF_CONFLICT)
+        emitter.emit({
+          userId: 'user-p3456',
+          journey: 'JOURNEY_B_AUTONOMOUS',
+          stage: 6,
+          eventType: 'FINAL_DISPATCH_GATE',
+          status: 'FAIL',
+          severity: 'WARNING',
+          errorCode: 'REGIME_PROHIBITED',
+          symbol: 'HYPE/USDT',
+          strategyId: 'Momentum',
+          timeframe: '15m',
+          emittedAtMs: nowMs - 3_000,
+          component: 'TradingBot',
+          message: 'Final dispatch gate blocked trade: REGIME_PROHIBITED',
+          outputSummary: {
+            gateName: 'FinalDispatchGate',
+            gateCategory: 'FINAL_DISPATCH_GATE',
+            decision: 'BLOCK',
+            reason: 'REGIME_PROHIBITED: Momentum prohibited in RANGING regime',
+          },
+        });
+      });
+
+      const jwt = await signJwt(env.JWT_SECRET!, { sub: 'user-p3456', role: 'ADMIN' });
+      const ovRes = await apiReq(env, '/api/monitor/v2/overview', { jwt });
+      expect(ovRes.status).toBe(200);
+
+      // Priority 3: Both publicMarketData and privateAccount are CONNECTED despite 55 ALARM_CYCLE rows
+      expect(ovRes.body.exchangeHealth.publicMarketData.honestState).toBe('CONNECTED');
+      expect(ovRes.body.exchangeHealth.publicMarketData.channel).toBe('PUBLIC_MARKET_DATA');
+      expect(ovRes.body.exchangeHealth.privateAccount.honestState).toBe('CONNECTED');
+      expect(ovRes.body.exchangeHealth.privateAccount.channel).toBe('AUTHENTICATED_ACCOUNT');
+
+      // Priority 5: Stage 2 is STALE (not FAIL) and preserves APPROVAL_EXPIRED_OR_INVALID
+      const stage2 = ovRes.body.stages.find((s: any) => s.stage === 2);
+      expect(stage2.honestState).toBe('STALE');
+      expect(stage2.failCount).toBe(0);
+      expect(stage2.expiredApprovalCount).toBe(1);
+      expect(stage2.latestErrorCode).toBe('APPROVAL_EXPIRED_OR_INVALID');
+      expect(stage2.latestClassification).toBe('APPROVAL_EXPIRED_STALE');
+
+      // Priority 6: Stage 6 is HEALTHY (not FAIL) and preserves expectedBlockCount = 1
+      const stage6 = ovRes.body.stages.find((s: any) => s.stage === 6);
+      expect(stage6.honestState).toBe('HEALTHY');
+      expect(stage6.failCount).toBe(0);
+      expect(stage6.expectedBlockCount).toBe(1);
+      expect(stage6.latestClassification).toBe('EXPECTED_SAFETY_BLOCK');
+
+      // Zero false system failure incidents recorded for stale approval or expected safety gate block
+      expect(ovRes.body.recentIncidentsCount).toBe(0);
+
+      // Priority 4: TA endpoint distinguishes SUMMARY_ONLY_INDICATORS_NOT_EMITTED from SKIPPED_NULL without fabricating numbers
+      const taRes = await apiReq(env, '/api/monitor/v2/ta', { jwt });
+      const solTa = taRes.body.items.find((r: any) => r.symbol === 'SOL/USDT');
+      const skipTa = taRes.body.items.find((r: any) => r.symbol === 'NEW/USDT');
+      expect(solTa.rsi).toBeNull();
+      expect(solTa.indicatorTelemetryStatus).toBe('SUMMARY_ONLY_INDICATORS_NOT_EMITTED');
+      expect(solTa.indicatorFieldStates.rsi).toBe('UNAVAILABLE_IN_TELEMETRY');
+      expect(solTa.confidenceScore).toBe(80);
+      expect(skipTa.rsi).toBeNull();
+      expect(skipTa.indicatorTelemetryStatus).toBe('SKIPPED_NULL');
+      expect(skipTa.indicatorFieldStates.rsi).toBe('ACTUAL_NULL');
+
+      // Priority 6: Strategies & gates preserves gateDecision: BLOCK and reason while classifying as EXPECTED_SAFETY_BLOCK
+      const sgRes = await apiReq(env, '/api/monitor/v2/strategies-gates', { jwt });
+      expect(sgRes.body.gateEvaluations[0]).toMatchObject({
+        decision: 'BLOCK',
+        gateDecision: 'BLOCK',
+        classification: 'EXPECTED_SAFETY_BLOCK',
+        isSystemError: false,
+      });
+      expect(sgRes.body.gateEvaluations[0].reason).toContain('REGIME_PROHIBITED');
+    });
+  });
 });

@@ -213,11 +213,11 @@ describe('Phase 1 — Shared Public Market-Data Cache & Single-Flight Coalescing
 
     const responses = await Promise.all(contexts.map((ctx) => handleGetMarketOpportunities(ctx) as Promise<any>));
 
-    // Upstream call counts: 1 fetchMarkets + 1 fetchTickers + 32 fetchCandles (8 symbols * 4 TFs) = 34 total
+    // Upstream call counts: 1 fetchMarkets + 1 fetchTickers + 24 fetchCandles (8 symbols * 3 TFs) = 26 total
     // vs 20 * 34 = 680 upstream requests before Phase 1.
     expect(mockAdapter.fetchMarkets).toHaveBeenCalledTimes(1);
     expect(mockAdapter.fetchTickers).toHaveBeenCalledTimes(1);
-    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(32);
+    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(24);
 
     // Anonymous public provider verification
     expect(providerConfigs).toHaveLength(1);
@@ -286,7 +286,7 @@ describe('Phase 1 — Shared Public Market-Data Cache & Single-Flight Coalescing
 
     expect(mockAdapter.fetchMarkets).toHaveBeenCalledTimes(1);
     expect(mockAdapter.fetchTickers).toHaveBeenCalledTimes(1);
-    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(32);
+    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(24);
 
     const cycleIds = new Set(responses.map((r) => r.telemetry.cycleId));
     expect(cycleIds.size).toBe(1);
@@ -310,12 +310,12 @@ describe('Phase 1 — Shared Public Market-Data Cache & Single-Flight Coalescing
 
     vi.spyOn(ExchangeManager, 'getProvider').mockResolvedValue(mockAdapter as any);
 
-    // t = 0s: Cold cache -> 1 markets, 1 tickers, 32 candles (8 symbols * 4 TFs)
+    // t = 0s: Cold cache -> 1 markets, 1 tickers, 24 candles (8 symbols * 3 TFs)
     const r1 = (await handleGetMarketOpportunities(createMockContext({ userId: 'ttl-user-1' }))) as any;
     expect(r1.success).toBe(true);
     expect(mockAdapter.fetchMarkets).toHaveBeenCalledTimes(1);
     expect(mockAdapter.fetchTickers).toHaveBeenCalledTimes(1);
-    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(32);
+    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(24);
 
     // t = 15s (< 30s TTL): Warm cache hit for a DIFFERENT user -> 0 upstream calls
     vi.setSystemTime(startMs + 15_000);
@@ -323,17 +323,17 @@ describe('Phase 1 — Shared Public Market-Data Cache & Single-Flight Coalescing
     expect(r2.telemetry.cycleId).toBe(r1.telemetry.cycleId);
     expect(mockAdapter.fetchMarkets).toHaveBeenCalledTimes(1);
     expect(mockAdapter.fetchTickers).toHaveBeenCalledTimes(1);
-    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(32);
+    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(24);
 
     // t = 31s (> 30s opportunity TTL; > 15s 5m candle TTL; < 60s 15m TTL; < 5m 1h TTL; < 15m 4h TTL)
-    // Only 5m candles (8 symbols) expire and re-fetch; 4h, 1h, and 15m (24 series) are served from CandleStore!
+    // Only 5m candles (8 symbols) expire and re-fetch; 1h and 15m (16 series) are served from CandleStore!
     vi.setSystemTime(startMs + 31_000);
     const r3 = (await handleGetMarketOpportunities(createMockContext({ userId: 'ttl-user-3' }))) as any;
     expect(r3.success).toBe(true);
     expect(r3.telemetry.cycleId).not.toBe(r1.telemetry.cycleId);
     expect(mockAdapter.fetchMarkets).toHaveBeenCalledTimes(2);
     expect(mockAdapter.fetchTickers).toHaveBeenCalledTimes(2);
-    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(32 + 8);
+    expect(mockAdapter.fetchCandles).toHaveBeenCalledTimes(24 + 8);
   });
 
   it('4. does not cache failed or degraded scans, removes failed promises safely, and recovers on retry', async () => {
@@ -523,23 +523,23 @@ describe('Phase 1 — Shared Public Market-Data Cache & Single-Flight Coalescing
       createMockContext({ userId: 'main-1', environment: 'mainnet' })
     )) as any;
     expect(mainRes1.opportunities[0].dominantDirection).toBe('LONG');
-    expect(mainnetAdapter.fetchCandles).toHaveBeenCalledTimes(4);
+    expect(mainnetAdapter.fetchCandles).toHaveBeenCalledTimes(3);
 
-    // Advance 31s so opportunity cache expires, while 4h/1h/15m candles in mainnet CandleStore remain warm
+    // Advance 31s so opportunity cache expires, while 1h/15m candles in mainnet CandleStore remain warm
     vi.setSystemTime(t0 + 31_000);
 
-    // Testnet scan for the SAME symbol BTC/USDT MUST NOT reuse mainnet's cached 4h/1h/15m BULL candles!
+    // Testnet scan for the SAME symbol BTC/USDT MUST NOT reuse mainnet's cached 1h/15m BULL candles!
     const testRes = (await handleGetMarketOpportunities(
       createMockContext({ userId: 'test-1', environment: 'testnet' })
     )) as any;
-    expect(testnetAdapter.fetchCandles).toHaveBeenCalledTimes(4);
+    expect(testnetAdapter.fetchCandles).toHaveBeenCalledTimes(3);
     expect(testRes.opportunities[0].dominantDirection).toBe('SHORT');
 
-    // Mainnet scan at t0 + 31s reuses mainnet's warm 4h/1h/15m candles (fetching only expired 5m) and stays LONG
+    // Mainnet scan at t0 + 31s reuses mainnet's warm 1h/15m candles (fetching only expired 5m) and stays LONG
     const mainRes2 = (await handleGetMarketOpportunities(
       createMockContext({ userId: 'main-2', environment: 'mainnet' })
     )) as any;
-    expect(mainnetAdapter.fetchCandles).toHaveBeenCalledTimes(4 + 1);
+    expect(mainnetAdapter.fetchCandles).toHaveBeenCalledTimes(3 + 1);
     expect(mainRes2.opportunities[0].dominantDirection).toBe('LONG');
 
     const diag = __getPublicOpportunityDiagnosticsForTests();

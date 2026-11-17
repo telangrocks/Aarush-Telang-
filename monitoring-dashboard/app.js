@@ -147,6 +147,37 @@
     return n.toFixed(digits);
   }
 
+  function formatTaIndicatorCell(row, fieldKey, digits = 2) {
+    const val = row ? row[fieldKey] : null;
+    if (val !== null && val !== undefined && Number.isFinite(Number(val))) {
+      return Number(val).toFixed(digits);
+    }
+    const fieldState = row?.indicatorFieldStates ? row.indicatorFieldStates[fieldKey] : null;
+    if (
+      fieldState === 'UNAVAILABLE_IN_TELEMETRY' ||
+      row?.indicatorTelemetryStatus === 'SUMMARY_ONLY_INDICATORS_NOT_EMITTED'
+    ) {
+      return '<span class="badge badge-disconnected" title="Unavailable in telemetry: producer emitted TA summary without individual scalar indicator values (not an actual NULL indicator calculation)">NOT_EMITTED</span>';
+    }
+    return '<span class="muted" title="Actual NULL indicator value">NULL</span>';
+  }
+
+  function formatTaRegimeCell(row) {
+    if (row?.regime) {
+      const conf = row.confidenceScore != null ? ` (${Number(row.confidenceScore).toFixed(0)}%)` : '';
+      return `${escapeHtml(row.regime)}${escapeHtml(conf)}`;
+    }
+    const fieldState = row?.indicatorFieldStates ? row.indicatorFieldStates.regime : null;
+    if (
+      fieldState === 'UNAVAILABLE_IN_TELEMETRY' ||
+      row?.indicatorTelemetryStatus === 'SUMMARY_ONLY_INDICATORS_NOT_EMITTED'
+    ) {
+      const conf = row?.confidenceScore != null ? `<div class="mono muted">conf=${Number(row.confidenceScore).toFixed(0)}</div>` : '';
+      return `<span class="badge badge-disconnected" title="Unavailable in telemetry: regime not included in Stage 4 TA_COMPUTED outputSummary">NOT_EMITTED</span>${conf}`;
+    }
+    return '<span class="muted">NULL</span>';
+  }
+
   function stateBadgeClass(status) {
     const s = String(status || '').toUpperCase();
     if (['HEALTHY', 'CONNECTED', 'PASS', 'PARITY_OK', 'MATCHED', 'FINAL_APPROVED', 'ELIGIBLE', 'PROTECTED'].includes(s)) return 'badge-healthy';
@@ -343,6 +374,13 @@
         const hs = escapeHtml(s.honestState);
         const latestCtx = s.latestSymbol ? ` • ${escapeHtml(s.latestSymbol)}` : '';
         const errCode = s.latestErrorCode ? ` [${escapeHtml(s.latestErrorCode)}]` : '';
+        const extraCounts = [
+          s.expiredApprovalCount > 0 ? `StaleExp:${Number(s.expiredApprovalCount)}` : '',
+          s.expectedBlockCount > 0 ? `GateBlock:${Number(s.expectedBlockCount)}` : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        const classLabel = s.latestClassification ? ` (${escapeHtml(s.latestClassification)})` : '';
         return `
           <div class="stage-card state-${hs}" data-jump-stage="${Number(s.stage)}">
             <div class="stage-top">
@@ -350,8 +388,8 @@
               <span class="badge ${stateBadgeClass(s.honestState)}">${hs}</span>
             </div>
             <div class="stage-title">${escapeHtml(s.name)}</div>
-            <div class="stage-counts">P:${Number(s.passCount)} W:${Number(s.warnCount)} F:${Number(s.failCount)} S:${Number(s.skippedCount)} (${escapeHtml(formatAge(s.ageMs))})</div>
-            <div class="stage-msg" title="${escapeHtml(s.latestMessage)}">${escapeHtml(s.latestEventType || 'IDLE')}${latestCtx}${errCode}: ${escapeHtml(s.latestMessage)}</div>
+            <div class="stage-counts">P:${Number(s.passCount)} W:${Number(s.warnCount)} F:${Number(s.failCount)} S:${Number(s.skippedCount)}${extraCounts ? ` ${escapeHtml(extraCounts)}` : ''} (${escapeHtml(formatAge(s.ageMs))})</div>
+            <div class="stage-msg" title="${escapeHtml(s.latestMessage)}">${escapeHtml(s.latestEventType || 'IDLE')}${latestCtx}${errCode}${classLabel}: ${escapeHtml(s.latestMessage)}</div>
           </div>
         `;
       })
@@ -495,12 +533,19 @@
               ${t.skipReason ? `<div class="mono muted">${escapeHtml(t.skipReason)}</div>` : ''}
             </td>
             <td class="mono">${t.candlesCount ?? '—'} / ${t.minRequiredBars ?? '—'}</td>
-            <td class="mono">${formatNullableNum(t.rsi, 2)}</td>
-            <td class="mono">${formatNullableNum(t.ema21, 2)}</td>
-            <td class="mono">${formatNullableNum(t.adx, 2)}</td>
-            <td class="mono">${formatNullableNum(t.vwap, 2)}</td>
-            <td class="mono">${escapeHtml(t.regime || '—')}</td>
-            <td>${t.antiFabricationVerified ? '<span class="badge badge-healthy">VERIFIED</span>' : '<span class="badge badge-fail">FABRICATED_NUM</span>'}</td>
+            <td class="mono">${formatTaIndicatorCell(t, 'rsi', 2)}</td>
+            <td class="mono">${formatTaIndicatorCell(t, 'ema21', 2)}</td>
+            <td class="mono">${formatTaIndicatorCell(t, 'adx', 2)}</td>
+            <td class="mono">${formatTaIndicatorCell(t, 'vwap', 2)}</td>
+            <td class="mono">${formatTaRegimeCell(t)}</td>
+            <td>
+              ${t.antiFabricationVerified ? '<span class="badge badge-healthy">VERIFIED</span>' : '<span class="badge badge-fail">FABRICATED_NUM</span>'}
+              ${
+                t.indicatorTelemetryStatus === 'SUMMARY_ONLY_INDICATORS_NOT_EMITTED'
+                  ? `<div class="mono muted small-text" title="${escapeHtml(t.telemetryLimitationNote || '')}">SUMMARY_ONLY (NO SCALARS)</div>`
+                  : ''
+              }
+            </td>
           </tr>
         `
             )
@@ -568,6 +613,7 @@
               </div>
               <div>
                 <span class="badge ${stateBadgeClass(sp.status)}">${escapeHtml(sp.status)}</span>
+                ${sp.monitoringClassification ? `<span class="badge badge-info">${escapeHtml(sp.monitoringClassification)}</span>` : ''}
                 <span class="badge badge-disconnected">${escapeHtml(sp.deliveryMilestone || 'D1_COMMITTED')}</span>
               </div>
             </div>
@@ -618,17 +664,27 @@
       gates.length === 0
         ? '<tr><td colspan="5" class="muted">No Stage 5/6 gate evaluations recorded in scope.</td></tr>'
         : gates
-            .map(
-              (g) => `
+            .map((g) => {
+              const isExpectedBlock = g.classification === 'EXPECTED_SAFETY_BLOCK';
+              const decisionBadgeClass =
+                g.decision === 'PASS' || g.decision === 'ALLOWED' || g.decision === 'ALLOW'
+                  ? 'badge-healthy'
+                  : isExpectedBlock
+                    ? 'badge-info'
+                    : 'badge-fail';
+              const decisionLabel = isExpectedBlock
+                ? `${escapeHtml(g.gateDecision || g.decision)} (EXPECTED SAFETY BLOCK)`
+                : escapeHtml(g.gateDecision || g.decision);
+              return `
           <tr>
             <td class="mono"><strong>S${Number(g.stage)} ${escapeHtml(g.gateName)}</strong><div class="muted">${escapeHtml(g.gateCategory)}</div></td>
-            <td><span class="badge ${stateBadgeClass(g.decision === 'PASS' || g.decision === 'ALLOWED' ? 'PASS' : 'FAIL')}">${escapeHtml(g.decision)}</span></td>
+            <td><span class="badge ${decisionBadgeClass}">${decisionLabel}</span></td>
             <td class="mono">${escapeHtml(g.symbol || '—')}<div class="muted">${escapeHtml(g.strategyId || '')} ${escapeHtml(g.timeframe || '')}</div></td>
             <td class="mono small-text">${escapeHtml(g.reason || '—')}<div class="muted">${escapeHtml(g.sourceFile || '')}</div></td>
             <td class="mono">${escapeHtml(formatTs(g.evaluatedAtMs))}</td>
           </tr>
-        `
-            )
+        `;
+            })
             .join('');
 
     const shadows = Array.isArray(data.shadowModeComparisons) ? data.shadowModeComparisons : [];
@@ -661,7 +717,8 @@
         : items
             .map((t) => {
               const m = t.milestones || {};
-              const pills = [
+              const ct = t.closeTelemetry || null;
+              const basePills = [
                 ['SIG', m.signalDetectedAtMs],
                 ['ALRT', m.tradeAlertCreatedAtMs],
                 ['WAL', m.orderIntentReservedAtMs],
@@ -678,6 +735,14 @@
                 })
                 .join('');
 
+              const closePill = ct?.closeRecorded
+                ? `<span class="ms-pill done" title="Verified close @ ${escapeHtml(String(ct.exitPrice ?? '—'))} (PnL: ${escapeHtml(String(ct.realizedPnl ?? '—'))})">CLOSE</span>`
+                : t.hasFillConfirmation
+                  ? `<span class="ms-pill" title="${escapeHtml(ct?.limitationNote || 'Close telemetry not emitted by producer')}">CLOSE:NOT_EMITTED</span>`
+                  : '';
+
+              const pills = `${basePills}${closePill}`;
+
               const ackFillBadge = t.hasFillConfirmation
                 ? '<span class="badge badge-healthy">FILL CONFIRMED</span>'
                 : t.isAckOnly
@@ -686,12 +751,22 @@
                     ? '<span class="badge badge-fail">TERMINAL FAIL</span>'
                     : '<span class="badge badge-disconnected">IN FLIGHT / NO FILL</span>';
 
+              const notifBadge = t.notificationStatus
+                ? `<div class="mono small-text" style="margin-top:4px;"><span class="badge ${t.notificationStatus === 'FCM_FAILED' ? 'badge-warn' : 'badge-info'}" title="Stage 8 Push Status (separate from Bybit execution)">Push: ${escapeHtml(t.notificationStatus)}</span></div>`
+                : '';
+
+              const closeNote = ct?.closeRecorded
+                ? `<div class="mono muted small-text">Closed @ ${formatNullableNum(ct.exitPrice, 2)} (PnL: ${formatNullableNum(ct.realizedPnl, 4)})</div>`
+                : t.hasFillConfirmation
+                  ? `<div class="mono muted small-text" title="${escapeHtml(ct?.limitationNote || '')}">Close telemetry: not emitted by producer</div>`
+                  : '';
+
               return `
                 <tr data-trade-id="${escapeHtml(t.tradeKey || t.orderId || t.alertId)}">
                   <td class="mono"><strong>${escapeHtml(t.symbol)}</strong> <span class="badge badge-info">${escapeHtml(t.side || '?')}</span><div class="muted">${escapeHtml(t.strategyId || '')}</div></td>
                   <td class="mono small-text">A:${escapeHtml(t.alertId || '—')}<div class="muted">O:${escapeHtml(t.orderId || '—')}</div></td>
-                  <td><span class="badge ${stateBadgeClass(t.executionStatus)}">${escapeHtml(t.currentMilestone)}</span><div class="mono muted">${escapeHtml(t.executionStatus)}</div></td>
-                  <td>${ackFillBadge}${t.bybitRetCode != null ? `<div class="mono muted">ret=${t.bybitRetCode} ${escapeHtml(t.bybitRetMsg || '')}</div>` : ''}</td>
+                  <td><span class="badge ${stateBadgeClass(t.executionStatus)}">${escapeHtml(t.currentMilestone)}</span><div class="mono muted">${escapeHtml(t.executionStatus)}</div>${notifBadge}</td>
+                  <td>${ackFillBadge}${t.bybitRetCode != null ? `<div class="mono muted">ret=${t.bybitRetCode} ${escapeHtml(t.bybitRetMsg || '')}</div>` : ''}${closeNote}</td>
                   <td class="mono">${formatNullableNum(t.requestedQty, 4)} / ${formatNullableNum(t.filledQty, 4)}<div class="muted">@ ${formatNullableNum(t.avgFillPrice ?? t.requestedPrice, 2)}</div></td>
                   <td class="mono">${formatNullableNum(t.slPrice, 2)} / ${formatNullableNum(t.tpPrice, 2)}</td>
                   <td><div class="milestone-strip">${pills}</div></td>
@@ -707,10 +782,12 @@
       ['Total', s.total || 0],
       ['Parity OK', s.parityOkCount ?? s.matchedCount ?? 0],
       ['Parity Mismatch', s.parityMismatchCount ?? s.mismatchCount ?? 0],
+      ['Poll Fallback Delivered', s.pollFallbackDeliveredCount || 0],
+      ['FCM Push Failed', s.fcmDispatchFailedCount ?? s.fcmFailedCount ?? 0],
       ['Pending Android', s.pendingAndroidCount || 0],
       ['Pending Backend', s.pendingBackendCount || 0],
       ['Dropped on Android', s.droppedOnAndroidCount || 0],
-      ['FCM Failed', s.fcmFailedCount || 0],
+      ['FCM Failed (No Receipt)', s.fcmFailedCount || 0],
       ['Eligible (OS Unprovable)', s.eligibleOsUnprovableCount || 0],
       ['Post-Check Missing', s.postCheckMissingCount || 0],
       ['Suppressed Precheck', s.suppressedPrecheckCount || 0],
@@ -725,12 +802,27 @@
         : items
             .map((n) => {
               const mismatches = Array.isArray(n.parityMismatches) ? n.parityMismatches : [];
+              const category = n.notificationCategory || n.backendEventType || 'TRADE_ALERT';
+              const fcmState = n.fcmDeliveryStatus || (n.fcmDispatchStatus === 'FAILED' ? 'FCM_FAILED' : 'FCM_SENT');
+              const androidDelivery = n.androidDeliveryStatus || '';
               return `
                 <tr>
-                  <td class="mono small-text"><strong>${escapeHtml(n.alertId || n.correlationKey)}</strong><div class="muted">${escapeHtml(n.fcmMessageId || 'No FCM ID')}</div></td>
+                  <td class="mono small-text"><strong>${escapeHtml(n.alertId || n.correlationKey)}</strong><div class="muted"><span class="badge badge-info">${escapeHtml(category)}</span> ${escapeHtml(n.fcmMessageId || 'No FCM ID')}</div></td>
                   <td class="mono">${escapeHtml(n.symbol || '—')}<div class="muted">${escapeHtml(n.strategyId || '—')} • ${escapeHtml(n.timeframe || 'NO_TF')}</div></td>
-                  <td class="mono small-text">${escapeHtml(n.backendEventType || '—')}<div class="muted">HTTP ${n.fcmHttpStatus ?? '—'} • ${escapeHtml(formatTs(n.backendDispatchedAtMs))}</div></td>
-                  <td class="mono small-text">${escapeHtml(n.androidSource || 'NONE')} • ${escapeHtml(n.androidDedupOutcome || '—')}<div class="muted">Val: ${escapeHtml(n.androidValidationOutcome || '—')}</div></td>
+                  <td class="mono small-text">
+                    <span class="badge ${fcmState === 'FCM_FAILED' ? 'badge-fail' : 'badge-healthy'}">${escapeHtml(fcmState)}</span>
+                    <div class="muted">${escapeHtml(n.backendEventType || '—')} • HTTP ${n.fcmHttpStatus ?? '—'} • ${escapeHtml(formatTs(n.backendDispatchedAtMs))}</div>
+                  </td>
+                  <td class="mono small-text">
+                    ${
+                      androidDelivery === 'DELIVERED_VIA_POLL_FALLBACK'
+                        ? '<span class="badge badge-healthy">POLL_FALLBACK DELIVERED</span>'
+                        : androidDelivery === 'NOT_APPLICABLE_FILL_NOTIFICATION'
+                          ? '<span class="badge badge-disconnected">FILL PUSH ONLY (NO ALERT POPUP)</span>'
+                          : escapeHtml(n.androidSource || 'NONE')
+                    }
+                    <div class="muted">Dedup: ${escapeHtml(n.androidDedupOutcome || '—')} • Val: ${escapeHtml(n.androidValidationOutcome || '—')}</div>
+                  </td>
                   <td><span class="badge ${stateBadgeClass(n.androidOsHeadsUpState)}">${escapeHtml(n.androidOsHeadsUpState || 'UNKNOWN')}</span>${n.androidEligibilityReason ? `<div class="mono muted">${escapeHtml(n.androidEligibilityReason)}</div>` : ''}</td>
                   <td>
                     <span class="badge ${stateBadgeClass(n.parityStatus)}">${escapeHtml(n.parityStatus)}</span>

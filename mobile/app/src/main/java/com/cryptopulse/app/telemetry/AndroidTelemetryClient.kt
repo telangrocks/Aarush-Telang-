@@ -1,5 +1,6 @@
 package com.cryptopulse.app.telemetry
 
+import com.cryptopulse.app.BuildConfig
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -63,7 +64,7 @@ class AndroidTelemetryClient(
     }
 
     companion object {
-        const val DEFAULT_ENDPOINT_URL = "https://crypto-pulse-backend.telangrocks.workers.dev/api/client/telemetry"
+        val DEFAULT_ENDPOINT_URL: String = BuildConfig.TELEMETRY_ENDPOINT_URL
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

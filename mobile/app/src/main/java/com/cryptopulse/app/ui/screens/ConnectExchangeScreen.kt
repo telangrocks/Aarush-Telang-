@@ -117,8 +117,11 @@ fun ConnectExchangeScreen(
             // Stay on Connect Exchange screen; do not redirect and do NOT call viewModel.resetState().
             return@LaunchedEffect
         }
-        val (isConnected, _, _) = withContext(Dispatchers.IO) {
+        val (isConnected, existingExchange, existingEnv) = withContext(Dispatchers.IO) {
             actualExchangeConnectionManager.getConnectionInfo()
+        }
+        if (isConnected) {
+            viewModel.syncRestoredConnection(existingExchange, existingEnv)
         }
         Log.d("ConnectExchangeScreen", "[DIAGNOSTIC] Initial connection check: isConnected=$isConnected")
         if (isConnected && !hasNavigatedToSetup) {
@@ -587,7 +590,12 @@ private fun ConnectExchangeEnvironmentToggle(
 
     LaunchedEffect(selectedEnvironment) {
         if (options.none { it.first.equals(selectedEnvironment, ignoreCase = true) }) {
-            onEnvironmentSelected("demo")
+            val canonical = com.cryptopulse.app.data.local.ExchangeConnectionManager.normalizeEnvironment(selectedEnvironment)
+            if (canonical != null) {
+                onEnvironmentSelected(canonical)
+            } else {
+                onEnvironmentSelected("demo")
+            }
         }
     }
 

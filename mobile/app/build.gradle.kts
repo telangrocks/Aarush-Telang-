@@ -4,6 +4,7 @@ plugins {
     kotlin("kapt")
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.google.services)
+    alias(libs.plugins.kotlin.compose)
 }
 
 
@@ -44,7 +45,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "BACKEND_BASE_URL", "\"https://crypto-pulse-backend-staging.telangrocks.workers.dev/\"")
+            buildConfigField("String", "TELEMETRY_ENDPOINT_URL", "\"https://crypto-pulse-backend-staging.telangrocks.workers.dev/api/client/telemetry\"")
+        }
         release {
+            buildConfigField("String", "BACKEND_BASE_URL", "\"https://crypto-pulse-backend.telangrocks.workers.dev/\"")
+            buildConfigField("String", "TELEMETRY_ENDPOINT_URL", "\"https://crypto-pulse-backend.telangrocks.workers.dev/api/client/telemetry\"")
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             val releaseKeystore = signingConfigs.getByName("release").storeFile
@@ -66,10 +73,10 @@ android {
         compose = true
         buildConfig = true
     }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.12"
-    }
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/LICENSE*"
@@ -153,8 +160,8 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-idling-resource:3.5.1")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    androidTestImplementation("com.google.dagger:hilt-android-testing:2.51.1")
-    kaptAndroidTest("com.google.dagger:hilt-compiler:2.51.1")
+    androidTestImplementation("com.google.dagger:hilt-android-testing:2.60.1")
+    kaptAndroidTest("com.google.dagger:hilt-compiler:2.60.1")
     androidTestUtil("androidx.test:orchestrator:1.4.2")
 }
 

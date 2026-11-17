@@ -75,9 +75,11 @@ import { chatWithKimiK3 } from "./services/kimi";
 import { LruTtlCache } from "./infrastructure/cache/LruTtlCache";
 import {
   bindTelemetryEnv,
+  checkStagingExchangeEnvironment,
   createScopedTelemetryEmitter,
   flushTelemetry,
   runWithTelemetryContext,
+  validateStagingIsolationEnv,
 } from "./infrastructure/monitoring/PipelineTelemetry";
 
 export interface Env {
@@ -98,6 +100,8 @@ export interface Env {
   AI?: Ai;
   ENVIRONMENT?: string;
   SIGNAL_MANAGER_MODE?: string;
+  /** Explicit staging-only exchange isolation constraint (e.g. "demo"); never set in production. */
+  STAGING_ISOLATION_MODE?: string;
   ADMIN_API_KEY?: string;
   ADMIN_EMAILS?: string;
   ADMIN_PASSWORD_HASH?: string;
@@ -198,14 +202,36 @@ app.use("*", async (c, next) => {
 const jsonEndpoints = ["/api/register", "/api/login", "/api/resend-verification", "/api/verify-email", "/api/forgot-password", "/api/reset-password", "/api/refresh", "/api/verify-pin", "/api/reset-pin", "/api/confirm-pin-reset"];
 
 app.get("/health", (c) => {
+  const stagingCfg = validateStagingIsolationEnv(c.env);
+  if (stagingCfg.isStaging && !stagingCfg.valid) {
+    c.status(stagingCfg.status as any);
+    return c.json({
+      status: "error",
+      code: stagingCfg.code,
+      error: stagingCfg.error,
+      message: stagingCfg.error,
+    });
+  }
   return c.json({
     status: "ok",
     service: "Crypto Pulse Backend",
+    environment: c.env?.ENVIRONMENT || "production",
+    stagingIsolationMode: c.env?.STAGING_ISOLATION_MODE || null,
     timestamp: new Date().toISOString(),
   });
 });
 
 app.use("*", async (c, next) => {
+  const stagingCfg = validateStagingIsolationEnv(c.env);
+  if (stagingCfg.isStaging && !stagingCfg.valid) {
+    c.status(stagingCfg.status as any);
+    return c.json({
+      success: false,
+      code: stagingCfg.code,
+      error: stagingCfg.error,
+      message: stagingCfg.error,
+    });
+  }
   if (
     c.req.method === "POST" &&
     jsonEndpoints.some((ep) => c.req.path.endsWith(ep))
@@ -383,6 +409,107 @@ api.use("*", async (c, next) => {
     }
   }
   await next();
+});
+
+// Staging-only exchange environment isolation guard (no-op in production where STAGING_ISOLATION_MODE is unset)
+api.use("*", async (c, next) => {
+  const stagingCfg = validateStagingIsolationEnv(c.env);
+  if (!stagingCfg.isStaging) {
+    return await next();
+  }
+  if (!stagingCfg.valid) {
+    c.status(stagingCfg.status as any);
+    return c.json({
+      success: false,
+      code: stagingCfg.code,
+      error: stagingCfg.error,
+      message: stagingCfg.error,
+    });
+  }
+
+  const subPath = c.req.path.replace(/^\/api/, "");
+  const isExchangeOrMarketOrBot =
+    subPath.startsWith("/exchange/") ||
+    subPath.startsWith("/market/") ||
+    subPath.startsWith("/trading-bot/");
+
+  if (isExchangeOrMarketOrBot) {
+    const queryEnv = c.req.query("environment");
+    if (queryEnv !== undefined) {
+      const qCheck = checkStagingExchangeEnvironment(c.env, queryEnv);
+      if (!qCheck.allowed) {
+        c.status(qCheck.status as any);
+        return c.json({ success: false, code: qCheck.code, error: qCheck.error, message: qCheck.error });
+      }
+    }
+    const headerEnv = c.req.header("x-exchange-environment");
+    if (headerEnv !== undefined) {
+      const hCheck = checkStagingExchangeEnvironment(c.env, headerEnv);
+      if (!hCheck.allowed) {
+        c.status(hCheck.status as any);
+        return c.json({ success: false, code: hCheck.code, error: hCheck.error, message: hCheck.error });
+      }
+    }
+
+    if (c.req.method === "POST" && (subPath === "/exchange/validate" || subPath === "/exchange/connect")) {
+      const rawBody = await c.req.raw.clone().json().catch(() => null) as Record<string, unknown> | null;
+      const bodyEnvCheck = checkStagingExchangeEnvironment(c.env, rawBody?.environment);
+      if (!bodyEnvCheck.allowed) {
+        c.status(bodyEnvCheck.status as any);
+        return c.json({
+          success: false,
+          code: bodyEnvCheck.code,
+          error: bodyEnvCheck.error,
+          message: bodyEnvCheck.error,
+        });
+      }
+    } else if (c.req.method === "POST" && subPath === "/trading-bot/activate") {
+      const rawBody = await c.req.raw.clone().json().catch(() => null) as Record<string, any> | null;
+      if (rawBody?.config && "environment" in rawBody.config) {
+        const cfgEnvCheck = checkStagingExchangeEnvironment(c.env, rawBody.config.environment);
+        if (!cfgEnvCheck.allowed) {
+          c.status(cfgEnvCheck.status as any);
+          return c.json({
+            success: false,
+            code: cfgEnvCheck.code,
+            error: cfgEnvCheck.error,
+            message: cfgEnvCheck.error,
+          });
+        }
+      }
+    }
+
+    if (
+      subPath !== "/exchange/validate" &&
+      subPath !== "/exchange/connect" &&
+      subPath !== "/market/strategies" &&
+      c.env.DB
+    ) {
+      const payload = c.get("jwtPayload") as { sub?: string } | undefined;
+      if (payload?.sub) {
+        const userRow = await c.env.DB.prepare(
+          "SELECT exchange_name, exchange_environment FROM users WHERE id = ?"
+        )
+          .bind(payload.sub)
+          .first<{ exchange_name: string | null; exchange_environment: string | null }>()
+          .catch(() => null);
+        if (userRow?.exchange_name) {
+          const storedEnvCheck = checkStagingExchangeEnvironment(c.env, userRow.exchange_environment);
+          if (!storedEnvCheck.allowed) {
+            c.status(storedEnvCheck.status as any);
+            return c.json({
+              success: false,
+              code: storedEnvCheck.code,
+              error: storedEnvCheck.error,
+              message: storedEnvCheck.error,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return await next();
 });
 
 api.get("/profile", handleGetProfile);

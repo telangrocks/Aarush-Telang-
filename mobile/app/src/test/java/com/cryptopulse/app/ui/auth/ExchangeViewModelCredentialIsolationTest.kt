@@ -1,7 +1,9 @@
 package com.cryptopulse.app.ui.auth
 
+import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ExchangeViewModelCredentialIsolationTest {
@@ -115,5 +117,34 @@ class ExchangeViewModelCredentialIsolationTest {
     fun `test H - ExchangeUiState includes CheckingConnection state`() {
         val checkingState: ExchangeUiState = ExchangeUiState.CheckingConnection
         assertEquals(ExchangeUiState.CheckingConnection, checkingState)
+    }
+
+    @Test
+    fun `test I - selectEnvironment normalizes aliases (Real, LIVE, Production, DEMO) to canonical mainnet or demo`() {
+        var state = ExchangeFormState()
+        state = state.selectEnvironment("Real")
+        assertEquals("mainnet", state.environment)
+
+        state = state.selectEnvironment("DEMO")
+        assertEquals("demo", state.environment)
+
+        state = state.selectEnvironment("production")
+        assertEquals("mainnet", state.environment)
+    }
+
+    @Test
+    fun `test J - ExchangeConnectionManager normalizeEnvironment rejects testnet (returns null) and never aliases testnet to demo`() {
+        assertEquals("demo", ExchangeConnectionManager.normalizeEnvironment("demo"))
+        assertEquals("demo", ExchangeConnectionManager.normalizeEnvironment("DEMO"))
+        assertEquals("mainnet", ExchangeConnectionManager.normalizeEnvironment("mainnet"))
+        assertEquals("mainnet", ExchangeConnectionManager.normalizeEnvironment("real"))
+        assertEquals("mainnet", ExchangeConnectionManager.normalizeEnvironment("live"))
+        assertEquals("mainnet", ExchangeConnectionManager.normalizeEnvironment("production"))
+
+        // Testnet is a distinct Bybit environment (api-testnet.bybit.com), NOT an alias of Demo (api-demo.bybit.com)
+        assertNull(ExchangeConnectionManager.normalizeEnvironment("testnet"))
+        assertNull(ExchangeConnectionManager.normalizeEnvironment("TESTNET"))
+        assertNull(ExchangeConnectionManager.normalizeEnvironment(""))
+        assertNull(ExchangeConnectionManager.normalizeEnvironment(null))
     }
 }

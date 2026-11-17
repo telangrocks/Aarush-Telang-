@@ -267,10 +267,14 @@ fun TradeAlertScreen(
     val isExecuting = executionState is ExecutionUiState.Submitting || executionState is ExecutionUiState.AwaitingFill
     val isExecutionSuccess = executionState is ExecutionUiState.Filled || executionState is ExecutionUiState.Confirmed
     var hasNavigated by remember { mutableStateOf(false) }
+    var lastRecordedPopupAlertId by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(alertId, candidate.pairName, strategy, timeframe, entryPrice, stopLossPrice, takeProfitPrice, isExecutable) {
+    LaunchedEffect(alertId) {
+        val validAlertId = alertId?.trim()?.takeIf { it.isNotEmpty() } ?: return@LaunchedEffect
+        if (lastRecordedPopupAlertId == validAlertId) return@LaunchedEffect
+        lastRecordedPopupAlertId = validAlertId
         com.cryptopulse.app.telemetry.AndroidStage9Observer.recordPopupRendered(
-            alertId = alertId,
+            alertId = validAlertId,
             symbol = candidate.pairName,
             strategyId = strategy,
             timeframe = timeframe,

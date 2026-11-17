@@ -38,10 +38,12 @@ class ExchangeRepositoryImpl @Inject constructor(
     }
 
     override suspend fun connectExchange(exchangeName: String, apiKey: String, apiSecret: String, apiPassphrase: String?, environment: String): NetworkResult<Unit> = withContext(dispatcherProvider.io) {
-        val request = ConnectExchangeRequestDto(exchangeName, apiKey, apiSecret, apiPassphrase, environment)
+        val canonicalExchange = ExchangeConnectionManager.normalizeExchangeName(exchangeName)
+        val canonicalEnv = ExchangeConnectionManager.normalizeEnvironment(environment) ?: environment
+        val request = ConnectExchangeRequestDto(canonicalExchange, apiKey, apiSecret, apiPassphrase, canonicalEnv)
         when (val result = exchangeRemoteDataSource.connectExchange(request)) {
             is NetworkResult.Success -> {
-                exchangeConnectionManager.saveConnection(exchangeName, environment)
+                exchangeConnectionManager.saveConnection(canonicalExchange, canonicalEnv)
                 NetworkResult.Success(Unit)
             }
             is NetworkResult.Error -> result
@@ -51,16 +53,19 @@ class ExchangeRepositoryImpl @Inject constructor(
     override suspend fun getConnectionStatus(): NetworkResult<ExchangeStatus> = withContext(dispatcherProvider.io) {
         when (val result = exchangeRemoteDataSource.getConnectionStatus()) {
             is NetworkResult.Success -> {
+                val canonicalEnv = ExchangeConnectionManager.normalizeEnvironment(result.data.environment)
+                val canonicalExchange = result.data.exchangeName?.let { ExchangeConnectionManager.normalizeExchangeName(it) }
+                val isValidConnected = result.data.isConnected && canonicalExchange != null && canonicalEnv != null
                 val state = ExchangeStatus(
-                    isConnected = result.data.isConnected,
-                    exchangeName = result.data.exchangeName,
-                    environment = result.data.environment,
+                    isConnected = isValidConnected,
+                    exchangeName = if (isValidConnected) canonicalExchange else null,
+                    environment = if (isValidConnected) canonicalEnv else null,
                     region = result.data.region
                 )
-                if (!result.data.isConnected) {
+                if (!isValidConnected) {
                     exchangeConnectionManager.clearConnection()
-                } else if (result.data.exchangeName != null && result.data.environment != null) {
-                    exchangeConnectionManager.saveConnection(result.data.exchangeName, result.data.environment)
+                } else {
+                    exchangeConnectionManager.saveConnection(canonicalExchange!!, canonicalEnv!!)
                 }
                 NetworkResult.Success(state)
             }

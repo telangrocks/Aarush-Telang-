@@ -2018,6 +2018,6 @@ describe('Market Opportunity Endpoints (Phase 2)', () => {
       );
       expect(marketQueryResp.status).toBe(200);
       expect(marketQueryResp.headers.get('X-Eligible-Market-Count')).toBe('7');
-    });
+    }, 25000);
   });
 });

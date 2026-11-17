@@ -318,10 +318,15 @@ class AuthViewModel @Inject constructor(
                             val statusResult = exchangeRepository.getConnectionStatus()
                             if (statusResult is NetworkResult.Success && statusResult.data.isConnected) {
                                 val status = statusResult.data
-                                exchangeConnectionManager.saveConnection(
-                                    status.exchangeName ?: "bybit",
-                                    status.environment ?: "demo"
-                                )
+                                val canonicalEnv = com.cryptopulse.app.data.local.ExchangeConnectionManager.normalizeEnvironment(status.environment)
+                                if (canonicalEnv != null) {
+                                    exchangeConnectionManager.saveConnection(
+                                        com.cryptopulse.app.data.local.ExchangeConnectionManager.normalizeExchangeName(status.exchangeName),
+                                        canonicalEnv
+                                    )
+                                } else {
+                                    exchangeConnectionManager.clearConnection()
+                                }
                             } else {
                                 exchangeConnectionManager.clearConnection()
                             }

@@ -84,6 +84,43 @@ async function fetchExistingSpanIds(db: D1Database, spanIds: string[]): Promise<
   return existing;
 }
 
+export function isStaleApprovalExpiryEvent(ev: {
+  stage?: number;
+  eventType?: string | null;
+  errorCode?: string | null;
+  message?: string | null;
+  outputSummary?: Record<string, unknown> | null;
+}): boolean {
+  if (ev.stage !== undefined && Number(ev.stage) !== 2) return false;
+  const errCode = String(ev.errorCode || '').toUpperCase();
+  const reasonCode = String(ev.outputSummary?.reasonCode || '').toUpperCase();
+  const msg = String(ev.message || '').toUpperCase();
+  return (
+    errCode === 'APPROVAL_EXPIRED_OR_INVALID' ||
+    reasonCode === 'APPROVAL_EXPIRED_OR_INVALID' ||
+    (ev.eventType === 'DISCOVERY_HANDOFF_CONSUMED' &&
+      (errCode.includes('APPROVAL_EXPIRED') || msg.includes('APPROVAL_EXPIRED_OR_INVALID')))
+  );
+}
+
+export function isExpectedSafetyGateBlockEvent(ev: {
+  stage?: number;
+  eventType?: string | null;
+  errorCode?: string | null;
+  message?: string | null;
+  outputSummary?: Record<string, unknown> | null;
+}): boolean {
+  if (ev.stage !== undefined && Number(ev.stage) !== 6) return false;
+  const code = String(ev.errorCode || ev.outputSummary?.code || '').toUpperCase();
+  const reason = String(ev.outputSummary?.reason || ev.message || '').toUpperCase();
+  return (
+    code === 'REGIME_PROHIBITED' ||
+    code === 'HTF_CONFLICT' ||
+    reason.includes('REGIME_PROHIBITED') ||
+    reason.includes('HTF_CONFLICT')
+  );
+}
+
 function buildCycleUpsertStatement(db: D1Database, ev: PipelineTelemetryEvent, expiryMs: number): D1PreparedStatement {
   const traceKey = resolveTraceKey(ev);
   const out = ev.outputSummary || {};
@@ -103,10 +140,21 @@ function buildCycleUpsertStatement(db: D1Database, ev: PipelineTelemetryEvent, e
       : 0;
   const androidConfirmedCount = isStage9ConfirmedEvent(ev) ? 1 : 0;
 
-  const isFailure = ev.status === 'FAIL';
+  const isStaleApproval = isStaleApprovalExpiryEvent(ev);
+  const isExpectedSafetyBlock = isExpectedSafetyGateBlockEvent(ev);
+  const isFailure = ev.status === 'FAIL' && !isStaleApproval && !isExpectedSafetyBlock;
+  const cycleStatus = isStaleApproval
+    ? 'SKIPPED'
+    : isExpectedSafetyBlock
+      ? 'PASS'
+      : ev.status;
   const failedStage = isFailure ? ev.stage : null;
-  const failureCode = isFailure ? ev.errorCode || ev.eventType : null;
-  const failureSummary = isFailure ? ev.message : null;
+  const failureCode = isFailure
+    ? ev.errorCode || ev.eventType
+    : isStaleApproval
+      ? ev.errorCode || 'APPROVAL_EXPIRED_OR_INVALID'
+      : null;
+  const failureSummary = isFailure || isStaleApproval ? ev.message : null;
 
   return db
     .prepare(
@@ -163,7 +211,7 @@ function buildCycleUpsertStatement(db: D1Database, ev: PipelineTelemetryEvent, e
       ev.emittedAtMs,
       ev.emittedAtMs,
       expiryMs,
-      ev.status,
+      cycleStatus,
       ev.stage,
       failedStage,
       failureCode,
@@ -488,7 +536,20 @@ interface TradeState {
   detailsJson: string | null;
 }
 
+function isNotificationStageEvent(ev: PipelineTelemetryEvent): boolean {
+  return (
+    ev.stage === 8 ||
+    ev.stage === 9 ||
+    ev.eventType.startsWith('FCM_') ||
+    ev.eventType.startsWith('NOTIFICATION_') ||
+    ev.eventType.startsWith('ANDROID_')
+  );
+}
+
 function classifyTradeMilestone(ev: PipelineTelemetryEvent): { status: string; milestone: string; field?: keyof TradeState } {
+  if (isNotificationStageEvent(ev)) {
+    return { status: 'SIGNAL_ONLY', milestone: ev.eventType };
+  }
   if (ev.status === 'FAIL' || ev.eventType.includes('FAILED')) {
     return { status: 'FAILED', milestone: ev.eventType, field: 'terminalFailedAtMs' };
   }
@@ -518,6 +579,9 @@ function classifyTradeMilestone(ev: PipelineTelemetryEvent): { status: string; m
 
 function isTradeLifecycleEvent(ev: PipelineTelemetryEvent): boolean {
   if (ev.stage === 7) return true;
+  if (ev.stage === 8 || ev.stage === 9) {
+    return Boolean((ev.clientOrderId || ev.intentId || ev.orderId) && ev.symbol);
+  }
   if (
     ev.eventType === 'SIGNAL_DETECTED' ||
     ev.eventType === 'TRADE_ALERT_CREATED' ||
@@ -614,14 +678,32 @@ function mergeTradeEventIntoState(
   const tradeKey = prev?.tradeKey || computeTradeKey(ev);
   const inp = ev.inputSummary || {};
   const out = ev.outputSummary || {};
+  const isNotifEv = isNotificationStageEvent(ev);
   const classified = classifyTradeMilestone(ev);
+
+  const prevHasConfirmedFill = Boolean(
+    prev?.exchangeFillConfirmedAtMs ||
+      prev?.exchangeSlTpConfirmedAtMs ||
+      prev?.positionD1SyncedAtMs ||
+      prev?.executionStatus === 'FILL_CONFIRMED' ||
+      prev?.executionStatus === 'PROTECTED'
+  );
 
   const prevRank = prev ? EXECUTION_RANK[prev.executionStatus] ?? 0 : 0;
   const nextRank = EXECUTION_RANK[classified.status] ?? 0;
-  const executionStatus =
-    nextRank >= prevRank ? classified.status : prev!.executionStatus;
-  const currentMilestone =
-    nextRank >= prevRank ? classified.milestone : prev!.currentMilestone;
+
+  let executionStatus: string;
+  let currentMilestone: string;
+  if (isNotifEv && prev) {
+    executionStatus = prev.executionStatus;
+    currentMilestone = prev.currentMilestone;
+  } else if (prevHasConfirmedFill && classified.status === 'FAILED') {
+    executionStatus = prev!.executionStatus;
+    currentMilestone = prev!.currentMilestone;
+  } else {
+    executionStatus = nextRank >= prevRank ? classified.status : prev!.executionStatus;
+    currentMilestone = nextRank >= prevRank ? classified.milestone : prev!.currentMilestone;
+  }
 
   const state: TradeState = prev
     ? { ...prev }
@@ -682,23 +764,53 @@ function mergeTradeEventIntoState(
   state.orderId = state.orderId || ev.orderId || asString(out.orderId);
   state.currentMilestone = currentMilestone;
   state.executionStatus = executionStatus;
-  state.requestedQty = asNumber(inp.requestedQty ?? inp.qty) ?? state.requestedQty;
-  state.requestedPrice = asNumber(inp.requestedPrice ?? inp.price) ?? state.requestedPrice;
-  state.filledQty = asNumber(out.filledQty ?? out.cumExecQty) ?? state.filledQty;
-  state.avgFillPrice = asNumber(out.avgFillPrice ?? out.avgPrice) ?? state.avgFillPrice;
-  state.slPrice = asNumber(out.slPrice ?? inp.slPrice ?? inp.stopLoss) ?? state.slPrice;
-  state.tpPrice = asNumber(out.tpPrice ?? inp.tpPrice ?? inp.takeProfit) ?? state.tpPrice;
-  state.bybitRetCode = asNumber(out.retCode ?? out.bybitRetCode) ?? state.bybitRetCode;
-  state.bybitRetMsg = asString(out.retMsg ?? out.bybitRetMsg) ?? state.bybitRetMsg;
-  state.errorCode = ev.errorCode ?? state.errorCode;
+  if (!isNotifEv) {
+    state.requestedQty = asNumber(inp.requestedQty ?? inp.qty) ?? state.requestedQty;
+    state.requestedPrice = asNumber(inp.requestedPrice ?? inp.price) ?? state.requestedPrice;
+    state.filledQty = asNumber(out.filledQty ?? out.cumExecQty) ?? state.filledQty;
+    state.avgFillPrice = asNumber(out.avgFillPrice ?? out.avgPrice) ?? state.avgFillPrice;
+    state.slPrice = asNumber(out.slPrice ?? inp.slPrice ?? inp.stopLoss) ?? state.slPrice;
+    state.tpPrice = asNumber(out.tpPrice ?? inp.tpPrice ?? inp.takeProfit) ?? state.tpPrice;
+    state.bybitRetCode = asNumber(out.retCode ?? out.bybitRetCode) ?? state.bybitRetCode;
+    state.bybitRetMsg = asString(out.retMsg ?? out.bybitRetMsg) ?? state.bybitRetMsg;
+    if (!(prevHasConfirmedFill && classified.status === 'FAILED')) {
+      state.errorCode = ev.errorCode ?? state.errorCode;
+    }
+  }
   state.firstSeenAtMs = Math.min(state.firstSeenAtMs, ev.emittedAtMs);
   state.updatedAtMs = Math.max(state.updatedAtMs, ev.emittedAtMs);
   state.expiresAtMs = Math.max(state.expiresAtMs, expiryMs);
 
-  if (classified.field) {
+  if (classified.field && !(prevHasConfirmedFill && classified.field === 'terminalFailedAtMs')) {
     (state[classified.field] as number | null) = ev.emittedAtMs;
   }
-  state.detailsJson = jsonOrNull({ lastMilestone: ev.eventType, message: ev.message, outputSummary: out }) ?? state.detailsJson;
+
+  let prevDetails: Record<string, unknown> = {};
+  if (state.detailsJson) {
+    try {
+      const parsed = JSON.parse(state.detailsJson);
+      if (parsed && typeof parsed === 'object') prevDetails = parsed as Record<string, unknown>;
+    } catch {}
+  }
+
+  if (isNotifEv) {
+    state.detailsJson = jsonOrNull({
+      ...prevDetails,
+      notificationStatus: ev.status === 'FAIL' ? 'FCM_FAILED' : 'SENT',
+      notificationEventType: ev.eventType,
+      notificationErrorCode: ev.errorCode ?? null,
+      notificationMessage: ev.message,
+      notificationUpdatedAtMs: ev.emittedAtMs,
+    });
+  } else {
+    state.detailsJson =
+      jsonOrNull({
+        ...prevDetails,
+        lastMilestone: ev.eventType,
+        message: ev.message,
+        outputSummary: out,
+      }) ?? state.detailsJson;
+  }
 
   return state;
 }
@@ -844,16 +956,47 @@ function parseJsonObject(raw: unknown): Record<string, unknown> | null {
   }
 }
 
-function computeParityCorrelationKey(ev: PipelineTelemetryEvent): string {
-  const rawKey = ev.alertId || ev.fcmMessageId || ev.clientOrderId || ev.traceId || ev.spanId;
+function isTradeFillNotificationEvent(ev: PipelineTelemetryEvent): boolean {
+  if (ev.stage !== 8) return false;
+  const inp = ev.inputSummary || {};
+  const out = ev.outputSummary || {};
+  const notifType = String(out.notificationType ?? inp.notificationType ?? '').toUpperCase();
+  if (notifType === 'TRADE_FILLED' || notifType === 'TRADE_FILL') return true;
+  if (ev.eventType.toUpperCase().includes('FILL')) return true;
+  return false;
+}
+
+function isDedicatedTradeFilledRecordEvent(ev: PipelineTelemetryEvent): boolean {
+  if (ev.stage !== 8) return false;
+  const inp = ev.inputSummary || {};
+  const out = ev.outputSummary || {};
+  const notifType = String(out.notificationType ?? inp.notificationType ?? '').toUpperCase();
+  return notifType === 'TRADE_FILLED' || Boolean(ev.orderId && isTradeFillNotificationEvent(ev));
+}
+
+function isFillParityState(state: ParityState | null | undefined): boolean {
+  if (!state) return false;
+  if (state.correlationKey.endsWith(':TRADE_FILLED')) return true;
+  const bet = String(state.backendEventType || '').toUpperCase();
+  return bet === 'TRADE_FILLED';
+}
+
+function computeParityCorrelationKey(ev: PipelineTelemetryEvent, forceFillSuffix = false): string {
+  const baseKey = ev.alertId || ev.fcmMessageId || ev.clientOrderId || ev.traceId || ev.spanId;
+  const rawKey =
+    forceFillSuffix || isDedicatedTradeFilledRecordEvent(ev)
+      ? `${baseKey}:TRADE_FILLED`
+      : baseKey;
   return ev.userId ? `${ev.userId}:${rawKey}` : rawKey;
 }
 
 async function resolveExistingParityState(db: D1Database, ev: PipelineTelemetryEvent): Promise<ParityState | null> {
-  const rawKey = ev.alertId || ev.fcmMessageId || ev.clientOrderId || ev.traceId || ev.spanId;
+  const baseKey = ev.alertId || ev.fcmMessageId || ev.clientOrderId || ev.traceId || ev.spanId;
+  const isDedicatedFill = isDedicatedTradeFilledRecordEvent(ev);
+  const rawKey = isDedicatedFill ? `${baseKey}:TRADE_FILLED` : baseKey;
   const scopedKey = computeParityCorrelationKey(ev);
   const userId = ev.userId ?? null;
-  const row = await db
+  const rowsRes = await db
     .prepare(
       `SELECT * FROM notification_parity_ledger
        WHERE (
@@ -862,8 +1005,9 @@ async function resolveExistingParityState(db: D1Database, ev: PipelineTelemetryE
          OR (fcm_message_id IS NOT NULL AND fcm_message_id = ?)
        )
        AND (? IS NULL OR user_id IS NULL OR user_id = ?)
-       ORDER BY CASE WHEN user_id = ? THEN 0 WHEN user_id IS NULL THEN 1 ELSE 2 END ASC
-       LIMIT 1`
+       ORDER BY CASE WHEN user_id = ? THEN 0 WHEN user_id IS NULL THEN 1 ELSE 2 END ASC,
+                CASE WHEN correlation_key IN (?, ?) THEN 0 ELSE 1 END ASC
+       LIMIT 5`
     )
     .bind(
       scopedKey,
@@ -872,14 +1016,31 @@ async function resolveExistingParityState(db: D1Database, ev: PipelineTelemetryE
       ev.fcmMessageId ?? '__NONE__',
       userId,
       userId,
-      userId
+      userId,
+      scopedKey,
+      rawKey
     )
-    .first<Record<string, unknown>>();
+    .all<Record<string, unknown>>();
 
+  const candidates = (rowsRes.results || []).filter((r) => {
+    if (r.user_id && ev.userId && String(r.user_id) !== ev.userId) return false;
+    const ck = String(r.correlation_key || '');
+    const bet = String(r.backend_event_type || '').toUpperCase();
+    const rowIsFill = ck.endsWith(':TRADE_FILLED') || bet === 'TRADE_FILLED';
+    if (isDedicatedFill) {
+      return rowIsFill;
+    }
+    if (isTradeFillNotificationEvent(ev)) {
+      // If an existing row already has a non-fill backend event (e.g. TRADE_ALERT), do not collide with it
+      if (bet && !bet.includes('FILL')) return false;
+      return true;
+    }
+    // TRADE_ALERT and Stage 9 events correlate strictly with non-fill TRADE_ALERT rows
+    return !rowIsFill;
+  });
+
+  const row = candidates[0];
   if (!row) return null;
-  if (row.user_id && ev.userId && String(row.user_id) !== ev.userId) {
-    return null;
-  }
   let mismatches: string[] = [];
   if (typeof row.parity_mismatches_json === 'string') {
     try {
@@ -929,6 +1090,7 @@ function recomputeParity(state: ParityState): void {
   const mismatches: string[] = [];
   const bp = state.backendPayload;
   const ap = state.androidRenderedFields;
+  const isFillRecord = isFillParityState(state);
 
   if (bp?.hasPlaceholderPnl3 === true) {
     mismatches.push('DEFECT_PLACEHOLDER_PNL_3');
@@ -937,7 +1099,7 @@ function recomputeParity(state: ParityState): void {
     mismatches.push('BACKEND_MISSING_TIMEFRAME');
   }
 
-  if (bp && ap) {
+  if (bp && ap && !isFillRecord) {
     if (bp.symbol && ap.symbol && String(bp.symbol) !== String(ap.symbol)) {
       mismatches.push('FIELD_MISMATCH:symbol');
     }
@@ -1025,7 +1187,12 @@ function mergeParityEventIntoState(
   ev: PipelineTelemetryEvent,
   expiryMs: number
 ): ParityState {
-  const correlationKey = prev?.correlationKey || computeParityCorrelationKey(ev);
+  const isFillEv = isTradeFillNotificationEvent(ev);
+  const forceFillSuffix =
+    isFillEv &&
+    prev === null &&
+    isDedicatedTradeFilledRecordEvent(ev);
+  const correlationKey = prev?.correlationKey || computeParityCorrelationKey(ev, forceFillSuffix);
   const inp = ev.inputSummary || {};
   const out = ev.outputSummary || {};
 
@@ -1081,18 +1248,33 @@ function mergeParityEventIntoState(
   state.expiresAtMs = Math.max(state.expiresAtMs, expiryMs);
 
   if (ev.stage === 8) {
-    state.backendEventType = asString(out.notificationType ?? inp.notificationType) || ev.eventType;
+    const incomingBackendType = asString(out.notificationType ?? inp.notificationType) || ev.eventType;
+    const prevPayload = state.backendPayload || {};
+    const prevSignalEntryPrice = asNumber(prevPayload.entryPrice ?? prevPayload.price);
+    state.backendEventType = state.backendEventType || incomingBackendType;
     state.backendDispatchedAtMs = state.backendDispatchedAtMs ?? ev.emittedAtMs;
     state.fcmHttpStatus = asNumber(out.fcmHttpStatus) ?? state.fcmHttpStatus;
     state.fcmDispatchStatus =
       asString(out.fcmDispatchStatus) || (ev.status === 'FAIL' ? 'FAILED' : 'SENT');
-    state.backendPayload = {
-      ...(state.backendPayload || {}),
+
+    // Priority 2: Never allow a TRADE_FILLED price to overwrite an existing signal entryPrice.
+    const nextPayload: Record<string, unknown> = {
+      ...prevPayload,
       ...out,
-      symbol: ev.symbol ?? out.symbol,
-      strategyId: ev.strategyId ?? out.strategyId,
-      timeframe: ev.timeframe ?? out.timeframe,
+      symbol: ev.symbol ?? out.symbol ?? prevPayload.symbol,
+      strategyId: ev.strategyId ?? out.strategyId ?? prevPayload.strategyId,
+      timeframe: ev.timeframe ?? out.timeframe ?? prevPayload.timeframe,
     };
+    if (isFillEv && prevSignalEntryPrice !== null) {
+      nextPayload.entryPrice = prevSignalEntryPrice;
+      nextPayload.price = prevSignalEntryPrice;
+      if (out.price !== undefined || out.avgFillPrice !== undefined) {
+        nextPayload.fillPrice = out.avgFillPrice ?? out.price;
+      }
+    } else if (isFillParityState(state) && (out.price !== undefined || out.avgFillPrice !== undefined)) {
+      nextPayload.fillPrice = out.avgFillPrice ?? out.price;
+    }
+    state.backendPayload = nextPayload;
   } else if (ev.stage === 9) {
     if (ev.eventType === STAGE9_EVENT_TYPES.FCM_RECEIVED || ev.eventType.includes('FCM_RECEIVED')) {
       state.androidFcmReceivedAtMs = state.androidFcmReceivedAtMs ?? ev.emittedAtMs;
@@ -1180,20 +1362,25 @@ function mergeParityEventIntoState(
     }
 
     if (isStage9PopupRenderedEvent(ev)) {
-      state.androidRenderedAtMs = state.androidRenderedAtMs ?? ev.emittedAtMs;
-      const rendered =
-        out.renderedFields && typeof out.renderedFields === 'object'
-          ? (out.renderedFields as Record<string, unknown>)
-          : out;
-      state.androidRenderedFields = {
-        ...(state.androidRenderedFields || {}),
-        ...rendered,
-      };
+      // Priority 2: Record popup rendering only once per valid alertId; do not overwrite first render fields.
+      if (state.androidRenderedAtMs === null) {
+        state.androidRenderedAtMs = ev.emittedAtMs;
+        const rendered =
+          out.renderedFields && typeof out.renderedFields === 'object'
+            ? (out.renderedFields as Record<string, unknown>)
+            : out;
+        state.androidRenderedFields = {
+          ...(state.androidRenderedFields || {}),
+          ...rendered,
+        };
+      }
     } else if (ev.eventType === STAGE9_EVENT_TYPES.POPUP_RENDERED && out.rendered === false) {
-      state.androidRenderedFields = {
-        ...(state.androidRenderedFields || {}),
-        rendered: false,
-      };
+      if (state.androidRenderedAtMs === null) {
+        state.androidRenderedFields = {
+          ...(state.androidRenderedFields || {}),
+          rendered: false,
+        };
+      }
     }
   }
 
@@ -1287,6 +1474,9 @@ function buildParityUpsertStatement(db: D1Database, state: ParityState): D1Prepa
 }
 
 function shouldRecordIncident(ev: PipelineTelemetryEvent): boolean {
+  if (isStaleApprovalExpiryEvent(ev) || isExpectedSafetyGateBlockEvent(ev)) {
+    return false;
+  }
   if (ev.status === 'FAIL' || ev.severity === 'ERROR' || ev.severity === 'CRITICAL') return true;
   if (ev.errorCode && ev.status !== 'PASS') return true;
   if (
@@ -1510,20 +1700,44 @@ export async function ingestEnvelope(
       if (!baseTrade) {
         baseTrade = await resolveExistingTradeState(db, ev);
       }
-      const nextTrade = mergeTradeEventIntoState(baseTrade, ev, expiryMs);
-      pendingTrades.set(nextTrade.tradeKey, nextTrade);
+      if (!isNotificationStageEvent(ev) || baseTrade) {
+        const nextTrade = mergeTradeEventIntoState(baseTrade, ev, expiryMs);
+        pendingTrades.set(nextTrade.tradeKey, nextTrade);
+      }
     }
 
-    if (ev.stage === 8 || ev.stage === 9) {
+    const isOrphanPopupRender =
+      ev.stage === 9 &&
+      (isStage9PopupRenderedEvent(ev) || ev.eventType === STAGE9_EVENT_TYPES.POPUP_RENDERED) &&
+      !ev.alertId &&
+      !ev.fcmMessageId;
+
+    if ((ev.stage === 8 || ev.stage === 9) && !isOrphanPopupRender) {
+      const isDedicatedFill = isDedicatedTradeFilledRecordEvent(ev);
+      const isFillEv = isTradeFillNotificationEvent(ev);
       const tentativeKey = computeParityCorrelationKey(ev);
       let baseParity = pendingParity.get(tentativeKey) || null;
       if (baseParity && baseParity.userId && ev.userId && baseParity.userId !== ev.userId) {
         baseParity = null;
       }
+      if (baseParity) {
+        const baseIsFill = isFillParityState(baseParity);
+        if (isDedicatedFill && !baseIsFill) baseParity = null;
+        else if (!isFillEv && baseIsFill) baseParity = null;
+        else if (isFillEv && baseParity.backendEventType && !String(baseParity.backendEventType).toUpperCase().includes('FILL')) {
+          baseParity = null;
+        }
+      }
       if (!baseParity) {
         for (const candidate of pendingParity.values()) {
           const sameUser = !ev.userId || !candidate.userId || candidate.userId === ev.userId;
           if (!sameUser) continue;
+          const candIsFill = isFillParityState(candidate);
+          if (isDedicatedFill && !candIsFill) continue;
+          if (!isFillEv && candIsFill) continue;
+          if (isFillEv && candidate.backendEventType && !String(candidate.backendEventType).toUpperCase().includes('FILL')) {
+            continue;
+          }
           if (
             (ev.alertId && candidate.alertId === ev.alertId) ||
             (ev.fcmMessageId && candidate.fcmMessageId === ev.fcmMessageId)

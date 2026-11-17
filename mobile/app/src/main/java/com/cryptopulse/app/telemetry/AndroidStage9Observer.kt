@@ -30,6 +30,7 @@ object AndroidStage9Observer {
     private val nextAllowedUploadAtMs = AtomicLong(0L)
     private val flushInFlight = AtomicBoolean(false)
     private val telemetryFailureRecorded = AtomicBoolean(false)
+    private val recordedPopupAlertIds = java.util.Collections.synchronizedSet(java.util.LinkedHashSet<String>())
 
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -87,6 +88,7 @@ object AndroidStage9Observer {
         nextAllowedUploadAtMs.set(0L)
         flushInFlight.set(false)
         telemetryFailureRecorded.set(false)
+        recordedPopupAlertIds.clear()
         clockMs = { System.currentTimeMillis() }
     }
 
@@ -308,6 +310,19 @@ object AndroidStage9Observer {
         requestedBudget: Double?,
         effectiveNotional: Double?
     ) {
+        val normalizedAlertId = alertId?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        synchronized(recordedPopupAlertIds) {
+            if (!recordedPopupAlertIds.add(normalizedAlertId)) {
+                return
+            }
+            if (recordedPopupAlertIds.size > 256) {
+                val oldest = recordedPopupAlertIds.iterator()
+                if (oldest.hasNext()) {
+                    oldest.next()
+                    oldest.remove()
+                }
+            }
+        }
         val renderedFields = buildMap<String, Any?> {
             symbol?.let { put("symbol", it) }
             strategyId?.let { put("strategyId", it) }
@@ -326,7 +341,7 @@ object AndroidStage9Observer {
                 eventType = Stage9TelemetryEvent.EventType.POPUP_RENDERED,
                 status = "PASS",
                 severity = "INFO",
-                alertId = alertId,
+                alertId = normalizedAlertId,
                 symbol = symbol,
                 strategyId = strategyId,
                 timeframe = timeframe,

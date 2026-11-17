@@ -458,8 +458,19 @@ class MainActivity : FragmentActivity() {
                                 val balances by exchangeViewModel.balances.collectAsState()
                                 val balancesError by exchangeViewModel.balancesError.collectAsState()
                                 val formState by exchangeViewModel.formState.collectAsState()
+                                val restoredConnState by exchangeConnectionManager.connectionState.collectAsState()
+                                val persistedExchange by exchangeConnectionManager.exchangeName.collectAsState(initial = null)
+                                val persistedEnvironment by exchangeConnectionManager.exchangeEnvironment.collectAsState(initial = null)
 
                                 val candidate = selectedCandidate ?: candidates.firstOrNull()
+
+                                LaunchedEffect(restoredConnState, persistedExchange, persistedEnvironment) {
+                                    val envToSync = restoredConnState?.third ?: persistedEnvironment
+                                    val exchToSync = restoredConnState?.second ?: persistedExchange
+                                    if (envToSync != null) {
+                                        exchangeViewModel.syncRestoredConnection(exchToSync, envToSync, isAuthoritative = true)
+                                    }
+                                }
 
                                 LaunchedEffect(candidate) {
                                     if (candidate != null && selectedCandidate == null) {
@@ -468,6 +479,10 @@ class MainActivity : FragmentActivity() {
                                 }
 
                                 LaunchedEffect(Unit) {
+                                    val (localConnected, localExchange, localEnv) = exchangeConnectionManager.getConnectionInfo()
+                                    if (localConnected && localEnv != null) {
+                                        exchangeViewModel.syncRestoredConnection(localExchange, localEnv, isAuthoritative = false)
+                                    }
                                     exchangeViewModel.fetchBalances()
                                 }
 
@@ -477,14 +492,21 @@ class MainActivity : FragmentActivity() {
                                     list.find { it.asset.equals(quoteAsset, ignoreCase = true) }?.free ?: 0.0
                                 }
 
+                                val effectiveExchange = com.cryptopulse.app.data.local.ExchangeConnectionManager.normalizeExchangeName(
+                                    restoredConnState?.second ?: persistedExchange ?: formState.selectedExchange
+                                )
+                                val effectiveEnvironment = com.cryptopulse.app.data.local.ExchangeConnectionManager.normalizeEnvironment(
+                                    restoredConnState?.third ?: persistedEnvironment ?: formState.environment
+                                ) ?: formState.environment
+
                                 val isRefreshingBalance by exchangeViewModel.isRefreshingBalances.collectAsState()
                                 TradeSetupScreen(
                                     candidate = candidate,
                                     balance = primaryBalance,
                                     balancesError = balancesError,
                                     asset = quoteAsset,
-                                    exchangeName = formState.selectedExchange.replaceFirstChar { it.uppercase() },
-                                    environmentName = formState.environment.replaceFirstChar { it.uppercase() },
+                                    exchangeName = effectiveExchange.replaceFirstChar { it.uppercase() },
+                                    environmentName = effectiveEnvironment.replaceFirstChar { it.uppercase() },
                                     onBack = {
                                         val prevRoute = navController.previousBackStackEntry?.destination?.route
                                         if (prevRoute == "connect_exchange" || prevRoute == "authenticated_flow") {

@@ -254,6 +254,146 @@ class ExchangeBalanceTest {
         assertTrue(uiTechEmpty.message.contains("strategy criteria"))
         assertFalse(uiTechEmpty.message.contains("Please increase your budget"))
     }
+
+    @Test
+    fun `mainnet cold-start restoration synchronizes ExchangeViewModel formState and ExchangeConnectionManager to mainnet`() = runTest {
+        val connManager = FakeExchangeConnectionManagerMinimal().apply {
+            storedConnected = false
+            storedExchange = null
+            storedEnvironment = null
+        }
+        exchangeRepository.statusResult = NetworkResult.Success(
+            ExchangeStatus(isConnected = true, exchangeName = "bybit", environment = "mainnet", region = "india")
+        )
+
+        val coldStartVm = ExchangeViewModel(
+            appContext = FakeContextMinimal(),
+            exchangeRepository = exchangeRepository,
+            marketRepository = marketRepository,
+            technicalAnalysisRepository = FakeTechnicalAnalysisRepositoryMinimal(),
+            botRepository = FakeBotRepositoryMinimal(),
+            fcmRepository = FakeFcmRepositoryMinimal(),
+            tokenManager = FakeTokenManagerMinimal(),
+            exchangeConnectionManager = connManager,
+            sessionRepository = FakeTradeSessionRepositoryMinimal(),
+            tradeAlertManager = FakeTradeAlertManagerMinimal()
+        )
+
+        // Simulate SplashScreen / checkExistingConnection cold-start restoration from backend exchange/status
+        coldStartVm.checkExistingConnection(forceRemote = true)
+
+        assertEquals("bybit", coldStartVm.formState.value.selectedExchange)
+        assertEquals("mainnet", coldStartVm.formState.value.environment)
+        assertEquals("Mainnet", coldStartVm.formState.value.environment.replaceFirstChar { it.uppercase() })
+        assertEquals(Triple(true, "bybit", "mainnet"), connManager.getConnectionInfo())
+        assertEquals(ExchangeUiState.Connected("bybit"), coldStartVm.uiState.value)
+    }
+
+    @Test
+    fun `demo cold-start restoration synchronizes ExchangeViewModel formState and ExchangeConnectionManager to demo`() = runTest {
+        val connManager = FakeExchangeConnectionManagerMinimal().apply {
+            storedConnected = false
+            storedExchange = null
+            storedEnvironment = null
+        }
+        exchangeRepository.statusResult = NetworkResult.Success(
+            ExchangeStatus(isConnected = true, exchangeName = "bybit", environment = "demo", region = "india")
+        )
+
+        val coldStartVm = ExchangeViewModel(
+            appContext = FakeContextMinimal(),
+            exchangeRepository = exchangeRepository,
+            marketRepository = marketRepository,
+            technicalAnalysisRepository = FakeTechnicalAnalysisRepositoryMinimal(),
+            botRepository = FakeBotRepositoryMinimal(),
+            fcmRepository = FakeFcmRepositoryMinimal(),
+            tokenManager = FakeTokenManagerMinimal(),
+            exchangeConnectionManager = connManager,
+            sessionRepository = FakeTradeSessionRepositoryMinimal(),
+            tradeAlertManager = FakeTradeAlertManagerMinimal()
+        )
+
+        coldStartVm.checkExistingConnection(forceRemote = true)
+
+        assertEquals("bybit", coldStartVm.formState.value.selectedExchange)
+        assertEquals("demo", coldStartVm.formState.value.environment)
+        assertEquals("Demo", coldStartVm.formState.value.environment.replaceFirstChar { it.uppercase() })
+        assertEquals(Triple(true, "bybit", "demo"), connManager.getConnectionInfo())
+        assertEquals(ExchangeUiState.Connected("bybit"), coldStartVm.uiState.value)
+    }
+
+    @Test
+    fun `environment changes remain synchronized across ExchangeConnectionManager and ExchangeViewModel when SplashScreen saves restored connection`() = runTest {
+        val connManager = FakeExchangeConnectionManagerMinimal().apply {
+            storedConnected = false
+            storedExchange = null
+            storedEnvironment = null
+        }
+
+        val sharedVm = ExchangeViewModel(
+            appContext = FakeContextMinimal(),
+            exchangeRepository = exchangeRepository,
+            marketRepository = marketRepository,
+            technicalAnalysisRepository = FakeTechnicalAnalysisRepositoryMinimal(),
+            botRepository = FakeBotRepositoryMinimal(),
+            fcmRepository = FakeFcmRepositoryMinimal(),
+            tokenManager = FakeTokenManagerMinimal(),
+            exchangeConnectionManager = connManager,
+            sessionRepository = FakeTradeSessionRepositoryMinimal(),
+            tradeAlertManager = FakeTradeAlertManagerMinimal()
+        )
+
+        // SplashScreen restores Mainnet directly on ExchangeConnectionManager (without navigating through ConnectExchangeScreen)
+        connManager.saveConnection("Bybit", "REAL")
+        assertEquals("bybit", sharedVm.formState.value.selectedExchange)
+        assertEquals("mainnet", sharedVm.formState.value.environment)
+        assertEquals("Mainnet", sharedVm.formState.value.environment.replaceFirstChar { it.uppercase() })
+
+        // Subsequent switch to Demo remains synchronized
+        connManager.saveConnection("bybit", "DEMO")
+        assertEquals("bybit", sharedVm.formState.value.selectedExchange)
+        assertEquals("demo", sharedVm.formState.value.environment)
+        assertEquals("Demo", sharedVm.formState.value.environment.replaceFirstChar { it.uppercase() })
+    }
+
+    @Test
+    fun `initialization default cannot overwrite a successfully restored mainnet environment`() = runTest {
+        val connManager = FakeExchangeConnectionManagerMinimal().apply {
+            storedConnected = true
+            storedExchange = "bybit"
+            storedEnvironment = "mainnet"
+        }
+
+        val restoredVm = ExchangeViewModel(
+            appContext = FakeContextMinimal(),
+            exchangeRepository = exchangeRepository,
+            marketRepository = marketRepository,
+            technicalAnalysisRepository = FakeTechnicalAnalysisRepositoryMinimal(),
+            botRepository = FakeBotRepositoryMinimal(),
+            fcmRepository = FakeFcmRepositoryMinimal(),
+            tokenManager = FakeTokenManagerMinimal(),
+            exchangeConnectionManager = connManager,
+            sessionRepository = FakeTradeSessionRepositoryMinimal(),
+            tradeAlertManager = FakeTradeAlertManagerMinimal()
+        )
+
+        // Cold-start init already restored mainnet from ExchangeConnectionManager
+        assertEquals("mainnet", restoredVm.formState.value.environment)
+
+        // Attempting to apply an initialization default ("demo") must not overwrite restored "mainnet"
+        restoredVm.applyInitializationDefaultEnvironment("demo")
+        assertEquals("mainnet", restoredVm.formState.value.environment)
+
+        // Even if local connection manager later had a non-authoritative demo read after authoritative remote restoration, mainnet is preserved
+        exchangeRepository.statusResult = NetworkResult.Success(
+            ExchangeStatus(isConnected = true, exchangeName = "bybit", environment = "mainnet", region = "india")
+        )
+        restoredVm.checkExistingConnection(forceRemote = true)
+        assertEquals("mainnet", restoredVm.formState.value.environment)
+
+        restoredVm.applyInitializationDefaultEnvironment("demo")
+        assertEquals("mainnet", restoredVm.formState.value.environment)
+    }
 }
 
 // ── Minimal Fakes ────────────────────────────────────────────────────────────
@@ -264,10 +404,11 @@ class FakeContextMinimal : android.content.ContextWrapper(null) {
 
 class FakeExchangeRepository : ExchangeRepository {
     var balancesResult: NetworkResult<List<BalanceItem>> = NetworkResult.Success(emptyList())
+    var statusResult: NetworkResult<ExchangeStatus> = NetworkResult.Success(ExchangeStatus(true, "bybit", "demo", null))
     var fetchBalancesCallCount = 0
     override suspend fun validateKeys(exchangeName: String, apiKey: String, apiSecret: String, apiPassphrase: String?, environment: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
     override suspend fun connectExchange(exchangeName: String, apiKey: String, apiSecret: String, apiPassphrase: String?, environment: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
-    override suspend fun getConnectionStatus(): NetworkResult<ExchangeStatus> = NetworkResult.Success(ExchangeStatus(true, "bybit", "demo", null))
+    override suspend fun getConnectionStatus(): NetworkResult<ExchangeStatus> = statusResult
     override suspend fun getBalances(): NetworkResult<List<BalanceItem>> {
         fetchBalancesCallCount++
         return balancesResult
@@ -306,6 +447,7 @@ class FakeBotRepositoryMinimal : com.cryptopulse.app.domain.repository.BotReposi
     override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long): kotlinx.coroutines.flow.Flow<com.cryptopulse.app.domain.models.TradeExecutionResult> = kotlinx.coroutines.flow.flowOf(createDummyExecutionResult(positionId))
     override suspend fun getAlerts(): NetworkResult<List<com.cryptopulse.app.domain.models.BotAlert>> = NetworkResult.Success(emptyList())
     override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+    override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
 }
 
 private fun createDummyExecutionResult(id: String) = com.cryptopulse.app.domain.models.TradeExecutionResult(
@@ -348,9 +490,33 @@ class FakeTokenManagerMinimal : com.cryptopulse.app.data.local.TokenManager(Fake
 }
 
 class FakeExchangeConnectionManagerMinimal : com.cryptopulse.app.data.local.ExchangeConnectionManager(FakeContextMinimal()) {
-    override suspend fun saveConnection(exchangeName: String, environment: String) {}
-    override suspend fun getConnectionInfo(): Triple<Boolean, String?, String?> = Triple(true, "bybit", "demo")
-    override suspend fun clearConnection() {}
+    var storedConnected: Boolean = true
+    var storedExchange: String? = "bybit"
+    var storedEnvironment: String? = "demo"
+
+    override suspend fun saveConnection(exchangeName: String, environment: String) {
+        val canonicalExch = normalizeExchangeName(exchangeName)
+        val canonicalEnv = normalizeEnvironment(environment) ?: return
+        storedConnected = true
+        storedExchange = canonicalExch
+        storedEnvironment = canonicalEnv
+        notifyConnectionRestored(canonicalExch, canonicalEnv)
+    }
+
+    override suspend fun getConnectionInfo(): Triple<Boolean, String?, String?> {
+        val canonicalEnv = normalizeEnvironment(storedEnvironment)
+        if (!storedConnected || canonicalEnv == null) {
+            return Triple(false, null, null)
+        }
+        return Triple(true, normalizeExchangeName(storedExchange), canonicalEnv)
+    }
+
+    override suspend fun clearConnection() {
+        storedConnected = false
+        storedExchange = null
+        storedEnvironment = null
+        notifyConnectionCleared()
+    }
 }
 
 class FakeTradeSessionRepositoryMinimal : com.cryptopulse.app.domain.repository.TradeSessionRepository {

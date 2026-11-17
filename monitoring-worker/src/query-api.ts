@@ -1,4 +1,5 @@
 import { PARITY_STATUSES } from '../../shared/monitoring';
+import { isExpectedSafetyGateBlockEvent, isStaleApprovalExpiryEvent } from './consumer';
 import { AdminPrincipal, MonitoringEnv } from './types';
 
 export interface QueryResult {
@@ -65,7 +66,7 @@ function buildWhereClause(filters: FilterItem[]): {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
   for (const f of filters) {
-    if (Array.isArray(f.binds) && f.binds.length > 0) {
+    if (Array.isArray(f.binds)) {
       clauses.push(f.sql);
       params.push(...f.binds);
     } else if (f.value !== null && f.value !== undefined && f.value !== '') {
@@ -182,6 +183,28 @@ function deriveHonestStageState(params: {
 }
 
 function mapSpanRow(r: any): Record<string, unknown> {
+  const inputSummary = safeJsonParse(r.input_summary_json) as Record<string, unknown> | null;
+  const outputSummary = safeJsonParse(r.output_summary_json) as Record<string, unknown> | null;
+  const isStaleApproval = isStaleApprovalExpiryEvent({
+    stage: Number(r.stage),
+    eventType: r.event_type,
+    errorCode: r.error_code,
+    message: r.message,
+    outputSummary,
+  });
+  const isExpectedSafetyBlock = isExpectedSafetyGateBlockEvent({
+    stage: Number(r.stage),
+    eventType: r.event_type,
+    errorCode: r.error_code,
+    message: r.message,
+    outputSummary,
+  });
+  const monitoringClassification = isStaleApproval
+    ? 'APPROVAL_EXPIRED_STALE'
+    : isExpectedSafetyBlock
+      ? 'EXPECTED_SAFETY_BLOCK'
+      : null;
+
   return {
     spanId: r.span_id,
     spanGroupId: r.span_group_id ?? null,
@@ -191,6 +214,7 @@ function mapSpanRow(r: any): Record<string, unknown> {
     tier: r.tier,
     eventType: r.event_type,
     status: r.status,
+    monitoringClassification,
     severity: r.severity,
     environment: r.environment,
     userId: r.user_id ?? null,
@@ -220,13 +244,35 @@ function mapSpanRow(r: any): Record<string, unknown> {
     sourceFile: r.source_file ?? null,
     errorCode: r.error_code ?? null,
     message: r.message,
-    inputSummary: safeJsonParse(r.input_summary_json),
-    outputSummary: safeJsonParse(r.output_summary_json),
+    inputSummary,
+    outputSummary,
     metadata: safeJsonParse(r.metadata_json),
   };
 }
 
 function mapCycleRow(r: any): Record<string, unknown> {
+  const rawFailureCode = String(r.failure_code || '').toUpperCase();
+  const isStaleApprovalCycle =
+    Number(r.failed_stage) === 2 &&
+    (rawFailureCode === 'APPROVAL_EXPIRED_OR_INVALID' || rawFailureCode.includes('APPROVAL_EXPIRED'));
+  const isExpectedSafetyBlockCycle =
+    Number(r.failed_stage) === 6 &&
+    (rawFailureCode === 'REGIME_PROHIBITED' ||
+      rawFailureCode === 'HTF_CONFLICT' ||
+      String(r.failure_summary || '').toUpperCase().includes('REGIME_PROHIBITED') ||
+      String(r.failure_summary || '').toUpperCase().includes('HTF_CONFLICT'));
+
+  const overallStatus = isStaleApprovalCycle
+    ? 'STALE'
+    : isExpectedSafetyBlockCycle
+      ? 'PASS'
+      : r.overall_status;
+  const statusClassification = isStaleApprovalCycle
+    ? 'APPROVAL_EXPIRED_STALE'
+    : isExpectedSafetyBlockCycle
+      ? 'EXPECTED_SAFETY_BLOCK'
+      : null;
+
   return {
     traceKey: r.trace_key,
     journey: r.journey,
@@ -241,9 +287,10 @@ function mapCycleRow(r: any): Record<string, unknown> {
     startedAtMs: r.started_at_ms,
     updatedAtMs: r.updated_at_ms,
     expiresAtMs: r.expires_at_ms,
-    overallStatus: r.overall_status,
+    overallStatus,
+    statusClassification,
     furthestStage: r.furthest_stage,
-    failedStage: r.failed_stage ?? null,
+    failedStage: isStaleApprovalCycle || isExpectedSafetyBlockCycle ? null : (r.failed_stage ?? null),
     failureCode: r.failure_code ?? null,
     failureSummary: r.failure_summary ?? null,
     symbolsCount: r.symbols_count ?? 0,
@@ -260,6 +307,84 @@ function mapTradeRow(r: any): Record<string, unknown> {
   const bybitHttpAckAtMs = r.bybit_http_ack_at_ms ?? null;
   const exchangeFillConfirmedAtMs = r.exchange_fill_confirmed_at_ms ?? null;
   const exchangeSlTpConfirmedAtMs = r.exchange_sl_tp_confirmed_at_ms ?? null;
+  const positionD1SyncedAtMs = r.position_d1_synced_at_ms ?? null;
+  const rawMilestone = String(r.current_milestone || '');
+  const rawStatus = String(r.execution_status || '');
+  const rawDetails = safeJsonParse(r.details_json) as Record<string, any> | null;
+
+  const isFcmMilestone =
+    rawMilestone.startsWith('FCM_') ||
+    rawMilestone.startsWith('NOTIFICATION_') ||
+    String(r.error_code || '') === 'NO_FCM_CREDENTIALS';
+  const hasFillConfirmation = Boolean(exchangeFillConfirmedAtMs);
+
+  // Priority 1: Keep trade execution status and notification status separate.
+  // A confirmed Bybit fill must never be displayed as an execution failure because push delivery failed.
+  let executionStatus = rawStatus;
+  let currentMilestone = rawMilestone;
+  let terminalFailedAtMs = r.terminal_failed_at_ms ?? null;
+  let executionErrorCode = r.error_code ?? null;
+  let notificationStatus: string | null =
+    typeof rawDetails?.notificationStatus === 'string' ? rawDetails.notificationStatus : null;
+  let notificationErrorCode: string | null =
+    typeof rawDetails?.notificationErrorCode === 'string' ? rawDetails.notificationErrorCode : null;
+
+  if (isFcmMilestone) {
+    notificationStatus =
+      notificationStatus || (rawMilestone.includes('FAILED') || rawStatus === 'FAILED' ? 'FCM_FAILED' : 'SENT');
+    notificationErrorCode = notificationErrorCode || (r.error_code ?? null);
+  }
+
+  if (hasFillConfirmation && (rawStatus === 'FAILED' || isFcmMilestone)) {
+    executionStatus = positionD1SyncedAtMs || exchangeSlTpConfirmedAtMs ? 'PROTECTED' : 'FILL_CONFIRMED';
+    currentMilestone = positionD1SyncedAtMs
+      ? 'POSITION_D1_SYNCED'
+      : exchangeSlTpConfirmedAtMs
+        ? 'EXCHANGE_SL_TP_CONFIRMED'
+        : 'EXCHANGE_FILL_CONFIRMED';
+    terminalFailedAtMs = null;
+    if (isFcmMilestone) {
+      executionErrorCode = null;
+    }
+  }
+
+  // Priority 7: Stage 7 close visibility — display verified close data if present; otherwise report telemetry limitation without inventing PnL.
+  const outSummary =
+    rawDetails?.outputSummary && typeof rawDetails.outputSummary === 'object'
+      ? (rawDetails.outputSummary as Record<string, any>)
+      : null;
+  const closedAtMs = asNullableNumber(rawDetails?.closedAtMs ?? rawDetails?.positionClosedAtMs ?? outSummary?.closedAtMs);
+  const exitPrice = asNullableNumber(rawDetails?.exitPrice ?? rawDetails?.closePrice ?? outSummary?.exitPrice);
+  const realizedPnl = asNullableNumber(rawDetails?.realizedPnl ?? outSummary?.realizedPnl);
+  const closeReason =
+    typeof rawDetails?.closeReason === 'string'
+      ? rawDetails.closeReason
+      : typeof outSummary?.closeReason === 'string'
+        ? outSummary.closeReason
+        : null;
+  const closeRecorded = Boolean(closedAtMs !== null || exitPrice !== null || rawMilestone === 'POSITION_CLOSED');
+
+  const closeTelemetry = closeRecorded
+    ? {
+        closeRecorded: true,
+        status: 'CLOSED_VERIFIED',
+        closedAtMs,
+        exitPrice,
+        realizedPnl,
+        closeReason,
+        limitationNote: null,
+      }
+    : {
+        closeRecorded: false,
+        status: 'CLOSE_TELEMETRY_NOT_EMITTED_BY_PRODUCER',
+        closedAtMs: null,
+        exitPrice: null,
+        realizedPnl: null,
+        closeReason: null,
+        limitationNote:
+          'Producer (TradingBot) emits Stage 7 spans through POSITION_D1_SYNCED (open sync) and does not emit POSITION_CLOSED spans to monitoring; close price and realized PnL are not available in Stage 7 telemetry.',
+      };
+
   return {
     tradeKey: r.trade_key,
     userId: r.user_id ?? null,
@@ -275,11 +400,13 @@ function mapTradeRow(r: any): Record<string, unknown> {
     intentId: r.intent_id ?? null,
     clientOrderId: r.client_order_id ?? null,
     orderId: r.order_id ?? null,
-    currentMilestone: r.current_milestone,
-    executionStatus: r.execution_status,
+    currentMilestone,
+    executionStatus,
+    notificationStatus,
+    notificationErrorCode,
     isAckOnly: Boolean(bybitHttpAckAtMs && !exchangeFillConfirmedAtMs),
-    hasFillConfirmation: Boolean(exchangeFillConfirmedAtMs),
-    hasProtectionConfirmed: Boolean(exchangeSlTpConfirmedAtMs),
+    hasFillConfirmation,
+    hasProtectionConfirmed: Boolean(exchangeSlTpConfirmedAtMs || positionD1SyncedAtMs),
     requestedQty: asNullableNumber(r.requested_qty),
     requestedPrice: asNullableNumber(r.requested_price),
     filledQty: asNullableNumber(r.filled_qty),
@@ -288,7 +415,7 @@ function mapTradeRow(r: any): Record<string, unknown> {
     tpPrice: asNullableNumber(r.tp_price),
     bybitRetCode: r.bybit_ret_code ?? null,
     bybitRetMsg: r.bybit_ret_msg ?? null,
-    errorCode: r.error_code ?? null,
+    errorCode: executionErrorCode,
     milestones: {
       signalDetectedAtMs: r.signal_detected_at_ms ?? null,
       tradeAlertCreatedAtMs: r.trade_alert_created_at_ms ?? null,
@@ -298,19 +425,53 @@ function mapTradeRow(r: any): Record<string, unknown> {
       reconciliationAttemptedAtMs: r.reconciliation_attempted_at_ms ?? null,
       exchangeFillConfirmedAtMs,
       exchangeSlTpConfirmedAtMs,
-      positionD1SyncedAtMs: r.position_d1_synced_at_ms ?? null,
-      terminalFailedAtMs: r.terminal_failed_at_ms ?? null,
+      positionD1SyncedAtMs,
+      terminalFailedAtMs,
+      closedAtMs,
     },
+    closeTelemetry,
     firstSeenAtMs: r.first_seen_at_ms,
     updatedAtMs: r.updated_at_ms,
-    details: safeJsonParse(r.details_json),
+    details: rawDetails,
   };
 }
 
 function mapNotificationRow(r: any): Record<string, unknown> {
+  const ck = String(r.correlation_key || '');
+  const backendEventType = r.backend_event_type ?? null;
+  const isFillRecord =
+    ck.endsWith(':TRADE_FILLED') || String(backendEventType || '').toUpperCase() === 'TRADE_FILLED';
+  const notificationCategory = isFillRecord ? 'TRADE_FILLED' : 'TRADE_ALERT';
+  const fcmDispatchStatus = r.fcm_dispatch_status ?? null;
+  const fcmDeliveryStatus =
+    fcmDispatchStatus === 'FAILED'
+      ? 'FCM_FAILED'
+      : fcmDispatchStatus === 'SENT'
+        ? 'FCM_SENT'
+        : 'NOT_DISPATCHED';
+
+  const androidPostNotifyVerified =
+    r.android_post_notify_verified === null || r.android_post_notify_verified === undefined
+      ? null
+      : Boolean(r.android_post_notify_verified);
+  const androidConfirmed = Boolean(r.android_rendered_at_ms || androidPostNotifyVerified === true);
+  const androidSource = r.android_source ?? null;
+  const androidDeliveryStatus = isFillRecord && !androidConfirmed
+    ? 'NOT_APPLICABLE_FILL_NOTIFICATION'
+    : androidConfirmed
+      ? androidSource === 'POLL_FALLBACK'
+        ? 'DELIVERED_VIA_POLL_FALLBACK'
+        : androidSource === 'BOTH'
+          ? 'DELIVERED_FCM_AND_POLL'
+          : 'DELIVERED_VIA_FCM'
+      : r.android_poll_received_at_ms || r.android_fcm_received_at_ms
+        ? 'RECEIVED_PENDING_RENDER'
+        : 'NOT_RECEIVED';
+
   return {
     correlationKey: r.correlation_key,
     alertId: r.alert_id ?? null,
+    notificationCategory,
     traceId: r.trace_id ?? null,
     cycleId: r.cycle_id ?? null,
     userId: r.user_id ?? null,
@@ -319,21 +480,20 @@ function mapNotificationRow(r: any): Record<string, unknown> {
     timeframe: r.timeframe ?? null,
     fcmMessageId: r.fcm_message_id ?? null,
     androidDeviceSessionHash: r.android_device_session_hash ?? null,
-    backendEventType: r.backend_event_type ?? null,
+    backendEventType,
     backendDispatchedAtMs: r.backend_dispatched_at_ms ?? null,
     fcmHttpStatus: r.fcm_http_status ?? null,
-    fcmDispatchStatus: r.fcm_dispatch_status ?? null,
+    fcmDispatchStatus,
+    fcmDeliveryStatus,
     backendPayload: safeJsonParse(r.backend_payload_json),
     androidFcmReceivedAtMs: r.android_fcm_received_at_ms ?? null,
     androidPollReceivedAtMs: r.android_poll_received_at_ms ?? null,
-    androidSource: r.android_source ?? null,
+    androidSource,
+    androidDeliveryStatus,
     androidDedupOutcome: r.android_dedup_outcome ?? null,
     androidEligibilityOutcome: r.android_eligibility_outcome ?? null,
     androidEligibilityReason: r.android_eligibility_reason ?? null,
-    androidPostNotifyVerified:
-      r.android_post_notify_verified === null || r.android_post_notify_verified === undefined
-        ? null
-        : Boolean(r.android_post_notify_verified),
+    androidPostNotifyVerified,
     androidOsHeadsUpState: r.android_os_heads_up_state || 'UNKNOWN',
     androidValidatedAtMs: r.android_validated_at_ms ?? null,
     androidValidationOutcome: r.android_validation_outcome ?? null,
@@ -368,6 +528,48 @@ function mapTaRow(r: any): Record<string, unknown> {
   };
 
   const hasAnyNumericIndicator = Object.values(indicators).some((v) => v !== null);
+  const rawSnapshot = safeJsonParse(r.raw_snapshot_json) as Record<string, any> | null;
+  const rawOut =
+    rawSnapshot?.outputSummary && typeof rawSnapshot.outputSummary === 'object'
+      ? (rawSnapshot.outputSummary as Record<string, unknown>)
+      : {};
+  const isSkipped = r.status === 'SKIPPED';
+
+  const indicatorFieldStates: Record<string, 'POPULATED' | 'ACTUAL_NULL' | 'UNAVAILABLE_IN_TELEMETRY'> = {};
+  for (const [k, val] of Object.entries(indicators)) {
+    if (val !== null) {
+      indicatorFieldStates[k] = 'POPULATED';
+    } else if (isSkipped || Object.prototype.hasOwnProperty.call(rawOut, k)) {
+      indicatorFieldStates[k] = 'ACTUAL_NULL';
+    } else {
+      indicatorFieldStates[k] = 'UNAVAILABLE_IN_TELEMETRY';
+    }
+  }
+
+  const regimeVal = r.regime ?? null;
+  const trendDirVal = r.trend_direction ?? null;
+  indicatorFieldStates.regime =
+    regimeVal !== null
+      ? 'POPULATED'
+      : isSkipped || Object.prototype.hasOwnProperty.call(rawOut, 'regime')
+        ? 'ACTUAL_NULL'
+        : 'UNAVAILABLE_IN_TELEMETRY';
+  indicatorFieldStates.trendDirection =
+    trendDirVal !== null
+      ? 'POPULATED'
+      : isSkipped || Object.prototype.hasOwnProperty.call(rawOut, 'trendDirection')
+        ? 'ACTUAL_NULL'
+        : 'UNAVAILABLE_IN_TELEMETRY';
+
+  const anyUnavailable = Object.values(indicatorFieldStates).some((s) => s === 'UNAVAILABLE_IN_TELEMETRY');
+  const indicatorTelemetryStatus = isSkipped
+    ? 'SKIPPED_NULL'
+    : hasAnyNumericIndicator
+      ? 'FULL'
+      : anyUnavailable
+        ? 'SUMMARY_ONLY_INDICATORS_NOT_EMITTED'
+        : 'ACTUAL_NULL';
+
   return {
     snapshotId: r.snapshot_id,
     journey: r.journey,
@@ -384,11 +586,17 @@ function mapTaRow(r: any): Record<string, unknown> {
     minRequiredBars: asNullableNumber(r.min_required_bars),
     indicatorEngine: r.indicator_engine,
     ...indicators,
-    regime: r.regime ?? null,
+    regime: regimeVal,
     confidenceScore: asNullableNumber(r.confidence_score),
-    trendDirection: r.trend_direction ?? null,
-    antiFabricationVerified: r.status === 'SKIPPED' ? !hasAnyNumericIndicator : true,
-    rawSnapshot: safeJsonParse(r.raw_snapshot_json),
+    trendDirection: trendDirVal,
+    indicatorFieldStates,
+    indicatorTelemetryStatus,
+    telemetryLimitationNote:
+      indicatorTelemetryStatus === 'SUMMARY_ONLY_INDICATORS_NOT_EMITTED'
+        ? 'Producer (StrategyOrchestrator) emitted TA_COMPUTED summary metadata (engine, bars, confidenceScore) without individual indicator values; fields are unavailable in telemetry, not null indicator results.'
+        : null,
+    antiFabricationVerified: isSkipped ? !hasAnyNumericIndicator : true,
+    rawSnapshot,
     computedAtMs: r.computed_at_ms,
   };
 }
@@ -508,81 +716,118 @@ async function handleOverview(url: URL, env: MonitoringEnv, scope: TenantScope):
   const incFilterList: FilterItem[] = [
     { sql: 'last_seen_at_ms >= ?', value: cutoffMs },
     { sql: 'user_id = ?', value: scope.userId },
+    {
+      sql: `NOT (stage = 2 AND UPPER(COALESCE(error_code, '')) = 'APPROVAL_EXPIRED_OR_INVALID')`,
+      binds: [],
+    },
+    {
+      sql: `NOT (stage = 6 AND UPPER(COALESCE(error_code, '')) IN ('REGIME_PROHIBITED', 'HTF_CONFLICT'))`,
+      binds: [],
+    },
   ];
   addStage9DeviceFilter(incFilterList, scope.deviceSessionHash);
   const incWhere = buildWhereClause(incFilterList);
 
-  const [rollupRes, latestByStageRes, latestJourneyARes, latestJourneyBRes, exchRes, selfHealthRes, dlqRes, incCountRes] =
-    await Promise.all([
-      db
-        .prepare(
-          `SELECT stage,
-                  COUNT(*) AS total,
-                  SUM(CASE WHEN status = 'PASS' THEN 1 ELSE 0 END) AS pass_count,
-                  SUM(CASE WHEN status = 'WARN' THEN 1 ELSE 0 END) AS warn_count,
-                  SUM(CASE WHEN status = 'FAIL' THEN 1 ELSE 0 END) AS fail_count,
-                  SUM(CASE WHEN status = 'SKIPPED' THEN 1 ELSE 0 END) AS skipped_count,
-                  MAX(emitted_at_ms) AS latest_emitted_at_ms
-           FROM stage_spans
+  const staleApprovalSql = `(stage = 2 AND (UPPER(COALESCE(error_code, '')) = 'APPROVAL_EXPIRED_OR_INVALID' OR (event_type = 'DISCOVERY_HANDOFF_CONSUMED' AND (UPPER(COALESCE(error_code, '')) LIKE '%APPROVAL_EXPIRED%' OR UPPER(COALESCE(message, '')) LIKE '%APPROVAL_EXPIRED_OR_INVALID%'))))`;
+  const expectedSafetyBlockSql = `(stage = 6 AND (UPPER(COALESCE(error_code, '')) IN ('REGIME_PROHIBITED', 'HTF_CONFLICT') OR (event_type = 'FINAL_DISPATCH_GATE' AND (UPPER(COALESCE(message, '')) LIKE '%REGIME_PROHIBITED%' OR UPPER(COALESCE(message, '')) LIKE '%HTF_CONFLICT%' OR UPPER(COALESCE(output_summary_json, '')) LIKE '%REGIME_PROHIBITED%' OR UPPER(COALESCE(output_summary_json, '')) LIKE '%HTF_CONFLICT%'))))`;
+
+  const [
+    rollupRes,
+    latestByStageRes,
+    latestJourneyARes,
+    latestJourneyBRes,
+    exchRes,
+    latestExchByChannelRes,
+    selfHealthRes,
+    dlqRes,
+    incCountRes,
+  ] = await Promise.all([
+    db
+      .prepare(
+        `SELECT stage,
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'PASS' OR ${expectedSafetyBlockSql} THEN 1 ELSE 0 END) AS pass_count,
+                SUM(CASE WHEN status = 'WARN' THEN 1 ELSE 0 END) AS warn_count,
+                SUM(CASE WHEN status = 'FAIL' AND NOT ${staleApprovalSql} AND NOT ${expectedSafetyBlockSql} THEN 1 ELSE 0 END) AS fail_count,
+                SUM(CASE WHEN status = 'SKIPPED' OR ${staleApprovalSql} THEN 1 ELSE 0 END) AS skipped_count,
+                SUM(CASE WHEN ${staleApprovalSql} THEN 1 ELSE 0 END) AS expired_approval_count,
+                SUM(CASE WHEN ${expectedSafetyBlockSql} THEN 1 ELSE 0 END) AS expected_block_count,
+                MAX(emitted_at_ms) AS latest_emitted_at_ms
+         FROM stage_spans
+         ${spanFilters.whereSql}
+         GROUP BY stage`
+      )
+      .bind(...spanFilters.params)
+      .all<any>(),
+    db
+      .prepare(
+        `SELECT stage, span_id, status, severity, event_type, error_code, message,
+                symbol, component, emitted_at_ms, trace_id, cycle_id, discovery_cycle_id,
+                output_summary_json
+         FROM (
+           SELECT s.*, ROW_NUMBER() OVER (
+             PARTITION BY s.stage
+             ORDER BY s.emitted_at_ms DESC, s.stage_seq DESC
+           ) AS rn
+           FROM stage_spans s
            ${spanFilters.whereSql}
-           GROUP BY stage`
-        )
-        .bind(...spanFilters.params)
-        .all<any>(),
-      db
-        .prepare(
-          `SELECT stage, span_id, status, severity, event_type, error_code, message,
-                  symbol, component, emitted_at_ms, trace_id, cycle_id, discovery_cycle_id
-           FROM (
-             SELECT s.*, ROW_NUMBER() OVER (
-               PARTITION BY s.stage
-               ORDER BY s.emitted_at_ms DESC, s.stage_seq DESC
-             ) AS rn
-             FROM stage_spans s
-             ${spanFilters.whereSql}
-           )
-           WHERE rn = 1`
-        )
-        .bind(...spanFilters.params)
-        .all<any>(),
-      db
-        .prepare(
-          `SELECT * FROM pipeline_cycles
-           ${cycleAWhereSql}
-           ORDER BY CASE WHEN discovery_cycle_id IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at_ms DESC
-           LIMIT 1`
-        )
-        .bind(...(scope.userId ? [scope.userId] : []))
-        .first<any>(),
-      db
-        .prepare(
-          `SELECT * FROM pipeline_cycles
-           ${cycleBWhereSql}
-           ORDER BY CASE WHEN cycle_id IS NOT NULL AND trace_id IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at_ms DESC
-           LIMIT 1`
-        )
-        .bind(...(scope.userId ? [scope.userId] : []))
-        .first<any>(),
-      db
-        .prepare(
-          `SELECT * FROM exchange_health_windows
+         )
+         WHERE rn = 1`
+      )
+      .bind(...spanFilters.params)
+      .all<any>(),
+    db
+      .prepare(
+        `SELECT * FROM pipeline_cycles
+         ${cycleAWhereSql}
+         ORDER BY CASE WHEN discovery_cycle_id IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at_ms DESC
+         LIMIT 1`
+      )
+      .bind(...(scope.userId ? [scope.userId] : []))
+      .first<any>(),
+    db
+      .prepare(
+        `SELECT * FROM pipeline_cycles
+         ${cycleBWhereSql}
+         ORDER BY CASE WHEN cycle_id IS NOT NULL AND trace_id IS NOT NULL THEN 0 ELSE 1 END ASC, updated_at_ms DESC
+         LIMIT 1`
+      )
+      .bind(...(scope.userId ? [scope.userId] : []))
+      .first<any>(),
+    db
+      .prepare(
+        `SELECT * FROM exchange_health_windows
+         ${exchWhere.whereSql}
+         ORDER BY recorded_at_ms DESC
+         LIMIT 50`
+      )
+      .bind(...exchWhere.params)
+      .all<any>(),
+    db
+      .prepare(
+        `SELECT * FROM (
+           SELECT e.*, ROW_NUMBER() OVER (
+             PARTITION BY e.channel
+             ORDER BY e.recorded_at_ms DESC
+           ) AS rn
+           FROM exchange_health_windows e
            ${exchWhere.whereSql}
-           ORDER BY recorded_at_ms DESC
-           LIMIT 50`
-        )
-        .bind(...exchWhere.params)
-        .all<any>(),
-      scope.isOperator && !scope.userId
-        ? db.prepare(`SELECT * FROM monitoring_self_health ORDER BY updated_at_ms DESC LIMIT 10`).all<any>()
-        : Promise.resolve({ results: [] }),
-      scope.isOperator && !scope.userId
-        ? db.prepare(`SELECT COUNT(*) AS count, MAX(received_at_ms) AS latest_ms FROM telemetry_dlq_records`).first<any>()
-        : Promise.resolve({ count: 0, latest_ms: null }),
-      db
-        .prepare(`SELECT COUNT(*) AS count FROM data_quality_incidents ${incWhere.whereSql}`)
-        .bind(...incWhere.params)
-        .first<{ count: number }>(),
-    ]);
+         )
+         WHERE rn = 1`
+      )
+      .bind(...exchWhere.params)
+      .all<any>(),
+    scope.isOperator && !scope.userId
+      ? db.prepare(`SELECT * FROM monitoring_self_health ORDER BY updated_at_ms DESC LIMIT 10`).all<any>()
+      : Promise.resolve({ results: [] }),
+    scope.isOperator && !scope.userId
+      ? db.prepare(`SELECT COUNT(*) AS count, MAX(received_at_ms) AS latest_ms FROM telemetry_dlq_records`).first<any>()
+      : Promise.resolve({ count: 0, latest_ms: null }),
+    db
+      .prepare(`SELECT COUNT(*) AS count FROM data_quality_incidents ${incWhere.whereSql}`)
+      .bind(...incWhere.params)
+      .first<{ count: number }>(),
+  ]);
 
   const rollupByStage = new Map<number, any>();
   for (const r of rollupRes.results || []) {
@@ -603,19 +848,56 @@ async function handleOverview(url: URL, env: MonitoringEnv, scope: TenantScope):
     const warnCount = Number(agg?.warn_count ?? 0);
     const failCount = Number(agg?.fail_count ?? 0);
     const skippedCount = Number(agg?.skipped_count ?? 0);
+    const expiredApprovalCount = Number(agg?.expired_approval_count ?? 0);
+    const expectedBlockCount = Number(agg?.expected_block_count ?? 0);
     const latestEmittedAtMs = agg?.latest_emitted_at_ms ?? latest?.emitted_at_ms ?? null;
-    const latestStatus = latest?.status ?? null;
+    const rawLatestStatus = latest?.status ?? null;
+    const latestOut = safeJsonParse(latest?.output_summary_json) as Record<string, unknown> | null;
 
-    const honestState = deriveHonestStageState({
+    const latestIsStaleApproval = latest
+      ? isStaleApprovalExpiryEvent({
+          stage: def.stage,
+          eventType: latest.event_type,
+          errorCode: latest.error_code,
+          message: latest.message,
+          outputSummary: latestOut,
+        })
+      : false;
+    const latestIsExpectedBlock = latest
+      ? isExpectedSafetyGateBlockEvent({
+          stage: def.stage,
+          eventType: latest.event_type,
+          errorCode: latest.error_code,
+          message: latest.message,
+          outputSummary: latestOut,
+        })
+      : false;
+
+    const effectiveLatestStatus = latestIsStaleApproval
+      ? 'SKIPPED'
+      : latestIsExpectedBlock
+        ? 'PASS'
+        : rawLatestStatus;
+
+    let honestState = deriveHonestStageState({
       total,
       failCount,
       warnCount,
       passCount,
-      latestStatus,
+      latestStatus: effectiveLatestStatus,
       latestEmittedAtMs,
       nowMs,
       staleThresholdMs: def.staleThresholdMs,
     });
+    if (def.stage === 2 && latestIsStaleApproval && failCount === 0) {
+      honestState = 'STALE';
+    }
+
+    const latestClassification = latestIsStaleApproval
+      ? 'APPROVAL_EXPIRED_STALE'
+      : latestIsExpectedBlock
+        ? 'EXPECTED_SAFETY_BLOCK'
+        : null;
 
     return {
       stage: def.stage,
@@ -627,9 +909,12 @@ async function handleOverview(url: URL, env: MonitoringEnv, scope: TenantScope):
       warnCount,
       failCount,
       skippedCount,
+      expiredApprovalCount,
+      expectedBlockCount,
       latestEmittedAtMs,
       ageMs: latestEmittedAtMs ? Math.max(0, nowMs - latestEmittedAtMs) : null,
-      latestStatus,
+      latestStatus: rawLatestStatus,
+      latestClassification,
       latestEventType: latest?.event_type ?? null,
       latestErrorCode: latest?.error_code ?? null,
       latestSymbol: latest?.symbol ?? null,
@@ -642,14 +927,23 @@ async function handleOverview(url: URL, env: MonitoringEnv, scope: TenantScope):
   });
 
   // Separate public market data vs private authenticated account exchange channels
+  // Use partitioned query first so ALARM_CYCLE ticks cannot push PUBLIC_MARKET_DATA out of LIMIT 50
   const latestExchangeByChannel = new Map<string, any>();
+  for (const row of latestExchByChannelRes.results || []) {
+    const ch = String(row.channel || 'UNKNOWN');
+    if (!latestExchangeByChannel.has(ch)) latestExchangeByChannel.set(ch, row);
+  }
   for (const row of exchRes.results || []) {
     const ch = String(row.channel || 'UNKNOWN');
     if (!latestExchangeByChannel.has(ch)) latestExchangeByChannel.set(ch, row);
   }
 
   const buildChannelHealth = (channels: string[], label: string) => {
-    const hit = channels.map((ch) => latestExchangeByChannel.get(ch)).find(Boolean);
+    const hits = channels
+      .map((ch) => latestExchangeByChannel.get(ch))
+      .filter(Boolean)
+      .sort((a, b) => Number(b.recorded_at_ms || 0) - Number(a.recorded_at_ms || 0));
+    const hit = hits[0];
     if (!hit) {
       return {
         label,
@@ -775,8 +1069,14 @@ async function handleOverview(url: URL, env: MonitoringEnv, scope: TenantScope):
       overallVerdict,
       stages,
       exchangeHealth: {
-        publicMarketData: buildChannelHealth(['PUBLIC_MARKET_DATA', 'PUBLIC_REST', 'COORDINATOR'], 'Public Market Data'),
-        privateAccount: buildChannelHealth(['PRIVATE_ACCOUNT', 'EXCHANGE_PRIVATE', 'ORDER_DISPATCH', 'BYBIT_PRIVATE'], 'Authenticated Account & Orders'),
+        publicMarketData: buildChannelHealth(
+          ['PUBLIC_MARKET_DATA', 'PUBLIC_REST', 'COORDINATOR', 'COORDINATOR_STATS'],
+          'Public Market Data'
+        ),
+        privateAccount: buildChannelHealth(
+          ['AUTHENTICATED_ACCOUNT', 'PRIVATE_ACCOUNT', 'EXCHANGE_PRIVATE', 'ORDER_DISPATCH', 'BYBIT_PRIVATE'],
+          'Authenticated Account & Orders'
+        ),
         recentWindowsCount: (exchRes.results || []).length,
       },
       journeys: {
@@ -1067,26 +1367,272 @@ async function handleTraceDetail(rawId: string, env: MonitoringEnv, scope: Tenan
       spans,
       stage2Decisions: (s2Res.results || []).map(mapStage2Row),
       taSnapshots: (taRes.results || []).map(mapTaRow),
-      gateEvaluations: (gatesRes.results || []).map((g: any) => ({
-        gateEvalId: g.gate_eval_id,
-        stage: g.stage,
-        journey: g.journey,
-        symbol: g.symbol ?? null,
-        strategyId: g.strategy_id ?? null,
-        timeframe: g.timeframe ?? null,
-        gateName: g.gate_name,
-        gateCategory: g.gate_category,
-        decision: g.decision,
-        reason: g.reason ?? null,
-        sourceFile: g.source_file ?? null,
-        evaluatedAtMs: g.evaluated_at_ms,
-        inputs: safeJsonParse(g.inputs_json),
-        outputs: safeJsonParse(g.outputs_json),
-      })),
+      gateEvaluations: (gatesRes.results || []).map(mapGateRow),
       trades: (tradesRes.results || []).map(mapTradeRow),
-      notifications: (notifsRes.results || []).map(mapNotificationRow),
+      notifications: (await normalizeAndSeparateNotificationRows(db, notifsRes.results || [])).map(mapNotificationRow),
     },
   };
+}
+
+function mapGateRow(g: any): Record<string, unknown> {
+  const inputs = safeJsonParse(g.inputs_json) as Record<string, unknown> | null;
+  const outputs = safeJsonParse(g.outputs_json) as Record<string, unknown> | null;
+  const isExpectedBlock = isExpectedSafetyGateBlockEvent({
+    stage: Number(g.stage),
+    eventType: g.gate_name,
+    errorCode: g.reason,
+    message: g.reason,
+    outputSummary: outputs,
+  });
+  const classification = isExpectedBlock
+    ? 'EXPECTED_SAFETY_BLOCK'
+    : g.decision === 'BLOCK'
+      ? 'GATE_BLOCK'
+      : g.decision === 'WARN' || g.decision === 'SHADOW_DIVERGED'
+        ? 'GATE_WARN'
+        : 'GATE_ALLOW';
+
+  return {
+    gateEvalId: g.gate_eval_id,
+    stage: g.stage,
+    journey: g.journey,
+    cycleId: g.cycle_id ?? null,
+    traceId: g.trace_id ?? null,
+    discoveryCycleId: g.discovery_cycle_id ?? null,
+    symbol: g.symbol ?? null,
+    strategyId: g.strategy_id ?? null,
+    timeframe: g.timeframe ?? null,
+    gateName: g.gate_name,
+    gateCategory: g.gate_category,
+    decision: g.decision,
+    gateDecision: g.decision,
+    classification,
+    isSystemError: !isExpectedBlock && g.decision === 'BLOCK' && Number(g.stage) !== 6,
+    reason: g.reason ?? null,
+    sourceFile: g.source_file ?? null,
+    evaluatedAtMs: g.evaluated_at_ms,
+    inputs,
+    outputs,
+  };
+}
+
+function computeParityMismatchesForQuery(
+  bp: Record<string, any> | null,
+  ap: Record<string, any> | null,
+  backendEventType: string | null,
+  androidRenderedAtMs: number | null,
+  androidPostNotifyVerified: number | null,
+  androidEligibilityOutcome: string | null,
+  isFillRecord: boolean
+): string[] {
+  const mismatches: string[] = [];
+  if (bp?.hasPlaceholderPnl3 === true) {
+    mismatches.push('DEFECT_PLACEHOLDER_PNL_3');
+  }
+  if (bp?.hasTimeframe === false && String(backendEventType || '').toUpperCase().includes('FILL')) {
+    mismatches.push('BACKEND_MISSING_TIMEFRAME');
+  }
+  if (bp && ap && !isFillRecord) {
+    if (bp.symbol && ap.symbol && String(bp.symbol) !== String(ap.symbol)) {
+      mismatches.push('FIELD_MISMATCH:symbol');
+    }
+    if (bp.strategyId && ap.strategyId && String(bp.strategyId) !== String(ap.strategyId)) {
+      mismatches.push('FIELD_MISMATCH:strategyId');
+    }
+    if (bp.timeframe && ap.timeframe && String(bp.timeframe) !== String(ap.timeframe)) {
+      mismatches.push('FIELD_MISMATCH:timeframe');
+    }
+    const bPrice = asNullableNumber(bp.entryPrice ?? bp.price);
+    const aPrice = asNullableNumber(ap.entryPrice ?? ap.price);
+    if (bPrice !== null && aPrice !== null && Math.abs(bPrice - aPrice) > 1e-6) {
+      mismatches.push('FIELD_MISMATCH:entryPrice');
+    }
+    const bSl = asNullableNumber(bp.stopLossPrice ?? bp.stopLoss);
+    const aSl = asNullableNumber(ap.stopLossPrice ?? ap.stopLoss);
+    if (bSl !== null && aSl !== null && Math.abs(bSl - aSl) > 1e-6) {
+      mismatches.push('FIELD_MISMATCH:stopLossPrice');
+    }
+    const bTp = asNullableNumber(bp.takeProfitPrice ?? bp.takeProfit);
+    const aTp = asNullableNumber(ap.takeProfitPrice ?? ap.takeProfit);
+    if (bTp !== null && aTp !== null && Math.abs(bTp - aTp) > 1e-6) {
+      mismatches.push('FIELD_MISMATCH:takeProfitPrice');
+    }
+    if (typeof bp.isExecutable === 'boolean' && typeof ap.isExecutable === 'boolean' && bp.isExecutable !== ap.isExecutable) {
+      mismatches.push('FIELD_MISMATCH:isExecutable');
+    }
+  }
+  if (ap?.rendered === false && !androidRenderedAtMs) {
+    mismatches.push('ANDROID_POPUP_RENDER_FAILED');
+  }
+  if (
+    androidPostNotifyVerified === 0 &&
+    !androidRenderedAtMs &&
+    androidEligibilityOutcome !== 'SUPPRESSED_PRECHECK'
+  ) {
+    mismatches.push('ANDROID_POST_CHECK_MISSING');
+  }
+  return Array.from(new Set(mismatches));
+}
+
+async function normalizeAndSeparateNotificationRows(
+  db: D1Database,
+  rawRows: any[]
+): Promise<any[]> {
+  // Exclude orphan secondary popup renders that had null alert_id and null fcm_message_id and no backend event
+  const nonOrphanRows = rawRows.filter((r) => {
+    const isOrphanNullAlert =
+      !r.alert_id &&
+      !r.fcm_message_id &&
+      !r.backend_dispatched_at_ms &&
+      !r.backend_event_type;
+    return !isOrphanNullAlert;
+  });
+
+  // Identify any historical rows where TRADE_FILLED overwrote TRADE_ALERT on the same row
+  const existingKeys = new Set(nonOrphanRows.map((r) => String(r.correlation_key)));
+  const collidedAlertIds = Array.from(
+    new Set(
+      nonOrphanRows
+        .filter(
+          (r) =>
+            r.alert_id &&
+            String(r.backend_event_type || '').toUpperCase() === 'TRADE_FILLED' &&
+            r.android_rendered_at_ms !== null &&
+            !String(r.correlation_key || '').endsWith(':TRADE_FILLED') &&
+            !existingKeys.has(`${r.correlation_key}:TRADE_FILLED`)
+        )
+        .map((r) => String(r.alert_id))
+    )
+  );
+
+  const stage8ByAlert = new Map<string, any[]>();
+  if (collidedAlertIds.length > 0) {
+    const ph = collidedAlertIds.map(() => '?').join(',');
+    const s8Res = await db
+      .prepare(
+        `SELECT * FROM stage_spans
+         WHERE stage = 8 AND alert_id IN (${ph})
+         ORDER BY emitted_at_ms ASC`
+      )
+      .bind(...collidedAlertIds)
+      .all<any>();
+    for (const sp of s8Res.results || []) {
+      const aid = String(sp.alert_id || '');
+      if (!stage8ByAlert.has(aid)) stage8ByAlert.set(aid, []);
+      stage8ByAlert.get(aid)!.push(sp);
+    }
+  }
+
+  const expanded: any[] = [];
+  for (const r of nonOrphanRows) {
+    const aid = r.alert_id ? String(r.alert_id) : '';
+    const spans = aid ? stage8ByAlert.get(aid) : undefined;
+    if (spans && spans.length > 0) {
+      const alertSpan = spans.find((s) => {
+        const out = safeJsonParse(s.output_summary_json) as Record<string, any> | null;
+        const nt = String(out?.notificationType || '').toUpperCase();
+        return nt === 'TRADE_ALERT' || (!nt.includes('FILL') && !String(s.event_type || '').toUpperCase().includes('FILL'));
+      });
+      const fillSpan = spans.find((s) => {
+        const out = safeJsonParse(s.output_summary_json) as Record<string, any> | null;
+        const nt = String(out?.notificationType || '').toUpperCase();
+        return nt.includes('FILL') || String(s.event_type || '').toUpperCase().includes('FILL');
+      });
+
+      if (alertSpan && fillSpan) {
+        const alertOut = (safeJsonParse(alertSpan.output_summary_json) as Record<string, any> | null) || {};
+        const fillOut = (safeJsonParse(fillSpan.output_summary_json) as Record<string, any> | null) || {};
+        const ap = (safeJsonParse(r.android_rendered_fields_json) as Record<string, any> | null) || null;
+        const alertBp: Record<string, any> = {
+          ...alertOut,
+          symbol: alertSpan.symbol ?? alertOut.symbol ?? r.symbol,
+          strategyId: alertSpan.strategy_id ?? alertOut.strategyId ?? r.strategy_id,
+          timeframe: alertSpan.timeframe ?? alertOut.timeframe ?? r.timeframe,
+        };
+        const alertMismatches = computeParityMismatchesForQuery(
+          alertBp,
+          ap,
+          'TRADE_ALERT',
+          asNullableNumber(r.android_rendered_at_ms),
+          asNullableNumber(r.android_post_notify_verified),
+          r.android_eligibility_outcome ?? null,
+          false
+        );
+        const androidConfirmed = Boolean(r.android_rendered_at_ms || r.android_post_notify_verified === 1);
+        const alertParityStatus =
+          alertMismatches.length > 0
+            ? PARITY_STATUSES.PARITY_MISMATCH
+            : androidConfirmed
+              ? PARITY_STATUSES.PARITY_OK
+              : PARITY_STATUSES.PENDING_ANDROID;
+
+        expanded.push({
+          ...r,
+          timeframe: alertSpan.timeframe ?? alertOut.timeframe ?? r.timeframe,
+          backend_event_type: 'TRADE_ALERT',
+          backend_dispatched_at_ms: alertSpan.emitted_at_ms ?? r.backend_dispatched_at_ms,
+          fcm_http_status: alertOut.fcmHttpStatus ?? r.fcm_http_status,
+          fcm_dispatch_status: alertOut.fcmDispatchStatus || (alertSpan.status === 'FAIL' ? 'FAILED' : 'SENT'),
+          backend_payload_json: JSON.stringify(alertBp),
+          parity_status: alertParityStatus,
+          parity_mismatches_json: JSON.stringify(alertMismatches),
+        });
+
+        const fillBp: Record<string, any> = {
+          ...fillOut,
+          fillPrice: fillOut.avgFillPrice ?? fillOut.price,
+          symbol: fillSpan.symbol ?? fillOut.symbol ?? r.symbol,
+          strategyId: fillSpan.strategy_id ?? fillOut.strategyId ?? r.strategy_id,
+          timeframe: fillSpan.timeframe ?? fillOut.timeframe ?? null,
+        };
+        const fillMismatches = computeParityMismatchesForQuery(
+          fillBp,
+          null,
+          'TRADE_FILLED',
+          null,
+          null,
+          null,
+          true
+        );
+        const fillDispatchStatus = fillOut.fcmDispatchStatus || (fillSpan.status === 'FAIL' ? 'FAILED' : 'SENT');
+        const fillParityStatus =
+          fillDispatchStatus === 'FAILED'
+            ? PARITY_STATUSES.FCM_FAILED
+            : fillMismatches.length > 0
+              ? PARITY_STATUSES.PARITY_MISMATCH
+              : PARITY_STATUSES.PENDING_ANDROID;
+
+        expanded.push({
+          ...r,
+          correlation_key: `${r.correlation_key}:TRADE_FILLED`,
+          timeframe: fillSpan.timeframe ?? fillOut.timeframe ?? null,
+          backend_event_type: 'TRADE_FILLED',
+          backend_dispatched_at_ms: fillSpan.emitted_at_ms ?? r.backend_dispatched_at_ms,
+          fcm_http_status: fillOut.fcmHttpStatus ?? r.fcm_http_status,
+          fcm_dispatch_status: fillDispatchStatus,
+          backend_payload_json: JSON.stringify(fillBp),
+          android_fcm_received_at_ms: null,
+          android_poll_received_at_ms: null,
+          android_source: null,
+          android_dedup_outcome: null,
+          android_eligibility_outcome: null,
+          android_eligibility_reason: null,
+          android_post_notify_verified: null,
+          android_os_heads_up_state: 'UNKNOWN',
+          android_validated_at_ms: null,
+          android_validation_outcome: null,
+          android_validation_reason: null,
+          android_rendered_at_ms: null,
+          android_rendered_fields_json: null,
+          parity_status: fillParityStatus,
+          parity_mismatches_json: JSON.stringify(fillMismatches),
+        });
+        continue;
+      }
+    }
+    expanded.push(r);
+  }
+  return expanded;
 }
 
 async function handleTaAndStage2(url: URL, env: MonitoringEnv, scope: TenantScope): Promise<QueryResult> {
@@ -1272,25 +1818,7 @@ async function handleStrategiesAndGates(url: URL, env: MonitoringEnv, scope: Ten
       total: Number(countRes?.total ?? 0),
       limit,
       offset,
-      gateEvaluations: (gatesRes.results || []).map((g: any) => ({
-        gateEvalId: g.gate_eval_id,
-        stage: g.stage,
-        journey: g.journey,
-        cycleId: g.cycle_id ?? null,
-        traceId: g.trace_id ?? null,
-        discoveryCycleId: g.discovery_cycle_id ?? null,
-        symbol: g.symbol ?? null,
-        strategyId: g.strategy_id ?? null,
-        timeframe: g.timeframe ?? null,
-        gateName: g.gate_name,
-        gateCategory: g.gate_category,
-        decision: g.decision,
-        reason: g.reason ?? null,
-        sourceFile: g.source_file ?? null,
-        evaluatedAtMs: g.evaluated_at_ms,
-        inputs: safeJsonParse(g.inputs_json),
-        outputs: safeJsonParse(g.outputs_json),
-      })),
+      gateEvaluations: (gatesRes.results || []).map(mapGateRow),
       strategySpans: (spansRes.results || []).filter((s: any) => Number(s.stage) === 5).map(mapSpanRow),
       safetyGateSpans: (spansRes.results || []).filter((s: any) => Number(s.stage) === 6).map(mapSpanRow),
       shadowModeComparisons: (shadowSpansRes.results || []).map(mapSpanRow),
@@ -1314,31 +1842,36 @@ async function handleTradesList(url: URL, env: MonitoringEnv, scope: TenantScope
   const where = buildWhereClause([
     { sql: 'user_id = ?', value: scope.userId },
     { sql: 'symbol = ?', value: symbol },
-    { sql: 'execution_status = ?', value: executionStatus },
-    { sql: 'current_milestone = ?', value: milestone },
     { sql: 'alert_id = ?', value: alertId },
     { sql: 'order_id = ?', value: orderId },
     { sql: 'trace_id = ?', value: traceId },
     { sql: 'cycle_id = ?', value: cycleId },
   ]);
 
-  const [countRes, rowsRes] = await Promise.all([
-    db.prepare(`SELECT COUNT(*) AS total FROM trade_lifecycle_ledger ${where.whereSql}`).bind(...where.params).first<{ total: number }>(),
-    db
-      .prepare(`SELECT * FROM trade_lifecycle_ledger ${where.whereSql} ORDER BY updated_at_ms DESC LIMIT ? OFFSET ?`)
-      .bind(...where.params, limit, offset)
-      .all<any>(),
-  ]);
+  const rowsRes = await db
+    .prepare(`SELECT * FROM trade_lifecycle_ledger ${where.whereSql} ORDER BY updated_at_ms DESC LIMIT 200`)
+    .bind(...where.params)
+    .all<any>();
+
+  const mappedAll = (rowsRes.results || [])
+    .map(mapTradeRow)
+    .filter((t) => {
+      if (executionStatus && String(t.executionStatus) !== executionStatus) return false;
+      if (milestone && String(t.currentMilestone) !== milestone) return false;
+      return true;
+    });
+
+  const paged = mappedAll.slice(offset, offset + limit);
 
   return {
     status: 200,
     body: {
       ok: true,
       readOnly: true,
-      total: Number(countRes?.total ?? 0),
+      total: mappedAll.length,
       limit,
       offset,
-      items: (rowsRes.results || []).map(mapTradeRow),
+      items: paged,
     },
   };
 }
@@ -1417,7 +1950,8 @@ async function handleTradeDetail(rawId: string, env: MonitoringEnv, scope: Tenan
         : Promise.resolve({ results: [] }),
     ]);
     correlatedSpans = (spRes.results || []).map(mapSpanRow);
-    correlatedNotifications = (ntRes.results || []).map(mapNotificationRow);
+    const normalizedNotifRows = await normalizeAndSeparateNotificationRows(db, ntRes.results || []);
+    correlatedNotifications = normalizedNotifRows.map(mapNotificationRow);
   }
 
   return {
@@ -1443,74 +1977,89 @@ async function handleNotifications(url: URL, env: MonitoringEnv, scope: TenantSc
   const osState = cleanParam(url.searchParams.get('androidOsHeadsUpState'));
   const traceId = cleanParam(url.searchParams.get('traceId'));
 
-  const itemFilters: FilterItem[] = [
-    { sql: 'user_id = ?', value: scope.userId },
-    { sql: 'parity_status = ?', value: parityStatus },
-    { sql: 'symbol = ?', value: symbol },
-    { sql: 'alert_id = ?', value: alertId },
-    { sql: 'fcm_message_id = ?', value: fcmMessageId },
-    { sql: 'android_os_heads_up_state = ?', value: osState },
-    { sql: 'trace_id = ?', value: traceId },
-  ];
-  addNotificationDeviceFilter(itemFilters, scope);
-  const where = buildWhereClause(itemFilters);
-
-  const summaryFilters: FilterItem[] = [
+  const baseFilters: FilterItem[] = [
     { sql: 'user_id = ?', value: scope.userId },
   ];
-  addNotificationDeviceFilter(summaryFilters, scope);
-  const summaryWhere = buildWhereClause(summaryFilters);
+  addNotificationDeviceFilter(baseFilters, scope);
+  const baseWhere = buildWhereClause(baseFilters);
 
-  const [countRes, rowsRes, summaryRes] = await Promise.all([
-    db.prepare(`SELECT COUNT(*) AS total FROM notification_parity_ledger ${where.whereSql}`).bind(...where.params).first<{ total: number }>(),
-    db
-      .prepare(`SELECT * FROM notification_parity_ledger ${where.whereSql} ORDER BY updated_at_ms DESC LIMIT ? OFFSET ?`)
-      .bind(...where.params, limit, offset)
-      .all<any>(),
-    db
-      .prepare(
-        `SELECT COUNT(*) AS total,
-                SUM(CASE WHEN parity_status = '${PARITY_STATUSES.PARITY_OK}' THEN 1 ELSE 0 END) AS parity_ok_count,
-                SUM(CASE WHEN parity_status = '${PARITY_STATUSES.PARITY_MISMATCH}' THEN 1 ELSE 0 END) AS parity_mismatch_count,
-                SUM(CASE WHEN parity_status = '${PARITY_STATUSES.PENDING_ANDROID}' THEN 1 ELSE 0 END) AS pending_android_count,
-                SUM(CASE WHEN parity_status = '${PARITY_STATUSES.PENDING_BACKEND}' THEN 1 ELSE 0 END) AS pending_backend_count,
-                SUM(CASE WHEN parity_status = '${PARITY_STATUSES.DROPPED_ON_ANDROID}' THEN 1 ELSE 0 END) AS dropped_on_android_count,
-                SUM(CASE WHEN parity_status = '${PARITY_STATUSES.FCM_FAILED}' THEN 1 ELSE 0 END) AS fcm_failed_count,
-                SUM(CASE WHEN android_os_heads_up_state = 'ELIGIBLE_OS_UNPROVABLE' THEN 1 ELSE 0 END) AS eligible_os_unprovable_count,
-                SUM(CASE WHEN android_os_heads_up_state = 'POST_CHECK_MISSING' THEN 1 ELSE 0 END) AS post_check_missing_count,
-                SUM(CASE WHEN android_os_heads_up_state = 'SUPPRESSED_PRECHECK' THEN 1 ELSE 0 END) AS suppressed_precheck_count
-         FROM notification_parity_ledger ${summaryWhere.whereSql}`
-      )
-      .bind(...summaryWhere.params)
-      .first<any>(),
-  ]);
+  const allRowsRes = await db
+    .prepare(`SELECT * FROM notification_parity_ledger ${baseWhere.whereSql} ORDER BY updated_at_ms DESC LIMIT 250`)
+    .bind(...baseWhere.params)
+    .all<any>();
 
-  const parityOkCount = Number(summaryRes?.parity_ok_count ?? 0);
-  const parityMismatchCount = Number(summaryRes?.parity_mismatch_count ?? 0);
+  const normalizedRows = await normalizeAndSeparateNotificationRows(db, allRowsRes.results || []);
+  const mappedAll = normalizedRows.map(mapNotificationRow);
+
+  let parityOkCount = 0;
+  let parityMismatchCount = 0;
+  let pendingAndroidCount = 0;
+  let pendingBackendCount = 0;
+  let droppedOnAndroidCount = 0;
+  let fcmFailedCount = 0;
+  let fcmDispatchFailedCount = 0;
+  let pollFallbackDeliveredCount = 0;
+  let eligibleOsUnprovableCount = 0;
+  let postCheckMissingCount = 0;
+  let suppressedPrecheckCount = 0;
+
+  for (const item of mappedAll) {
+    const ps = String(item.parityStatus || '');
+    if (ps === PARITY_STATUSES.PARITY_OK) parityOkCount += 1;
+    else if (ps === PARITY_STATUSES.PARITY_MISMATCH) parityMismatchCount += 1;
+    else if (ps === PARITY_STATUSES.PENDING_ANDROID) pendingAndroidCount += 1;
+    else if (ps === PARITY_STATUSES.PENDING_BACKEND) pendingBackendCount += 1;
+    else if (ps === PARITY_STATUSES.DROPPED_ON_ANDROID) droppedOnAndroidCount += 1;
+    else if (ps === PARITY_STATUSES.FCM_FAILED) fcmFailedCount += 1;
+
+    if (item.fcmDispatchStatus === 'FAILED') fcmDispatchFailedCount += 1;
+    if (item.androidDeliveryStatus === 'DELIVERED_VIA_POLL_FALLBACK' || item.androidDeliveryStatus === 'DELIVERED_FCM_AND_POLL') {
+      pollFallbackDeliveredCount += 1;
+    }
+
+    const os = String(item.androidOsHeadsUpState || '');
+    if (os === 'ELIGIBLE_OS_UNPROVABLE') eligibleOsUnprovableCount += 1;
+    else if (os === 'POST_CHECK_MISSING') postCheckMissingCount += 1;
+    else if (os === 'SUPPRESSED_PRECHECK') suppressedPrecheckCount += 1;
+  }
+
+  const filteredItems = mappedAll.filter((item) => {
+    if (parityStatus && String(item.parityStatus) !== parityStatus) return false;
+    if (symbol && String(item.symbol || '') !== symbol) return false;
+    if (alertId && String(item.alertId || '') !== alertId) return false;
+    if (fcmMessageId && String(item.fcmMessageId || '') !== fcmMessageId) return false;
+    if (osState && String(item.androidOsHeadsUpState || '') !== osState) return false;
+    if (traceId && String(item.traceId || '') !== traceId) return false;
+    return true;
+  });
+
+  const pagedItems = filteredItems.slice(offset, offset + limit);
 
   return {
     status: 200,
     body: {
       ok: true,
       readOnly: true,
-      total: Number(countRes?.total ?? 0),
+      total: filteredItems.length,
       limit,
       offset,
       summary: {
-        total: Number(summaryRes?.total ?? 0),
+        total: mappedAll.length,
         parityOkCount,
         parityMismatchCount,
         matchedCount: parityOkCount,
         mismatchCount: parityMismatchCount,
-        pendingAndroidCount: Number(summaryRes?.pending_android_count ?? 0),
-        pendingBackendCount: Number(summaryRes?.pending_backend_count ?? 0),
-        droppedOnAndroidCount: Number(summaryRes?.dropped_on_android_count ?? 0),
-        fcmFailedCount: Number(summaryRes?.fcm_failed_count ?? 0),
-        eligibleOsUnprovableCount: Number(summaryRes?.eligible_os_unprovable_count ?? 0),
-        postCheckMissingCount: Number(summaryRes?.post_check_missing_count ?? 0),
-        suppressedPrecheckCount: Number(summaryRes?.suppressed_precheck_count ?? 0),
+        pendingAndroidCount,
+        pendingBackendCount,
+        droppedOnAndroidCount,
+        fcmFailedCount,
+        fcmDispatchFailedCount,
+        pollFallbackDeliveredCount,
+        eligibleOsUnprovableCount,
+        postCheckMissingCount,
+        suppressedPrecheckCount,
       },
-      items: (rowsRes.results || []).map(mapNotificationRow),
+      items: pagedItems,
     },
   };
 }
@@ -1534,6 +2083,16 @@ async function handleIncidentsList(url: URL, env: MonitoringEnv, scope: TenantSc
     { sql: 'strategy_id = ?', value: strategyId },
     { sql: 'error_code = ?', value: errorCode },
   ];
+  if (!errorCode) {
+    filters.push({
+      sql: `NOT (stage = 2 AND UPPER(COALESCE(error_code, '')) = 'APPROVAL_EXPIRED_OR_INVALID')`,
+      binds: [],
+    });
+    filters.push({
+      sql: `NOT (stage = 6 AND UPPER(COALESCE(error_code, '')) IN ('REGIME_PROHIBITED', 'HTF_CONFLICT'))`,
+      binds: [],
+    });
+  }
   addStage9DeviceFilter(filters, scope.deviceSessionHash);
   const where = buildWhereClause(filters);
 

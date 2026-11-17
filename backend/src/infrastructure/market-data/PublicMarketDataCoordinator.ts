@@ -6,13 +6,14 @@ import { MultiTimeframeCandleStore, ScannerTimeframe } from '../../engine/scanne
 import { MarketOpportunityScanner, ScannerScanResult } from '../../engine/scanner/MarketOpportunityScanner';
 import { DEFAULT_SCANNER_CONFIG } from '../../engine/scanner/ScannerTypes';
 import { selectBoundedDiscoveryMarkets } from '../../handlers/exchange';
-import { ExchangeRequestScheduler, InMemorySchedulerStorage } from '../exchange/pacing';
+import { ExchangeRequestScheduler, InMemorySchedulerStorage, RequestPriority } from '../exchange/pacing';
 import { SingleFlightCoalescer } from '../cache/SingleFlightCoalescer';
 import { LruTtlCache } from '../cache/LruTtlCache';
 import { CandleValidator } from '../exchange/CandleValidator';
 import { StructuredLogger } from '../telemetry/Telemetry';
 import { RetryPolicy } from '../orchestrator/RetryPolicy';
 import { SymbolResolver } from '../../utils/SymbolResolver';
+import { checkStagingExchangeEnvironment, validateStagingIsolationEnv } from '../monitoring/PipelineTelemetry';
 
 function tryNormalizeTickerCacheKey(symbol: string): string | null {
   try {
@@ -101,6 +102,10 @@ export class PublicMarketDataCoordinator {
   private adapterPromise: Promise<any> | null = null;
 
   constructor(private readonly state: DurableObjectState, private readonly env: Env) {
+    const stagingCfg = validateStagingIsolationEnv(env);
+    if (stagingCfg.isStaging && stagingCfg.allowedExchangeEnv) {
+      this.environment = stagingCfg.allowedExchangeEnv;
+    }
     // 205 bars buffer covers EMA-200 + safe margin for TradingBot, TA preview, and scanner
     const dummyProvider = {
       fetchCandles: async (sym: string, tf: string, limit: number) => this.fetchUpstreamKlines(sym, tf, limit),
@@ -110,6 +115,10 @@ export class PublicMarketDataCoordinator {
   }
 
   private async getAdapter(): Promise<any> {
+    const stagingCheck = checkStagingExchangeEnvironment(this.env, this.environment);
+    if (!stagingCheck.allowed) {
+      throw new Error(stagingCheck.error || 'Staging exchange environment rejected.');
+    }
     if (!this.adapterPromise) {
       this.adapterPromise = ExchangeManager.getProvider(this.exchangeName, {
         environment: this.environment,
@@ -135,6 +144,17 @@ export class PublicMarketDataCoordinator {
     const hasEnvHeader = request.headers.has('x-exchange-environment');
     if (hasEnvQuery || hasEnvHeader) {
       const envParam = hasEnvQuery ? url.searchParams.get('environment') : request.headers.get('x-exchange-environment');
+      const stagingEnvCheck = checkStagingExchangeEnvironment(this.env, envParam);
+      if (!stagingEnvCheck.allowed) {
+        return Response.json(
+          {
+            success: false,
+            code: stagingEnvCheck.code,
+            error: stagingEnvCheck.error,
+          },
+          { status: stagingEnvCheck.status }
+        );
+      }
       const normEnv = normalizeEnvironment(envParam);
       if (!normEnv) {
         return Response.json(
@@ -149,6 +169,18 @@ export class PublicMarketDataCoordinator {
       if (this.environment !== normEnv) {
         this.environment = normEnv;
         this.adapterPromise = null;
+      }
+    } else {
+      const activeStagingCheck = checkStagingExchangeEnvironment(this.env, this.environment);
+      if (!activeStagingCheck.allowed) {
+        return Response.json(
+          {
+            success: false,
+            code: activeStagingCheck.code,
+            error: activeStagingCheck.error,
+          },
+          { status: activeStagingCheck.status }
+        );
       }
     }
     const regionParam = url.searchParams.get('region') || request.headers.get('x-exchange-region');
@@ -286,7 +318,10 @@ export class PublicMarketDataCoordinator {
         return freshCheck.slice(-limit);
       }
 
-      const fullSeries = await this.fetchUpstreamKlines(symbol, timeframe, 205);
+      const fullSeries = await this.scheduler.schedule(
+        RequestPriority.P3_MARKET_DATA,
+        () => this.fetchUpstreamKlines(symbol, timeframe, 205)
+      );
       this.klineCache.set(cacheKey, fullSeries);
       return fullSeries.slice(-limit);
     });

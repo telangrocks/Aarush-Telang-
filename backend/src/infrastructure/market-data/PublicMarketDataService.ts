@@ -10,7 +10,7 @@ import { CandleValidator } from '../exchange/CandleValidator';
 import { StructuredLogger } from '../telemetry/Telemetry';
 import { RetryPolicy } from '../orchestrator/RetryPolicy';
 import { buildTickerLookupMap, findTickerBySymbol } from './PublicMarketDataCoordinator';
-import { emitStageSpan } from '../monitoring/PipelineTelemetry';
+import { checkStagingExchangeEnvironment, emitStageSpan } from '../monitoring/PipelineTelemetry';
 
 /**
  * PublicMarketDataService:
@@ -113,12 +113,64 @@ export class PublicMarketDataService {
     } catch (_) {}
   }
 
+  private assertStagingEnvironment(env: Env, environment: unknown): void {
+    const check = checkStagingExchangeEnvironment(env, environment);
+    if (!check.allowed) {
+      throw new Error(check.error || 'Staging exchange environment rejected.');
+    }
+  }
+
+  private isCoordinatorConfigured(env: Env): boolean {
+    return Boolean(env?.PUBLIC_MARKET_COORDINATOR);
+  }
+
+  private async fetchFromCoordinator<T>(
+    env: Env,
+    path: string,
+    exchange: ExchangeName,
+    environment: ExchangeEnvironment,
+    region: ExchangeRegion,
+    query?: Record<string, string | number>
+  ): Promise<T> {
+    const namespace = env.PUBLIC_MARKET_COORDINATOR;
+    if (!namespace || typeof namespace.idFromName !== 'function' || typeof namespace.get !== 'function') {
+      throw new Error(`Invalid PUBLIC_MARKET_COORDINATOR binding for Coordinator ${path}`);
+    }
+    const doId = namespace.idFromName(`${exchange}:${environment}:${region}`);
+    const coordinator = namespace.get(doId);
+    let resp: Response;
+    try {
+      resp = await coordinator.fetch(new Request(this.buildCoordinatorUrl(path, environment, region, query)));
+    } catch (err: any) {
+      this.logger.warn(`[PublicMarketDataService] Coordinator ${path} RPC failed`, {
+        error: err?.message || String(err),
+      });
+      throw err;
+    }
+    if (!resp.ok) {
+      let detail = `Coordinator ${path} failed with HTTP ${resp.status}`;
+      try {
+        const errBody = await resp.json() as { error?: string; message?: string };
+        if (errBody?.error || errBody?.message) {
+          detail = String(errBody.error || errBody.message);
+        }
+      } catch (_) {}
+      this.logger.warn(`[PublicMarketDataService] Coordinator ${path} returned non-OK`, {
+        status: resp.status,
+        detail,
+      });
+      throw new Error(detail);
+    }
+    return await resp.json() as T;
+  }
+
   public async getMarkets(
     env: Env,
     exchange: ExchangeName = 'bybit',
     environment: ExchangeEnvironment = 'mainnet',
     region: ExchangeRegion = 'india'
   ): Promise<any[]> {
+    this.assertStagingEnvironment(env, environment);
     const l1Key = `${exchange}:${environment}:${region}:markets`;
 
     // Tier 1: L1 Memory
@@ -137,24 +189,15 @@ export class PublicMarketDataService {
         return l2Cached;
       }
 
-      // Tier 3: L3 Coordinator DO (if bound)
-      if (env.PUBLIC_MARKET_COORDINATOR && typeof env.PUBLIC_MARKET_COORDINATOR.idFromName === 'function') {
-        try {
-          const doId = env.PUBLIC_MARKET_COORDINATOR.idFromName(`${exchange}:${environment}:${region}`);
-          const coordinator = env.PUBLIC_MARKET_COORDINATOR.get(doId);
-          const resp = await coordinator.fetch(new Request(this.buildCoordinatorUrl('/markets', environment, region)));
-          if (resp.ok) {
-            const data = await resp.json() as any[];
-            this.marketsCache.set(l1Key, data);
-            await this.writeL2Cache(l2Url, data, 300); // 5m L2 TTL
-            return data;
-          }
-        } catch (err: any) {
-          this.logger.warn('[PublicMarketDataService] Coordinator /markets failed, falling back to direct adapter:', err?.message);
-        }
+      // Tier 3: L3 Coordinator DO (exclusive upstream owner when configured)
+      if (this.isCoordinatorConfigured(env)) {
+        const data = await this.fetchFromCoordinator<any[]>(env, '/markets', exchange, environment, region);
+        this.marketsCache.set(l1Key, data);
+        await this.writeL2Cache(l2Url, data, 300); // 5m L2 TTL
+        return data;
       }
 
-      // Fallback: Direct anonymous CCXT adapter
+      // Fallback: Direct anonymous CCXT adapter ONLY when PUBLIC_MARKET_COORDINATOR is absent
       const adapter = await ExchangeManager.getProvider(exchange, { environment, region });
       const markets = await adapter.fetchMarkets();
       this.marketsCache.set(l1Key, markets);
@@ -169,6 +212,7 @@ export class PublicMarketDataService {
     environment: ExchangeEnvironment = 'mainnet',
     region: ExchangeRegion = 'india'
   ): Promise<any[]> {
+    this.assertStagingEnvironment(env, environment);
     const t0 = Date.now();
     const l1Key = `${exchange}:${environment}:${region}:tickers`;
 
@@ -178,6 +222,7 @@ export class PublicMarketDataService {
       emitStageSpan({
         stage: 1,
         tier: 'TIER_3',
+        environment,
         eventType: 'PUBLIC_MARKET_DATA_CACHE',
         status: 'PASS',
         component: 'PublicMarketDataService',
@@ -201,6 +246,7 @@ export class PublicMarketDataService {
         emitStageSpan({
           stage: 1,
           tier: 'TIER_3',
+          environment,
           eventType: 'PUBLIC_MARKET_DATA_CACHE',
           status: 'PASS',
           component: 'PublicMarketDataService',
@@ -212,39 +258,15 @@ export class PublicMarketDataService {
         return l2Cached;
       }
 
-      const hasCoordinator =
-        Boolean(env.PUBLIC_MARKET_COORDINATOR) &&
-        typeof env.PUBLIC_MARKET_COORDINATOR?.idFromName === 'function' &&
-        typeof env.PUBLIC_MARKET_COORDINATOR?.get === 'function';
-
       // Tier 3: L3 Coordinator DO (exclusive upstream-fetch & retry owner when configured)
-      if (hasCoordinator) {
-        const doId = env.PUBLIC_MARKET_COORDINATOR!.idFromName(`${exchange}:${environment}:${region}`);
-        const coordinator = env.PUBLIC_MARKET_COORDINATOR!.get(doId);
-        let resp: Response;
-        try {
-          resp = await coordinator.fetch(new Request(this.buildCoordinatorUrl('/tickers', environment, region)));
-        } catch (err: any) {
-          this.logger.warn('[PublicMarketDataService] Coordinator /tickers RPC failed', { error: err?.message || String(err) });
-          throw err;
-        }
-        if (!resp.ok) {
-          let detail = `Coordinator /tickers failed with HTTP ${resp.status}`;
-          try {
-            const errBody = await resp.json() as { error?: string; message?: string };
-            if (errBody?.error || errBody?.message) {
-              detail = String(errBody.error || errBody.message);
-            }
-          } catch (_) {}
-          this.logger.warn('[PublicMarketDataService] Coordinator /tickers returned non-OK', { status: resp.status, detail });
-          throw new Error(detail);
-        }
-        const data = await resp.json() as any[];
+      if (this.isCoordinatorConfigured(env)) {
+        const data = await this.fetchFromCoordinator<any[]>(env, '/tickers', exchange, environment, region);
         this.cacheTickersInL1(l1Key, data);
         await this.writeL2Cache(l2Url, data, 3); // 3s L2 TTL
         emitStageSpan({
           stage: 1,
           tier: 'TIER_2',
+          environment,
           eventType: 'PUBLIC_MARKET_DATA_CACHE',
           status: 'PASS',
           component: 'PublicMarketDataService',
@@ -264,6 +286,7 @@ export class PublicMarketDataService {
       emitStageSpan({
         stage: 1,
         tier: 'TIER_2',
+        environment,
         eventType: 'PUBLIC_MARKET_DATA_CACHE',
         status: 'PASS',
         component: 'PublicMarketDataService',
@@ -288,6 +311,7 @@ export class PublicMarketDataService {
     environment: ExchangeEnvironment = 'mainnet',
     region: ExchangeRegion = 'india'
   ): Promise<any | null> {
+    this.assertStagingEnvironment(env, environment);
     const l1Key = `${exchange}:${environment}:${region}:tickers`;
     const cachedList = this.tickersCache.get(l1Key);
     const map = this.tickerMapCache.get(l1Key);
@@ -311,6 +335,7 @@ export class PublicMarketDataService {
     environment: ExchangeEnvironment = 'mainnet',
     region: ExchangeRegion = 'india'
   ): Promise<any[]> {
+    this.assertStagingEnvironment(env, environment);
     const l1Key = `${exchange}:${environment}:${region}:klines:${symbol}:${interval}`;
 
     // Tier 1: L1 Memory
@@ -333,26 +358,22 @@ export class PublicMarketDataService {
         return l2Cached.slice(-limit);
       }
 
-      // Tier 3: L3 Coordinator DO (if bound)
-      if (env.PUBLIC_MARKET_COORDINATOR && typeof env.PUBLIC_MARKET_COORDINATOR.idFromName === 'function') {
-        try {
-          const doId = env.PUBLIC_MARKET_COORDINATOR.idFromName(`${exchange}:${environment}:${region}`);
-          const coordinator = env.PUBLIC_MARKET_COORDINATOR.get(doId);
-          const resp = await coordinator.fetch(
-            new Request(this.buildCoordinatorUrl('/klines', environment, region, { symbol, interval, limit: 205 }))
-          );
-          if (resp.ok) {
-            const data = await resp.json() as any[];
-            this.klinesCache.set(l1Key, data);
-            await this.writeL2Cache(l2Url, data, 15); // 15s L2 TTL
-            return data.slice(-limit);
-          }
-        } catch (err: any) {
-          this.logger.warn('[PublicMarketDataService] Coordinator /klines failed, falling back to direct adapter:', err?.message);
-        }
+      // Tier 3: L3 Coordinator DO (exclusive upstream owner when configured)
+      if (this.isCoordinatorConfigured(env)) {
+        const data = await this.fetchFromCoordinator<any[]>(
+          env,
+          '/klines',
+          exchange,
+          environment,
+          region,
+          { symbol, interval, limit: 205 }
+        );
+        this.klinesCache.set(l1Key, data);
+        await this.writeL2Cache(l2Url, data, 15); // 15s L2 TTL
+        return data.slice(-limit);
       }
 
-      // Fallback: Direct anonymous CCXT adapter
+      // Fallback: Direct anonymous CCXT adapter ONLY when PUBLIC_MARKET_COORDINATOR is absent
       const adapter = await ExchangeManager.getProvider(exchange, { environment, region });
       const fetchLimit = Math.max(limit, 205);
       const rawKlines = await adapter.fetchKlines(symbol, interval, fetchLimit);
@@ -369,6 +390,7 @@ export class PublicMarketDataService {
     environment: ExchangeEnvironment = 'mainnet',
     region: ExchangeRegion = 'india'
   ): Promise<ScannerScanResult> {
+    this.assertStagingEnvironment(env, environment);
     const l1Key = `${exchange}:${environment}:${region}:opportunities`;
 
     // Tier 1: L1 Memory
@@ -387,26 +409,23 @@ export class PublicMarketDataService {
         return l2Cached;
       }
 
-      // Tier 3: L3 Coordinator DO (if bound)
-      if (env.PUBLIC_MARKET_COORDINATOR && typeof env.PUBLIC_MARKET_COORDINATOR.idFromName === 'function') {
-        try {
-          const doId = env.PUBLIC_MARKET_COORDINATOR.idFromName(`${exchange}:${environment}:${region}`);
-          const coordinator = env.PUBLIC_MARKET_COORDINATOR.get(doId);
-          const resp = await coordinator.fetch(new Request(this.buildCoordinatorUrl('/opportunities', environment, region)));
-          if (resp.ok) {
-            const data = await resp.json() as ScannerScanResult;
-            if (data && data.screenedCount > 0) {
-              this.opportunitiesCache.set(l1Key, data);
-              await this.writeL2Cache(l2Url, data, 30); // 30s L2 TTL
-              return data;
-            }
-          }
-        } catch (err: any) {
-          this.logger.warn('[PublicMarketDataService] Coordinator /opportunities failed, falling back to direct scan:', err?.message);
+      // Tier 3: L3 Coordinator DO (exclusive upstream owner when configured)
+      if (this.isCoordinatorConfigured(env)) {
+        const data = await this.fetchFromCoordinator<ScannerScanResult>(
+          env,
+          '/opportunities',
+          exchange,
+          environment,
+          region
+        );
+        if (data && data.screenedCount > 0) {
+          this.opportunitiesCache.set(l1Key, data);
+          await this.writeL2Cache(l2Url, data, 30); // 30s L2 TTL
         }
+        return data;
       }
 
-      // Fallback: Direct anonymous scan
+      // Fallback: Direct anonymous scan ONLY when PUBLIC_MARKET_COORDINATOR is absent
       const adapter = await ExchangeManager.getProvider(exchange, { environment, region });
       const [markets, tickers] = await Promise.all([
         this.getMarkets(env, exchange, environment, region),

@@ -140,7 +140,18 @@ fun SplashScreen(
                     if (!token.isNullOrEmpty()) {
                         try {
                             val result = exchangeRepository.getConnectionStatus()
-                            if (result is com.cryptopulse.app.core.network.NetworkResult.Success) { val status = result.data; if (status.isConnected) { exchangeConnectionManager.saveConnection(status.exchangeName ?: "bybit", status.environment ?: "demo") } }
+                            if (result is com.cryptopulse.app.core.network.NetworkResult.Success) {
+                                val status = result.data
+                                val canonicalEnv = ExchangeConnectionManager.normalizeEnvironment(status.environment)
+                                if (status.isConnected && canonicalEnv != null) {
+                                    exchangeConnectionManager.saveConnection(
+                                        ExchangeConnectionManager.normalizeExchangeName(status.exchangeName),
+                                        canonicalEnv
+                                    )
+                                } else {
+                                    exchangeConnectionManager.clearConnection()
+                                }
+                            }
                         } catch (e: Exception) {
                             // Silently fail if not connected
                         }

@@ -271,4 +271,129 @@ class AndroidStage9TelemetryTest {
         assertTrue(renderedJson.contains("\"stopLossPrice\":145.0"))
         assertTrue(renderedJson.contains("\"takeProfitPrice\":160.0"))
     }
+
+    @Test
+    fun `debug BuildConfig and Retrofit baseUrl point strictly to staging and ApiConstants are relative`() {
+        val expectedStagingBase = "https://crypto-pulse-backend-staging.telangrocks.workers.dev/"
+        val expectedStagingTelemetry = "https://crypto-pulse-backend-staging.telangrocks.workers.dev/api/client/telemetry"
+
+        assertEquals(expectedStagingBase, com.cryptopulse.app.BuildConfig.BACKEND_BASE_URL)
+        assertEquals(expectedStagingTelemetry, com.cryptopulse.app.BuildConfig.TELEMETRY_ENDPOINT_URL)
+        assertEquals(expectedStagingTelemetry, AndroidTelemetryClient.DEFAULT_ENDPOINT_URL)
+
+        val retrofit = com.cryptopulse.app.di.AppModule.provideRetrofit(OkHttpClient())
+        assertEquals(expectedStagingBase, retrofit.baseUrl().toString())
+        assertFalse(retrofit.baseUrl().toString().contains("https://crypto-pulse-backend.telangrocks.workers.dev/"))
+
+        val endpoints = listOf(
+            com.cryptopulse.app.data.api.ApiConstants.LOGIN,
+            com.cryptopulse.app.data.api.ApiConstants.REGISTER,
+            com.cryptopulse.app.data.api.ApiConstants.LOGOUT,
+            com.cryptopulse.app.data.api.ApiConstants.REFRESH,
+            com.cryptopulse.app.data.api.ApiConstants.EXCHANGE_VALIDATE,
+            com.cryptopulse.app.data.api.ApiConstants.EXCHANGE_CONNECT,
+            com.cryptopulse.app.data.api.ApiConstants.EXCHANGE_STATUS,
+            com.cryptopulse.app.data.api.ApiConstants.EXCHANGE_BALANCE,
+            com.cryptopulse.app.data.api.ApiConstants.MARKET_CANDIDATES,
+            com.cryptopulse.app.data.api.ApiConstants.MARKET_KLINES,
+            com.cryptopulse.app.data.api.ApiConstants.MARKET_TICKER,
+            com.cryptopulse.app.data.api.ApiConstants.MARKET_TECHNICAL_ANALYSIS,
+            com.cryptopulse.app.data.api.ApiConstants.MARKET_STRATEGIES,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_ACTIVATE,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_DEACTIVATE,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_STATUS,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_ANALYSIS_STATUS,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_EXECUTE_TRADE,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_STOP_TRADE,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_ALERTS,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_ALERTS_ACKNOWLEDGE,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_ALERTS_DISMISS,
+            com.cryptopulse.app.data.api.ApiConstants.BOT_EXECUTION_STATUS,
+            com.cryptopulse.app.data.api.ApiConstants.FCM_REGISTER
+        )
+        for (ep in endpoints) {
+            assertTrue("Endpoint $ep must be relative /api/...", ep.startsWith("/api/"))
+            assertFalse("Endpoint $ep must not hardcode host", ep.contains("http"))
+        }
+    }
+
+    @Test
+    fun `recordPopupRendered ignores null or blank alertId and records only once per valid alertId`() {
+        // Null or blank alertId must never emit an orphan popup telemetry event
+        AndroidStage9Observer.recordPopupRendered(
+            alertId = null,
+            symbol = "SOL/USDT",
+            strategyId = null,
+            timeframe = null,
+            entryPrice = 72.31,
+            stopLossPrice = 0.0,
+            takeProfitPrice = 0.0,
+            isExecutable = false,
+            quantity = null,
+            requestedBudget = null,
+            effectiveNotional = null
+        )
+        AndroidStage9Observer.recordPopupRendered(
+            alertId = "   ",
+            symbol = "SOL/USDT",
+            strategyId = "VWAP",
+            timeframe = "15m",
+            entryPrice = 72.31,
+            stopLossPrice = 71.48,
+            takeProfitPrice = 73.41,
+            isExecutable = true,
+            quantity = 0.6,
+            requestedBudget = 43.38,
+            effectiveNotional = 43.38
+        )
+        assertEquals(0, capturedEvents.size)
+
+        // First valid render for alert_1 -> recorded
+        AndroidStage9Observer.recordPopupRendered(
+            alertId = "alert_dedup_popup_1",
+            symbol = "SOL/USDT",
+            strategyId = "VWAP",
+            timeframe = "15m",
+            entryPrice = 72.31,
+            stopLossPrice = 71.48,
+            takeProfitPrice = 73.41,
+            isExecutable = true,
+            quantity = 0.6,
+            requestedBudget = 43.38,
+            effectiveNotional = 43.38
+        )
+        // Duplicate recomposition for same alert_1 -> ignored
+        AndroidStage9Observer.recordPopupRendered(
+            alertId = "alert_dedup_popup_1",
+            symbol = "SOL/USDT",
+            strategyId = "VWAP",
+            timeframe = "15m",
+            entryPrice = 72.31,
+            stopLossPrice = 0.0,
+            takeProfitPrice = 0.0,
+            isExecutable = false,
+            quantity = 0.6,
+            requestedBudget = 43.38,
+            effectiveNotional = 43.38
+        )
+        assertEquals(1, capturedEvents.size)
+        assertEquals("alert_dedup_popup_1", capturedEvents[0].alertId)
+
+        // Different valid alertId -> recorded
+        AndroidStage9Observer.recordPopupRendered(
+            alertId = "alert_dedup_popup_2",
+            symbol = "ETH/USDT",
+            strategyId = "MeanReversion",
+            timeframe = "5m",
+            entryPrice = 1849.44,
+            stopLossPrice = 1863.93,
+            takeProfitPrice = 1830.13,
+            isExecutable = true,
+            quantity = 0.02,
+            requestedBudget = 36.98,
+            effectiveNotional = 36.98
+        )
+        assertEquals(2, capturedEvents.size)
+        assertEquals("alert_dedup_popup_2", capturedEvents[1].alertId)
+    }
 }

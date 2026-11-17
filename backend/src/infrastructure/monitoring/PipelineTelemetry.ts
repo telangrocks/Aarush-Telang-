@@ -92,10 +92,17 @@ export function createScopedTelemetryEmitter(
   } | null
 ): TelemetryEmitter {
   const isDisabled = isTelemetryDisabled(env);
-  const queue = isDisabled ? null : ((env?.TELEMETRY_QUEUE as TelemetryIngestBinding | undefined) ?? defaultQueue);
+  const hasExplicitBindings = Boolean(env && ('TELEMETRY_QUEUE' in env || 'MONITOR_INGEST_SERVICE' in env));
+  const queue = isDisabled
+    ? null
+    : hasExplicitBindings
+      ? ((env?.TELEMETRY_QUEUE as TelemetryIngestBinding | undefined) ?? null)
+      : defaultQueue;
   const httpFallback = isDisabled
     ? null
-    : ((env?.MONITOR_INGEST_SERVICE as HttpIngestServiceBinding | undefined) ?? defaultHttpFallback);
+    : hasExplicitBindings
+      ? ((env?.MONITOR_INGEST_SERVICE as HttpIngestServiceBinding | undefined) ?? null)
+      : defaultHttpFallback;
   return new TelemetryEmitter({
     producer,
     queue,
@@ -220,4 +227,136 @@ export function getEmitterStatsSnapshot(producer: BackendProducerName): Producer
 export function getBufferedSnapshot(producer: BackendProducerName): readonly PipelineTelemetryEvent[] {
   const emitter = fallbackEmitters.get(producer);
   return emitter ? emitter.getBufferedEventsSnapshot() : [];
+}
+
+export interface StagingIsolationEnv {
+  ENVIRONMENT?: unknown;
+  STAGING_ISOLATION_MODE?: unknown;
+}
+
+export interface StagingConfigValidation {
+  isStaging: boolean;
+  valid: boolean;
+  allowedExchangeEnv: 'demo' | null;
+  status: number;
+  code: string;
+  error: string | null;
+}
+
+/**
+ * Determines whether the Worker environment has explicit staging isolation configured,
+ * and validates that the staging configuration is present and valid ('demo').
+ *
+ * Production (ENVIRONMENT === 'production' and no STAGING_ISOLATION_MODE) returns
+ * { isStaging: false, valid: true, allowedExchangeEnv: null } so production Demo + Real
+ * trading remain 100% unrestricted.
+ */
+export function validateStagingIsolationEnv(env?: StagingIsolationEnv | null): StagingConfigValidation {
+  if (!env || typeof env !== 'object') {
+    return { isStaging: false, valid: true, allowedExchangeEnv: null, status: 200, code: 'OK', error: null };
+  }
+
+  const hasExplicitStagingKey = 'STAGING_ISOLATION_MODE' in env;
+  const rawEnv = env.ENVIRONMENT;
+  const rawEnvStr = typeof rawEnv === 'string' ? rawEnv.trim().toLowerCase() : null;
+
+  const isProdOrTestEnv =
+    rawEnv === undefined ||
+    rawEnvStr === 'production' ||
+    rawEnvStr === 'test' ||
+    rawEnvStr === 'testing';
+
+  if (!hasExplicitStagingKey && isProdOrTestEnv && rawEnvStr !== '') {
+    return { isStaging: false, valid: true, allowedExchangeEnv: null, status: 200, code: 'OK', error: null };
+  }
+
+  if (hasExplicitStagingKey) {
+    const modeStr = typeof env.STAGING_ISOLATION_MODE === 'string' ? env.STAGING_ISOLATION_MODE.trim().toLowerCase() : '';
+    if (modeStr !== 'demo' || (rawEnv !== undefined && rawEnvStr !== 'demo')) {
+      return {
+        isStaging: true,
+        valid: false,
+        allowedExchangeEnv: null,
+        status: 400,
+        code: 'INVALID_ENVIRONMENT',
+        error: 'Invalid or missing staging environment configuration. Failing closed to prevent Mainnet routing.',
+      };
+    }
+    return { isStaging: true, valid: true, allowedExchangeEnv: 'demo', status: 200, code: 'OK', error: null };
+  }
+
+  if (rawEnvStr === 'demo') {
+    return { isStaging: true, valid: true, allowedExchangeEnv: 'demo', status: 200, code: 'OK', error: null };
+  }
+
+  if (rawEnvStr === 'testnet') {
+    return { isStaging: false, valid: true, allowedExchangeEnv: null, status: 200, code: 'OK', error: null };
+  }
+
+  return {
+    isStaging: true,
+    valid: false,
+    allowedExchangeEnv: null,
+    status: 400,
+    code: 'INVALID_ENVIRONMENT',
+    error: `Invalid or missing staging ENVIRONMENT ('${String(rawEnv ?? '')}'). Failing closed to prevent Mainnet routing.`,
+  };
+}
+
+/**
+ * Validates a requested or stored exchange environment against the staging isolation policy.
+ * When not in staging mode, returns { allowed: true } without restriction.
+ * When in staging mode, only 'demo' is permitted; 'mainnet', 'testnet', missing, null, or invalid values fail closed.
+ */
+export function checkStagingExchangeEnvironment(
+  env: StagingIsolationEnv | null | undefined,
+  candidateExchangeEnv: unknown,
+  options?: { allowUndefined?: boolean }
+): { allowed: boolean; status: number; code: string; error: string | null } {
+  const cfg = validateStagingIsolationEnv(env);
+  if (!cfg.isStaging) {
+    return { allowed: true, status: 200, code: 'OK', error: null };
+  }
+  if (!cfg.valid || !cfg.allowedExchangeEnv) {
+    return {
+      allowed: false,
+      status: cfg.status,
+      code: cfg.code,
+      error: cfg.error || 'Invalid staging environment configuration.',
+    };
+  }
+
+  if (candidateExchangeEnv === undefined && options?.allowUndefined) {
+    return { allowed: true, status: 200, code: 'OK', error: null };
+  }
+
+  const norm = typeof candidateExchangeEnv === 'string' ? candidateExchangeEnv.trim().toLowerCase() : '';
+  if (!norm) {
+    return {
+      allowed: false,
+      status: 400,
+      code: 'INVALID_ENVIRONMENT',
+      error: 'Missing or null exchange environment in staging; failing closed to prevent Mainnet fallback.',
+    };
+  }
+
+  if (norm === 'mainnet' || norm === 'real' || norm === 'live' || norm === 'production') {
+    return {
+      allowed: false,
+      status: 403,
+      code: 'STAGING_MAINNET_BLOCKED',
+      error: "Staging environment only permits Bybit Demo ('demo') connections. Mainnet is blocked in staging.",
+    };
+  }
+
+  if (norm !== cfg.allowedExchangeEnv) {
+    return {
+      allowed: false,
+      status: 400,
+      code: 'INVALID_ENVIRONMENT',
+      error: `Unsupported exchange environment '${String(candidateExchangeEnv)}' for staging. Only '${cfg.allowedExchangeEnv}' is allowed.`,
+    };
+  }
+
+  return { allowed: true, status: 200, code: 'OK', error: null };
 }

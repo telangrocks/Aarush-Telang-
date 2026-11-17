@@ -407,7 +407,7 @@ export class MarketOpportunityScanner {
     affordableCandidates.sort((a, b) => b.quality.turnover24hUsdt - a.quality.turnover24hUsdt);
     const deepCandidates = affordableCandidates.slice(0, 25);
 
-    const BATCH_SIZE = 5;
+    const BATCH_SIZE = 1;
     const evaluatedOpportunities: MarketOpportunity[] = [];
 
     for (let i = 0; i < deepCandidates.length; i += BATCH_SIZE) {
@@ -417,8 +417,8 @@ export class MarketOpportunityScanner {
         batch.map(async ({ market, ticker, quality }) => {
           const symbol = market.symbol;
           try {
-            // Retrieve tiered candles across 4h, 1h, 15m, 5m (candle store respects TTLs)
-            const mtfSnapshot = await this.candleStore.getMultiTimeframeSnapshot(symbol, ['4h', '1h', '15m', '5m']);
+            // Retrieve tiered candles across 1h, 15m, 5m (candle store respects TTLs)
+            const mtfSnapshot = await this.candleStore.getMultiTimeframeSnapshot(symbol, ['1h', '15m', '5m']);
             if (mtfSnapshot.isFullyDegraded) {
               return null;
             }
@@ -426,7 +426,6 @@ export class MarketOpportunityScanner {
             const candles1h = mtfSnapshot.timeframes['1h']?.candles || [];
             const candles15m = mtfSnapshot.timeframes['15m']?.candles || [];
             const candles5m = mtfSnapshot.timeframes['5m']?.candles || [];
-            const candles4h = mtfSnapshot.timeframes['4h']?.candles || [];
 
             if (candles1h.length < 20 || candles15m.length < 20 || candles5m.length < 20) {
               emitStageSpan({

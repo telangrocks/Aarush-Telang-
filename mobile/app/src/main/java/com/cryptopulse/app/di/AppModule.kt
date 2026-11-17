@@ -272,7 +272,7 @@ object AppModule {
     @Singleton
     fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit {
         return Retrofit.Builder()
-            .baseUrl("https://crypto-pulse-backend.telangrocks.workers.dev/")
+            .baseUrl(BuildConfig.BACKEND_BASE_URL)
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()

@@ -18,7 +18,7 @@ import {
   IncidentStatus,
   validateMonitoringEvent
 } from '../infrastructure/monitoring/MonitoringEvent';
-import { createScopedTelemetryEmitter } from '../infrastructure/monitoring/PipelineTelemetry';
+import { createScopedTelemetryEmitter, validateStagingIsolationEnv } from '../infrastructure/monitoring/PipelineTelemetry';
 import { PipelineTelemetryEvent, normalizeEnvironmentMode } from '../../../shared/monitoring';
 
 /**
@@ -399,9 +399,15 @@ export async function handleGetComponentHealth(c: Context<{ Bindings: Env }>) {
     let coordinatorStats: any = null;
     if (c.env.PUBLIC_MARKET_COORDINATOR) {
       try {
-        const coordId = c.env.PUBLIC_MARKET_COORDINATOR.idFromName('bybit:mainnet:aws-eu-central-1');
+        const stagingCfg = validateStagingIsolationEnv(c.env);
+        const coordEnv = stagingCfg.isStaging ? (stagingCfg.allowedExchangeEnv || 'demo') : 'mainnet';
+        const coordRegion = stagingCfg.isStaging ? 'india' : 'aws-eu-central-1';
+        const coordId = c.env.PUBLIC_MARKET_COORDINATOR.idFromName(`bybit:${coordEnv}:${coordRegion}`);
         const coordStub = c.env.PUBLIC_MARKET_COORDINATOR.get(coordId);
-        const res = await coordStub.fetch('http://coordinator/stats');
+        const statsUrl = stagingCfg.isStaging
+          ? `http://coordinator/stats?environment=${coordEnv}&region=${coordRegion}`
+          : 'http://coordinator/stats';
+        const res = await coordStub.fetch(statsUrl);
         if (res.ok) {
           coordinatorStats = await res.json();
         }

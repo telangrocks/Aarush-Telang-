@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 
 import android.util.Log
+import com.cryptopulse.app.data.local.ExchangeConnectionManager
 import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.repository.ExchangeRepository
 import com.cryptopulse.app.domain.repository.FcmRepository
@@ -115,12 +116,14 @@ data class ExchangeFormState(
     }
 
     fun selectExchange(newExchange: String): ExchangeFormState {
-        val newKey = Pair(newExchange.lowercase(), environment.lowercase())
+        val canonicalExchange = ExchangeConnectionManager.normalizeExchangeName(newExchange)
+        val canonicalEnv = ExchangeConnectionManager.normalizeEnvironment(environment) ?: environment.lowercase()
+        val newKey = Pair(canonicalExchange, canonicalEnv)
         val existing = credentialsMap[newKey] ?: CredentialSet()
         val updatedMap = credentialsMap.toMutableMap()
         updatedMap[newKey] = existing
         return copy(
-            selectedExchange = newExchange,
+            selectedExchange = canonicalExchange,
             credentialsMap = updatedMap,
             apiKeyError = null,
             apiSecretError = null,
@@ -130,12 +133,14 @@ data class ExchangeFormState(
     }
 
     fun selectEnvironment(newEnvironment: String): ExchangeFormState {
-        val newKey = Pair(selectedExchange.lowercase(), newEnvironment.lowercase())
+        val canonicalEnv = ExchangeConnectionManager.normalizeEnvironment(newEnvironment) ?: newEnvironment.trim().lowercase()
+        val canonicalExchange = ExchangeConnectionManager.normalizeExchangeName(selectedExchange)
+        val newKey = Pair(canonicalExchange, canonicalEnv)
         val existing = credentialsMap[newKey] ?: CredentialSet()
         val updatedMap = credentialsMap.toMutableMap()
         updatedMap[newKey] = existing
         return copy(
-            environment = newEnvironment,
+            environment = canonicalEnv,
             credentialsMap = updatedMap,
             apiKeyError = null,
             apiSecretError = null,
@@ -257,6 +262,56 @@ class ExchangeViewModel @Inject constructor(
     private val _isBalanceStale = MutableStateFlow(false)
     val isBalanceStale: StateFlow<Boolean> = _isBalanceStale.asStateFlow()
 
+    private var hasRestoredEnvironment: Boolean = false
+    private var hasAuthoritativeRemoteRestoration: Boolean = false
+
+    init {
+        viewModelScope.launch {
+            try {
+                val (localConnected, localExchange, localEnv) = exchangeConnectionManager.getConnectionInfo()
+                if (localConnected && !hasAuthoritativeRemoteRestoration) {
+                    syncRestoredConnection(localExchange, localEnv, isAuthoritative = false)
+                }
+            } catch (_: Throwable) {
+                // Ignore if local DataStore is unavailable in unit test environment
+            }
+        }
+        viewModelScope.launch {
+            exchangeConnectionManager.connectionState.collect { snapshot ->
+                if (snapshot != null) {
+                    val (connected, exchange, env) = snapshot
+                    if (connected) {
+                        syncRestoredConnection(exchange, env, isAuthoritative = true)
+                    }
+                }
+            }
+        }
+    }
+
+    fun syncRestoredConnection(
+        exchangeName: String?,
+        environment: String?,
+        isAuthoritative: Boolean = false
+    ) {
+        val canonicalEnv = ExchangeConnectionManager.normalizeEnvironment(environment) ?: return
+        val canonicalExchange = ExchangeConnectionManager.normalizeExchangeName(exchangeName)
+        hasRestoredEnvironment = true
+        if (isAuthoritative) {
+            hasAuthoritativeRemoteRestoration = true
+        }
+        _formState.value = _formState.value
+            .selectExchange(canonicalExchange)
+            .selectEnvironment(canonicalEnv)
+    }
+
+    fun applyInitializationDefaultEnvironment(defaultEnv: String = "demo") {
+        if (hasRestoredEnvironment || hasAuthoritativeRemoteRestoration) {
+            return
+        }
+        val canonicalEnv = ExchangeConnectionManager.normalizeEnvironment(defaultEnv) ?: "demo"
+        _formState.value = _formState.value.selectEnvironment(canonicalEnv)
+    }
+
     fun clearCandidatesError() { _candidatesError.value = null }
     fun clearAnalysisError() { _analysisError.value = null }
     fun clearTradeError() {
@@ -345,23 +400,37 @@ class ExchangeViewModel @Inject constructor(
     fun checkExistingConnection(forceRemote: Boolean = false) {
         viewModelScope.launch {
             _uiState.value = ExchangeUiState.CheckingConnection
-            val (localConnected, localExchange, localEnv) = exchangeConnectionManager.getConnectionInfo()
-            if (localConnected && !forceRemote) {
-                _uiState.value = ExchangeUiState.Connected(localExchange ?: "bybit")
-                // fetchMarketCandidates() deferred
-                return@launch
-            }
-
             val token = tokenManager.getToken()
             if (!token.isNullOrBlank()) {
                 val result = exchangeRepository.getConnectionStatus()
-                if (result is NetworkResult.Success && result.data.isConnected) {
+                if (result is NetworkResult.Success) {
                     val status = result.data
-                    val exchange = status.exchangeName ?: "bybit"
-                    val env = status.environment ?: "demo"
-                    exchangeConnectionManager.saveConnection(exchange, env)
-                    _uiState.value = ExchangeUiState.Connected(exchange)
-                    // fetchMarketCandidates() deferred
+                    val canonicalEnv = ExchangeConnectionManager.normalizeEnvironment(status.environment)
+                    if (status.isConnected && canonicalEnv != null) {
+                        val canonicalExchange = ExchangeConnectionManager.normalizeExchangeName(status.exchangeName)
+                        syncRestoredConnection(canonicalExchange, canonicalEnv, isAuthoritative = true)
+                        exchangeConnectionManager.saveConnection(canonicalExchange, canonicalEnv)
+                        _uiState.value = ExchangeUiState.Connected(canonicalExchange)
+                        return@launch
+                    } else {
+                        hasRestoredEnvironment = false
+                        hasAuthoritativeRemoteRestoration = false
+                        exchangeConnectionManager.clearConnection()
+                        _uiState.value = ExchangeUiState.Idle
+                        return@launch
+                    }
+                }
+            }
+
+            val (localConnected, localExchange, localEnv) = exchangeConnectionManager.getConnectionInfo()
+            if (localConnected && !forceRemote) {
+                val resolvedExchange = ExchangeConnectionManager.normalizeExchangeName(localExchange)
+                val resolvedEnv = ExchangeConnectionManager.normalizeEnvironment(localEnv)
+                if (resolvedEnv != null) {
+                    if (!hasAuthoritativeRemoteRestoration) {
+                        syncRestoredConnection(resolvedExchange, resolvedEnv, isAuthoritative = false)
+                    }
+                    _uiState.value = ExchangeUiState.Connected(resolvedExchange)
                     return@launch
                 }
             }
@@ -420,10 +489,13 @@ class ExchangeViewModel @Inject constructor(
                 return@launch
             }
 
+            val canonicalExchange = ExchangeConnectionManager.normalizeExchangeName(state.selectedExchange)
+            val canonicalEnv = ExchangeConnectionManager.normalizeEnvironment(state.environment) ?: state.environment
+            syncRestoredConnection(canonicalExchange, canonicalEnv, isAuthoritative = true)
             _formState.value = _formState.value.copy(isLoading = false)
-            _uiState.value = ExchangeUiState.Connected(state.selectedExchange)
+            _uiState.value = ExchangeUiState.Connected(canonicalExchange)
 
-            exchangeConnectionManager.saveConnection(state.selectedExchange, state.environment)
+            exchangeConnectionManager.saveConnection(canonicalExchange, canonicalEnv)
             // fetchMarketCandidates() is deferred until budget is provided in Trade Setup
         }
     }
@@ -520,6 +592,8 @@ class ExchangeViewModel @Inject constructor(
         _tickerError.value = null
         _liveAlertPrice.value = null
         _isUnknownState.value = false
+        hasRestoredEnvironment = false
+        hasAuthoritativeRemoteRestoration = false
         _uiState.value = ExchangeUiState.Idle
         _formState.value = ExchangeFormState()
         _candidates.value = emptyList()

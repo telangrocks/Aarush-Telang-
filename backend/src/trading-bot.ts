@@ -33,6 +33,7 @@ import {
 } from './engine/signal-lifecycle';
 import { normalizeEnvironment as normalizeCanonicalEnvironment } from './utils/environment';
 import {
+  checkStagingExchangeEnvironment,
   createScopedTelemetryEmitter,
   emitStageSpan,
   flushTelemetry,
@@ -770,7 +771,7 @@ export class TradingBot {
       }
 
       const canonicalEnv = normalizeEnvironment(user.exchange_environment);
-      if (!canonicalEnv) {
+      if (!canonicalEnv || !checkStagingExchangeEnvironment(this.env, canonicalEnv).allowed) {
         console.error(`[TradingBot] INVALID_ENVIRONMENT in D1 for user=${userId} (raw=${JSON.stringify(user.exchange_environment)}). Failing closed without substituting default environment.`);
         await invalidateStaleProviderIfNeeded();
         return null;
@@ -2615,7 +2616,10 @@ export class TradingBot {
         return await runWithTelemetryContext(
           {
             journey: 'JOURNEY_B_AUTONOMOUS',
-            environment: this.env.ENVIRONMENT,
+            environment:
+              normalizeEnvironment(this.runtimeState.approvedCandidateRecord?.environment) ||
+              normalizeEnvironment(this.cachedCredentials?.environment) ||
+              this.env.ENVIRONMENT,
             userId: this.runtimeState.userId,
             botId: this.state?.id?.toString?.(),
             cycleId: `exec_${Date.now()}`,
@@ -5704,7 +5708,11 @@ export class TradingBot {
             ok: true,
             readOnly: true,
             isActive: Boolean(this.runtimeState.isActive),
-            environment: this.env.ENVIRONMENT || 'unknown',
+            environment:
+              normalizeEnvironment(this.runtimeState.approvedCandidateRecord?.environment) ||
+              normalizeEnvironment(this.cachedCredentials?.environment) ||
+              this.env.ENVIRONMENT ||
+              'unknown',
             monitoredSymbolsCount: Array.isArray(this.runtimeState.monitoredSymbols)
               ? this.runtimeState.monitoredSymbols.length
               : 0,
@@ -7369,7 +7377,10 @@ export class TradingBot {
           await runWithTelemetryContext(
             {
               journey: 'JOURNEY_B_AUTONOMOUS',
-              environment: this.env.ENVIRONMENT,
+              environment:
+                normalizeEnvironment(storedApproval?.environment) ||
+                normalizeEnvironment(this.cachedCredentials?.environment) ||
+                this.env.ENVIRONMENT,
               userId,
               botId: this.state?.id?.toString?.(),
               cycleId,

@@ -488,10 +488,10 @@ describe('MarketOpportunityScanner (Phase 2 Full-Universe Live Scanning)', () =>
 
     const scanner = new MarketOpportunityScanner(mockProvider);
 
-    // Cycle 1: Fetches 4 timeframes (4h, 1h, 15m, 5m)
+    // Cycle 1: Fetches 3 timeframes (1h, 15m, 5m)
     await scanner.scan();
     const firstCallCount = fetchCandlesSpy.mock.calls.length;
-    expect(firstCallCount).toBe(4);
+    expect(firstCallCount).toBe(3);
     // Cycle 2 immediately after: Candle store cache hits
     await scanner.scan();
     const secondCallCount = fetchCandlesSpy.mock.calls.length;

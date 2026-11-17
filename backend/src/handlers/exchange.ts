@@ -61,6 +61,10 @@ function parseNumericField(val: any): { present: boolean; valid: boolean; value:
 interface ScopedPublicCandleStoreEntry {
   adapter: any;
   store: MultiTimeframeCandleStore;
+  env?: any;
+  exchangeName?: ExchangeName;
+  environment?: ExchangeEnvironment;
+  region?: ExchangeRegion;
 }
 
 const PUBLIC_CANDLE_STORE_REGISTRY = new Map<string, ScopedPublicCandleStoreEntry>();
@@ -115,29 +119,63 @@ export function buildPublicOpportunityCacheKey(
 function getOrCreateScopedPublicCandleStore(
   storeKey: string,
   publicAdapter: any,
-  maxCandles: number = PUBLIC_CANDLE_STORE_DEPTH
+  maxCandles: number = PUBLIC_CANDLE_STORE_DEPTH,
+  env?: any,
+  exchangeName?: ExchangeName,
+  environment?: ExchangeEnvironment,
+  region?: ExchangeRegion
 ): MultiTimeframeCandleStore {
   const existing = PUBLIC_CANDLE_STORE_REGISTRY.get(storeKey);
   if (existing) {
     existing.adapter = publicAdapter;
+    if (env !== undefined) existing.env = env;
+    if (exchangeName) existing.exchangeName = exchangeName;
+    if (environment) existing.environment = environment;
+    if (region) existing.region = region;
     return existing.store;
   }
 
   const holder: ScopedPublicCandleStoreEntry = {
     adapter: publicAdapter,
     store: null as unknown as MultiTimeframeCandleStore,
+    env,
+    exchangeName,
+    environment,
+    region,
+  };
+
+  const fetchSeries = async (preferFetchKlines: boolean, symbol: string, tf: any, limit: number) => {
+    // When coordinator binding is configured, never silently fall back to the direct adapter.
+    // Propagate coordinator and staging isolation errors so discovery fails closed.
+    if (holder.env?.PUBLIC_MARKET_COORDINATOR) {
+      if (!holder.exchangeName || !holder.environment || !holder.region) {
+        throw new Error("Coordinator market-data scope (exchange/environment/region) is missing.");
+      }
+      return await PublicMarketDataService.getInstance().getKlines(
+        holder.env,
+        symbol,
+        tf,
+        limit,
+        holder.exchangeName,
+        holder.environment,
+        holder.region
+      );
+    }
+
+    const primary = preferFetchKlines ? holder.adapter?.fetchKlines : holder.adapter?.fetchCandles;
+    const secondary = preferFetchKlines ? holder.adapter?.fetchCandles : holder.adapter?.fetchKlines;
+    if (typeof primary === "function") {
+      return primary.call(holder.adapter, symbol, tf, limit);
+    }
+    if (typeof secondary === "function") {
+      return secondary.call(holder.adapter, symbol, tf, limit);
+    }
+    return Promise.resolve([]);
   };
 
   const delegatingPublicCandleProvider = {
-    fetchCandles: (symbol: string, tf: any, limit: number) => {
-      if (typeof holder.adapter?.fetchCandles === "function") {
-        return holder.adapter.fetchCandles(symbol, tf, limit);
-      }
-      if (typeof holder.adapter?.fetchKlines === "function") {
-        return holder.adapter.fetchKlines(symbol, tf, limit);
-      }
-      return Promise.resolve([]);
-    },
+    fetchCandles: (symbol: string, tf: any, limit: number) => fetchSeries(false, symbol, tf, limit),
+    fetchKlines: (symbol: string, tf: any, limit: number) => fetchSeries(true, symbol, tf, limit),
   };
 
   holder.store = new MultiTimeframeCandleStore(delegatingPublicCandleProvider as any, maxCandles);
@@ -1445,6 +1483,15 @@ export async function handleGetPersonalizedMarketCandidates(
       }
     } catch (mErr: any) {
       console.error("[DIAGNOSTIC] Stage 7 WARNING: fetchMarkets threw exception:", mErr?.message);
+      if (c.env.PUBLIC_MARKET_COORDINATOR) {
+        c.status(503);
+        return c.json({
+          success: false,
+          stage: "7. fetchMarkets completed",
+          error: mErr?.message || "Failed to fetch markets from coordinator",
+          constructor: mErr?.constructor?.name || "ExchangeError",
+        });
+      }
     }
 
     if (!markets || !markets.length) {
@@ -1728,7 +1775,15 @@ export async function handleGetPersonalizedMarketCandidates(
       });
       // Share the same scoped public candle store as handleGetMarketOpportunities to avoid redundant kline fetches
       const candleStoreKey = `${exchangeName}:${environment}:${region}:cd${PUBLIC_CANDLE_STORE_DEPTH}`;
-      const sharedCandleStore = getOrCreateScopedPublicCandleStore(candleStoreKey, publicAdapter, PUBLIC_CANDLE_STORE_DEPTH);
+      const sharedCandleStore = getOrCreateScopedPublicCandleStore(
+        candleStoreKey,
+        publicAdapter,
+        PUBLIC_CANDLE_STORE_DEPTH,
+        c.env,
+        exchangeName,
+        environment,
+        region
+      );
       const scanner = new MarketOpportunityScanner(publicAdapter as any, DEFAULT_SCANNER_CONFIG, sharedCandleStore);
       const scanResult = await scanner.scan({
         markets: boundedMarkets,
@@ -2043,7 +2098,11 @@ export async function handleGetMarketOpportunities(
       const candleStore = getOrCreateScopedPublicCandleStore(
         candleStoreKey,
         publicAdapter,
-        PUBLIC_CANDLE_STORE_DEPTH
+        PUBLIC_CANDLE_STORE_DEPTH,
+        c.env,
+        exchangeName,
+        environment,
+        region
       );
 
       const scanner = new MarketOpportunityScanner(
