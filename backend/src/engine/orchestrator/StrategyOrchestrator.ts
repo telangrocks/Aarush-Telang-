@@ -283,9 +283,69 @@ export class StrategyOrchestrator {
       const tfCandles = snap?.candles?.[targetTimeframe] || [];
       const minRequiredBars = strategy.manifest?.minimumCandles ?? 35;
       const insufficientBars = tfCandles.length < minRequiredBars;
-      const ind = (md?.indicators ?? md?.evaluationMetrics ?? md) as Record<string, any> | undefined;
-      const numOrUndef = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
+      // --- Stage 4 Telemetry: target-timeframe-scoped indicator extraction ---
+      // Indicators live at result.metadata.indicatorSnapshot.timeframes[targetTimeframe]
+      // as keyed series arrays computed by IndicatorEngine on exclusively closed candles.
+      // This block is telemetry-only and is isolated with try-catch; any failure here
+      // cannot affect `result`, trading signals, or the returned EvaluationResult.
+      const numOrUndef = (v: unknown): number | undefined =>
+        (typeof v === 'number' && Number.isFinite(v)) ? v : undefined;
+
+      let taRsi: number | undefined;
+      let taEma9: number | undefined;
+      let taEma21: number | undefined;
+      let taEma50: number | undefined;
+      let taEma200: number | undefined;
+      let taMacdLine: number | undefined;
+      let taMacdSignal: number | undefined;
+      let taMacdHist: number | undefined;
+      let taAtr: number | undefined;
+      let taRegime: string | undefined;
+
+      try {
+        const indicatorSnapshot = md?.indicatorSnapshot as { timeframes?: Record<string, any> } | undefined;
+        const tfInd = indicatorSnapshot?.timeframes?.[targetTimeframe];
+        const cfg = (strategy as any).config?.conditionConfig;
+
+        const rsiPeriod: number = cfg?.rsiPeriod ?? 14;
+        const emaFastPeriod: number = cfg?.emaFastPeriod ?? 9;
+        const emaSlowPeriod: number = cfg?.emaSlowPeriod ?? 21;
+        const macdKey: string = cfg?.macdKey ?? '12,26,9';
+        const atrPeriod: number = cfg?.atrPeriod ?? 14;
+
+        taRsi = numOrUndef(tfInd?.rsi?.[rsiPeriod]?.slice(-1)[0]);
+
+        const emaFastVal = numOrUndef(tfInd?.ema?.[emaFastPeriod]?.slice(-1)[0]);
+        const emaSlowVal = numOrUndef(tfInd?.ema?.[emaSlowPeriod]?.slice(-1)[0]);
+        // Map computed EMA values to named dashboard fields by actual period.
+        // A strategy only computes the EMAs in its indicatorConfig; unused periods
+        // remain undefined and are stored as NULL (truthful ACTUAL_NULL, not fabricated).
+        if (emaFastPeriod === 9   || emaSlowPeriod === 9)   taEma9   = emaFastPeriod === 9   ? emaFastVal : emaSlowVal;
+        if (emaFastPeriod === 21  || emaSlowPeriod === 21)  taEma21  = emaFastPeriod === 21  ? emaFastVal : emaSlowVal;
+        if (emaFastPeriod === 50  || emaSlowPeriod === 50)  taEma50  = emaFastPeriod === 50  ? emaFastVal : emaSlowVal;
+        if (emaFastPeriod === 200 || emaSlowPeriod === 200) taEma200 = emaFastPeriod === 200 ? emaFastVal : emaSlowVal;
+
+        const macdLast = tfInd?.macd?.[macdKey]?.slice(-1)[0];
+        taMacdLine   = numOrUndef(macdLast?.macdLine);
+        taMacdSignal = numOrUndef(macdLast?.signalLine);
+        taMacdHist   = numOrUndef(macdLast?.histogram);
+
+        taAtr = numOrUndef(tfInd?.atr?.[atrPeriod]?.slice(-1)[0]);
+        taRegime = typeof md?.regime === 'string' ? md.regime : md?.regime?.regime;
+      } catch {
+        // Telemetry extraction failure must never propagate or affect trading evaluation.
+        // All taXxx variables remain undefined → stored as NULL in D1.
+      }
+      // --- End Stage 4 Telemetry extraction ---
+
+      // True when the strategy returned before computing indicators (e.g. insufficient CLOSED
+      // candles after forming-candle filtering). Values stay undefined; this flag documents why.
+      const indicatorsComputed = Boolean((md?.indicatorSnapshot as any)?.timeframes?.[targetTimeframe]);
+
+      // Stage 4 emission is telemetry-only: a failure here must never convert a successful
+      // strategy evaluation into a failed one or alter the returned EvaluationResult.
+      try {
       if (insufficientBars) {
         emitStageSpan({
           journey: 'JOURNEY_B_AUTONOMOUS',
@@ -325,20 +385,28 @@ export class StrategyOrchestrator {
           message: `Computed canonical TA for ${symbol} ${targetTimeframe} (${tfCandles.length} bars)`,
           inputSummary: { candlesCount: tfCandles.length, minRequiredBars, indicatorEngine: 'CANONICAL' },
           outputSummary: {
-            timeframe: targetTimeframe,
+            timeframe:      targetTimeframe,
             indicatorEngine: 'CANONICAL',
-            rsi: numOrUndef(ind?.rsi) ?? numOrUndef(ind?.rsi14) ?? numOrUndef(ind?.currentRsi),
-            ema9: numOrUndef(ind?.ema9),
-            ema21: numOrUndef(ind?.ema21) ?? numOrUndef(ind?.ema20),
-            ema50: numOrUndef(ind?.ema50),
-            ema200: numOrUndef(ind?.ema200),
-            adx: numOrUndef(ind?.adx),
-            atr: numOrUndef(ind?.atr),
-            vwap: numOrUndef(ind?.vwap),
-            regime: typeof md?.regime === 'string' ? md.regime : md?.regime?.regime,
+            // Explicit null (not undefined) when the strategy did not compute / could not produce a
+            // finite value: JSON drops undefined keys, which the monitoring API would misreport as
+            // UNAVAILABLE_IN_TELEMETRY. Explicit null is reported as ACTUAL_NULL (producer evaluated).
+            rsi:        taRsi ?? null,
+            ema9:       taEma9 ?? null,
+            ema21:      taEma21 ?? null,
+            ema50:      taEma50 ?? null,
+            ema200:     taEma200 ?? null,
+            macdLine:   taMacdLine ?? null,
+            macdSignal: taMacdSignal ?? null,
+            macdHist:   taMacdHist ?? null,
+            atr:        taAtr ?? null,
+            regime:     taRegime,
             confidenceScore: result.confidenceScore,
+            ...(indicatorsComputed ? {} : { indicatorsUnavailableReason: 'STRATEGY_REJECTED_BEFORE_INDICATORS' }),
           },
         });
+      }
+      } catch {
+        // Swallow: telemetry must not affect evaluation, signals or returned results.
       }
 
       emitStageSpan({
