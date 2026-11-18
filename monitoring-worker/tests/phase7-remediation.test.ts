@@ -1452,5 +1452,88 @@ describe('Phase 7: Defect Remediation Verification (Priorities 1-4)', () => {
       });
       expect(sgRes.body.gateEvaluations[0].reason).toContain('REGIME_PROHIBITED');
     });
+
+    it('Stage 4: scalar indicator values emitted by StrategyOrchestrator persist to D1 and are exposed truthfully by /ta (POPULATED vs ACTUAL_NULL vs UNAVAILABLE_IN_TELEMETRY)', async () => {
+      const db = new SqliteD1Database();
+      const env = createEnv(db);
+      const nowMs = Date.now();
+
+      await emitAndIngest(db, 'trading-bot-do', (emitter) => {
+        // ScalperV2 15m PASS: EMA 9/21 + RSI/MACD/ATR populated; ema50/ema200 explicit null (not applicable)
+        emitter.emit({
+          userId: 'user-s4', journey: 'JOURNEY_B_AUTONOMOUS', stage: 4, eventType: 'TA_COMPUTED',
+          status: 'PASS', severity: 'INFO', symbol: 'BTC/USDT', timeframe: '15m', strategyId: 'ScalperV2',
+          emittedAtMs: nowMs - 6_000, component: 'IndicatorEngine', message: 'Computed canonical TA',
+          inputSummary: { candlesCount: 200, minRequiredBars: 35, indicatorEngine: 'CANONICAL' },
+          outputSummary: {
+            timeframe: '15m', indicatorEngine: 'CANONICAL',
+            rsi: 61.25, ema9: 51970.5, ema21: 51909.25, ema50: null, ema200: null,
+            macdLine: 70.5, macdSignal: 65.25, macdHist: 5.25, atr: 100.75,
+            regime: 'TRENDING', confidenceScore: 45,
+          },
+        });
+        // Momentum 1h PASS: strategy rejected before computing indicators -> explicit nulls + reason
+        emitter.emit({
+          userId: 'user-s4', journey: 'JOURNEY_B_AUTONOMOUS', stage: 4, eventType: 'TA_COMPUTED',
+          status: 'PASS', severity: 'INFO', symbol: 'ETH/USDT', timeframe: '1h', strategyId: 'Momentum',
+          emittedAtMs: nowMs - 5_000, component: 'IndicatorEngine', message: 'Computed canonical TA',
+          inputSummary: { candlesCount: 200, minRequiredBars: 201, indicatorEngine: 'CANONICAL' },
+          outputSummary: {
+            timeframe: '1h', indicatorEngine: 'CANONICAL',
+            rsi: null, ema9: null, ema21: null, ema50: null, ema200: null,
+            macdLine: null, macdSignal: null, macdHist: null, atr: null,
+            indicatorsUnavailableReason: 'STRATEGY_REJECTED_BEFORE_INDICATORS', confidenceScore: 0,
+          },
+        });
+        // Legacy summary-only row (keys absent) must still be flagged as not emitted
+        emitter.emit({
+          userId: 'user-s4', journey: 'JOURNEY_B_AUTONOMOUS', stage: 4, eventType: 'TA_COMPUTED',
+          status: 'PASS', severity: 'INFO', symbol: 'SOL/USDT', timeframe: '15m',
+          emittedAtMs: nowMs - 4_000, component: 'IndicatorEngine', message: 'Legacy summary only',
+          inputSummary: { candlesCount: 200, minRequiredBars: 35 },
+          outputSummary: { timeframe: '15m', indicatorEngine: 'CANONICAL', confidenceScore: 50 },
+        });
+      });
+
+      // Database layer
+      const persisted = await db
+        .prepare('SELECT symbol, rsi, ema9, ema21, ema50, macd_line, macd_signal, macd_hist, atr FROM ta_indicator_snapshots WHERE symbol = ?')
+        .bind('BTC/USDT')
+        .first<any>();
+      expect(persisted).toMatchObject({ rsi: 61.25, ema9: 51970.5, ema21: 51909.25, ema50: null, macd_line: 70.5, macd_signal: 65.25, macd_hist: 5.25, atr: 100.75 });
+
+      // Monitoring API layer
+      const jwt = await signJwt(env.JWT_SECRET!, { sub: 'user-s4', role: 'ADMIN' });
+      const res = await apiReq(env, '/api/monitor/v2/ta', { jwt });
+      expect(res.status).toBe(200);
+      const btc = res.body.items.find((r: any) => r.symbol === 'BTC/USDT');
+      const eth = res.body.items.find((r: any) => r.symbol === 'ETH/USDT');
+      const sol = res.body.items.find((r: any) => r.symbol === 'SOL/USDT');
+
+      expect(btc.indicatorTelemetryStatus).toBe('FULL');
+      expect(btc.rsi).toBe(61.25);
+      expect(btc.ema9).toBe(51970.5);
+      expect(btc.ema21).toBe(51909.25);
+      expect(btc.macdLine).toBe(70.5);
+      expect(btc.macdSignal).toBe(65.25);
+      expect(btc.macdHist).toBe(5.25);
+      expect(btc.atr).toBe(100.75);
+      expect(btc.indicatorFieldStates.rsi).toBe('POPULATED');
+      expect(btc.indicatorFieldStates.ema9).toBe('POPULATED');
+      expect(btc.indicatorFieldStates.ema50).toBe('ACTUAL_NULL');
+      expect(btc.indicatorFieldStates.atr).toBe('POPULATED');
+      expect(btc.telemetryLimitationNote).toBeNull();
+
+      // Rejected-before-indicators: all explicit nulls -> ACTUAL_NULL, never SUMMARY_ONLY / fabricated numbers
+      expect(eth.rsi).toBeNull();
+      expect(eth.atr).toBeNull();
+      expect(eth.indicatorTelemetryStatus).toBe('ACTUAL_NULL');
+      expect(eth.indicatorFieldStates.rsi).toBe('ACTUAL_NULL');
+      expect(eth.indicatorFieldStates.atr).toBe('ACTUAL_NULL');
+
+      // Legacy producer rows remain correctly classified as not emitted
+      expect(sol.indicatorTelemetryStatus).toBe('SUMMARY_ONLY_INDICATORS_NOT_EMITTED');
+      expect(sol.indicatorFieldStates.rsi).toBe('UNAVAILABLE_IN_TELEMETRY');
+    });
   });
 });

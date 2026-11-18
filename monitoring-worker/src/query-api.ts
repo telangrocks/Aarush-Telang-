@@ -562,11 +562,16 @@ function mapTaRow(r: any): Record<string, unknown> {
         : 'UNAVAILABLE_IN_TELEMETRY';
 
   const anyUnavailable = Object.values(indicatorFieldStates).some((s) => s === 'UNAVAILABLE_IN_TELEMETRY');
+  // Producer explicitly reported every core scalar indicator (value or explicit null): the producer
+  // evaluated them, so an all-null row is ACTUAL_NULL rather than "summary only / not emitted".
+  const coreIndicatorKeysReported = [
+    'rsi', 'ema9', 'ema21', 'ema50', 'ema200', 'macdLine', 'macdSignal', 'macdHist', 'atr',
+  ].every((k) => Object.prototype.hasOwnProperty.call(rawOut, k));
   const indicatorTelemetryStatus = isSkipped
     ? 'SKIPPED_NULL'
     : hasAnyNumericIndicator
       ? 'FULL'
-      : anyUnavailable
+      : anyUnavailable && !coreIndicatorKeysReported
         ? 'SUMMARY_ONLY_INDICATORS_NOT_EMITTED'
         : 'ACTUAL_NULL';
 
