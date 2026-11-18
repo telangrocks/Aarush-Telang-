@@ -36,3 +36,34 @@ crons = ["0 */6 * * *"]
 [vars]
 ENVIRONMENT = "production"
 ALLOWED_ORIGINS = "https://cryptopulse-monitoring.pages.dev,http://localhost:3000,http://localhost:8788,http://127.0.0.1:8788"
+
+# ---------------------------------------------------------------------------
+# ISOLATED STAGING (Cloudflare Free plan only)
+# Verified deployed resources:
+# - D1: crypto_pulse_monitoring_db_staging (d4524498-cb4b-484b-95c0-a3cfa740541f)
+# - Secrets (wrangler secret put --env staging):
+#     ADMIN_API_KEY, INTERNAL_INGEST_SECRET, JWT_SECRET,
+#     GRAFANA_OTLP_ENDPOINT, GRAFANA_INSTANCE_ID, GRAFANA_API_TOKEN
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "cryptopulse-monitoring-worker-staging"
+workers_dev = true
+
+[[env.staging.d1_databases]]
+binding = "MONITORING_DB"
+database_name = "crypto_pulse_monitoring_db_staging"
+database_id = "d4524498-cb4b-484b-95c0-a3cfa740541f"
+migrations_dir = "migrations"
+
+[env.staging.triggers]
+crons = ["0 */6 * * *"]
+
+[env.staging.vars]
+ENVIRONMENT = "demo"
+REQUIRE_INTERNAL_SECRET = "true"
+ALLOWED_ORIGINS = "https://staging.cryptopulse-monitoring.pages.dev,http://localhost:8788,http://127.0.0.1:8788"
+MONITORING_SINK = "both"
+
+[[env.staging.services]]
+binding = "BACKEND_SERVICE"
+service = "crypto-pulse-backend-staging"

@@ -15,7 +15,7 @@ import {
   sanitizeTelemetryEvent,
   scrubSensitiveString,
 } from '../../shared/monitoring';
-import { IngestOutcome, MonitoringEnv, TelemetryQueueBatch } from './types';
+import { IngestOutcome, MonitoringEnv, MonitoringSinkMode, TelemetryQueueBatch } from './types';
 
 const EXECUTION_RANK: Record<string, number> = {
   SIGNAL_ONLY: 1,
@@ -1368,7 +1368,8 @@ function buildIncidentStatement(db: D1Database, ev: PipelineTelemetryEvent): D1P
  */
 export async function ingestEnvelope(
   db: D1Database,
-  envelope: TelemetryQueueEnvelope
+  envelope: TelemetryQueueEnvelope,
+  env?: MonitoringEnv
 ): Promise<IngestOutcome> {
   const consumerProcessedAtMs = Date.now();
   const rawEvents = Array.isArray(envelope?.events) ? envelope.events : [];
@@ -1633,7 +1634,8 @@ export async function ingestEnvelope(
     );
   }
 
-  if (stmts.length > 0) {
+  const sinkMode = (env?.MONITORING_SINK || 'both').toLowerCase() as MonitoringSinkMode;
+  if (stmts.length > 0 && sinkMode !== 'grafana') {
     await db.batch(stmts);
   }
 
@@ -1644,7 +1646,8 @@ export async function ingestEnvelope(
     deduped: totalDeduped,
     dlqRouted: 0,
     consumerProcessedAtMs,
-    d1CommittedAtMs,
+    d1CommittedAtMs: sinkMode === 'grafana' ? 0 : d1CommittedAtMs,
+    sinkMode,
   };
 }
 
@@ -1676,7 +1679,7 @@ export async function handleQueueBatch(
 ): Promise<void> {
   for (const message of batch.messages) {
     try {
-      await ingestEnvelope(env.MONITORING_DB, message.body);
+      await ingestEnvelope(env.MONITORING_DB, message.body, env);
       message.ack();
     } catch (err: any) {
       await recordD1WriteFailureBestEffort(env.MONITORING_DB, err?.message || 'ingest_failed');

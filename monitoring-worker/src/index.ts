@@ -7,6 +7,7 @@ import {
 } from '../../shared/monitoring';
 import { authenticateReadOnlyAdmin, buildCorsHeaders, timingSafeEqualAscii } from './auth';
 import { handleDlqBatch, handleQueueBatch, ingestEnvelope, pruneExpiredTelemetry } from './consumer';
+import { forwardToGrafana } from './grafana-sink';
 import { handleMonitorQueryV2 } from './query-api';
 import { MonitoringEnv, TelemetryQueueBatch } from './types';
 
@@ -68,7 +69,11 @@ function buildTailCrashEvents(items: TraceItem[], env: MonitoringEnv): PipelineT
   return events;
 }
 
-export async function handleMonitorFetch(request: Request, env: MonitoringEnv): Promise<Response> {
+export async function handleMonitorFetch(
+  request: Request,
+  env: MonitoringEnv,
+  ctx?: ExecutionContext
+): Promise<Response> {
   const url = new URL(request.url);
   const corsHeaders = buildCorsHeaders(request, env);
 
@@ -78,7 +83,14 @@ export async function handleMonitorFetch(request: Request, env: MonitoringEnv): 
 
   if (url.pathname === '/health') {
     return jsonResponse(
-      { ok: true, service: 'cryptopulse-monitoring-worker', readOnly: true, timestampMs: Date.now() },
+      {
+        ok: true,
+        service: 'cryptopulse-monitoring-worker',
+        readOnly: true,
+        sinkMode: env.MONITORING_SINK || 'both',
+        hasGrafana: Boolean(env.GRAFANA_OTLP_ENDPOINT),
+        timestampMs: Date.now(),
+      },
       200,
       corsHeaders
     );
@@ -101,7 +113,31 @@ export async function handleMonitorFetch(request: Request, env: MonitoringEnv): 
       if (!envelope || !Array.isArray(envelope.events)) {
         return jsonResponse({ error: 'Invalid telemetry envelope' }, 400, corsHeaders);
       }
-      const outcome = await ingestEnvelope(env.MONITORING_DB, envelope);
+
+      const outcome = await ingestEnvelope(env.MONITORING_DB, envelope, env);
+
+      // Grafana Cloud OTLP dual-sink forwarding
+      const sinkMode = (env.MONITORING_SINK || 'both').toLowerCase();
+      if (sinkMode === 'both' || sinkMode === 'grafana') {
+        const grafanaPromise = forwardToGrafana(envelope, env).catch(() => ({
+          ok: false,
+          delivered: 0,
+          failed: envelope.events?.length || 0,
+          durationMs: 0,
+        }));
+
+        if (ctx && typeof ctx.waitUntil === 'function') {
+          ctx.waitUntil(grafanaPromise);
+        } else {
+          const gRes = await grafanaPromise;
+          if (gRes) {
+            outcome.grafanaDelivered = gRes.delivered;
+            outcome.grafanaFailed = gRes.failed;
+            outcome.grafanaDurationMs = gRes.durationMs;
+          }
+        }
+      }
+
       return jsonResponse({ ok: true, outcome }, 200, corsHeaders);
     } catch (err: any) {
       return jsonResponse({ ok: false, error: err?.message || 'ingest_error' }, 500, corsHeaders);
@@ -135,8 +171,8 @@ export async function handleMonitorFetch(request: Request, env: MonitoringEnv): 
 }
 
 export default {
-  async fetch(request: Request, env: MonitoringEnv, _ctx: ExecutionContext): Promise<Response> {
-    return handleMonitorFetch(request, env);
+  async fetch(request: Request, env: MonitoringEnv, ctx: ExecutionContext): Promise<Response> {
+    return handleMonitorFetch(request, env, ctx);
   },
 
   async queue(batch: TelemetryQueueBatch, env: MonitoringEnv): Promise<void> {
