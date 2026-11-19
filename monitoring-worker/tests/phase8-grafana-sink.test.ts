@@ -227,6 +227,22 @@ describe('Phase 8 / Grafana Cloud OTLP Sink & Dual-Sink Ingestion', () => {
       expect(result.delivered).toBe(1);
     });
 
+    it('successfully delivers telemetry when HTTP 204 No Content is returned (Grafana Cloud default)', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+
+      const envelope: TelemetryQueueEnvelope = {
+        batchId: 'bat-002-204',
+        producer: 'crypto-pulse-backend',
+        producedAtMs: Date.now(),
+        events: [createMockEvent()],
+      };
+
+      const result = await forwardToGrafana(envelope, env);
+      expect(result.ok).toBe(true);
+      expect(result.statusCode).toBe(204);
+      expect(result.delivered).toBe(1);
+    });
+
     it('gracefully skips without errors when Grafana endpoint is unconfigured', async () => {
       const mockFetch = vi.fn();
       globalThis.fetch = mockFetch;

@@ -340,8 +340,8 @@ export async function forwardToGrafana(
       response = await sendOnce();
     }
 
-    // 200 OK or 202 Accepted are valid OTLP ingestion responses
-    if (response.status === 200 || response.status === 202) {
+    // 200 OK, 202 Accepted, or 204 No Content are valid OTLP ingestion responses
+    if (response.status === 200 || response.status === 202 || response.status === 204) {
       return {
         ok: true,
         delivered: rawEvents.length,
@@ -355,7 +355,7 @@ export async function forwardToGrafana(
     if (response.status >= 500 || response.status === 429) {
       await new Promise((res) => setTimeout(res, 250));
       const retryResponse = await sendOnce();
-      if (retryResponse.status === 200 || retryResponse.status === 202) {
+      if (retryResponse.status === 200 || retryResponse.status === 202 || retryResponse.status === 204) {
         return {
           ok: true,
           delivered: rawEvents.length,
