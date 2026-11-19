@@ -1,0 +1,188 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "name": "CryptoPulse Critical System Alerts",
+      "folder": "CryptoPulse Alerts",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "cp-alert-circuit-breaker",
+          "title": "CryptoPulse: Circuit Breaker or Critical Safety Failure",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": { "from": 300, "to": 0 },
+              "datasourceUid": "grafanacloud-boldpony2912-logs",
+              "model": {
+                "editorMode": "code",
+                "expr": "sum(count_over_time({service_name=\"cryptopulse-backend\"} | json | (event_type = \"CIRCUIT_BREAKER\" or severity = \"CRITICAL\" or detected_level = \"critical\") [5m]))",
+                "queryType": "range",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": { "params": [0], "type": "gt" },
+                    "operator": { "type": "and" },
+                    "query": { "params": ["A"] },
+                    "reducer": { "params": [], "type": "last" },
+                    "type": "query"
+                  }
+                ],
+                "datasource": { "type": "__expr__", "uid": "__expr__" },
+                "expression": "A",
+                "reducer": "last",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "expression": "$B > 0",
+                "type": "math"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Alerting",
+          "for": "0m",
+          "annotations": {
+            "summary": "Critical trading safety violation or circuit breaker tripped in CryptoPulse backend.",
+            "description": "One or more CRITICAL severity events or CIRCUIT_BREAKER triggers were detected in Grafana Loki logs within the last 5 minutes."
+          },
+          "labels": {
+            "severity": "critical",
+            "tier": "TIER_1",
+            "component": "TradingBot"
+          }
+        },
+        {
+          "uid": "cp-alert-execution-failures",
+          "title": "CryptoPulse: High Trade Execution Failure Rate",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": { "from": 300, "to": 0 },
+              "datasourceUid": "grafanacloud-boldpony2912-logs",
+              "model": {
+                "editorMode": "code",
+                "expr": "sum(count_over_time({service_name=\"cryptopulse-backend\"} | json | stage = 7 and status = \"FAIL\" [5m]))",
+                "queryType": "range",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": { "params": [2], "type": "gt" },
+                    "operator": { "type": "and" },
+                    "query": { "params": ["A"] },
+                    "reducer": { "params": [], "type": "last" },
+                    "type": "query"
+                  }
+                ],
+                "datasource": { "type": "__expr__", "uid": "__expr__" },
+                "expression": "A",
+                "reducer": "last",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "expression": "$B > 2",
+                "type": "math"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "KeepLast",
+          "for": "2m",
+          "annotations": {
+            "summary": "Stage 7 trade order executions are repeatedly failing.",
+            "description": "More than 2 failed trade executions detected in a 5-minute rolling window."
+          },
+          "labels": {
+            "severity": "warning",
+            "tier": "TIER_1",
+            "stage": "7",
+            "component": "ExecutionEngine"
+          }
+        },
+        {
+          "uid": "cp-alert-android-telemetry-error",
+          "title": "CryptoPulse: Android Stage 9 Telemetry Failure Spike",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "range",
+              "relativeTimeRange": { "from": 600, "to": 0 },
+              "datasourceUid": "grafanacloud-boldpony2912-logs",
+              "model": {
+                "editorMode": "code",
+                "expr": "sum(count_over_time({service_name=\"cryptopulse-backend\"} | json | stage = 9 and status = \"FAIL\" [10m]))",
+                "queryType": "range",
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": { "params": [3], "type": "gt" },
+                    "operator": { "type": "and" },
+                    "query": { "params": ["A"] },
+                    "reducer": { "params": [], "type": "last" },
+                    "type": "query"
+                  }
+                ],
+                "datasource": { "type": "__expr__", "uid": "__expr__" },
+                "expression": "A",
+                "reducer": "last",
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "expression": "$B > 3",
+                "type": "math"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "KeepLast",
+          "for": "5m",
+          "annotations": {
+            "summary": "Android Stage 9 client telemetry experiencing high error rate.",
+            "description": "More than 3 Android Stage 9 errors recorded in 10 minutes."
+          },
+          "labels": {
+            "severity": "warning",
+            "tier": "TIER_1",
+            "stage": "9",
+            "component": "AndroidStage9Observer"
+          }
+        }
+      ]
+    }
+  ]
+}
