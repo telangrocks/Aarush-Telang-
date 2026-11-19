@@ -1,0 +1,417 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Centralized monitoring dashboard for CryptoPulse backend pipeline, Android Stage 9 telemetry, and trade executions powered by Grafana Cloud Loki & OpenTelemetry.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "System Overview & Key Telemetry Counters",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["sum"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "loki" },
+          "editorMode": "code",
+          "expr": "sum(count_over_time({service_name=\"cryptopulse-backend\"} [$__range]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Total Telemetry Events",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["sum"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki" },
+          "editorMode": "code",
+          "expr": "sum(count_over_time({service_name=\"cryptopulse-backend\"} | json | (detected_level =~ \"(?i)error|critical\" or status = \"FAIL\" or severity =~ \"(?i)error|critical\") [$__range]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Errors & Failures",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["sum"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki" },
+          "editorMode": "code",
+          "expr": "sum(count_over_time({service_name=\"cryptopulse-backend\"} | json | stage = 9 or component = \"AndroidStage9Observer\" [$__range]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Android Stage 9 Events",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "purple", "value": null }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["sum"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki" },
+          "editorMode": "code",
+          "expr": "sum(count_over_time({service_name=\"cryptopulse-backend\"} | json | stage = 7 or event_type =~ \"(?i)ORDER.*|TRADE.*\" [$__range]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Trade Execution Events",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "title": "Pipeline Stage Distribution & Ingestion Activity",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "stacking": { "group": "A", "mode": "normal" }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 14, "x": 0, "y": 6 },
+      "id": 5,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki" },
+          "editorMode": "code",
+          "expr": "sum by (stage) (count_over_time({service_name=\"cryptopulse-backend\"} | json | stage != \"\" [$__interval]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Events by Pipeline Stage (Stage 1 to 9)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 6 },
+      "id": 6,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "values": ["value", "percent"] },
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": ["sum"],
+          "fields": "",
+          "values": false
+        },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki" },
+          "editorMode": "code",
+          "expr": "sum by (journey) (count_over_time({service_name=\"cryptopulse-backend\"} | json | journey != \"\" [$__range]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Events by Telemetry Journey",
+      "type": "piechart"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 102,
+      "title": "Android Stage 9 Client Telemetry",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "loki" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+      "id": 7,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki" },
+          "editorMode": "code",
+          "expr": "{service_name=\"cryptopulse-backend\"} | json | stage = 9 or component = \"AndroidStage9Observer\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Android Stage 9 Events Stream",
+      "type": "logs"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 103,
+      "title": "Trade Execution & Order Telemetry",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "loki" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "id": 8,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki" },
+          "editorMode": "code",
+          "expr": "{service_name=\"cryptopulse-backend\"} | json | stage = 7 or event_type =~ \"(?i)ORDER.*|TRADE.*\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Stage 7 Trade Execution Log Stream",
+      "type": "logs"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "id": 104,
+      "title": "Error Logs & Failure Investigations",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "loki" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 33 },
+      "id": 9,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki" },
+          "editorMode": "code",
+          "expr": "{service_name=\"cryptopulse-backend\"} | json | (detected_level =~ \"(?i)error|critical\" or status = \"FAIL\" or severity =~ \"(?i)error|critical\")",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Errors, Exceptions & Safety Gate Rejections",
+      "type": "logs"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["cryptopulse", "monitoring", "loki", "otlp", "android"],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "value": "$__all"
+        },
+        "datasource": { "type": "loki" },
+        "definition": "label_values({service_name=\"cryptopulse-backend\"}, deployment_environment)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Environment",
+        "multi": false,
+        "name": "environment",
+        "options": [],
+        "query": {
+          "label": "deployment_environment",
+          "refId": "LokiVariableQueryEditor-VariableQuery",
+          "stream": "{service_name=\"cryptopulse-backend\"}",
+          "type": 1
+        },
+        "refresh": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m"]
+  },
+  "timezone": "browser",
+  "title": "CryptoPulse Telemetry & Observability Overview",
+  "uid": "cryptopulse-telemetry-overview",
+  "version": 1
+}
