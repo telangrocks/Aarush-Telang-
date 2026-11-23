@@ -6,6 +6,7 @@ import com.cryptopulse.app.core.network.NetworkResult
 import com.cryptopulse.app.data.api.dto.fcm.request.FcmRegisterRequestDto
 import com.cryptopulse.app.data.api.dto.fcm.response.FcmRegisterResponseDto
 import com.cryptopulse.app.data.datasource.remote.fcm.FcmRemoteDataSource
+import com.google.gson.Gson
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -168,5 +169,29 @@ class FcmRepositoryImplTest {
         // Repeat token_v2 should be deduplicated
         repository.registerToken("token_v2")
         assertEquals(listOf("token_v1", "token_v2"), registeredTokens)
+    }
+
+    // --- Consolidated from FcmRegisterRequestDtoTest ---
+
+    @Test
+    fun `FcmRegisterRequestDto serializes exactly to fcmToken field matching backend contract`() {
+        val gson = Gson()
+        val testToken = "sample_firebase_token_abc123"
+        val dto = FcmRegisterRequestDto(fcmToken = testToken)
+
+        val json = gson.toJson(dto)
+
+        // Assert JSON has "fcmToken": "sample_firebase_token_abc123"
+        assertTrue("JSON must contain fcmToken key", json.contains("\"fcmToken\":\"$testToken\""))
+        assertEquals("{\"fcmToken\":\"$testToken\"}", json)
+    }
+
+    @Test
+    fun `FcmRegisterRequestDto deserializes correctly from backend format`() {
+        val gson = Gson()
+        val json = "{\"fcmToken\":\"sample_token_xyz789\"}"
+        val dto = gson.fromJson(json, FcmRegisterRequestDto::class.java)
+
+        assertEquals("sample_token_xyz789", dto.fcmToken)
     }
 }

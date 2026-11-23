@@ -1,16 +1,35 @@
 package com.cryptopulse.app.ui.strategies
 
 import com.cryptopulse.app.core.network.NetworkResult
+import com.cryptopulse.app.core.error.NetworkError
+import com.cryptopulse.app.data.api.ApiConstants
+import com.cryptopulse.app.data.api.TradingBotService
+import com.cryptopulse.app.data.datasource.remote.bot.BotRemoteDataSource
 import com.cryptopulse.app.domain.models.*
 import com.cryptopulse.app.domain.repository.BotRepository
 import com.cryptopulse.app.domain.repository.TradeSessionRepository
 import com.cryptopulse.app.domain.repository.TechnicalAnalysisRepository
 import com.cryptopulse.app.domain.repository.StrategyRepository
+import com.cryptopulse.app.domain.models.ExecutionUiState
+import com.cryptopulse.app.ui.auth.ExchangeViewModel
+import com.cryptopulse.app.ui.auth.FakeContextMinimal
+import com.cryptopulse.app.ui.auth.FakeExchangeRepository
+import com.cryptopulse.app.ui.auth.FakeMarketRepositoryMinimal
+import com.cryptopulse.app.ui.auth.FakeTechnicalAnalysisRepositoryMinimal
+import com.cryptopulse.app.ui.auth.FakeTrackingBotRepository
+import com.cryptopulse.app.ui.auth.FakeTrackingTradeAlertManager
+import com.cryptopulse.app.ui.auth.FakeFcmRepositoryMinimal
+import com.cryptopulse.app.ui.auth.FakeTokenManagerMinimal
+import com.cryptopulse.app.ui.auth.FakeExchangeConnectionManagerMinimal
+import com.cryptopulse.app.ui.auth.FakeTradeSessionRepositoryMinimal
+import com.cryptopulse.app.ui.screens.resolveStrategyScoreCardStatusText
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Before
@@ -109,6 +128,88 @@ class TechnicalAnalysisViewModelTest {
             override fun clearCache() {}
         }
     }
+
+    // ========================================================================
+    // Consolidated Helper: RecordingBotRepository for Activation Tests
+    // ========================================================================
+    private class ActivationRecordingBotRepository : BotRepository {
+        var activateCallCount = 0
+        var lastActivatedSymbol: String? = null
+        var lastActivatedStrategy: String? = null
+        var lastActivatedConfig: TradeSetupConfig? = null
+        var activateResultProvider: suspend () -> NetworkResult<Unit> = { NetworkResult.Success(Unit) }
+
+        var deactivateCallCount = 0
+        var deactivateResultProvider: suspend () -> NetworkResult<Unit> = { NetworkResult.Success(Unit) }
+
+        private val _analysisState = MutableStateFlow<AnalysisSnapshot?>(null)
+        override val analysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+        override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = _analysisState.asStateFlow()
+        override val committedStrategyId: StateFlow<String?> = MutableStateFlow(null).asStateFlow()
+        override val isBotActive: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()
+
+        private val _isConnected = MutableStateFlow(true)
+        override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+        var lastActivatedSymbols: List<String>? = null
+
+        override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+            activateCallCount++
+            lastActivatedSymbols = symbols
+            lastActivatedSymbol = symbols.firstOrNull()
+            lastActivatedStrategy = strategy
+            lastActivatedConfig = config
+            return activateResultProvider()
+        }
+
+        override suspend fun executeTrade(request: com.cryptopulse.app.data.api.dto.bot.request.ExecuteTradeRequestDto): NetworkResult<TradeExecutionResult> =
+            NetworkResult.Error(NetworkError.Unknown(Exception("Not implemented")))
+
+        override suspend fun deactivateBot(): NetworkResult<Unit> {
+            deactivateCallCount++
+            return deactivateResultProvider()
+        }
+
+        override suspend fun getStatus(): NetworkResult<BotStatus> =
+            NetworkResult.Success(BotStatus(state = BotState.ANALYSING, isActive = true, coinId = "BTCUSDT", strategy = "ScalperV2"))
+        override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> =
+            NetworkResult.Error(NetworkError.Unknown(Exception("Not implemented")))
+        override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> =
+            NetworkResult.Error(NetworkError.Unknown(Exception("Not implemented")))
+        override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long) =
+            kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+        override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+        override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+        override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
+        override fun updateConnectionState(connected: Boolean) {}
+        override fun startObserving() {}
+        override fun stopObserving() {}
+    }
+
+    private fun createActivationViewModel(
+        sessionRepository: TradeSessionRepository = createMockSessionRepository("ScalperV2"),
+        botRepository: BotRepository = ActivationRecordingBotRepository(),
+        technicalAnalysisRepository: TechnicalAnalysisRepository = createMockTechnicalAnalysisRepository(),
+        strategyRepository: StrategyRepository = createMockStrategyRepository()
+    ): TechnicalAnalysisViewModel {
+        return TechnicalAnalysisViewModel(
+            sessionRepository = sessionRepository,
+            botRepository = botRepository,
+            technicalAnalysisRepository = technicalAnalysisRepository,
+            strategyRepository = strategyRepository,
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+    }
+
+    private fun isUseThisStrategyButtonEnabled(isActivating: Boolean): Boolean = !isActivating
+    private fun isDeactivateBotButtonEnabled(isActivating: Boolean, isLoading: Boolean): Boolean = !isActivating && !isLoading
+    private fun isActivationErrorBannerVisible(activationError: String?): Boolean = !activationError.isNullOrBlank()
+
+    private fun calculateClampedProgress(score: Int): Float = (score / 100f).coerceIn(0f, 1f)
+    private fun generateIndicatorKey(index: Int, indicator: IndicatorSummary): String = "${indicator.name}_$index"
+    private fun generateCheckpointKey(index: Int, checkpoint: ConditionSummary): String = "${checkpoint.id.ifBlank { checkpoint.name }}_$index"
 
     @Suppress("UNCHECKED_CAST")
     private fun <T> uninitialized(): T = null as T
@@ -882,7 +983,8 @@ class TechnicalAnalysisViewModelTest {
 
         // User previews Scalper V2 while bot is active on VWAP
         viewModel.selectStrategyForViewing("ScalperV2", "BTCUSDT")
-        testDispatcher.scheduler.advanceUntilIdle()
+        testDispatcher.scheduler.advanceTimeBy(100L)
+        testDispatcher.scheduler.runCurrent()
         assertEquals(1, previewCallCount)
 
         viewModel.onScreenStarted("BTCUSDT")
@@ -906,6 +1008,7 @@ class TechnicalAnalysisViewModelTest {
         assertEquals(0, activateBotCallCount)
 
         viewModel.onScreenStopped()
+        testDispatcher.scheduler.runCurrent()
     }
 
     @Test
@@ -1524,6 +1627,641 @@ class TechnicalAnalysisViewModelTest {
         assertEquals("Must pass all candidate symbols without fallback", candidatesList, dispatchedSymbols)
         assertEquals(6, dispatchedSymbols?.size)
         assertNull(viewModel.activationError.value)
+    }
+
+    // ========================================================================
+    // CONSOLIDATED FROM TechnicalAnalysisSafetyTest (13 Tests)
+    // ========================================================================
+
+    @Test
+    fun `clamped progress should safely constrain negative scores to 0`() {
+        val progress = calculateClampedProgress(-25)
+        assertEquals(0f, progress, 0.0001f)
+    }
+
+    @Test
+    fun `clamped progress should produce exact 0 for zero score`() {
+        val progress = calculateClampedProgress(0)
+        assertEquals(0f, progress, 0.0001f)
+    }
+
+    @Test
+    fun `clamped progress should produce exact fractional value for normal score`() {
+        val progress = calculateClampedProgress(75)
+        assertEquals(0.75f, progress, 0.0001f)
+    }
+
+    @Test
+    fun `clamped progress should produce exact 1 for 100 score`() {
+        val progress = calculateClampedProgress(100)
+        assertEquals(1.0f, progress, 0.0001f)
+    }
+
+    @Test
+    fun `clamped progress should safely constrain overflow scores to 1`() {
+        val progress = calculateClampedProgress(125)
+        assertEquals(1.0f, progress, 0.0001f)
+    }
+
+    @Test
+    fun `duplicate indicator names should produce guaranteed unique composite keys`() {
+        val indicators = listOf(
+            IndicatorSummary(name = "RSI", value = "65.0", signal = "BULLISH"),
+            IndicatorSummary(name = "RSI", value = "70.0", signal = "BULLISH"),
+            IndicatorSummary(name = "RSI", value = "55.0", signal = "NEUTRAL")
+        )
+
+        val keys = indicators.mapIndexed { index, indicator -> generateIndicatorKey(index, indicator) }
+
+        assertEquals(3, keys.toSet().size)
+        assertEquals("RSI_0", keys[0])
+        assertEquals("RSI_1", keys[1])
+        assertEquals("RSI_2", keys[2])
+    }
+
+    @Test
+    fun `blank indicator names should produce guaranteed unique composite keys`() {
+        val indicators = listOf(
+            IndicatorSummary(name = "", value = "10.0", signal = "NEUTRAL"),
+            IndicatorSummary(name = "", value = "20.0", signal = "NEUTRAL")
+        )
+
+        val keys = indicators.mapIndexed { index, indicator -> generateIndicatorKey(index, indicator) }
+
+        assertEquals(2, keys.toSet().size)
+        assertEquals("_0", keys[0])
+        assertEquals("_1", keys[1])
+    }
+
+    @Test
+    fun `duplicate checkpoint IDs should produce guaranteed unique composite keys`() {
+        val checkpoints = listOf(
+            ConditionSummary(id = "trend", name = "Trend 15m", currentValue = "OK", targetValue = "OK", status = "PASSED"),
+            ConditionSummary(id = "trend", name = "Trend 1h", currentValue = "OK", targetValue = "OK", status = "PASSED")
+        )
+
+        val keys = checkpoints.mapIndexed { index, checkpoint -> generateCheckpointKey(index, checkpoint) }
+
+        assertEquals(2, keys.toSet().size)
+        assertEquals("trend_0", keys[0])
+        assertEquals("trend_1", keys[1])
+    }
+
+    @Test
+    fun `blank checkpoint IDs with duplicate names should produce guaranteed unique composite keys`() {
+        val checkpoints = listOf(
+            ConditionSummary(id = "", name = "EMA Confirmation", currentValue = "PASS", targetValue = "PASS", status = "PASSED"),
+            ConditionSummary(id = "", name = "EMA Confirmation", currentValue = "PASS", targetValue = "PASS", status = "PASSED")
+        )
+
+        val keys = checkpoints.mapIndexed { index, checkpoint -> generateCheckpointKey(index, checkpoint) }
+
+        assertEquals(2, keys.toSet().size)
+        assertEquals("EMA Confirmation_0", keys[0])
+        assertEquals("EMA Confirmation_1", keys[1])
+    }
+
+    @Test
+    fun `BUDGET_INSUFFICIENT_AT_CURRENT_PRICE displays exact trade skipped message`() {
+        val message = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "BLOCKED_BY_EXISTING_GATE",
+            suppressionReason = "BUDGET_INSUFFICIENT_AT_CURRENT_PRICE",
+            signalType = "BUY"
+        )
+        assertEquals("TRADE SKIPPED: Budget insufficient at current market price.", message)
+    }
+
+    @Test
+    fun `INSUFFICIENT_BUDGET and BELOW_MIN_NOTIONAL also display exact trade skipped message`() {
+        val msg1 = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "BLOCKED_BY_EXISTING_GATE",
+            suppressionReason = "INSUFFICIENT_BUDGET",
+            signalType = "BUY"
+        )
+        assertEquals("TRADE SKIPPED: Budget insufficient at current market price.", msg1)
+
+        val msg2 = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "BLOCKED_BY_EXISTING_GATE",
+            suppressionReason = "BELOW_MIN_NOTIONAL",
+            signalType = "SELL"
+        )
+        assertEquals("TRADE SKIPPED: Budget insufficient at current market price.", msg2)
+    }
+
+    @Test
+    fun `TICKER_UNAVAILABLE is kept distinct and does not falsely claim insufficient budget`() {
+        val message = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "BLOCKED_BY_EXISTING_GATE",
+            suppressionReason = "TICKER_UNAVAILABLE",
+            signalType = "BUY"
+        )
+        assertEquals("ENTRY QUALIFICATION: BLOCKED (TICKER_UNAVAILABLE)", message)
+        assertNotEquals("TRADE SKIPPED: Budget insufficient at current market price.", message)
+    }
+
+    @Test
+    fun `qualified strategies display qualification status with signal type`() {
+        val msgBuy = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "TRADE_QUALIFIED",
+            suppressionReason = null,
+            signalType = "BUY"
+        )
+        assertEquals("ENTRY QUALIFICATION: QUALIFIED (BUY)", msgBuy)
+
+        val msgSell = resolveStrategyScoreCardStatusText(
+            qualificationStatus = "TRADE_ALERT_CREATED",
+            suppressionReason = null,
+            signalType = "SELL"
+        )
+        assertEquals("ENTRY QUALIFICATION: QUALIFIED (SELL)", msgSell)
+    }
+
+    // ========================================================================
+    // CONSOLIDATED FROM TechnicalAnalysisActivationFixTest (9 Tests)
+    // ========================================================================
+
+    @Test
+    fun `ActivationFix Test A - USE THIS STRATEGY is enabled and dispatches 1 activation request while preview is loading`() = runTest {
+        val botRepo = ActivationRecordingBotRepository()
+        val sessionRepo = createMockSessionRepository("Breakout")
+        val viewModel = createActivationViewModel(
+            sessionRepository = sessionRepo,
+            botRepository = botRepo
+        )
+
+        val isActivating = viewModel.isActivating.value
+        val isEnabledDuringPreviewLoading = isUseThisStrategyButtonEnabled(isActivating = isActivating)
+        assertTrue(
+            "USE THIS STRATEGY button MUST be enabled while preview is loading (isLoadingPreview == true)",
+            isEnabledDuringPreviewLoading
+        )
+
+        var successCallbackFired = false
+        val baseConfig = TradeSetupConfig(
+            strategyId = "Breakout",
+            symbol = "BTCUSDT",
+            entryPrice = 50000.0,
+            parameters = mapOf("breakoutPeriod" to "20")
+        )
+
+        viewModel.activateBot(
+            symbol = "BTCUSDT",
+            strategy = "Breakout",
+            config = baseConfig,
+            onSuccess = { successCallbackFired = true }
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("Must dispatch exactly 1 activation request to repository", 1, botRepo.activateCallCount)
+        assertEquals("BTCUSDT", botRepo.lastActivatedSymbol)
+        assertEquals("Breakout", botRepo.lastActivatedStrategy)
+        assertEquals("Breakout", botRepo.lastActivatedConfig?.strategyId)
+        assertTrue("onSuccess callback must have been executed", successCallbackFired)
+        assertFalse("isActivating must reset to false after completion", viewModel.isActivating.value)
+    }
+
+    @Test
+    fun `ActivationFix Test B - Activation failure preserves unadulterated error string and makes banner visible`() = runTest {
+        val rawErrorMessage = "Bybit API key has expired: signature verification failed (code: 10002)"
+        val botRepo = ActivationRecordingBotRepository().apply {
+            activateResultProvider = {
+                NetworkResult.Error(
+                    NetworkError.HttpError(
+                        code = 401,
+                        message = rawErrorMessage,
+                        errorCode = "INVALID_API_KEY"
+                    )
+                )
+            }
+        }
+        val viewModel = createActivationViewModel(
+            botRepository = botRepo
+        )
+
+        var successFired = false
+        viewModel.activateBot(
+            symbol = "ETHUSDT",
+            strategy = "Momentum",
+            config = null,
+            onSuccess = { successFired = true }
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse("onSuccess must NOT fire on failure", successFired)
+        assertFalse("isActivating must be false after failure", viewModel.isActivating.value)
+
+        val collectedError = viewModel.activationError.value
+        assertNotNull("activationError must NOT be null", collectedError)
+        assertEquals(
+            "activationError must contain the exact unadulterated error string from BotRepository",
+            rawErrorMessage,
+            collectedError
+        )
+
+        assertTrue(
+            "Activation error banner must be visible in UI when error is present",
+            isActivationErrorBannerVisible(collectedError)
+        )
+    }
+
+    @Test
+    fun `ActivationFix Test C - Dismissing error clears activationError and hides banner in UI`() = runTest {
+        val botRepo = ActivationRecordingBotRepository().apply {
+            activateResultProvider = {
+                NetworkResult.Error(NetworkError.HttpError(500, "Server Internal Error", "SERVER_ERROR"))
+            }
+        }
+        val viewModel = createActivationViewModel(
+            botRepository = botRepo
+        )
+
+        viewModel.activateBot("BTCUSDT", "ScalperV2", null) {}
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertNotNull(viewModel.activationError.value)
+        assertTrue(isActivationErrorBannerVisible(viewModel.activationError.value))
+
+        viewModel.clearActivationError()
+
+        assertNull("activationError must be null after dismissal", viewModel.activationError.value)
+        assertFalse(
+            "Activation error banner must be hidden when activationError is null",
+            isActivationErrorBannerVisible(viewModel.activationError.value)
+        )
+    }
+
+    @Test
+    fun `ActivationFix Test D - Retrying activation automatically clears prior error before new request completes`() = runTest {
+        val deferredResponse = CompletableDeferred<NetworkResult<Unit>>()
+        val botRepo = ActivationRecordingBotRepository().apply {
+            activateResultProvider = {
+                NetworkResult.Error(NetworkError.HttpError(400, "Initial Failure", "ERROR"))
+            }
+        }
+        val viewModel = createActivationViewModel(
+            botRepository = botRepo
+        )
+
+        viewModel.activateBot("BTCUSDT", "ScalperV2", null) {}
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals("Initial Failure", viewModel.activationError.value)
+
+        botRepo.activateResultProvider = { deferredResponse.await() }
+
+        viewModel.activateBot("BTCUSDT", "ScalperV2", null) {}
+
+        assertNull("Prior activationError must be automatically cleared on retry invocation", viewModel.activationError.value)
+        assertTrue("isActivating must be true during retry in-flight", viewModel.isActivating.value)
+
+        deferredResponse.complete(NetworkResult.Success(Unit))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse(viewModel.isActivating.value)
+        assertNull("activationError remains null after successful retry", viewModel.activationError.value)
+    }
+
+    @Test
+    fun `ActivationFix Test E - Rapid duplicate taps do not send duplicate activation requests`() = runTest {
+        val deferredResponse = CompletableDeferred<NetworkResult<Unit>>()
+        val botRepo = ActivationRecordingBotRepository().apply {
+            activateResultProvider = { deferredResponse.await() }
+        }
+        val viewModel = createActivationViewModel(
+            botRepository = botRepo
+        )
+
+        viewModel.activateBot("BTCUSDT", "ScalperV2", null) {}
+        assertTrue("isActivating must be true while request is in-flight", viewModel.isActivating.value)
+        testDispatcher.scheduler.runCurrent()
+        assertEquals("First tap dispatched exactly 1 request", 1, botRepo.activateCallCount)
+
+        assertFalse(
+            "USE THIS STRATEGY button is disabled while isActivating is true",
+            isUseThisStrategyButtonEnabled(isActivating = viewModel.isActivating.value)
+        )
+
+        viewModel.activateBot("BTCUSDT", "ScalperV2", null) {}
+        testDispatcher.scheduler.runCurrent()
+
+        assertEquals(
+            "Duplicate activation call must be ignored while previous is in-flight",
+            1,
+            botRepo.activateCallCount
+        )
+
+        deferredResponse.complete(NetworkResult.Success(Unit))
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertFalse(viewModel.isActivating.value)
+    }
+
+    @Test
+    fun `ActivationFix Test F - DEACTIVATE BOT button enabled behavior is completely unchanged`() {
+        assertTrue(
+            "DEACTIVATE BOT must be enabled when neither activating nor loading",
+            isDeactivateBotButtonEnabled(isActivating = false, isLoading = false)
+        )
+        assertFalse(
+            "DEACTIVATE BOT must remain DISABLED when isLoading is true",
+            isDeactivateBotButtonEnabled(isActivating = false, isLoading = true)
+        )
+        assertFalse(
+            "DEACTIVATE BOT must be DISABLED when isActivating is true",
+            isDeactivateBotButtonEnabled(isActivating = true, isLoading = false)
+        )
+        assertFalse(
+            "DEACTIVATE BOT must be DISABLED when both isActivating and isLoading are true",
+            isDeactivateBotButtonEnabled(isActivating = true, isLoading = true)
+        )
+    }
+
+    @Test
+    fun `ActivationFix Test G - activateBot preserves complete candidate list through to repository without collapse`() {
+        val recordingRepo = ActivationRecordingBotRepository()
+        val mockSession = createMockSessionRepository("ScalperV2")
+        val viewModel = createActivationViewModel(botRepository = recordingRepo, sessionRepository = mockSession)
+
+        val candidateList = listOf("BTCUSDT", "ETHUSDT", "SOLUSDT")
+        var onSuccessCalled = false
+
+        viewModel.activateBot(symbols = candidateList, strategy = "ScalperV2", config = null) {
+            onSuccessCalled = true
+        }
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue("onSuccess must be called", onSuccessCalled)
+        assertEquals("Repository must receive exactly ONE activateBot call", 1, recordingRepo.activateCallCount)
+        assertEquals("Repository must receive ALL candidate symbols", candidateList, recordingRepo.lastActivatedSymbols)
+        assertEquals("Primary symbol must be the first candidate", "BTCUSDT", recordingRepo.lastActivatedSymbol)
+        assertEquals("Strategy must be ScalperV2", "ScalperV2", recordingRepo.lastActivatedStrategy)
+    }
+
+    @Test
+    fun `ActivationFix Test H - activateBot with empty list does NOT call repository and sets activationError`() {
+        val recordingRepo = ActivationRecordingBotRepository()
+        val mockSession = createMockSessionRepository("ScalperV2")
+        val viewModel = createActivationViewModel(botRepository = recordingRepo, sessionRepository = mockSession)
+
+        var onSuccessCalled = false
+        viewModel.activateBot(symbols = emptyList(), strategy = "ScalperV2", config = null) {
+            onSuccessCalled = true
+        }
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse("onSuccess must NOT be called for empty candidate list", onSuccessCalled)
+        assertEquals("Repository must NOT receive any activateBot call", 0, recordingRepo.activateCallCount)
+        assertNotNull("activationError must be set", viewModel.activationError.value)
+        assertEquals("Cannot activate bot: no eligible candidates available.", viewModel.activationError.value)
+    }
+
+    @Test
+    fun `ActivationFix Test I - single symbol activateBot delegates to multi-symbol and preserves single symbol list`() {
+        val recordingRepo = ActivationRecordingBotRepository()
+        val mockSession = createMockSessionRepository("ScalperV2")
+        val viewModel = createActivationViewModel(botRepository = recordingRepo, sessionRepository = mockSession)
+
+        var onSuccessCalled = false
+        viewModel.activateBot(symbol = "XRPUSDT", strategy = "Momentum", config = null) {
+            onSuccessCalled = true
+        }
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue("onSuccess must be called", onSuccessCalled)
+        assertEquals("Repository must receive exactly ONE activateBot call", 1, recordingRepo.activateCallCount)
+        assertEquals("Repository must receive single-element list", listOf("XRPUSDT"), recordingRepo.lastActivatedSymbols)
+        assertEquals("Primary symbol must be XRPUSDT", "XRPUSDT", recordingRepo.lastActivatedSymbol)
+        assertEquals("Strategy must be Momentum", "Momentum", recordingRepo.lastActivatedStrategy)
+    }
+
+    // ========================================================================
+    // CONSOLIDATED FROM Stage2_6_ManualTradeRemovalSafetyTest (8 Tests)
+    // ========================================================================
+
+    @Test
+    fun `ManualTradeRemoval 01 - TechnicalAnalysisViewModel does not expose triggerTradeAlert`() {
+        val methodNames = TechnicalAnalysisViewModel::class.java.methods.map { it.name }
+        assertFalse(
+            "TechnicalAnalysisViewModel must NOT declare or inherit triggerTradeAlert",
+            methodNames.contains("triggerTradeAlert")
+        )
+    }
+
+    @Test
+    fun `ManualTradeRemoval 02 - BotRepository interface does not declare triggerAlert or executeMockTrade`() {
+        val methodNames = BotRepository::class.java.methods.map { it.name }
+        assertFalse(
+            "BotRepository must NOT declare triggerAlert",
+            methodNames.contains("triggerAlert")
+        )
+        assertFalse(
+            "BotRepository must NOT declare executeMockTrade",
+            methodNames.contains("executeMockTrade")
+        )
+    }
+
+    @Test
+    fun `ManualTradeRemoval 03 - BotRemoteDataSource interface does not declare triggerAlert or executeMockTrade`() {
+        val methodNames = BotRemoteDataSource::class.java.methods.map { it.name }
+        assertFalse(
+            "BotRemoteDataSource must NOT declare triggerAlert",
+            methodNames.contains("triggerAlert")
+        )
+        assertFalse(
+            "BotRemoteDataSource must NOT declare executeMockTrade",
+            methodNames.contains("executeMockTrade")
+        )
+    }
+
+    @Test
+    fun `ManualTradeRemoval 04 - TradingBotService does not declare triggerAlert or executeMockTrade`() {
+        val methodNames = TradingBotService::class.java.methods.map { it.name }
+        assertFalse(
+            "TradingBotService must NOT declare triggerAlert",
+            methodNames.contains("triggerAlert")
+        )
+        assertFalse(
+            "TradingBotService must NOT declare executeMockTrade",
+            methodNames.contains("executeMockTrade")
+        )
+    }
+
+    @Test
+    fun `ManualTradeRemoval 05 - ApiConstants does not declare BOT_TRIGGER_ALERT or BOT_MOCK_TRADE`() {
+        val fieldNames = ApiConstants::class.java.declaredFields.map { it.name }
+        assertFalse(
+            "ApiConstants must NOT declare BOT_TRIGGER_ALERT",
+            fieldNames.contains("BOT_TRIGGER_ALERT")
+        )
+        assertFalse(
+            "ApiConstants must NOT declare BOT_MOCK_TRADE",
+            fieldNames.contains("BOT_MOCK_TRADE")
+        )
+    }
+
+    @Test
+    fun `ManualTradeRemoval 06 - TechnicalAnalysisViewModel preserves autonomous bot activation`() = runTest {
+        var activatedSymbols: List<String>? = null
+        var activatedStrategy: String? = null
+
+        val fakeBotRepo = object : BotRepository {
+            override val analysisState: StateFlow<AnalysisSnapshot?> = MutableStateFlow(null).asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = MutableStateFlow(null).asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = MutableStateFlow("ScalperV2").asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> {
+                activatedSymbols = symbols
+                activatedStrategy = strategy
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun deactivateBot(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(BotState.ANALYSING, true, "BTCUSDT", "ScalperV2"))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long) = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        val sessionRepo = object : TradeSessionRepository {
+            private val _id = MutableStateFlow<String?>("ScalperV2")
+            override val selectedStrategyId: StateFlow<String?> = _id.asStateFlow()
+            override val tradeSetupConfig: StateFlow<TradeSetupConfig?> = MutableStateFlow<TradeSetupConfig?>(null).asStateFlow()
+            override fun setStrategyId(id: String) { _id.value = id }
+            override fun setTradeSetupConfig(config: TradeSetupConfig) {}
+            override fun clearSession() {}
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = sessionRepo,
+            botRepository = fakeBotRepo,
+            technicalAnalysisRepository = FakeTechnicalAnalysisRepositoryMinimal(),
+            strategyRepository = object : StrategyRepository {
+                override suspend fun getStrategies(): NetworkResult<List<Strategy>> = NetworkResult.Success(emptyList())
+                override suspend fun getStrategyById(id: String): NetworkResult<Strategy?> = NetworkResult.Success(null)
+                override fun clearCache() {}
+            },
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        var successCalled = false
+        val candidateSymbols = listOf("BTCUSDT", "ETHUSDT", "SOLUSDT")
+        viewModel.activateAutonomousBot(candidateSymbols, null) {
+            successCalled = true
+        }
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue("Autonomous activation must succeed", successCalled)
+        assertEquals("ScalperV2", activatedStrategy)
+        assertEquals(candidateSymbols, activatedSymbols)
+    }
+
+    @Test
+    fun `ManualTradeRemoval 07 - TechnicalAnalysisViewModel preserves autonomous bot deactivation`() = runTest {
+        var deactivateCalled = false
+
+        val fakeBotRepo = object : BotRepository {
+            override val analysisState: StateFlow<AnalysisSnapshot?> = MutableStateFlow(null).asStateFlow()
+            override val activeBotAnalysisState: StateFlow<AnalysisSnapshot?> = MutableStateFlow(null).asStateFlow()
+            override val committedStrategyId: StateFlow<String?> = MutableStateFlow("ScalperV2").asStateFlow()
+            override val isBotActive: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+            override val isConnected: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+
+            override suspend fun activateBot(symbols: List<String>, strategy: String, config: TradeSetupConfig?): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun deactivateBot(): NetworkResult<Unit> {
+                deactivateCalled = true
+                return NetworkResult.Success(Unit)
+            }
+            override suspend fun getStatus(): NetworkResult<BotStatus> = NetworkResult.Success(BotStatus(BotState.STOPPED, false, null, null))
+            override suspend fun executeTrade(alertId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(alertId))
+            override suspend fun getExecutionStatus(positionId: String): NetworkResult<TradeExecutionResult> = NetworkResult.Success(createDummyExecResult(positionId))
+            override fun pollExecutionStatus(positionId: String, timeoutMs: Long, pollIntervalMs: Long) = kotlinx.coroutines.flow.flowOf(createDummyExecResult(positionId))
+            override suspend fun stopTrade(): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun getAlerts(): NetworkResult<List<BotAlert>> = NetworkResult.Success(emptyList())
+            override suspend fun acknowledgeAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override suspend fun dismissAlert(alertId: String): NetworkResult<Unit> = NetworkResult.Success(Unit)
+            override fun updateAnalysisState(snapshot: AnalysisSnapshot?) {}
+            override fun updateConnectionState(connected: Boolean) {}
+            override fun startObserving() {}
+            override fun stopObserving() {}
+        }
+
+        val sessionRepo = object : TradeSessionRepository {
+            override val selectedStrategyId: StateFlow<String?> = MutableStateFlow<String?>("ScalperV2").asStateFlow()
+            override val tradeSetupConfig: StateFlow<TradeSetupConfig?> = MutableStateFlow<TradeSetupConfig?>(null).asStateFlow()
+            override fun setStrategyId(id: String) {}
+            override fun setTradeSetupConfig(config: TradeSetupConfig) {}
+            override fun clearSession() {}
+        }
+
+        val viewModel = TechnicalAnalysisViewModel(
+            sessionRepository = sessionRepo,
+            botRepository = fakeBotRepo,
+            technicalAnalysisRepository = FakeTechnicalAnalysisRepositoryMinimal(),
+            strategyRepository = object : StrategyRepository {
+                override suspend fun getStrategies(): NetworkResult<List<Strategy>> = NetworkResult.Success(emptyList())
+                override suspend fun getStrategyById(id: String): NetworkResult<Strategy?> = NetworkResult.Success(null)
+                override fun clearCache() {}
+            },
+            tradeAlertManager = com.cryptopulse.app.service.TradeAlertManager()
+        )
+
+        var stoppedCalled = false
+        viewModel.stopBot {
+            stoppedCalled = true
+        }
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue("stopBot callback must be invoked", stoppedCalled)
+        assertTrue("Repository deactivateBot must be called", deactivateCalled)
+    }
+
+    @Test
+    fun `ManualTradeRemoval 08 - TradeAlertScreen autonomous trade execution remains fully intact`() = runTest {
+        val fakeBotRepo = FakeTrackingBotRepository()
+        val fakeAlertManager = FakeTrackingTradeAlertManager()
+
+        val exchangeVm = ExchangeViewModel(
+            appContext = FakeContextMinimal(),
+            exchangeRepository = FakeExchangeRepository(),
+            marketRepository = FakeMarketRepositoryMinimal(),
+            technicalAnalysisRepository = FakeTechnicalAnalysisRepositoryMinimal(),
+            botRepository = fakeBotRepo,
+            fcmRepository = FakeFcmRepositoryMinimal(),
+            tokenManager = FakeTokenManagerMinimal(),
+            exchangeConnectionManager = FakeExchangeConnectionManagerMinimal(),
+            sessionRepository = FakeTradeSessionRepositoryMinimal(),
+            tradeAlertManager = fakeAlertManager
+        )
+
+        val approvedAutonomousAlert = mapOf<String, Any>(
+            "id" to "autonomous_alert_777",
+            "symbol" to "BTC/USDT",
+            "entryPrice" to 95000.0,
+            "stopLoss" to 93500.0,
+            "takeProfit" to 98000.0,
+            "positionSize" to 500.0,
+            "strategy" to "ScalperV2",
+            "side" to "BUY",
+            "quantity" to 0.005,
+            "isExecutable" to true
+        )
+        exchangeVm.setPendingAlert(approvedAutonomousAlert)
+
+        exchangeVm.executeCurrentTrade()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("Autonomous alert execution MUST trigger executeTrade API", 1, fakeBotRepo.executeTradeCallCount)
+        assertEquals("autonomous_alert_777", fakeBotRepo.lastExecutedAlertId)
+        assertTrue("Execution state must transition to Filled", exchangeVm.executionState.value is ExecutionUiState.Filled)
+        assertEquals("Alarm cutoff must be triggered", 1, fakeAlertManager.dismissOrExecuteCallCount)
+
+        exchangeVm.stopLiveTicker()
     }
 }
 
