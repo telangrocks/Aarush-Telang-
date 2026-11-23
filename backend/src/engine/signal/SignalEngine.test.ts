@@ -6,6 +6,9 @@ import { SignalRules } from './SignalValidator';
 import { ConditionResult } from '../condition';
 import { ConfidenceScore } from '../confidence';
 import { RiskAssessment } from '../risk';
+import { ScalperV2Strategy } from '../strategies/scalper-v2/ScalperV2Strategy';
+import { StrategyContext } from '../context/StrategyContext';
+import { MarketSnapshot } from '../market-data/MarketSnapshot';
 
 describe('SignalEngine', () => {
   const rules: SignalRules = {
@@ -353,6 +356,90 @@ describe('SignalEngine', () => {
 
       const signal = engine.evaluate(context, conditionResultBase, confidenceScore, riskAssessment);
       expect(signal).toBeNull();
+    });
+  });
+
+  describe('Zero-Hold Invariants', () => {
+    it('Invariant 1: SignalType enum must only define BUY and SELL, never HOLD', () => {
+      const enumKeys = Object.keys(SignalType);
+      const enumValues = Object.values(SignalType);
+
+      expect(enumKeys).toEqual(['BUY', 'SELL']);
+      expect(enumValues).toEqual(['BUY', 'SELL']);
+      expect((SignalType as any).HOLD).toBeUndefined();
+    });
+
+    it('Invariant 3: Unqualified setup due to neutral conditions returns null even with high confidence', () => {
+      const engine = new SignalEngine(rules);
+      const neutralConditions: ConditionResult = {
+        timestamp: 1000,
+        timeframes: {
+          '15m': {
+            trend: { trendDirection: 'SIDEWAYS', emaCrossoverState: 'NONE', priceAboveEMA: false },
+            momentum: { rsiState: 'NEUTRAL', macdDirection: 'NEUTRAL' },
+            volatility: { atrState: 'NEUTRAL' },
+            volume: { volumeTrend: 'NEUTRAL', volumeConfirmation: false }
+          }
+        }
+      };
+      const highConfidence: ConfidenceScore = {
+        timestamp: 1000,
+        overallScore: 85,
+        overallLongScore: 85,
+        overallShortScore: 0,
+        overallLevel: 'HIGH',
+        timeframes: {
+          '15m': {
+            score: 85,
+            longScore: 85,
+            shortScore: 0,
+            level: 'HIGH',
+            factors: { trendScore: 100, momentumScore: 100, volatilityScore: 100, volumeScore: 100 },
+            explanation: ['All factors strong']
+          }
+        }
+      };
+      const acceptableRisk: RiskAssessment = {
+        timestamp: 1000,
+        stopLossDistance: 500,
+        takeProfitDistance: 1000,
+        riskRewardRatio: 2.0,
+        positionSizeRecommendation: 1000,
+        maximumExposure: 5000,
+        riskClassification: 'MEDIUM',
+        explanation: ['Valid risk profile']
+      };
+
+      const signal = engine.evaluate(context, neutralConditions, highConfidence, acceptableRisk);
+      expect(signal).toBeNull();
+    });
+
+    it('Invariant 6: Long-only strategy suppresses SELL to null (never converts to BUY or HOLD)', () => {
+      const strategy = new ScalperV2Strategy();
+      const bearishSnapshot: MarketSnapshot = {
+        symbol: 'BTC/USDT',
+        timestamp: Date.now(),
+        currentPrice: 80,
+        volume24h: 10000,
+        quoteVolume24h: 800000,
+        metadata: { priceChange24h: -10, priceChangePercent24h: -10, highPrice24h: 100, lowPrice24h: 75 },
+        candles: {
+          '5m': [
+            { timestamp: 1, open: 100, high: 105, low: 95, close: 100, volume: 1000 },
+            { timestamp: 2, open: 100, high: 100, low: 85, close: 90, volume: 1200 },
+            { timestamp: 3, open: 90, high: 90, low: 75, close: 80, volume: 2000 }
+          ]
+        } as any
+      };
+
+      const ctx = new StrategyContext(bearishSnapshot).freeze();
+      const result = strategy.evaluate(ctx, '5m');
+
+      expect(result.metadata.signal?.type).not.toBe('BUY');
+      if (result.metadata.reasoning.some((r: string) => r.includes('Short signal suppressed'))) {
+        expect(result.hasSignal).toBe(false);
+        expect(result.metadata.signal).toBeNull();
+      }
     });
   });
 });

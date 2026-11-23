@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ExchangeErrorClassifier } from './ExchangeErrorClassifier';
 import { ExchangeSpecificationRegistry } from './registry/ExchangeSpecificationRegistry';
+import { classifyException, classifyExchangeResponse } from './errors';
 
 describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests', () => {
   const classifier = ExchangeErrorClassifier.getInstance();
@@ -102,6 +103,35 @@ describe('ExchangeErrorClassifier & Enterprise Specification Registry Unit Tests
     expect(bybitSpec).toBeDefined();
     expect(bybitSpec?.displayName).toBe('Bybit');
     expect(bybitSpec?.defaultCapabilities.supportsFutures).toBe(true);
+  });
+
+  it('10. Should classify Bybit API key not recognized (33004) with environment toggle guidance via classifyException', () => {
+    const errorBody = JSON.stringify({
+      retCode: 33004,
+      retMsg: 'The API key is invalid',
+    });
+    const result = classifyException(new Error(errorBody), 'bybit');
+    expect(result.code).toBe('INVALID_API_KEY');
+    expect(result.hint).toContain('Environment toggle (Demo vs Real)');
+  });
+
+  it('11. Should classify Bybit errors accurately through classifyException and classifyExchangeResponse wrappers', () => {
+    expect(classifyException(new Error(JSON.stringify({ retCode: 10003, retMsg: 'invalid api_key' })), 'bybit').code).toBe('INVALID_API_KEY');
+    expect(classifyException(new Error(JSON.stringify({ retCode: 10002, retMsg: 'req timestamp exceeds recv_window' })), 'bybit').code).toBe('TIMESTAMP_OUT_OF_SYNC');
+    expect(classifyException(new Error(JSON.stringify({ retCode: 10004, retMsg: 'Error sign' })), 'bybit').code).toBe('INVALID_SIGNATURE');
+    expect(classifyException(new Error(JSON.stringify({ retCode: 10010, retMsg: 'Unmatched IP address' })), 'bybit').code).toBe('IP_NOT_WHITELISTED');
+
+    const htmlBody = '<html><head><title>403 Forbidden</title></head><body>Request blocked by Cloudflare WAF</body></html>';
+    expect(classifyExchangeResponse(403, htmlBody, 'bybit').code).toBe('WAF_BLOCKED');
+
+    const unauthorized = classifyExchangeResponse(401, '{"retCode":10003,"retMsg":"invalid api_key"}', 'bybit');
+    expect(unauthorized.code).toBe('INVALID_API_KEY');
+  });
+
+  it('12. Should map unrecognized Bybit retCode (-9999) to INVALID_REQUEST fallback via BybitErrorMapper', () => {
+    const spec = ExchangeSpecificationRegistry.getInstance().getSpecification('bybit');
+    const mapped = spec?.mapper.mapErrorPayload(400, '{"retCode":-9999,"retMsg":"something odd"}', {}, 'tech');
+    expect(mapped?.code).toBe('INVALID_REQUEST');
   });
 });
 });

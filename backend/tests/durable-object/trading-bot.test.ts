@@ -1577,5 +1577,167 @@ describe("Trading Bot Durable Object - Architecture v2.0", () => {
       mockState.storage.transaction = origTxn;
     });
   });
+
+  describe("Consolidated Crash Recovery & Global Trading Kill Switch Coverage", () => {
+    it("recovers crashed RUNNING scan on DO restart by transitioning scan:current to ABORTED (DO_RESTART_RECOVERY)", async () => {
+      const sharedStorage = new Map<string, any>();
+      sharedStorage.set("scan:activeScanId", "scan-crashed-123");
+      sharedStorage.set("scan:current", {
+        scanId: "scan-crashed-123",
+        status: "RUNNING",
+        startedAt: 1700000000000,
+        universeSize: 25,
+      });
+
+      let recoveryPromise: Promise<any> | undefined;
+      const recoveryState: any = {
+        id: { toString: () => "test-do-1" },
+        storage: {
+          get: async (k: string) => sharedStorage.get(k),
+          put: async (keyOrEntries: string | Record<string, any>, val?: any) => {
+            if (typeof keyOrEntries === "string") {
+              sharedStorage.set(keyOrEntries, val);
+            } else if (keyOrEntries && typeof keyOrEntries === "object") {
+              for (const [k, v] of Object.entries(keyOrEntries)) {
+                sharedStorage.set(k, v);
+              }
+            }
+          },
+          delete: async (k: string) => sharedStorage.delete(k),
+        },
+        blockConcurrencyWhile: (cb: any) => {
+          recoveryPromise = cb();
+          return recoveryPromise;
+        },
+      };
+      const recoveryEnv: any = {
+        DB: { prepare: () => ({ bind: () => ({ first: async () => ({ count: 0 }) }) }) },
+      };
+
+      new TradingBot(recoveryState, recoveryEnv);
+      if (recoveryPromise) {
+        await recoveryPromise;
+      }
+
+      const recoveredScan = await recoveryState.storage.get("scan:current");
+      const activeScanId = await recoveryState.storage.get("scan:activeScanId");
+
+      expect(activeScanId).toBeNull();
+      expect(recoveredScan.status).toBe("ABORTED");
+      expect(recoveredScan.abortReason).toBe("DO_RESTART_RECOVERY");
+      expect(recoveredScan.abortedAt).toBeDefined();
+    });
+
+    it("allows /execute-trade past kill switch when GLOBAL_TRADING_HALT is false", async () => {
+      const killStorage = new Map<string, any>([
+        ["isActive", true],
+        ["userId", "test-user-123"],
+      ]);
+      const killState: any = {
+        id: { toString: () => "mock-do-id" },
+        storage: {
+          get: async (key: string) => killStorage.get(key),
+          put: async (key: string, value: any) => killStorage.set(key, value),
+          setAlarm: async (_ms: number) => {},
+          list: async () => killStorage,
+        },
+        blockConcurrencyWhile: async (cb: () => Promise<any>) => await cb(),
+      };
+      const killEnv: any = {
+        DB: {
+          prepare: () => ({
+            bind: () => ({
+              first: async () => null,
+              run: async () => {},
+            }),
+          }),
+        },
+        GLOBAL_TRADING_HALT: "false",
+      };
+
+      const bot = new TradingBot(killState, killEnv);
+      const res = await bot.fetch(
+        new Request("https://mock/execute-trade", { method: "POST", body: JSON.stringify({}) })
+      );
+      expect(res.status).not.toBe(503);
+    });
+
+    it("blocks /execute-trade and returns HTTP 503 when GLOBAL_TRADING_HALT is true", async () => {
+      const killStorage = new Map<string, any>([
+        ["isActive", true],
+        ["userId", "test-user-123"],
+      ]);
+      const killState: any = {
+        id: { toString: () => "mock-do-id" },
+        storage: {
+          get: async (key: string) => killStorage.get(key),
+          put: async (key: string, value: any) => killStorage.set(key, value),
+          setAlarm: async (_ms: number) => {},
+          list: async () => killStorage,
+        },
+        blockConcurrencyWhile: async (cb: () => Promise<any>) => await cb(),
+      };
+      const killEnv: any = {
+        DB: {
+          prepare: () => ({
+            bind: () => ({
+              first: async () => null,
+              run: async () => {},
+            }),
+          }),
+        },
+        GLOBAL_TRADING_HALT: "true",
+      };
+
+      const bot = new TradingBot(killState, killEnv);
+      const res = await bot.fetch(
+        new Request("https://mock/execute-trade", { method: "POST", body: JSON.stringify({}) })
+      );
+      expect(res.status).toBe(503);
+      const data = await res.json<any>();
+      expect(data.error).toContain("safely suspended");
+    });
+
+    it("reflects GLOBAL_TRADING_HALT status accurately in DO /health endpoint", async () => {
+      const killStorage = new Map<string, any>([
+        ["isActive", true],
+        ["userId", "test-user-123"],
+      ]);
+      const killState: any = {
+        id: { toString: () => "mock-do-id" },
+        storage: {
+          get: async (key: string) => killStorage.get(key),
+          put: async (key: string, value: any) => killStorage.set(key, value),
+          setAlarm: async (_ms: number) => {},
+          list: async () => killStorage,
+        },
+        blockConcurrencyWhile: async (cb: () => Promise<any>) => await cb(),
+      };
+      const baseEnv: any = {
+        DB: {
+          prepare: () => ({
+            bind: () => ({
+              first: async () => null,
+              run: async () => {},
+            }),
+          }),
+        },
+      };
+
+      let bot = new TradingBot(killState, { ...baseEnv, GLOBAL_TRADING_HALT: "true" });
+      let res = await bot.fetch(new Request("https://mock/health"));
+      expect(res.status).toBe(200);
+      let data = await res.json<any>();
+      expect(data.globalTradingHalt).toBe(true);
+      expect(data.activePositionsCount).toBe(0);
+      expect(data.version).toBe("1.0.0-phase3.3.1");
+
+      bot = new TradingBot(killState, { ...baseEnv, GLOBAL_TRADING_HALT: "false" });
+      res = await bot.fetch(new Request("https://mock/health"));
+      expect(res.status).toBe(200);
+      data = await res.json<any>();
+      expect(data.globalTradingHalt).toBe(false);
+    });
+  });
 });
 

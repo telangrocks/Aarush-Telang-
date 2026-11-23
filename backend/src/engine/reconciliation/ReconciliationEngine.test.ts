@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ReconciliationEngine } from './ReconciliationEngine';
 import BigNumber from 'bignumber.js';
 
@@ -214,6 +214,209 @@ describe("ReconciliationEngine Unit Tests", () => {
 
       expect(await ReconciliationEngine.reconcilePositionLifecycle(adapter, closedPos, Date.now())).toBeNull();
       expect(await ReconciliationEngine.reconcilePositionLifecycle(adapter, cancelledPos, Date.now())).toBeNull();
+    });
+  });
+
+  describe("Failure Recovery & Exhaustive REST Reconciliation", () => {
+    it("1. Timeout before exchange receives request: recovers UNKNOWN -> ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION with zero resubmits", async () => {
+      const capturedCreateOrderCalls: any[] = [];
+      const mockAdapter: any = {
+        fetchOrder: vi.fn().mockResolvedValue(null),
+        fetchClosedOrders: vi.fn().mockResolvedValue([]),
+        fetchPositions: vi.fn(),
+        fetchClosedPnl: vi.fn(),
+        createOrder: vi.fn().mockImplementation((req: any) => {
+          capturedCreateOrderCalls.push(req);
+          return Promise.resolve({ id: "ord_123" });
+        }),
+      };
+      const intent: any = {
+        intentId: "c3cbe99c-timeout-1",
+        symbol: "ZRO/USDT",
+        side: "buy",
+        orderType: "market",
+        qty: "85.6604",
+        status: "UNKNOWN",
+        createdAt: Date.now() - 20 * 60 * 1000,
+        reconciliationAttemptCount: 4,
+        payloadSnapshot: {} as any,
+      };
+
+      const result = await ReconciliationEngine.reconcile(mockAdapter, intent, Date.now());
+      expect(result.status).toBe("ORDER_NOT_FOUND_AFTER_EXHAUSTIVE_RECONCILIATION");
+      expect(capturedCreateOrderCalls.length).toBe(0);
+    });
+
+    it("2. Timeout after exchange accepts request: recovers existing open order via orderLinkId without resubmitting", async () => {
+      const capturedCreateOrderCalls: any[] = [];
+      const alertId = "c3cbe99c-timeout-2";
+      const mockAdapter: any = {
+        fetchOrder: vi.fn().mockResolvedValue({
+          id: "bybit_ord_5544",
+          clientOrderId: alertId,
+          symbol: "ZRO/USDT",
+          side: "buy",
+          type: "limit",
+          status: "open",
+          price: new BigNumber(1.1674),
+          amount: new BigNumber(85.6604),
+          filled: new BigNumber(0),
+          remaining: new BigNumber(85.6604),
+        }),
+        createOrder: vi.fn().mockImplementation((req: any) => capturedCreateOrderCalls.push(req)),
+      };
+      const intent: any = {
+        intentId: alertId,
+        symbol: "ZRO/USDT",
+        side: "buy",
+        orderType: "limit",
+        qty: "85.6604",
+        status: "UNKNOWN",
+        createdAt: Date.now(),
+        reconciliationAttemptCount: 0,
+        payloadSnapshot: {} as any,
+      };
+
+      const result = await ReconciliationEngine.reconcile(mockAdapter, intent, Date.now());
+      expect(result.status).toBe("DISPATCHED");
+      expect(result.actualOrderId).toBe("bybit_ord_5544");
+      expect(capturedCreateOrderCalls.length).toBe(0);
+    });
+
+    it("3. Timeout after exchange fills request: recovers existing filled order with authoritative avgPrice", async () => {
+      const capturedCreateOrderCalls: any[] = [];
+      const alertId = "c3cbe99c-timeout-3";
+      const mockAdapter: any = {
+        fetchOrder: vi.fn().mockResolvedValue({
+          id: "bybit_ord_9988",
+          clientOrderId: alertId,
+          symbol: "ZRO/USDT",
+          side: "buy",
+          type: "market",
+          status: "closed",
+          average: new BigNumber(1.1674),
+          amount: new BigNumber(85.6604),
+          filled: new BigNumber(85.6604),
+          remaining: new BigNumber(0),
+        }),
+        createOrder: vi.fn().mockImplementation((req: any) => capturedCreateOrderCalls.push(req)),
+      };
+      const intent: any = {
+        intentId: alertId,
+        symbol: "ZRO/USDT",
+        side: "buy",
+        orderType: "market",
+        qty: "85.6604",
+        status: "UNKNOWN",
+        createdAt: Date.now(),
+        reconciliationAttemptCount: 0,
+        payloadSnapshot: {} as any,
+      };
+
+      const result = await ReconciliationEngine.reconcile(mockAdapter, intent, Date.now());
+      expect(result.status).toBe("FILLED");
+      expect(result.actualOrderId).toBe("bybit_ord_9988");
+      expect(result.actualFillPrice).toBe("1.1674");
+      expect(result.actualExecutedQuantity).toBe("85.6604");
+      expect(capturedCreateOrderCalls.length).toBe(0);
+    });
+
+    it("4. Recovers existing cancelled or rejected order to FAILED without resubmitting", async () => {
+      const capturedCreateOrderCalls: any[] = [];
+      const alertId = "c3cbe99c-cancel-1";
+      const mockAdapter: any = {
+        fetchOrder: vi.fn().mockResolvedValue({
+          id: "bybit_ord_cancel",
+          clientOrderId: alertId,
+          symbol: "ZRO/USDT",
+          side: "buy",
+          type: "limit",
+          status: "canceled",
+          amount: new BigNumber(85.6604),
+          filled: new BigNumber(0),
+          remaining: new BigNumber(85.6604),
+        }),
+        createOrder: vi.fn().mockImplementation((req: any) => capturedCreateOrderCalls.push(req)),
+      };
+      const intent: any = {
+        intentId: alertId,
+        symbol: "ZRO/USDT",
+        side: "buy",
+        orderType: "limit",
+        qty: "85.6604",
+        status: "UNKNOWN",
+        createdAt: Date.now(),
+        reconciliationAttemptCount: 0,
+        payloadSnapshot: {} as any,
+      };
+
+      const result = await ReconciliationEngine.reconcile(mockAdapter, intent, Date.now());
+      expect(result.status).toBe("FAILED");
+      expect(capturedCreateOrderCalls.length).toBe(0);
+    });
+
+    it("5. Recovers partial fill state accurately from DISPATCHED", async () => {
+      const alertId = "c3cbe99c-partial-1";
+      const mockAdapter: any = {
+        fetchOrder: vi.fn().mockResolvedValue({
+          id: "bybit_ord_partial",
+          clientOrderId: alertId,
+          symbol: "ZRO/USDT",
+          side: "buy",
+          type: "limit",
+          status: "partially_filled",
+          average: new BigNumber(1.1674),
+          amount: new BigNumber(100.0),
+          filled: new BigNumber(45.0),
+          remaining: new BigNumber(55.0),
+        }),
+      };
+      const intent: any = {
+        intentId: alertId,
+        symbol: "ZRO/USDT",
+        side: "buy",
+        orderType: "limit",
+        qty: "100.0",
+        status: "DISPATCHED",
+        createdAt: Date.now(),
+        reconciliationAttemptCount: 0,
+        payloadSnapshot: {} as any,
+      };
+
+      const result = await ReconciliationEngine.reconcile(mockAdapter, intent, Date.now());
+      expect(result.status).toBe("PARTIALLY_FILLED");
+      expect(result.actualExecutedQuantity).toBe("45");
+      expect(result.actualFillPrice).toBe("1.1674");
+    });
+
+    it("6. Preserves terminal FILLED state against stale out-of-order open response", async () => {
+      const alertId = "c3cbe99c-monotonic";
+      const mockAdapter: any = {
+        fetchOrder: vi.fn().mockResolvedValue({
+          id: "bybit_ord_stale",
+          clientOrderId: alertId,
+          symbol: "ZRO/USDT",
+          side: "buy",
+          status: "open",
+          amount: new BigNumber(85.6604),
+          filled: new BigNumber(0),
+        }),
+      };
+      const terminalIntent: any = {
+        intentId: alertId,
+        symbol: "ZRO/USDT",
+        side: "buy",
+        status: "FILLED",
+        actualFillPrice: "1.1674",
+        actualExecutedQuantity: "85.6604",
+        createdAt: Date.now(),
+        reconciliationAttemptCount: 1,
+        payloadSnapshot: {} as any,
+      };
+
+      const result = await ReconciliationEngine.reconcile(mockAdapter, terminalIntent, Date.now());
+      expect(result.status).toBe("FILLED");
+      expect(result.actualFillPrice).toBe("1.1674");
     });
   });
 });

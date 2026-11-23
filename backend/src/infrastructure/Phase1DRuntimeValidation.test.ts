@@ -8,7 +8,10 @@ import { ExecutionIdempotencyService } from './services/ExecutionIdempotencyServ
 import { CircuitBreaker } from './orchestrator/CircuitBreaker';
 import { RateLimiter } from './orchestrator/RateLimiter';
 import { EventBus, DomainEvent } from '../domain/events/EventBus';
-import { StructuredLogger, TelemetryTracer } from './telemetry/Telemetry';
+import { StructuredLogger, TelemetryTracer, MetricsCollector } from './telemetry/Telemetry';
+import { ConfigService } from './config/ConfigService';
+import { Container } from './di/Container';
+import { ExchangeRepository, UserExchangeCredentials } from './repositories/Repositories';
 import { Ticker } from '../exchanges/models/NormalizedDomain';
 import { WebCryptoSigner } from './crypto/WebCryptoSigner';
 import { PublicMarketDataService } from './market-data/PublicMarketDataService';
@@ -215,5 +218,54 @@ describe('Phase 1D – Production Stabilization & Runtime Validation Suite', () 
       'http://coordinator/klines?symbol=BTC%2FUSDT&interval=5m&limit=205&environment=demo&region=india',
       'http://coordinator/opportunities?environment=demo&region=india',
     ]);
+  });
+
+  it('12. ConfigService parses environment configuration with fallbacks', () => {
+    const config = new ConfigService({ ENCRYPTION_KEY: 'test_key_32_chars_long_1234567' });
+    expect(config.exchangeConfig.timeoutMs).toBe(10000);
+    expect(config.cacheConfig.maxCapacity).toBe(50);
+    expect(config.getEncryptionKey()).toBe('test_key_32_chars_long_1234567');
+  });
+
+  it('13. MetricsCollector accumulates counters and latencies', () => {
+    MetricsCollector.increment('test_counter', 1);
+    MetricsCollector.recordLatency('test_latency', 100);
+    const metrics = MetricsCollector.getMetrics();
+    expect(metrics.counters['test_counter']).toBe(1);
+    expect(metrics.histograms['test_latency'].count).toBe(1);
+    expect(metrics.histograms['test_latency'].avg).toBe(100);
+  });
+
+  it('14. DI Container registers and resolves instances correctly', () => {
+    const container = new Container();
+    container.register('config', () => new ConfigService());
+    expect(container.has('config')).toBe(true);
+    const resolved = container.resolve<ConfigService>('config');
+    expect(resolved).toBeInstanceOf(ConfigService);
+  });
+
+  it('15. ExchangeRepository operates safely with mock database bindings', async () => {
+    let queryRun = false;
+    const mockDb = {
+      prepare: () => ({
+        bind: () => ({
+          run: async () => { queryRun = true; },
+          first: async () => null,
+        }),
+      }),
+    };
+
+    const repo = new ExchangeRepository(mockDb);
+    const creds: UserExchangeCredentials = {
+      userId: 'usr_1',
+      exchangeName: 'binance',
+      environment: 'mainnet',
+      apiKey: 'k123',
+      encryptedSecret: 'sec_enc',
+      secretIv: 'iv_123',
+    };
+
+    await repo.saveUserCredentials(creds);
+    expect(queryRun).toBe(true);
   });
 });

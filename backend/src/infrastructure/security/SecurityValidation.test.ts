@@ -6,6 +6,7 @@ import { PermissionValidator } from './PermissionValidator';
 import { AuditLogger } from './AuditLogger';
 import { SecurityAwareCache } from './SecurityAwareCache';
 import { SecurityState } from './SecurityState';
+import { EventBus } from '../../domain/events/EventBus';
 
 describe('Milestone 6 — Phase 3 Comprehensive Security Validation Test Suite', () => {
   it('Security Test 1: Full Credential Lifecycle & Version Rotation', () => {
@@ -99,5 +100,95 @@ describe('Milestone 6 — Phase 3 Comprehensive Security Validation Test Suite',
 
     state = state.withViolation();
     expect(state.securityViolationsCount).toBe(1);
+  });
+
+  describe('Consolidated Component Unit Invariants (SecretManager, SecureMemory, AuditLogger, SecurityAwareCache)', () => {
+    it('SecretManager verifies ACTIVE state, apiKey retrieval, REVOKED reason, and expires credentials past TTL', async () => {
+      const manager = new SecretManager();
+      const regRes = manager.registerCredential('usr_100', 'binance', 'key_v1', 'sec_enc_1', 'iv_1', 'mainnet');
+      expect(regRes.isSuccess).toBe(true);
+      if (regRes.isSuccess) {
+        expect(regRes.value.version).toBe(1);
+        expect(regRes.value.state).toBe('ACTIVE');
+      }
+
+      const activeRes = manager.getActiveCredential('usr_100', 'binance', 'mainnet');
+      expect(activeRes.isSuccess).toBe(true);
+      if (activeRes.isSuccess) {
+        expect(activeRes.value.apiKey).toBe('key_v1');
+      }
+
+      const rotRes = manager.rotateCredential('usr_100', 'binance', 'key_v2', 'sec_enc_2', 'iv_2', 'mainnet');
+      expect(rotRes.isSuccess).toBe(true);
+      if (rotRes.isSuccess) {
+        expect(rotRes.value.version).toBe(2);
+        expect(rotRes.value.apiKey).toBe('key_v2');
+      }
+
+      manager.revokeCredential('usr_100', 'binance', 'mainnet');
+      const revokedRes = manager.getActiveCredential('usr_100', 'binance', 'mainnet');
+      expect(revokedRes.isFailure).toBe(true);
+      if (revokedRes.isFailure) {
+        expect(revokedRes.error.message).toContain('REVOKED');
+      }
+
+      manager.registerCredential('usr_100', 'bybit', 'key_b1', 'sec_b1', 'iv_b1', 'mainnet', undefined, undefined, 20);
+      await new Promise((r) => setTimeout(r, 40));
+      const expiredRes = manager.getActiveCredential('usr_100', 'bybit', 'mainnet');
+      expect(expiredRes.isFailure).toBe(true);
+      if (expiredRes.isFailure) {
+        expect(expiredRes.error.message).toContain('EXPIRED');
+      }
+    });
+
+    it('SecureMemory handles mismatched-length timingSafeEqual, generateSecureNonce, and zeroizeBuffer', () => {
+      expect(SecureMemory.timingSafeEqual('super_secret_hmac_signature_999', 'short')).toBe(false);
+
+      const nonce1 = SecureMemory.generateSecureNonce(16);
+      const nonce2 = SecureMemory.generateSecureNonce(16);
+      expect(nonce1).toHaveLength(16);
+      expect(nonce2).toHaveLength(16);
+      expect(SecureMemory.timingSafeEqual(Array.from(nonce1).join(','), Array.from(nonce2).join(','))).toBe(false);
+
+      const buffer = new Uint8Array([10, 20, 30, 40, 50]);
+      SecureMemory.zeroizeBuffer(buffer);
+      expect(Array.from(buffer)).toEqual([0, 0, 0, 0, 0]);
+    });
+
+    it('AuditLogger publishes immutable SECURITY_AUDIT_EVENT to EventBus and tracks ENVIRONMENT_VIOLATION', async () => {
+      const bus = new EventBus();
+      const auditLogger = new AuditLogger(bus);
+
+      const publishedEvents: any[] = [];
+      bus.subscribe('SECURITY_AUDIT_EVENT', (evt) => {
+        publishedEvents.push(evt);
+      });
+
+      const evt = await auditLogger.logSecurityEvent('CREDENTIAL_ROTATED', 'usr_sec_10', 'mainnet', 'binance', {
+        version: 2,
+      });
+      expect(evt.securityAction).toBe('CREDENTIAL_ROTATED');
+      expect(evt.userId).toBe('usr_sec_10');
+
+      await auditLogger.logSecurityEvent('ENVIRONMENT_VIOLATION', 'usr_hacker', 'mainnet', 'kucoin', {
+        attemptedEnv: 'sandbox',
+      });
+
+      const logs = auditLogger.getImmutableAuditLogs();
+      expect(logs).toHaveLength(2);
+      expect(logs[0].eventId).toBe(evt.eventId);
+      expect(logs[1].securityAction).toBe('ENVIRONMENT_VIOLATION');
+      expect(publishedEvents).toHaveLength(2);
+      expect(publishedEvents[0].eventId).toBe(evt.eventId);
+      expect(publishedEvents[1].securityAction).toBe('ENVIRONMENT_VIOLATION');
+    });
+
+    it('SecurityAwareCache prevents cross-environment cache poisoning between mainnet and testnet', async () => {
+      const cache = new SecurityAwareCache<any>();
+      await cache.set('usr_10', 'mainnet', 'binance', 1, '/api/v3/account', { balance: 5000 });
+
+      expect(await cache.get('usr_10', 'mainnet', 'binance', 1, '/api/v3/account')).toEqual({ balance: 5000 });
+      expect(await cache.get('usr_10', 'testnet', 'binance', 1, '/api/v3/account')).toBeNull();
+    });
   });
 });

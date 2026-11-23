@@ -546,4 +546,78 @@ describe('CryptoPulse — Phase 1 Matrix Coverage Forensic Audit Suite', () => {
       expect(reportZero.cells[i].hasSignal).toBe(reportFunded.cells[i].hasSignal);
     }
   });
+
+  // --------------------------------------------------------------------------
+  // TEST 12–14: Universe Sizing Edge Cases (Consolidated from MatrixMTFCoverage)
+  // --------------------------------------------------------------------------
+  it('Test 12 [Partial 21-Coin Universe]: validates 21 coins produce exactly 105 expected cells', async () => {
+    const store = createMockCandleStore();
+    const symbols21 = SYMBOLS_25.slice(0, 21);
+    const candidates: CandidateEvaluationInput[] = symbols21.map((symbol, idx) => {
+      populateStoreForSymbol(store, symbol);
+      return {
+        index: idx + 1,
+        symbol,
+        rawOpportunity: { symbol, timeframes: { '15m': { closePrice: 100 } } },
+      };
+    });
+
+    const report = await evaluator.evaluate({
+      candidates,
+      candleStore: store,
+      accountBalance: 1000,
+    });
+
+    expect(report.discoveredCandidateCount).toBe(21);
+    expect(report.evaluatedCandidateCount).toBe(21);
+    expect(report.expectedCells).toBe(105);
+    expect(report.terminalCells).toBe(105);
+    expect(report.unaccountedCells).toBe(0);
+    expect(report.silentSkips).toBe(0);
+    expect(report.isComplete).toBe(true);
+    expect(report.cells.length).toBe(105);
+  });
+
+  it('Test 13 [Empty Universe]: validates N = 0 completes as NO_ELIGIBLE_SYMBOLS (0 cells)', async () => {
+    const store = createMockCandleStore();
+    const report = await evaluator.evaluate({
+      candidates: [],
+      candleStore: store,
+      accountBalance: 1000,
+    });
+
+    expect(report.discoveredCandidateCount).toBe(0);
+    expect(report.evaluatedCandidateCount).toBe(0);
+    expect(report.expectedCells).toBe(0);
+    expect(report.terminalCells).toBe(0);
+    expect(report.unaccountedCells).toBe(0);
+    expect(report.silentSkips).toBe(0);
+    expect(report.isComplete).toBe(true);
+    expect(report.cells.length).toBe(0);
+    expect(report.scanStatus).toBe('NO_ELIGIBLE_SYMBOLS');
+  });
+
+  it('Test 14 [Symbol Deduplication]: validates duplicate candidates are deduplicated before matrix execution', async () => {
+    const store = createMockCandleStore();
+    populateStoreForSymbol(store, 'BTCUSDT');
+    populateStoreForSymbol(store, 'ETHUSDT');
+
+    const duplicateCandidates: CandidateEvaluationInput[] = [
+      { index: 1, symbol: 'BTCUSDT' },
+      { index: 2, symbol: 'btcusdt' },
+      { index: 3, symbol: 'ETHUSDT' },
+      { index: 4, symbol: 'BTCUSDT' },
+    ];
+
+    const report = await evaluator.evaluate({
+      candidates: duplicateCandidates,
+      candleStore: store,
+    });
+
+    expect(report.discoveredCandidateCount).toBe(2);
+    expect(report.evaluatedCandidateCount).toBe(2);
+    expect(report.expectedCells).toBe(10);
+    expect(report.terminalCells).toBe(10);
+    expect(report.isComplete).toBe(true);
+  });
 });
